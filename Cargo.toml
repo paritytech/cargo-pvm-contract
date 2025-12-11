@@ -2,7 +2,7 @@
 name = "cargo-pvm-contract"
 version = "0.1.0"
 edition = "2021"
-publish = false
+publish = true
 
 [[bin]]
 name = "cargo-pvm-contract"
