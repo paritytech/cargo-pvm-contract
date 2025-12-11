@@ -142,10 +142,10 @@ fn copy_embedded_template(
     extract_embedded_dir(template_dir, target_dir)?;
     log::debug!("Extracted template files to {template_dir:?}");
 
-    let cargo_toml_path = template_dir.path().join("Cargo.toml");
+    let cargo_toml_path = template_dir.path().join("_Cargo.toml");
     let cargo_toml_file = template_dir
         .get_file(&cargo_toml_path)
-        .ok_or_else(|| anyhow::anyhow!("Template missing Cargo.toml at {cargo_toml_path:?}"))?;
+        .ok_or_else(|| anyhow::anyhow!("Template missing _Cargo.toml at {cargo_toml_path:?}"))?;
 
     let cargo_toml_content = std::str::from_utf8(cargo_toml_file.contents())
         .context("Invalid UTF-8 in template Cargo.toml")?;
@@ -183,6 +183,13 @@ fn extract_embedded_dir_impl(
             .path()
             .strip_prefix(base_path)
             .context("Failed to strip template prefix from file path")?;
+
+        // Skip _Cargo.toml as it's handled separately in copy_embedded_template
+        if relative_path.file_name().and_then(|n| n.to_str()) == Some("_Cargo.toml") {
+            debug!("Skipping _Cargo.toml (will be processed separately)");
+            continue;
+        }
+
         let file_path = target_dir.join(relative_path);
 
         debug!("Extracting file: {relative_path:?}");

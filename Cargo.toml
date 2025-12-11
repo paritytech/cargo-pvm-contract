@@ -2,6 +2,7 @@
 name = "cargo-pvm-contract"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 publish = true
 include = [
     "src/**",
@@ -10,6 +11,7 @@ include = [
     "Cargo.lock",
     "README.md",
 ]
+exclude = [".git", "target"]
 
 [[bin]]
 name = "cargo-pvm-contract"
