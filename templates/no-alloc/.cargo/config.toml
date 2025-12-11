@@ -1,0 +1,7 @@
+# Use a standard rust riscv64 target for cargo check and rust-anaylser
+# cargo pvm will use  `polkavm_linker::TargetJsonArgs::default()`
+[build]
+target = "riscv64imac-unknown-none-elf"
+
+
+
