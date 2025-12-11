@@ -3,6 +3,13 @@ name = "cargo-pvm-contract"
 version = "0.1.0"
 edition = "2021"
 publish = true
+include = [
+    "src/**",
+    "templates/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+]
 
 [[bin]]
 name = "cargo-pvm-contract"
