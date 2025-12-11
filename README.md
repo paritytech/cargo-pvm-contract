@@ -2,6 +2,10 @@
 
 A cargo subcommand to build Rust contracts to PolkaVM bytecode.
 
+This tool is designed for building smart contracts in Rust using the low-level API provided by [pallet-revive-uapi](https://docs.rs/pallet-revive-uapi/latest/pallet_revive_uapi/). For a more high-level, user-friendly API, see [Ink!](https://use.ink/).
+
+To learn more, visit the [Rust Contract Template](https://github.com/paritytech/rust-contract-template).
+
 ## Installation
 
 ```bash
