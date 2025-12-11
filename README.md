@@ -9,7 +9,7 @@ To learn more, visit the [Rust Contract Template](https://github.com/paritytech/
 ## Installation
 
 ```bash
-cargo install --path .
+cargo install --force --locked cargo-pvm-contract
 ```
 
 Alternatively, you can run it directly from the target directory:
