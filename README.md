@@ -12,12 +12,6 @@ To learn more, visit the [Rust Contract Template](https://github.com/paritytech/
 cargo install --force --locked cargo-pvm-contract
 ```
 
-Alternatively, you can run it directly from the target directory:
-
-```bash
-./target/release/cargo-pvm-contract pvm-contract [COMMAND]
-```
-
 ## Usage
 
 Once installed, you can use it as a cargo subcommand:
