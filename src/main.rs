@@ -66,14 +66,14 @@ fn build_command(bin_name: Option<String>, output: Option<PathBuf>) -> Result<()
     debug!("Found Cargo.toml at: {}", manifest_path.display());
 
     let cargo_toml_content = fs::read_to_string(&manifest_path)
-        .with_context(|| format!("Failed to read Cargo.toml at {}", manifest_path.display()))?;
+        .with_context(|| format!("Failed to read Cargo.toml at {manifest_path:?}"))?;
 
     let doc = cargo_toml_content
         .parse::<toml_edit::DocumentMut>()
         .context("Failed to parse Cargo.toml")?;
 
     let bin_name = if let Some(name) = bin_name {
-        debug!("Using specified binary name: {}", name);
+        debug!("Using specified binary name: {name}");
         name
     } else {
         let first_bin_name = doc
@@ -91,7 +91,7 @@ fn build_command(bin_name: Option<String>, output: Option<PathBuf>) -> Result<()
     let work_dir = manifest_path.parent().unwrap();
     let build_dir = work_dir.join("target");
     let elf_path = build_contract(&manifest_path, &build_dir, &bin_name)?;
-    let output_path = output.unwrap_or_else(|| PathBuf::from(format!("./{}.polkavm", bin_name)));
+    let output_path = output.unwrap_or_else(|| PathBuf::from(format!("./{bin_name}.polkavm")));
     link_to_polkavm(&elf_path, &output_path)?;
 
     println!("Successfully built contract: {output_path:?}");
@@ -186,12 +186,10 @@ fn extract_embedded_dir_impl(
 
         // Skip _Cargo.toml as it's handled separately in copy_embedded_template
         if relative_path.file_name().and_then(|n| n.to_str()) == Some("_Cargo.toml") {
-            debug!("Skipping _Cargo.toml (will be processed separately)");
             continue;
         }
 
         let file_path = target_dir.join(relative_path);
-
         debug!("Extracting file: {relative_path:?}");
 
         // Create parent directories if needed
@@ -251,7 +249,6 @@ fn build_contract(manifest_path: &PathBuf, build_dir: &PathBuf, bin_name: &str) 
     build_command
         .current_dir(work_dir)
         .env("RUSTC_BOOTSTRAP", "1")
-        .env("SKIP_BUILD_SCRIPT", "1")
         .args(["build", "--release", "--manifest-path"])
         .arg(manifest_path)
         .args([
@@ -264,13 +261,10 @@ fn build_contract(manifest_path: &PathBuf, build_dir: &PathBuf, bin_name: &str) 
         ]);
 
     debug!("Running: {build_command:?}");
-
-    // Spawn the build process and inherit stdout/stderr for real-time output
     let mut child = build_command
         .spawn()
         .context("Failed to execute cargo build")?;
 
-    // Wait for the build to complete
     let status = child.wait().context("Failed to wait for cargo build")?;
 
     if !status.success() {
@@ -305,11 +299,9 @@ fn link_to_polkavm(elf_path: &PathBuf, output_path: &PathBuf) -> Result<()> {
     )
     .map_err(|err| anyhow::anyhow!("Failed to link PolkaVM program: {err:?}"))?;
 
-    let linked_size = linked.len();
-
-    fs::write(output_path, linked)
+    fs::write(output_path, &linked)
         .with_context(|| format!("Failed to write PolkaVM bytecode to {output_path:?}"))?;
 
-    debug!("Wrote {linked_size} bytes to {output_path:?}");
+    debug!("Wrote {} bytes to {output_path:?}", linked.len());
     Ok(())
 }
