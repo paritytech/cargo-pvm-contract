@@ -390,9 +390,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     } else {
         if use_alloc {
-            quote! { Err(b"UnknownSelector".to_vec()) }
+            quote! { Err(Vec::new()) }
         } else {
-            quote! { Err(b"UnknownSelector") }
+            quote! { Err(b"") }
         }
     };
 

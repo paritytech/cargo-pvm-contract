@@ -48,6 +48,9 @@ use syn::{parse_macro_input, ItemFn, ItemMod};
 ///
 ///     #[pvm_contract::method]
 ///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
+///
+///     #[pvm_contract::fallback]
+///     pub fn fallback() -> Result<(), Error> { Err(Error::UnknownSelector) }
 /// }
 /// ```
 ///
@@ -73,6 +76,9 @@ use syn::{parse_macro_input, ItemFn, ItemMod};
 ///
 ///     #[pvm_contract::method]
 ///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
+///
+///     #[pvm_contract::fallback]
+///     pub fn fallback() -> Result<(), Error> { Err(Error::UnknownSelector) }
 /// }
 /// ```
 ///
@@ -143,14 +149,14 @@ use syn::{parse_macro_input, ItemFn, ItemMod};
 ///     pvm_contract::api::call_data_copy(&mut call_data, 0);
 ///
 ///     let result: Result<Option<Vec<u8>>, Vec<u8>> = (|| {
-///         if call_data.len() < 4 { return Err(b"UnknownSelector".to_vec()); }
+///         if call_data.len() < 4 { return Err(Vec::new()); }
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///
 ///         match selector {
 ///             [0x18, 0x16, 0x0d, 0xdd] => {  // totalSupply()
 ///                 Ok(Some(my_token::total_supply().to_be_bytes::<32>().to_vec()))
 ///             }
-///             _ => Err(b"UnknownSelector".to_vec()),
+///             _ => Err(Vec::new()),
 ///         }
 ///     })();
 ///
