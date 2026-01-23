@@ -1,0 +1,90 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Marks a module as a PVM smart contract, generating the dispatch logic and entry points."><title>contract in pvm - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="pvm" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (22c74ba91 2026-01-15)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc attr"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">contract</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../pvm/index.html">pvm</a><span class="version">0.2.3</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">contract</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#attributes" title="Attributes">Attributes</a></li><li><a href="#example" title="Example">Example</a></li><li><a href="#generated-code" title="Generated Code">Generated Code</a></li><li><a href="#return-type-flexibility" title="Return Type Flexibility">Return Type Flexibility</a></li><li><a href="#error-handling" title="Error Handling">Error Handling</a></li><li><a href="#no-alloc-mode" title="No-Alloc Mode">No-Alloc Mode</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate pvm</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">pvm</a></div><h1>Attribute Macro <span class="attr">contract</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"></span></div><pre class="rust item-decl"><code>#[contract]</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Marks a module as a PVM smart contract, generating the dispatch logic and entry points.</p>
+<h2 id="attributes"><a class="doc-anchor" href="#attributes">§</a>Attributes</h2>
+<ul>
+<li><code>no_alloc</code> - Disables the global allocator (uses fixed-size stack buffers)</li>
+<li><code>buffer = N</code> - Sets the calldata buffer size for no_alloc mode (default: 256)</li>
+</ul>
+<h2 id="example"><a class="doc-anchor" href="#example">§</a>Example</h2>
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">use </span>pvm::{Address, Error, U256};
+
+<span class="attr">#[pvm::contract]
+</span><span class="kw">mod </span>my_token {
+    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+
+    <span class="attr">#[pvm::constructor]
+    </span><span class="kw">pub fn </span>new() -&gt; <span class="prelude-ty">Result</span>&lt;(), Error&gt; {
+        <span class="prelude-val">Ok</span>(())
+    }
+
+    <span class="comment">// Fallible method - returns Result&lt;T, Error&gt;
+    </span><span class="attr">#[pvm::method(<span class="string">"transfer(address,uint256)"</span>)]
+    </span><span class="kw">pub fn </span>transfer(to: Address, amount: U256) -&gt; <span class="prelude-ty">Result</span>&lt;(), Error&gt; {
+        <span class="kw">if </span>get_balance(<span class="kw-2">&amp;</span>pvm::caller()) &lt; amount {
+            <span class="kw">return </span><span class="prelude-val">Err</span>(Error::InsufficientBalance);
+        }
+        <span class="comment">// ... transfer logic
+        </span><span class="prelude-val">Ok</span>(())
+    }
+
+    <span class="comment">// Infallible method - returns T directly (no Result wrapper)
+    </span><span class="attr">#[pvm::method(<span class="string">"totalSupply() returns (uint256)"</span>)]
+    </span><span class="kw">pub fn </span>total_supply() -&gt; U256 {
+        get_total_supply()
+    }
+
+    <span class="comment">// Infallible with no return value
+    </span><span class="attr">#[pvm::method(<span class="string">"mint(address,uint256)"</span>)]
+    </span><span class="kw">pub fn </span>mint(to: Address, amount: U256) {
+        set_balance(<span class="kw-2">&amp;</span>to, get_balance(<span class="kw-2">&amp;</span>to) + amount);
+    }
+
+    <span class="attr">#[pvm::fallback]
+    </span><span class="kw">pub fn </span>fallback() -&gt; <span class="prelude-ty">Result</span>&lt;(), Error&gt; {
+        <span class="prelude-val">Err</span>(Error::UnknownSelector)
+    }
+}</code></pre></div><h2 id="generated-code"><a class="doc-anchor" href="#generated-code">§</a>Generated Code</h2>
+<p>The macro generates:</p>
+<ul>
+<li><code>deploy()</code> - Constructor entry point</li>
+<li><code>call()</code> - Dispatcher that routes calls by selector</li>
+<li>Selector computation from Solidity signatures</li>
+<li>ABI encoding/decoding for parameters and return values</li>
+</ul>
+<h2 id="return-type-flexibility"><a class="doc-anchor" href="#return-type-flexibility">§</a>Return Type Flexibility</h2>
+<p>Methods can return either:</p>
+<p><strong><code>Result&lt;T, Error&gt;</code></strong> - For fallible operations:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="attr">#[pvm::method(<span class="string">"transfer(address,uint256)"</span>)]
+</span><span class="kw">pub fn </span>transfer(to: Address, amount: U256) -&gt; <span class="prelude-ty">Result</span>&lt;(), Error&gt; {
+    <span class="comment">// Can return Err(Error::...) to revert
+</span>}</code></pre></div>
+<p><strong><code>T</code></strong> (plain value) - For infallible operations:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="attr">#[pvm::method(<span class="string">"totalSupply() returns (uint256)"</span>)]
+</span><span class="kw">pub fn </span>total_supply() -&gt; U256 {
+    get_total_supply()  <span class="comment">// Always succeeds
+</span>}</code></pre></div>
+<p>The macro detects the return type and generates appropriate dispatch code:</p>
+<ul>
+<li><code>Result&lt;T, Error&gt;</code> → <code>method().map(encode).map_err(|e| e.as_ref())</code></li>
+<li><code>T</code> → <code>Ok(encode(method()))</code></li>
+</ul>
+<h2 id="error-handling"><a class="doc-anchor" href="#error-handling">§</a>Error Handling</h2>
+<p>Use <code>pvm::Error</code> for revertable errors:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">pub enum </span>Error {
+    InsufficientBalance,
+    UnknownSelector,
+    InvalidCalldata,
+    CalldataTooLarge,
+    Custom(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>[u8]),  <span class="comment">// For custom error messages
+</span>}</code></pre></div>
+<p><code>Error</code> implements <code>AsRef&lt;[u8]&gt;</code>, so errors are automatically converted
+to byte slices for the revert data.</p>
+<h2 id="no-alloc-mode"><a class="doc-anchor" href="#no-alloc-mode">§</a>No-Alloc Mode</h2>
+<p>For minimal binary size, use <code>no_alloc</code>:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="attr">#[pvm::contract(no_alloc, buffer = <span class="number">512</span>)]
+</span><span class="kw">mod </span>my_contract {
+    <span class="comment">// Uses stack-allocated buffers instead of Vec
+</span>}</code></pre></div></div></details></section></div></main></body></html>

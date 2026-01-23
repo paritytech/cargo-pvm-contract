@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Marks a function as a contract method with a Solidity-style signature."><title>method in pvm - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="pvm" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (22c74ba91 2026-01-15)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="sidebar-items.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc attr"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">method</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../pvm/index.html">pvm</a><span class="version">0.2.3</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">method</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#signature-format" title="Signature Format">Signature Format</a></li><li><a href="#supported-types" title="Supported Types">Supported Types</a></li><li><a href="#return-types" title="Return Types">Return Types</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="index.html">In crate pvm</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="index.html">pvm</a></div><h1>Attribute Macro <span class="attr">method</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"></span></div><pre class="rust item-decl"><code>#[method]</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Marks a function as a contract method with a Solidity-style signature.</p>
+<h2 id="signature-format"><a class="doc-anchor" href="#signature-format">§</a>Signature Format</h2><div class="example-wrap"><pre class="language-text"><code>&quot;functionName(type1,type2) returns (returnType)&quot;</code></pre></div>
+<p>The signature is used to:</p>
+<ol>
+<li>Compute the 4-byte selector (keccak256 hash of canonical signature)</li>
+<li>Generate ABI decoding for input parameters</li>
+<li>Generate ABI encoding for return values</li>
+</ol>
+<h2 id="supported-types"><a class="doc-anchor" href="#supported-types">§</a>Supported Types</h2><div><table><thead><tr><th>Solidity</th><th>Rust</th></tr></thead><tbody>
+<tr><td><code>address</code></td><td><code>Address</code></td></tr>
+<tr><td><code>uint256</code></td><td><code>U256</code></td></tr>
+<tr><td><code>uint128</code></td><td><code>u128</code></td></tr>
+<tr><td><code>uint64</code></td><td><code>u64</code></td></tr>
+<tr><td><code>uint32</code></td><td><code>u32</code></td></tr>
+<tr><td><code>uint8</code></td><td><code>u8</code></td></tr>
+<tr><td><code>bool</code></td><td><code>bool</code></td></tr>
+<tr><td><code>bytes32</code></td><td><code>[u8; 32]</code></td></tr>
+</tbody></table>
+</div><h2 id="return-types"><a class="doc-anchor" href="#return-types">§</a>Return Types</h2>
+<p>Methods support two return patterns:</p>
+
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="comment">// Fallible - can revert with error
+</span><span class="attr">#[pvm::method(<span class="string">"transfer(address,uint256)"</span>)]
+</span><span class="kw">pub fn </span>transfer(to: Address, amount: U256) -&gt; <span class="prelude-ty">Result</span>&lt;(), Error&gt; { ... }
+
+<span class="comment">// Infallible - always succeeds
+</span><span class="attr">#[pvm::method(<span class="string">"balanceOf(address) returns (uint256)"</span>)]
+</span><span class="kw">pub fn </span>balance_of(account: Address) -&gt; U256 { ... }</code></pre></div></div></details></section></div></main></body></html>

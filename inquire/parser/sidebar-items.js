@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_BOOL_PARSER"],"type":["BoolParser","CustomTypeParser"]};

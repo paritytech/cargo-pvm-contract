@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["constructor","contract","fallback","method"],"mod":["codegen","signature","solidity"]};

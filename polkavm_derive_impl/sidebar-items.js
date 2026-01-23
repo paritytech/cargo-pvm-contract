@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["polkavm_define_abi","polkavm_export","polkavm_impl_abi_support","polkavm_import"],"struct":["AbiSupportAttributes","ExportBlockAttributes","ImportBlockAttributes"]};

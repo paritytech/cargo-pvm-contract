@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["Commands","InitType","MemoryModel"],"fn":["check_dir_exists","find_example","init_command","init_from_example","load_examples","main","prompt_memory_model","prompt_name"],"mod":["scaffold"],"static":["TEMPLATES_DIR"],"struct":["Cli","ExampleContract","PvmContractArgs"]};

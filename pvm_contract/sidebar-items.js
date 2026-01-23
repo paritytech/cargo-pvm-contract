@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["constructor","contract","fallback","method"],"enum":["api"],"struct":["Address","FixedBytes","ReturnFlags","StorageFlags"],"trait":["HostFn"],"type":["I256","U256"]};

@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["expand_constructor","expand_fallback","expand_method"],"struct":["MethodArgs"]};

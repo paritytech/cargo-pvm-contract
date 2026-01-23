@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["calculate_min_input_size","generate_decode","generate_decode_array_element","generate_decode_params"]};

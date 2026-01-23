@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["polkavm_derive_impl",[["impl <a class=\"trait\" href=\"syn/parse/trait.Parse.html\" title=\"trait syn::parse::Parse\">Parse</a> for <a class=\"struct\" href=\"polkavm_derive_impl/struct.AbiSupportAttributes.html\" title=\"struct polkavm_derive_impl::AbiSupportAttributes\">AbiSupportAttributes</a>",0],["impl <a class=\"trait\" href=\"syn/parse/trait.Parse.html\" title=\"trait syn::parse::Parse\">Parse</a> for <a class=\"struct\" href=\"polkavm_derive_impl/struct.ExportBlockAttributes.html\" title=\"struct polkavm_derive_impl::ExportBlockAttributes\">ExportBlockAttributes</a>",0],["impl <a class=\"trait\" href=\"syn/parse/trait.Parse.html\" title=\"trait syn::parse::Parse\">Parse</a> for <a class=\"struct\" href=\"polkavm_derive_impl/struct.ImportBlockAttributes.html\" title=\"struct polkavm_derive_impl::ImportBlockAttributes\">ImportBlockAttributes</a>",0]]],["pvm_contract_macros",[["impl <a class=\"trait\" href=\"syn/parse/trait.Parse.html\" title=\"trait syn::parse::Parse\">Parse</a> for <a class=\"struct\" href=\"pvm_contract_macros/codegen/contract/struct.ContractArgs.html\" title=\"struct pvm_contract_macros::codegen::contract::ContractArgs\">ContractArgs</a>",0],["impl <a class=\"trait\" href=\"syn/parse/trait.Parse.html\" title=\"trait syn::parse::Parse\">Parse</a> for <a class=\"struct\" href=\"pvm_contract_macros/codegen/method/struct.MethodArgs.html\" title=\"struct pvm_contract_macros::codegen::method::MethodArgs\">MethodArgs</a>",0]]],["syn",[]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[871,600,11]}

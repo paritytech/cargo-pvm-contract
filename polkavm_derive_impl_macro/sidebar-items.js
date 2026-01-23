@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["__PRIVATE_DO_NOT_USE_polkavm_define_abi","__PRIVATE_DO_NOT_USE_polkavm_export","__PRIVATE_DO_NOT_USE_polkavm_import"],"macro":["__PRIVATE_DO_NOT_USE_polkavm_impl_abi_support"]};

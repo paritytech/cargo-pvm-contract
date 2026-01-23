@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["askama_escape",[["impl&lt;E, W&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html\" title=\"trait core::fmt::Write\">Write</a> for <a class=\"struct\" href=\"askama_escape/struct.EscapeWriter.html\" title=\"struct askama_escape::EscapeWriter\">EscapeWriter</a>&lt;'_, E, W&gt;<div class=\"where\">where\n    W: <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html\" title=\"trait core::fmt::Write\">Write</a>,\n    E: <a class=\"trait\" href=\"askama_escape/trait.Escaper.html\" title=\"trait askama_escape::Escaper\">Escaper</a>,</div>",0]]],["bytes",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html\" title=\"trait core::fmt::Write\">Write</a> for <a class=\"struct\" href=\"bytes/struct.BytesMut.html\" title=\"struct bytes::BytesMut\">BytesMut</a>",0]]],["clap_builder",[["impl <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html\" title=\"trait core::fmt::Write\">Write</a> for <a class=\"struct\" href=\"clap_builder/builder/struct.StyledStr.html\" title=\"struct clap_builder::builder::StyledStr\">StyledStr</a>",0]]],["jiff",[["impl&lt;W: <a class=\"trait\" href=\"jiff/fmt/trait.Write.html\" title=\"trait jiff::fmt::Write\">Write</a>&gt; <a class=\"trait\" href=\"https://doc.rust-lang.org/nightly/core/fmt/trait.Write.html\" title=\"trait core::fmt::Write\">Write</a> for <a class=\"struct\" href=\"jiff/fmt/struct.StdFmtWrite.html\" title=\"struct jiff::fmt::StdFmtWrite\">StdFmtWrite</a>&lt;W&gt;",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[616,260,301,391]}

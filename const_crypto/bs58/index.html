@@ -1,0 +1,55 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="`const-crypto`"><title>const_crypto::bs58 - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="const_crypto" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (22c74ba91 2026-01-15)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module bs58</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../const_crypto/index.html">const_<wbr>crypto</a><span class="version">0.3.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module bs58</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#const-crypto" title="`const-crypto`"><code>const-crypto</code></a><ul><li><a href="#features" title="Features">Features</a></li><li><a href="#usage" title="Usage">Usage</a></li></ul></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#constants" title="Constants">Constants</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate const_<wbr>crypto</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">const_crypto</a></div><h1>Module <span>bs58</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/const_crypto/bs58.rs.html#1-277">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="const-crypto"><a class="doc-anchor" href="#const-crypto">§</a><code>const-crypto</code></h2>
+<p>A <code>#[no_std]</code> library for <code>const</code> sha2/sha3 hashing, ed25519 off-curve point evaluation, and bs58 decoding/encoding with minimal dependencies.</p>
+<h3 id="features"><a class="doc-anchor" href="#features">§</a>Features</h3>
+<ul>
+<li>We write a <code>const</code> implementation of Edwards point decompression and use it to provide a <code>const</code> implementation of on/off curve evaluation. This is then used to build a <code>const</code> implementation of Solana’s <code>Pubkey::find_program_address</code>.
+<strong>NOTE: this point decompression implementation is not cryptographically safe; it does not use constant time implementations for the internal math operations, as it is not intended to be used with secrets. Do not reuse.</strong></li>
+<li>Base58 encoding of 32 byte arrays into strings (and vice versa, i.e. decoding). The encoding is taken from <code>fd_bs58</code>, and adapted for <code>const</code>/`#[no_std] with some bug fixes.</li>
+<li>Full sha2/sha3 hash suites. Re-exports of <code>sha2-const-stable</code> (authored by yours truly) and <code>keccak-const</code> (authored by <a href="https://github.com/OffchainLabs/keccak-const">OffChainLabs</a>)</li>
+</ul>
+<h3 id="usage"><a class="doc-anchor" href="#usage">§</a>Usage</h3>
+<p>The file <code>examples/pda.rs</code> concisely demonstrates all functionality:</p>
+
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>const_crypto::{bs58, ed25519, sha2, sha3};
+
+<span class="doccomment">/// Uses const bs58 to roundtrip (decode + encode) system_program ID
+</span><span class="kw">pub const </span>PROGRAM_KEY: [u8; <span class="number">32</span>] = bs58::decode_pubkey(<span class="string">"11111111111111111111111111111111"</span>);
+<span class="kw">pub const </span>PROGRAM_KEY_STR: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str = bs58::encode_pubkey(<span class="kw-2">&amp;</span>PROGRAM_KEY).str();
+<span class="kw">const _</span>: () = <span class="macro">assert!</span>(ascii_str_eq(
+    PROGRAM_KEY_STR,
+    <span class="string">"11111111111111111111111111111111"
+</span>));
+
+<span class="doccomment">/// Uses const ed25519 (and thus const sha2 internally)
+</span><span class="kw">pub const </span>PROGRAM_DERIVED_ADDRESS: [u8; <span class="number">32</span>] =
+    ed25519::derive_program_address(<span class="kw-2">&amp;</span>[<span class="string">b"seed"</span>], <span class="kw-2">&amp;</span>PROGRAM_KEY).<span class="number">0</span>;
+
+<span class="comment">// the address is off curve
+</span><span class="kw">const _</span>: () = <span class="macro">assert!</span>(!ed25519::crypto_unsafe_is_on_curve(
+    <span class="kw-2">&amp;</span>PROGRAM_DERIVED_ADDRESS
+));
+
+<span class="kw">pub fn </span>main() {
+    <span class="kw">pub const </span>KECCAK_DEMO: [u8; <span class="number">32</span>] = sha3::Keccak256::new().update(<span class="string">b"const-keccak"</span>).finalize();
+    <span class="kw">pub const </span>SHA3_256_DEMO: [u8; <span class="number">32</span>] = sha3::Sha3_256::new().update(<span class="string">b"const-sha3"</span>).finalize();
+    <span class="kw">pub const </span>SHA256_DEMO: [u8; <span class="number">32</span>] = sha2::Sha256::new().update(<span class="string">b"const-sha2"</span>).finalize();
+
+    <span class="macro">println!</span>(<span class="string">"pda      = {PROGRAM_DERIVED_ADDRESS:?}\n"</span>);
+    <span class="macro">println!</span>(<span class="string">"keccak   = {KECCAK_DEMO:?}\n"</span>);
+    <span class="macro">println!</span>(<span class="string">"sha3_256 = {SHA3_256_DEMO:?}\n"</span>);
+    <span class="macro">println!</span>(<span class="string">"sha256   = {SHA256_DEMO:?}\n"</span>);
+}
+
+<span class="doccomment">/// A utility function used to show round trip is correct
+</span><span class="kw">pub const fn </span>ascii_str_eq(a: <span class="kw-2">&amp;</span>str, b: <span class="kw-2">&amp;</span>str) -&gt; bool {
+    <span class="macro">assert!</span>(a.len() == b.len());
+    <span class="macro">assert!</span>(a.is_ascii());
+    <span class="macro">assert!</span>(b.is_ascii());
+
+    <span class="kw">let </span><span class="kw-2">mut </span>i = <span class="number">0</span>;
+    <span class="kw">while </span>i &lt; a.len() {
+        <span class="macro">assert!</span>(a.as_bytes()[i] == b.as_bytes()[i]);
+        i += <span class="number">1
+    </span>}
+    <span class="bool-val">true
+</span>}</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Base58Str.html" title="struct const_crypto::bs58::Base58Str">Base58<wbr>Str</a></dt></dl><h2 id="constants" class="section-header">Constants<a href="#constants" class="anchor">§</a></h2><dl class="item-table"><dt><a class="constant" href="constant.ENC_TABLE_32.html" title="constant const_crypto::bs58::ENC_TABLE_32">ENC_<wbr>TABLE_<wbr>32</a></dt></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.decode_pubkey.html" title="fn const_crypto::bs58::decode_pubkey">decode_<wbr>pubkey</a></dt><dt><a class="fn" href="fn.encode_pubkey.html" title="fn const_crypto::bs58::encode_pubkey">encode_<wbr>pubkey</a></dt><dt><a class="fn" href="fn.try_from_str.html" title="fn const_crypto::bs58::try_from_str">try_<wbr>from_<wbr>str</a></dt></dl></section></div></main></body></html>

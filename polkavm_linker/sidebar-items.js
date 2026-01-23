@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OptLevel","RustcVersion","TargetInstructionSet"],"fn":["assemble","program_from_elf","target_json_path"],"static":["TARGET_JSON_32_BIT_NEW","TARGET_JSON_32_BIT_OLD","TARGET_JSON_64_BIT_NEW","TARGET_JSON_64_BIT_OLD"],"struct":["Config","ProgramBlob","ProgramFromElfError","ProgramParseError","ProgramParts","TargetJsonArgs"]};

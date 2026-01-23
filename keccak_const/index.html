@@ -1,0 +1,42 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="`const fn` implementation of the SHA-3 family of hash and extendable-output functions."><title>keccak_const - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="keccak_const" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (22c74ba91 2026-01-15)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate keccak_const</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../keccak_const/index.html">keccak_<wbr>const</a><span class="version">0.2.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>keccak_<wbr>const</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/keccak_const/lib.rs.html#1-499">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p><code>const fn</code> implementation of the SHA-3 family of hash and extendable-output
+functions.</p>
+<p>This crate allows you to use the SHA-3 hash and extendable-output functions
+as constant expressions in Rust. For all other usages, the <a href="https://crates.io/crates/sha3">sha3</a>
+crate includes more optimized implementations of these hash functions.</p>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">const </span>PSEUDO_RANDOM_BYTES: [u8; <span class="number">1000</span>] = Shake256::new()
+        .update(<span class="string">b"The quick brown fox "</span>)
+        .update(<span class="string">b"jumps over the lazy dog"</span>)
+        .finalize();</code></pre></div>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">const </span>ROUND_CONSTANTS: [u128; <span class="number">8</span>] = {
+    <span class="kw">let </span>shake = Shake128::new()
+        .update(<span class="string">b"The quick brown fox "</span>)
+        .update(<span class="string">b"jumps over the lazy dog"</span>);
+
+    <span class="kw">let </span><span class="kw-2">mut </span>reader = shake.finalize_xof();
+    <span class="kw">let </span><span class="kw-2">mut </span>output = [<span class="number">0</span>; <span class="number">8</span>];
+
+    <span class="kw">let </span><span class="kw-2">mut </span>i = <span class="number">0</span>;
+    <span class="kw">while </span>i &lt; <span class="number">8 </span>{
+        <span class="kw">let </span>buf: [u8; <span class="number">16</span>];
+        (reader, buf) = reader.read();
+        output[i] = u128::from_be_bytes(buf);
+        i += <span class="number">1</span>;
+    }
+
+    output
+};
+
+<span class="macro">assert_eq!</span>(
+    [
+        <span class="number">324498722242859095401832112442782838951</span>,
+        <span class="number">100470442341479765851591908475476895342</span>,
+        <span class="number">241049111671168257801898223573666863059</span>,
+        <span class="number">139197826094415251816510671569090212218</span>,
+        <span class="number">73371475849610774600276735485442220492</span>,
+        <span class="number">321031806373587100556524628628207173306</span>,
+        <span class="number">70553598458795679727810425741185559539</span>,
+        <span class="number">297273966300911440566694043047331846682</span>,
+    ],
+    ROUND_CONSTANTS,
+);</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Keccak224.html" title="struct keccak_const::Keccak224">Keccak224</a></dt><dd>The <code>KECCAK-224</code> hash function</dd><dt><a class="struct" href="struct.Keccak256.html" title="struct keccak_const::Keccak256">Keccak256</a></dt><dd>The <code>KECCAK-256</code> hash function</dd><dt><a class="struct" href="struct.Keccak384.html" title="struct keccak_const::Keccak384">Keccak384</a></dt><dd>The <code>KECCAK-384</code> hash function</dd><dt><a class="struct" href="struct.Keccak512.html" title="struct keccak_const::Keccak512">Keccak512</a></dt><dd>The <code>KECCAK-512</code> hash function</dd><dt><a class="struct" href="struct.Sha3_224.html" title="struct keccak_const::Sha3_224">Sha3_<wbr>224</a></dt><dd>The <code>SHA3-224</code> hash function</dd><dt><a class="struct" href="struct.Sha3_256.html" title="struct keccak_const::Sha3_256">Sha3_<wbr>256</a></dt><dd>The <code>SHA3-256</code> hash function</dd><dt><a class="struct" href="struct.Sha3_384.html" title="struct keccak_const::Sha3_384">Sha3_<wbr>384</a></dt><dd>The <code>SHA3-384</code> hash function</dd><dt><a class="struct" href="struct.Sha3_512.html" title="struct keccak_const::Sha3_512">Sha3_<wbr>512</a></dt><dd>The <code>SHA3-512</code> hash function</dd><dt><a class="struct" href="struct.Shake128.html" title="struct keccak_const::Shake128">Shake128</a></dt><dd>The <code>SHAKE128</code> extendable-output function</dd><dt><a class="struct" href="struct.Shake256.html" title="struct keccak_const::Shake256">Shake256</a></dt><dd>The <code>SHAKE256</code> extendable-output function</dd></dl></section></div></main></body></html>

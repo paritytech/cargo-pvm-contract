@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["polkavm_define_abi","polkavm_export","polkavm_import"],"fn":["heap_base","memset","sbrk"],"macro":["min_stack_size"],"mod":["default_abi"],"struct":["LeakingAllocator"]};

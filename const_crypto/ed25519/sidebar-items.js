@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["crypto_unsafe_is_on_curve","derive_program_address"],"struct":["CompressedEdwardsY","EdwardsPoint","PartialPda"]};

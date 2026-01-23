@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ClearType"],"fn":["disable_raw_mode","enable_raw_mode","is_raw_mode_enabled","size"],"struct":["Clear","DisableLineWrap","EnableLineWrap","EnterAlternateScreen","LeaveAlternateScreen","ScrollDown","ScrollUp","SetSize","SetTitle"]};

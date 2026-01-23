@@ -1,0 +1,9 @@
+(function() {
+    const implementors = Object.fromEntries([["cargo_pvm_contract",[["impl <a class=\"trait\" href=\"askama/trait.Template.html\" title=\"trait askama::Template\">Template</a> for <a class=\"struct\" href=\"cargo_pvm_contract/scaffold/struct.BuildRsTemplate.html\" title=\"struct cargo_pvm_contract::scaffold::BuildRsTemplate\">BuildRsTemplate</a>",0],["impl <a class=\"trait\" href=\"askama/trait.Template.html\" title=\"trait askama::Template\">Template</a> for <a class=\"struct\" href=\"cargo_pvm_contract/scaffold/struct.ContractBlankTemplate.html\" title=\"struct cargo_pvm_contract::scaffold::ContractBlankTemplate\">ContractBlankTemplate</a>",0],["impl&lt;'a&gt; <a class=\"trait\" href=\"askama/trait.Template.html\" title=\"trait askama::Template\">Template</a> for <a class=\"struct\" href=\"cargo_pvm_contract/scaffold/struct.CargoTomlTemplate.html\" title=\"struct cargo_pvm_contract::scaffold::CargoTomlTemplate\">CargoTomlTemplate</a>&lt;'a&gt;",0],["impl&lt;'a&gt; <a class=\"trait\" href=\"askama/trait.Template.html\" title=\"trait askama::Template\">Template</a> for <a class=\"struct\" href=\"cargo_pvm_contract/scaffold/struct.ContractAllocTemplate.html\" title=\"struct cargo_pvm_contract::scaffold::ContractAllocTemplate\">ContractAllocTemplate</a>&lt;'a&gt;",0],["impl&lt;'a&gt; <a class=\"trait\" href=\"askama/trait.Template.html\" title=\"trait askama::Template\">Template</a> for <a class=\"struct\" href=\"cargo_pvm_contract/scaffold/struct.ContractNoAllocTemplate.html\" title=\"struct cargo_pvm_contract::scaffold::ContractNoAllocTemplate\">ContractNoAllocTemplate</a>&lt;'a&gt;",0]]]]);
+    if (window.register_implementors) {
+        window.register_implementors(implementors);
+    } else {
+        window.pending_implementors = implementors;
+    }
+})()
+//{"start":59,"fragment_lengths":[1570]}

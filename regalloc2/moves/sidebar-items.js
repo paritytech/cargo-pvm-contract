@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["MoveVecWithScratch"],"struct":["MoveAndScratchResolver","ParallelMoves"],"type":["MoveVec"]};
