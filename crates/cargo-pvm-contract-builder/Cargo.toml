@@ -12,3 +12,8 @@ anyhow = { workspace = true }
 log = { workspace = true }
 polkavm-linker = { workspace = true }
 toml_edit = { workspace = true }
+syn = { version = "2.0", features = ["full", "parsing"] }
+quote = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tiny-keccak = { workspace = true }
