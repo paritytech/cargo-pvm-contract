@@ -4,24 +4,6 @@ use convert_case::{Case, Casing};
 use serde::Deserialize;
 use std::io::Write;
 use std::{fs, path::PathBuf, process::Command};
-use tiny_keccak::{Hasher, Keccak};
-
-#[derive(Template)]
-#[template(path = "scaffold/contract_alloc.rs.txt")]
-struct ContractAllocTemplate<'a> {
-    sol_file_name: &'a str,
-    functions: Vec<AllocFunctionInfo>,
-}
-
-#[derive(Template)]
-#[template(path = "scaffold/contract_no_alloc.rs.txt")]
-struct ContractNoAllocTemplate<'a> {
-    contract_name_upper: &'a str,
-    selectors: Vec<SelectorConst>,
-    events: Vec<EventConst>,
-    errors: Vec<ErrorConst>,
-    functions: Vec<NoAllocFunctionInfo>,
-}
 
 const BUILDER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -33,13 +15,8 @@ struct CargoTomlTemplate<'a> {
     use_alloc: bool,
     use_macros: bool,
     builder_version: &'a str,
-    builder_path: Option<String>,
-    pvm_contract_path: Option<String>,
+    local_path: Option<String>,
 }
-
-#[derive(Template)]
-#[template(path = "scaffold/contract_blank.rs.txt")]
-struct ContractBlankTemplate;
 
 #[derive(Template)]
 #[template(path = "scaffold/contract_macro.rs.txt")]
@@ -50,42 +27,27 @@ struct ContractMacroTemplate;
 struct ContractMacroNoAllocTemplate;
 
 #[derive(Template)]
+#[template(path = "scaffold/contract_macro_sol.rs.txt")]
+struct ContractMacroSolTemplate<'a> {
+    sol_file_name: &'a str,
+    functions: Vec<MacroFunctionInfo>,
+}
+
+#[derive(Template)]
+#[template(path = "scaffold/contract_macro_sol_no_alloc.rs.txt")]
+struct ContractMacroSolNoAllocTemplate<'a> {
+    sol_file_name: &'a str,
+    functions: Vec<MacroFunctionInfo>,
+}
+
+#[derive(Template)]
 #[template(path = "scaffold/build.rs.txt")]
 struct BuildRsTemplate;
 
-struct AllocFunctionInfo {
-    name: String,
+struct MacroFunctionInfo {
     name_snake: String,
-    call_type: String,
-}
-
-struct SelectorConst {
-    const_name: String,
-    bytes_hex: String,
-    signature: String,
-}
-
-struct EventConst {
-    const_name: String,
-    bytes_hex: String,
-    signature: String,
-}
-
-struct ErrorConst {
-    const_name: String,
-    bytes_hex: String,
-    signature: String,
-}
-
-struct NoAllocFunctionInfo {
-    name: String,
-    selector_const: String,
-    min_call_data_len: usize,
-    params: Vec<ParamDecode>,
-}
-
-struct ParamDecode {
-    decode_line: String,
+    params: String,
+    return_type: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,9 +84,19 @@ enum AbiItem {
         state_mutability: String,
     },
     #[serde(rename = "event")]
-    Event { name: String, inputs: Vec<AbiInput> },
+    Event {
+        #[allow(dead_code)]
+        name: String,
+        #[allow(dead_code)]
+        inputs: Vec<AbiInput>,
+    },
     #[serde(rename = "error")]
-    Error { name: String, inputs: Vec<AbiInput> },
+    Error {
+        #[allow(dead_code)]
+        name: String,
+        #[allow(dead_code)]
+        inputs: Vec<AbiInput>,
+    },
     #[serde(rename = "constructor")]
     Constructor {
         #[allow(dead_code)]
@@ -147,112 +119,6 @@ struct AbiOutput {
     name: String,
     #[serde(rename = "type")]
     type_name: String,
-}
-
-/// Compute the keccak256 hash of a string
-fn keccak256(input: &str) -> [u8; 32] {
-    let mut hasher = Keccak::v256();
-    let mut output = [0u8; 32];
-    hasher.update(input.as_bytes());
-    hasher.finalize(&mut output);
-    output
-}
-
-/// Compute the 4-byte function selector from a function signature
-fn compute_selector(signature: &str) -> [u8; 4] {
-    let hash = keccak256(signature);
-    [hash[0], hash[1], hash[2], hash[3]]
-}
-
-/// Build a function signature from name and input types
-fn build_function_signature(name: &str, inputs: &[AbiInput]) -> String {
-    let types: Vec<&str> = inputs.iter().map(|i| i.type_name.as_str()).collect();
-    format!("{}({})", name, types.join(","))
-}
-
-/// Format a byte array as Rust hex literal
-fn format_bytes_as_hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .map(|b| format!("0x{:02x}", b))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Format a 32-byte array with line breaks for readability
-fn format_bytes32_multiline(bytes: &[u8; 32]) -> String {
-    bytes
-        .chunks(8)
-        .map(|chunk| {
-            chunk
-                .iter()
-                .map(|b| format!("0x{:02x}", b))
-                .collect::<Vec<_>>()
-                .join(", ")
-        })
-        .collect::<Vec<_>>()
-        .join(",\n    ")
-}
-
-/// Create a new blank contract project.
-pub fn init_blank_contract(contract_name: &str) -> Result<()> {
-    let contract_name = contract_name.to_case(Case::Kebab);
-    let target_dir = std::env::current_dir()?.join(&contract_name);
-    if target_dir.exists() {
-        anyhow::bail!("Directory already exists: {target_dir:?}");
-    }
-
-    fs::create_dir(&target_dir)
-        .with_context(|| format!("Failed to create directory: {target_dir:?}"))?;
-
-    let (target_json_path, target_json_name) = resolve_target_json()?;
-    let target_json_dest = target_dir.join(target_json_name);
-    fs::copy(&target_json_path, &target_json_dest).with_context(|| {
-        format!(
-            "Failed to copy target JSON from {} to {}",
-            target_json_path.display(),
-            target_json_dest.display()
-        )
-    })?;
-
-    let target_json_name = target_json_dest
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Target JSON path is missing a file name"))?;
-
-    let cargo_config_dir = target_dir.join(".cargo");
-    fs::create_dir(&cargo_config_dir)?;
-    fs::write(
-        cargo_config_dir.join("config.toml"),
-        format!(
-            "[build]\n target = \"{}\"\n\n[unstable]\n build-std = [\"core\", \"alloc\"]\n\n[env]\n RUSTC_BOOTSTRAP = \"1\"\n",
-            target_json_name
-        ),
-    )?;
-
-    fs::write(target_dir.join(".gitignore"), "/target\n*.polkavm\n")?;
-    fs::write(
-        target_dir.join("rust-toolchain.toml"),
-        "[toolchain]\nchannel = \"nightly\"\n",
-    )?;
-    fs::create_dir(target_dir.join("src"))?;
-    let lib_rs_content = generate_blank_contract()?;
-    fs::write(
-        target_dir.join(format!("src/{}.rs", contract_name)),
-        lib_rs_content,
-    )?;
-
-    let build_rs_content = generate_build_rs()?;
-    fs::write(target_dir.join("build.rs"), build_rs_content)?;
-
-    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, false, false)?;
-    fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
-
-    println!("Successfully initialized blank contract project: {target_dir:?}");
-    println!("\nNext steps:");
-    println!("  cd {contract_name}");
-    println!("  cargo build");
-    Ok(())
 }
 
 pub fn init_new_contract(contract_name: &str, use_alloc: bool) -> Result<()> {
@@ -419,10 +285,8 @@ fn init_from_example_files_inner(
 
     let lib_rs_content = if let Some(contents) = rust_contents {
         String::from_utf8(contents.to_vec()).context("Example Rust file is not valid UTF-8")?
-    } else if use_alloc {
-        generate_rust_code_alloc(&sol_file_name, &metadata, &actual_contract_name)?
     } else {
-        generate_rust_code_no_alloc(&metadata, &actual_contract_name)?
+        generate_macro_contract_sol(&sol_file_name, &metadata, use_alloc)?
     };
     fs::write(
         target_dir.join(format!("src/{}.rs", actual_contract_kebab)),
@@ -432,7 +296,7 @@ fn init_from_example_files_inner(
     let build_rs_content = generate_build_rs()?;
     fs::write(target_dir.join("build.rs"), build_rs_content)?;
 
-    let use_macros = rust_contents.is_some();
+    let use_macros = true;
     let cargo_toml_content = generate_cargo_toml(
         &contract_name,
         &actual_contract_kebab,
@@ -527,12 +391,6 @@ fn extract_solc_metadata_from_bytes(
     Ok((metadata, contract_name.clone()))
 }
 
-fn generate_blank_contract() -> Result<String> {
-    ContractBlankTemplate
-        .render()
-        .context("Failed to render blank contract template")
-}
-
 fn generate_macro_contract() -> Result<String> {
     ContractMacroTemplate
         .render()
@@ -545,136 +403,118 @@ fn generate_macro_contract_no_alloc() -> Result<String> {
         .context("Failed to render macro no-alloc contract template")
 }
 
-fn generate_build_rs() -> Result<String> {
-    BuildRsTemplate
-        .render()
-        .context("Failed to render build.rs template")
-}
-
-fn generate_rust_code_alloc(
+fn generate_macro_contract_sol(
     sol_file_name: &str,
     metadata: &ContractMetadata,
-    contract_name: &str,
+    use_alloc: bool,
 ) -> Result<String> {
-    let contract_name_pascal = contract_name.to_case(Case::Pascal);
-
-    let functions: Vec<AllocFunctionInfo> = metadata
+    let functions: Vec<MacroFunctionInfo> = metadata
         .output
         .abi
         .iter()
         .filter_map(|item| match item {
-            AbiItem::Function { name, .. } => Some(AllocFunctionInfo {
-                name: name.clone(),
-                name_snake: name.to_case(Case::Snake),
-                call_type: format!("{contract_name_pascal}::{name}Call"),
-            }),
+            AbiItem::Function {
+                name,
+                inputs,
+                outputs,
+                ..
+            } => {
+                let name_snake = name.to_case(Case::Snake);
+                let params = inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let param_name = if p.name.is_empty() {
+                            format!("arg{}", i)
+                        } else {
+                            p.name.to_case(Case::Snake)
+                        };
+                        format!("{}: {}", param_name, solidity_to_rust_type(&p.type_name))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let return_type = if outputs.is_empty() {
+                    "Result<(), Error>".to_string()
+                } else if outputs.len() == 1 {
+                    format!(
+                        "Result<{}, Error>",
+                        solidity_to_rust_type(&outputs[0].type_name)
+                    )
+                } else {
+                    let types = outputs
+                        .iter()
+                        .map(|o| solidity_to_rust_type(&o.type_name))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("Result<({}), Error>", types)
+                };
+                Some(MacroFunctionInfo {
+                    name_snake,
+                    params,
+                    return_type,
+                })
+            }
             _ => None,
         })
         .collect();
 
-    let template = ContractAllocTemplate {
-        sol_file_name,
-        functions,
-    };
-
-    template.render().context("Failed to render alloc template")
+    if use_alloc {
+        ContractMacroSolTemplate {
+            sol_file_name,
+            functions,
+        }
+        .render()
+        .context("Failed to render macro sol alloc template")
+    } else {
+        ContractMacroSolNoAllocTemplate {
+            sol_file_name,
+            functions,
+        }
+        .render()
+        .context("Failed to render macro sol no-alloc template")
+    }
 }
 
-fn generate_rust_code_no_alloc(metadata: &ContractMetadata, contract_name: &str) -> Result<String> {
-    let contract_name_upper = contract_name.to_uppercase();
-
-    // Collect function selectors
-    let mut selectors = Vec::new();
-    let mut functions = Vec::new();
-
-    for item in &metadata.output.abi {
-        if let AbiItem::Function { name, inputs, .. } = item {
-            let signature = build_function_signature(name, inputs);
-            let selector = compute_selector(&signature);
-            let const_name = format!("{}_SELECTOR", name.to_case(Case::UpperSnake));
-
-            selectors.push(SelectorConst {
-                const_name: const_name.clone(),
-                bytes_hex: format_bytes_as_hex(&selector),
-                signature: signature.clone(),
-            });
-
-            // Generate decode params
-            let mut params = Vec::new();
-
-            for (idx, input) in inputs.iter().enumerate() {
-                let param_name = if input.name.is_empty() {
-                    format!("param_{}", idx)
-                } else {
-                    input.name.to_case(Case::Snake)
-                };
-
-                let decode_line =
-                    format!("// TODO: decode {param_name} of type {}", input.type_name);
-
-                params.push(ParamDecode { decode_line });
+fn solidity_to_rust_type(sol_type: &str) -> String {
+    match sol_type {
+        "address" => "Address".to_string(),
+        "bool" => "bool".to_string(),
+        "string" => "String".to_string(),
+        "bytes" => "Vec<u8>".to_string(),
+        s if s.starts_with("uint") => {
+            let bits: u32 = s[4..].parse().unwrap_or(256);
+            match bits {
+                8 => "u8".to_string(),
+                16 => "u16".to_string(),
+                32 => "u32".to_string(),
+                64 => "u64".to_string(),
+                128 => "u128".to_string(),
+                _ => "U256".to_string(),
             }
-
-            functions.push(NoAllocFunctionInfo {
-                name: name.clone(),
-                selector_const: const_name,
-                min_call_data_len: 4 + inputs.len() * 32,
-                params,
-            });
         }
+        s if s.starts_with("int") => {
+            let bits: u32 = s[3..].parse().unwrap_or(256);
+            match bits {
+                8 => "i8".to_string(),
+                16 => "i16".to_string(),
+                32 => "i32".to_string(),
+                64 => "i64".to_string(),
+                128 => "i128".to_string(),
+                _ => "I256".to_string(),
+            }
+        }
+        s if s.starts_with("bytes") && s.len() > 5 => {
+            let size: usize = s[5..].parse().unwrap_or(32);
+            format!("[u8; {}]", size)
+        }
+        _ => "U256".to_string(),
     }
+}
 
-    // Collect events
-    let events: Vec<EventConst> = metadata
-        .output
-        .abi
-        .iter()
-        .filter_map(|item| {
-            if let AbiItem::Event { name, inputs } = item {
-                let signature = build_function_signature(name, inputs);
-                let hash = keccak256(&signature);
-                Some(EventConst {
-                    const_name: format!("{}_EVENT_SIGNATURE", name.to_case(Case::UpperSnake)),
-                    bytes_hex: format_bytes32_multiline(&hash),
-                    signature,
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Collect errors
-    let errors: Vec<ErrorConst> = metadata
-        .output
-        .abi
-        .iter()
-        .filter_map(|item| {
-            if let AbiItem::Error { name, inputs } = item {
-                let signature = build_function_signature(name, inputs);
-                let selector = compute_selector(&signature);
-                Some(ErrorConst {
-                    const_name: format!("{}_ERROR", name.to_case(Case::UpperSnake)),
-                    bytes_hex: format_bytes_as_hex(&selector),
-                    signature,
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let template = ContractNoAllocTemplate {
-        contract_name_upper: &contract_name_upper,
-        selectors,
-        events,
-        errors,
-        functions,
-    };
-
-    template
+fn generate_build_rs() -> Result<String> {
+    BuildRsTemplate
         .render()
-        .context("Failed to render no-alloc template")
+        .context("Failed to render build.rs template")
 }
 
 fn resolve_target_json() -> Result<(PathBuf, String)> {
@@ -698,25 +538,14 @@ fn generate_cargo_toml(
     use_alloc: bool,
     use_macros: bool,
 ) -> Result<String> {
-    let builder_path = std::env::var("CARGO_PVM_CONTRACT_BUILDER_PATH")
+    let local_path = std::env::var("CARGO_PVM_CONTRACT_PATH")
         .ok()
         .filter(|value| !value.trim().is_empty());
 
-    if let Some(ref path) = builder_path {
+    if let Some(ref path) = local_path {
         let path = std::path::Path::new(path);
         if !path.exists() {
-            anyhow::bail!("Builder path does not exist: {}", path.display());
-        }
-    }
-
-    let pvm_contract_path = std::env::var("CARGO_PVM_CONTRACT_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-
-    if let Some(ref path) = pvm_contract_path {
-        let path = std::path::Path::new(path);
-        if !path.exists() {
-            anyhow::bail!("pvm_contract path does not exist: {}", path.display());
+            anyhow::bail!("CARGO_PVM_CONTRACT_PATH does not exist: {}", path.display());
         }
     }
 
@@ -726,8 +555,7 @@ fn generate_cargo_toml(
         use_alloc,
         use_macros,
         builder_version: BUILDER_VERSION,
-        builder_path,
-        pvm_contract_path,
+        local_path,
     };
     template
         .render()

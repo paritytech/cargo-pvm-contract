@@ -1,17 +1,7 @@
 #![no_main]
 #![no_std]
 
-extern crate alloc;
-
 use pvm_contract::{api, Address, StorageFlags, U256};
-
-#[global_allocator]
-static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
-    static mut ARRAY: picoalloc::Array<1024> = picoalloc::Array([0u8; 1024]);
-    picoalloc::Mutex::new(picoalloc::Allocator::new(unsafe {
-        picoalloc::ArrayPointer::new(&raw mut ARRAY)
-    }))
-};
 
 #[pvm_contract::contract("MyToken.sol", no_alloc, buffer = 256)]
 mod my_token {

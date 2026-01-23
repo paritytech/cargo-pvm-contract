@@ -11,13 +11,15 @@ path = "src/{{ bin_source }}.rs"
 
 [dependencies]
 {% if use_macros -%}
-{% if let Some(path) = pvm_contract_path -%}
-pvm_contract = { path = "{{ path }}" }
+{% if let Some(path) = local_path -%}
+pvm-contract = { path = "{{ path }}/crates/pvm-contract" }
 {% else -%}
-pvm_contract = "{{ builder_version }}"
+pvm-contract = "{{ builder_version }}"
 {% endif -%}
 polkavm-derive = { version = "0.30.0" }
+{% if use_alloc -%}
 picoalloc = { version = "5", default-features = false }
+{% endif -%}
 {% else -%}
 {% if use_alloc -%}
 alloy-core = { version = "0.8", default-features = false, features = ["sol-types"] }
@@ -30,8 +32,8 @@ polkavm-derive = { version = "0.31.0" }
 {% endif %}
 
 [build-dependencies]
-{% if let Some(path) = builder_path -%}
-cargo-pvm-contract-builder = { path = "{{ path }}" }
+{% if let Some(path) = local_path -%}
+cargo-pvm-contract-builder = { path = "{{ path }}/crates/cargo-pvm-contract-builder" }
 {% else -%}
 cargo-pvm-contract-builder = "{{ builder_version }}"
 {% endif %}

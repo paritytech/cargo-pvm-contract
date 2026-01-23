@@ -1,5 +1,5 @@
 [package]
-name = "pvm_contract"
+name = "pvm-contract"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +8,6 @@ description = "Runtime library for PVM smart contracts"
 
 [dependencies]
 pvm-contract-macros = { path = "../pvm-contract-macros" }
-alloy-primitives = { version = "0.8", default-features = false }
+ruint = { version = "1.17", default-features = false }
 pallet-revive-uapi = { version = "0.9", default-features = false }
 polkavm-derive.workspace = true
