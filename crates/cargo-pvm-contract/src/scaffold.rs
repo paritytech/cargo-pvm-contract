@@ -31,13 +31,23 @@ struct CargoTomlTemplate<'a> {
     contract_name: &'a str,
     bin_source: &'a str,
     use_alloc: bool,
+    use_macros: bool,
     builder_version: &'a str,
     builder_path: Option<String>,
+    pvm_contract_path: Option<String>,
 }
 
 #[derive(Template)]
 #[template(path = "scaffold/contract_blank.rs.txt")]
 struct ContractBlankTemplate;
+
+#[derive(Template)]
+#[template(path = "scaffold/contract_macro.rs.txt")]
+struct ContractMacroTemplate;
+
+#[derive(Template)]
+#[template(path = "scaffold/contract_macro_no_alloc.rs.txt")]
+struct ContractMacroNoAllocTemplate;
 
 #[derive(Template)]
 #[template(path = "scaffold/build.rs.txt")]
@@ -235,10 +245,70 @@ pub fn init_blank_contract(contract_name: &str) -> Result<()> {
     let build_rs_content = generate_build_rs()?;
     fs::write(target_dir.join("build.rs"), build_rs_content)?;
 
-    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, false)?;
+    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, false, false)?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
 
     println!("Successfully initialized blank contract project: {target_dir:?}");
+    println!("\nNext steps:");
+    println!("  cd {contract_name}");
+    println!("  cargo build");
+    Ok(())
+}
+
+pub fn init_new_contract(contract_name: &str, use_alloc: bool) -> Result<()> {
+    let contract_name = contract_name.to_case(Case::Kebab);
+    let target_dir = std::env::current_dir()?.join(&contract_name);
+    if target_dir.exists() {
+        anyhow::bail!("Directory already exists: {target_dir:?}");
+    }
+
+    fs::create_dir(&target_dir)
+        .with_context(|| format!("Failed to create directory: {target_dir:?}"))?;
+
+    let (target_json_path, target_json_name) = resolve_target_json()?;
+    let target_json_dest = target_dir.join(&target_json_name);
+    fs::copy(&target_json_path, &target_json_dest).with_context(|| {
+        format!(
+            "Failed to copy target JSON from {} to {}",
+            target_json_path.display(),
+            target_json_dest.display()
+        )
+    })?;
+
+    let cargo_config_dir = target_dir.join(".cargo");
+    fs::create_dir(&cargo_config_dir)?;
+    fs::write(
+        cargo_config_dir.join("config.toml"),
+        format!(
+            "[build]\n target = \"{}\"\n\n[unstable]\n build-std = [\"core\", \"alloc\"]\n\n[env]\n RUSTC_BOOTSTRAP = \"1\"\n",
+            target_json_name
+        ),
+    )?;
+
+    fs::write(target_dir.join(".gitignore"), "/target\n*.polkavm\n")?;
+    fs::write(
+        target_dir.join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"nightly\"\n",
+    )?;
+
+    fs::create_dir(target_dir.join("src"))?;
+    let lib_rs_content = if use_alloc {
+        generate_macro_contract()?
+    } else {
+        generate_macro_contract_no_alloc()?
+    };
+    fs::write(
+        target_dir.join(format!("src/{}.rs", contract_name)),
+        lib_rs_content,
+    )?;
+
+    let build_rs_content = generate_build_rs()?;
+    fs::write(target_dir.join("build.rs"), build_rs_content)?;
+
+    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, use_alloc, true)?;
+    fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
+
+    println!("Successfully initialized contract project: {target_dir:?}");
     println!("\nNext steps:");
     println!("  cd {contract_name}");
     println!("  cargo build");
@@ -362,9 +432,13 @@ fn init_from_example_files_inner(
     let build_rs_content = generate_build_rs()?;
     fs::write(target_dir.join("build.rs"), build_rs_content)?;
 
-    // Create Cargo.toml
-    let cargo_toml_content =
-        generate_cargo_toml(&contract_name, &actual_contract_kebab, use_alloc)?;
+    let use_macros = rust_contents.is_some();
+    let cargo_toml_content = generate_cargo_toml(
+        &contract_name,
+        &actual_contract_kebab,
+        use_alloc,
+        use_macros,
+    )?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
 
     println!("Successfully initialized contract project from {sol_file_name}: {target_dir:?}");
@@ -457,6 +531,18 @@ fn generate_blank_contract() -> Result<String> {
     ContractBlankTemplate
         .render()
         .context("Failed to render blank contract template")
+}
+
+fn generate_macro_contract() -> Result<String> {
+    ContractMacroTemplate
+        .render()
+        .context("Failed to render macro contract template")
+}
+
+fn generate_macro_contract_no_alloc() -> Result<String> {
+    ContractMacroNoAllocTemplate
+        .render()
+        .context("Failed to render macro no-alloc contract template")
 }
 
 fn generate_build_rs() -> Result<String> {
@@ -606,7 +692,12 @@ fn resolve_target_json() -> Result<(PathBuf, String)> {
     Ok((target_json, target_name))
 }
 
-fn generate_cargo_toml(contract_name: &str, bin_source: &str, use_alloc: bool) -> Result<String> {
+fn generate_cargo_toml(
+    contract_name: &str,
+    bin_source: &str,
+    use_alloc: bool,
+    use_macros: bool,
+) -> Result<String> {
     let builder_path = std::env::var("CARGO_PVM_CONTRACT_BUILDER_PATH")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -618,12 +709,25 @@ fn generate_cargo_toml(contract_name: &str, bin_source: &str, use_alloc: bool) -
         }
     }
 
+    let pvm_contract_path = std::env::var("CARGO_PVM_CONTRACT_PATH")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    if let Some(ref path) = pvm_contract_path {
+        let path = std::path::Path::new(path);
+        if !path.exists() {
+            anyhow::bail!("pvm_contract path does not exist: {}", path.display());
+        }
+    }
+
     let template = CargoTomlTemplate {
         contract_name,
         bin_source,
         use_alloc,
+        use_macros,
         builder_version: BUILDER_VERSION,
         builder_path,
+        pvm_contract_path,
     };
     template
         .render()

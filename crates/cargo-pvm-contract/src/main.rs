@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use include_dir::{Dir, include_dir};
+use include_dir::{include_dir, Dir};
 use inquire::{Select, Text};
 use log::debug;
 use std::path::PathBuf;
@@ -39,17 +39,15 @@ struct PvmContractArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 enum InitType {
-    SolidityFile,
+    New,
     Example,
-    Blank,
 }
 
 impl std::fmt::Display for InitType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InitType::SolidityFile => write!(f, "From a Solidity interface file (.sol)"),
+            InitType::New => write!(f, "New contract"),
             InitType::Example => write!(f, "From an example contract"),
-            InitType::Blank => write!(f, "Blank (empty contract)"),
         }
     }
 }
@@ -172,11 +170,10 @@ fn main() -> Result<()> {
 }
 
 fn init_command(args: PvmContractArgs) -> Result<()> {
-    // Get init_type from args or prompt
     let init_type = match args.init_type {
         Some(t) => t,
         None => {
-            let init_types = vec![InitType::SolidityFile, InitType::Example, InitType::Blank];
+            let init_types = vec![InitType::New, InitType::Example];
             Select::new("How do you want to initialize the project?", init_types)
                 .prompt()
                 .context("Failed to get initialization type")?
@@ -184,16 +181,32 @@ fn init_command(args: PvmContractArgs) -> Result<()> {
     };
 
     match init_type {
-        InitType::Blank => {
+        InitType::New => {
             let contract_name = prompt_name(args.name, None)?;
+            let memory_model = prompt_memory_model(args.memory_model)?;
+            let sol_path = prompt_sol_file(args.sol_file)?;
+
             check_dir_exists(&contract_name)?;
-            debug!("Initializing blank contract: {contract_name}");
-            scaffold::init_blank_contract(&contract_name)
+            let use_alloc = memory_model == MemoryModel::AllocWithAlloy;
+
+            if let Some(sol_path) = sol_path {
+                debug!(
+                    "Initializing from Solidity file: {} with memory model: {:?}",
+                    sol_path.display(),
+                    memory_model
+                );
+                let sol_file = sol_path.to_str().ok_or_else(|| {
+                    anyhow::anyhow!("Solidity file path is not valid UTF-8: {:?}", sol_path)
+                })?;
+                scaffold::init_from_solidity_file(sol_file, &contract_name, use_alloc)
+            } else {
+                debug!("Initializing new contract: {contract_name}");
+                scaffold::init_new_contract(&contract_name, use_alloc)
+            }
         }
         InitType::Example => {
             let examples = load_examples()?;
 
-            // Get example from args or prompt
             let example = match args.example {
                 Some(example_name) => find_example(&examples, &example_name)?,
                 None => Select::new("Select an example:", examples)
@@ -211,49 +224,6 @@ fn init_command(args: PvmContractArgs) -> Result<()> {
             );
 
             init_from_example(&example, &contract_name, memory_model)
-        }
-        InitType::SolidityFile => {
-            // Get sol_file from args or prompt
-            let sol_path = match args.sol_file {
-                Some(path) => path,
-                None => {
-                    let sol_file = Text::new("Enter path to your .sol file:")
-                        .with_help_message("Path to a Solidity interface file")
-                        .prompt()
-                        .context("Failed to get .sol file path")?;
-
-                    if sol_file.is_empty() {
-                        anyhow::bail!("Solidity file path cannot be empty");
-                    }
-                    PathBuf::from(sol_file)
-                }
-            };
-
-            if !sol_path.exists() {
-                anyhow::bail!("Solidity file not found: {}", sol_path.display());
-            }
-
-            let default_name = sol_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("contract")
-                .to_string();
-
-            let memory_model = prompt_memory_model(args.memory_model)?;
-            let contract_name = prompt_name(args.name, Some(&default_name))?;
-
-            check_dir_exists(&contract_name)?;
-            debug!(
-                "Initializing from Solidity file: {} with memory model: {:?}",
-                sol_path.display(),
-                memory_model
-            );
-
-            let sol_file = sol_path.to_str().ok_or_else(|| {
-                anyhow::anyhow!("Solidity file path is not valid UTF-8: {:?}", sol_path)
-            })?;
-            let use_alloc = memory_model == MemoryModel::AllocWithAlloy;
-            scaffold::init_from_solidity_file(sol_file, &contract_name, use_alloc)
         }
     }
 }
@@ -288,6 +258,38 @@ fn prompt_name(arg: Option<String>, default: Option<&str>) -> Result<String> {
     }
 
     Ok(contract_name)
+}
+
+fn prompt_sol_file(arg: Option<PathBuf>) -> Result<Option<PathBuf>> {
+    match arg {
+        Some(path) => {
+            if !path.exists() {
+                anyhow::bail!("Solidity file not found: {}", path.display());
+            }
+            Ok(Some(path))
+        }
+        None => {
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                return Ok(None);
+            }
+
+            let sol_file = Text::new("Enter path to your .sol file (optional):")
+                .with_help_message("Leave empty to skip, or provide a Solidity interface file")
+                .prompt()
+                .context("Failed to get .sol file path")?;
+
+            if sol_file.trim().is_empty() {
+                Ok(None)
+            } else {
+                let path = PathBuf::from(sol_file);
+                if !path.exists() {
+                    anyhow::bail!("Solidity file not found: {}", path.display());
+                }
+                Ok(Some(path))
+            }
+        }
+    }
 }
 
 fn init_from_example(

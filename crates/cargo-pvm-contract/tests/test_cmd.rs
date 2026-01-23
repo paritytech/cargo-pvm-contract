@@ -2,12 +2,18 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-fn scaffold_example(temp_dir: &TempDir, name: &str, memory_model: &str) -> PathBuf {
+fn scaffold_example_with_pvm_contract(
+    temp_dir: &TempDir,
+    name: &str,
+    memory_model: &str,
+    pvm_contract_path: &Path,
+) -> PathBuf {
     let builder_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../cargo-pvm-contract-builder");
     let project_dir = temp_dir.path().join(name);
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
     cmd.current_dir(temp_dir.path())
-        .env("CARGO_PVM_CONTRACT_BUILDER_PATH", builder_path)
+        .env("CARGO_PVM_CONTRACT_BUILDER_PATH", &builder_path)
+        .env("CARGO_PVM_CONTRACT_PATH", pvm_contract_path)
         .arg("pvm-contract")
         .arg("--init-type")
         .arg("example")
@@ -39,14 +45,20 @@ fn build_scaffolded_project(project_dir: &Path) {
 #[test]
 fn scaffold_mytoken_alloc() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let project_dir = scaffold_example(&temp_dir, "mytoken-alloc", "alloc-with-alloy");
+    let pvm_contract_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pvm_contract");
+    let project_dir = scaffold_example_with_pvm_contract(
+        &temp_dir,
+        "mytoken-alloc",
+        "alloc-with-alloy",
+        &pvm_contract_path,
+    );
 
     let cargo_toml =
         std::fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml exists");
 
-    assert!(cargo_toml.contains("alloy-core"));
+    assert!(cargo_toml.contains("pvm_contract"));
+    assert!(cargo_toml.contains("polkavm-derive"));
     assert!(cargo_toml.contains("picoalloc"));
-    assert!(cargo_toml.contains("pallet-revive-uapi"));
 
     build_scaffolded_project(&project_dir);
 }
@@ -54,14 +66,20 @@ fn scaffold_mytoken_alloc() {
 #[test]
 fn scaffold_mytoken_no_alloc() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let project_dir = scaffold_example(&temp_dir, "mytoken-no-alloc", "no-alloc");
+    let pvm_contract_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../pvm_contract");
+    let project_dir = scaffold_example_with_pvm_contract(
+        &temp_dir,
+        "mytoken-no-alloc",
+        "no-alloc",
+        &pvm_contract_path,
+    );
 
     let cargo_toml =
         std::fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml exists");
 
-    assert!(!cargo_toml.contains("alloy-core"));
-    assert!(!cargo_toml.contains("picoalloc"));
-    assert!(cargo_toml.contains("pallet-revive-uapi"));
+    assert!(cargo_toml.contains("pvm_contract"));
+    assert!(cargo_toml.contains("polkavm-derive"));
+    assert!(cargo_toml.contains("picoalloc"));
 
     build_scaffolded_project(&project_dir);
 }

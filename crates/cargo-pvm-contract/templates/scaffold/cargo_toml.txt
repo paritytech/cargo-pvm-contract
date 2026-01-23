@@ -10,6 +10,15 @@ name = "{{ contract_name }}"
 path = "src/{{ bin_source }}.rs"
 
 [dependencies]
+{% if use_macros -%}
+{% if let Some(path) = pvm_contract_path -%}
+pvm_contract = { path = "{{ path }}" }
+{% else -%}
+pvm_contract = "{{ builder_version }}"
+{% endif -%}
+polkavm-derive = { version = "0.30.0" }
+picoalloc = { version = "5", default-features = false }
+{% else -%}
 {% if use_alloc -%}
 alloy-core = { version = "0.8", default-features = false, features = ["sol-types"] }
 {% endif -%}
@@ -18,6 +27,7 @@ pallet-revive-uapi = { version = "0.10", default-features = false }
 picoalloc = { version = "5", default-features = false }
 {% endif -%}
 polkavm-derive = { version = "0.31.0" }
+{% endif %}
 
 [build-dependencies]
 {% if let Some(path) = builder_path -%}

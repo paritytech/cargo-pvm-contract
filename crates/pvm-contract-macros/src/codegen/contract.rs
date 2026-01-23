@@ -108,7 +108,10 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        if segments.len() == 2 && segments[0].ident == "pvm" && segments[1].ident == name {
+        if segments.len() == 2
+            && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
+            && segments[1].ident == name
+        {
             return true;
         }
     }
@@ -356,8 +359,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
         quote! {
-            #[no_mangle]
-            #[pvm_contract::polkavm_derive::polkavm_export]
+            #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
                 match #mod_name::#constructor_name() {
                     Ok(()) => {}
@@ -369,8 +371,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     } else {
         quote! {
-            #[no_mangle]
-            #[pvm_contract::polkavm_derive::polkavm_export]
+            #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {}
         }
     };
@@ -392,14 +393,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         if use_alloc {
             quote! { Err(Vec::new()) }
         } else {
-            quote! { Err(b"") }
+            quote! { Err(b"" as &[u8]) }
         }
     };
 
     let call_fn = if use_alloc {
         quote! {
-            #[no_mangle]
-            #[pvm_contract::polkavm_derive::polkavm_export]
+            #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pvm_contract::api::call_data_size() as usize;
                 let mut call_data = vec![0u8; call_data_len];
@@ -432,53 +432,48 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     } else {
         let buffer_size = args.buffer_size;
+        let no_alloc_fallback = if parsed.has_fallback {
+            let fallback_name = parsed.fallback_name.as_ref().unwrap();
+            quote! {
+                match #mod_name::#fallback_name() {
+                    Ok(()) => {}
+                    Err(e) => {
+                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                    }
+                }
+            }
+        } else {
+            quote! {
+                pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"");
+            }
+        };
+
         quote! {
-            #[no_mangle]
-            #[pvm_contract::polkavm_derive::polkavm_export]
+            #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pvm_contract::api::call_data_size() as usize;
 
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    <pvm_contract::api as pvm_contract::HostFn>::return_value(pvm_contract::ReturnFlags::REVERT, b"CalldataTooLarge");
+                    pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"CalldataTooLarge");
                     return;
                 }
                 pvm_contract::api::call_data_copy(&mut call_data[..call_data_len], 0);
 
-                let result: Result<Option<&[u8]>, &[u8]> = (|| {
-                    if call_data_len < 4 {
-                        return #fallback_call;
-                    }
+                if call_data_len < 4 {
+                    #no_alloc_fallback
+                    return;
+                }
 
-                    let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
-                    let input = &call_data[4..call_data_len];
+                let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+                let input = &call_data[4..call_data_len];
 
-                    match selector {
-                        #(#dispatch_arms)*
-                        _ => #fallback_call,
-                    }
-                })();
-
-                match result {
-                    Ok(Some(data)) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::empty(), data);
-                    }
-                    Ok(None) => {}
-                    Err(data) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, data);
+                match selector {
+                    #(#dispatch_arms)*
+                    _ => {
+                        #no_alloc_fallback
                     }
                 }
-            }
-        }
-    };
-
-    let error_enum = quote! {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum Error {}
-
-        impl AsRef<[u8]> for Error {
-            fn as_ref(&self) -> &[u8] {
-                match *self {}
             }
         }
     };
@@ -496,8 +491,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
-            #error_enum
-
             #mod_content
         }
     })

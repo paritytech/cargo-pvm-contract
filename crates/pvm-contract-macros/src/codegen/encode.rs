@@ -182,11 +182,7 @@ pub fn generate_encode_return(types: &[SolType], use_alloc: bool) -> TokenStream
 
     if types.len() == 1 {
         let encode = generate_encode(&types[0], quote!(result), use_alloc);
-        if use_alloc {
-            return quote! { #encode.to_vec() };
-        } else {
-            return quote! { &#encode };
-        }
+        return quote! { #encode.to_vec() };
     }
 
     let encodes: Vec<_> = types
@@ -200,22 +196,9 @@ pub fn generate_encode_return(types: &[SolType], use_alloc: bool) -> TokenStream
 
     let total_size: usize = types.iter().map(|t| t.head_size()).sum();
 
-    if use_alloc {
-        quote! {{
-            let mut out = alloc::vec::Vec::with_capacity(#total_size);
-            #(out.extend_from_slice(&#encodes);)*
-            out
-        }}
-    } else {
-        quote! {{
-            let mut out = [0u8; #total_size];
-            let mut offset = 0;
-            #(
-                let encoded = #encodes;
-                out[offset..offset + 32].copy_from_slice(&encoded);
-                offset += 32;
-            )*
-            &out
-        }}
-    }
+    quote! {{
+        let mut out = alloc::vec::Vec::with_capacity(#total_size);
+        #(out.extend_from_slice(&#encodes);)*
+        out
+    }}
 }
