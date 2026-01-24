@@ -143,54 +143,93 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 /// With allocation enabled (default), the `call()` function uses `Vec`:
 ///
 /// ```ignore
+/// #[polkavm_derive::polkavm_export]
 /// pub extern "C" fn call() {
-///     let call_data_len = pvm_contract::api::call_data_size() as usize;
+///     let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
 ///     let mut call_data = vec![0u8; call_data_len];
-///     pvm_contract::api::call_data_copy(&mut call_data, 0);
+///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 ///
 ///     let result: Result<Option<Vec<u8>>, Vec<u8>> = (|| {
-///         if call_data.len() < 4 { return Err(Vec::new()); }
+///         if call_data.len() < 4 {
+///             return my_token::fallback().map(|()| None).map_err(|e| e.as_ref().to_vec());
+///         }
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+///         let input = &call_data[4..];
 ///
 ///         match selector {
-///             [0x18, 0x16, 0x0d, 0xdd] => {  // totalSupply()
-///                 Ok(Some(my_token::total_supply().to_be_bytes::<32>().to_vec()))
+///             [0x18, 0x16, 0x0d, 0xdd] => {
+///                 // totalSupply() -> uint256
+///                 Ok(Some({
+///                     let result = my_token::total_supply();
+///                     result.to_be_bytes::<32>().to_vec()
+///                 }))
 ///             }
-///             _ => Err(Vec::new()),
+///             [0x70, 0xa0, 0x82, 0x31] => {
+///                 // balanceOf(address) -> uint256
+///                 let mut account = [0u8; 20];
+///                 account.copy_from_slice(&input[12..32]);
+///                 Ok(Some({
+///                     let result = my_token::balance_of(account);
+///                     result.to_be_bytes::<32>().to_vec()
+///                 }))
+///             }
+///             _ => my_token::fallback().map(|()| None).map_err(|e| e.as_ref().to_vec()),
 ///         }
 ///     })();
 ///
 ///     match result {
-///         Ok(Some(data)) => pvm_contract::api::return_value(pvm_contract::ReturnFlags::empty(), &data),
+///         Ok(Some(data)) => {
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::empty(), &data);
+///         }
 ///         Ok(None) => {}
-///         Err(data) => pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, &data),
+///         Err(data) => {
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::REVERT, &data);
+///         }
 ///     }
 /// }
 /// ```
 ///
 /// ## Dispatch Logic (no_alloc mode)
 ///
-/// With `no_alloc`, fixed-size stack buffers are used instead:
+/// With `no_alloc`, returns happen directly in selector arms (no Result wrapper):
 ///
 /// ```ignore
-/// #[pvm_contract::contract("MyToken.sol", no_alloc, buffer = 512)]
+/// #[pvm_contract_macros::contract("MyToken.sol", no_alloc, buffer = 512)]
 /// mod my_token { /* ... */ }
 ///
-/// // Expands to:
+/// // Generates:
+/// #[polkavm_derive::polkavm_export]
 /// pub extern "C" fn call() {
-///     let call_data_len = pvm_contract::api::call_data_size() as usize;
-///     let mut call_data = [0u8; 512];  // fixed buffer
+///     let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+///     let mut call_data = [0u8; 512];
 ///
 ///     if call_data_len > 512 {
-///         pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"CalldataTooLarge");
-///         return;
+///         pallet_revive_uapi::HostFnImpl::return_value(
+///             pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
 ///     }
-///     pvm_contract::api::call_data_copy(&mut call_data[..call_data_len], 0);
+///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
-///     let result: Result<Option<&[u8]>, &[u8]> = (|| {
-///         // ... dispatch using slices instead of Vec
-///     })();
-///     // ...
+///     if call_data_len < 4 {
+///         // fallback handling
+///     }
+///
+///     let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+///     let input = &call_data[4..call_data_len];
+///
+///     match selector {
+///         [0x18, 0x16, 0x0d, 0xdd] => {
+///             // totalSupply() -> returns directly
+///             let result = my_token::total_supply();
+///             let encoded = result.to_be_bytes::<32>();
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::empty(), &encoded);
+///         }
+///         _ => {
+///             // fallback
+///         }
+///     }
 /// }
 /// ```
 ///
