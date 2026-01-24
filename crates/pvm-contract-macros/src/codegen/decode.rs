@@ -16,7 +16,7 @@ pub fn generate_decode(
             quote! {{
                 let mut addr = [0u8; 20];
                 addr.copy_from_slice(&#data_expr[#offset_lit + 12..#offset_lit + 32]);
-                pvm_contract::Address::from(addr)
+                addr
             }}
         }
         SolType::Bool => {
@@ -51,7 +51,7 @@ pub fn generate_decode(
         }
         SolType::Uint(_) => {
             quote! {
-                pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
+                ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
             }
         }
         SolType::Int(8) => {
@@ -81,7 +81,7 @@ pub fn generate_decode(
         }
         SolType::Int(_) => {
             quote! {
-                pvm_contract::I256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
+                ruint::aliases::I256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
             }
         }
         SolType::Bytes(size) => {
@@ -95,14 +95,14 @@ pub fn generate_decode(
         SolType::DynBytes => {
             if use_alloc {
                 quote! {{
-                    let dyn_offset = pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
-                    let length = pvm_contract::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
+                    let dyn_offset = ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
+                    let length = ruint::aliases::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
                     #data_expr[dyn_offset + 32..dyn_offset + 32 + length].to_vec()
                 }}
             } else {
                 quote! {{
-                    let dyn_offset = pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
-                    let length = pvm_contract::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
+                    let dyn_offset = ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
+                    let length = ruint::aliases::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
                     &#data_expr[dyn_offset + 32..dyn_offset + 32 + length]
                 }}
             }
@@ -110,15 +110,15 @@ pub fn generate_decode(
         SolType::String => {
             if use_alloc {
                 quote! {{
-                    let dyn_offset = pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
-                    let length = pvm_contract::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
+                    let dyn_offset = ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
+                    let length = ruint::aliases::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
                     let bytes = &#data_expr[dyn_offset + 32..dyn_offset + 32 + length];
                     alloc::string::String::from_utf8_lossy(bytes).into_owned()
                 }}
             } else {
                 quote! {{
-                    let dyn_offset = pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
-                    let length = pvm_contract::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
+                    let dyn_offset = ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
+                    let length = ruint::aliases::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
                     let bytes = &#data_expr[dyn_offset + 32..dyn_offset + 32 + length];
                     core::str::from_utf8(bytes).unwrap_or("")
                 }}
@@ -130,8 +130,8 @@ pub fn generate_decode(
                     generate_decode_array_element(inner, quote!(elem_data), use_alloc);
                 let elem_size = inner.head_size();
                 quote! {{
-                    let dyn_offset = pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
-                    let length = pvm_contract::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
+                    let dyn_offset = ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
+                    let length = ruint::aliases::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
                     let array_data = &#data_expr[dyn_offset + 32..];
                     let mut result = alloc::vec::Vec::with_capacity(length);
                     for i in 0..length {

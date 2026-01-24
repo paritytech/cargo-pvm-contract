@@ -106,13 +106,14 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
+    const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        if segments.len() == 2
-            && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
-            && segments[1].ident == name
-        {
-            return true;
+        if segments.len() == 2 {
+            let first = segments[0].ident.to_string();
+            if VALID_PREFIXES.contains(&first.as_str()) && segments[1].ident == name {
+                return true;
+            }
         }
     }
     false
@@ -364,7 +365,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 match #mod_name::#constructor_name() {
                     Ok(()) => {}
                     Err(e) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
@@ -401,9 +402,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = pvm_contract::api::call_data_size() as usize;
+                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = vec![0u8; call_data_len];
-                pvm_contract::api::call_data_copy(&mut call_data, 0);
+                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 let result: Result<Option<Vec<u8>>, Vec<u8>> = (|| {
                     if call_data.len() < 4 {
@@ -421,11 +422,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 match result {
                     Ok(Some(data)) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::empty(), &data);
+                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::empty(), &data);
                     }
                     Ok(None) => {}
                     Err(data) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, &data);
+                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, &data);
                     }
                 }
             }
@@ -436,33 +437,31 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let fallback_name = parsed.fallback_name.as_ref().unwrap();
             quote! {
                 match #mod_name::#fallback_name() {
-                    Ok(()) => {}
+                    Ok(()) => return,
                     Err(e) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
         } else {
             quote! {
-                pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"");
+                pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, b"");
             }
         };
 
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = pvm_contract::api::call_data_size() as usize;
+                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
 
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"CalldataTooLarge");
-                    return;
+                    pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
                 }
-                pvm_contract::api::call_data_copy(&mut call_data[..call_data_len], 0);
+                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
                     #no_alloc_fallback
-                    return;
                 }
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
@@ -479,7 +478,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     Ok(quote! {
-        use pvm_contract::HostFn as _;
+        use pallet_revive_uapi::HostFn as _;
 
         #alloc_setup
 
@@ -520,7 +519,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
 
     quote! {
         #[allow(unused_imports)]
-        use pvm_contract::HostFn as _;
+        use pallet_revive_uapi::HostFn as _;
 
         #(#items)*
     }

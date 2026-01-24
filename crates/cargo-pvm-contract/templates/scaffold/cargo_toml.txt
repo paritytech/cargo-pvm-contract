@@ -10,25 +10,16 @@ name = "{{ contract_name }}"
 path = "src/{{ bin_source }}.rs"
 
 [dependencies]
-{% if use_macros -%}
 {% if let Some(path) = local_path -%}
-pvm-contract = { path = "{{ path }}/crates/pvm-contract" }
+pvm-contract-macros = { path = "{{ path }}/crates/pvm-contract-macros" }
 {% else -%}
-pvm-contract = "{{ builder_version }}"
+pvm-contract-macros = "{{ builder_version }}"
 {% endif -%}
-polkavm-derive = { version = "0.30.0" }
-{% if use_alloc -%}
-picoalloc = { version = "5", default-features = false }
-{% endif -%}
-{% else -%}
-{% if use_alloc -%}
-alloy-core = { version = "0.8", default-features = false, features = ["sol-types"] }
-{% endif -%}
-pallet-revive-uapi = { version = "0.10", default-features = false }
-{% if use_alloc -%}
-picoalloc = { version = "5", default-features = false }
-{% endif -%}
+pallet-revive-uapi = { version = "0.9", default-features = false }
 polkavm-derive = { version = "0.31.0" }
+ruint = { version = "1.17", default-features = false }
+{% if use_alloc -%}
+picoalloc = { version = "5", default-features = false }
 {% endif %}
 
 [build-dependencies]

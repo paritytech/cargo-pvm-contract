@@ -1,7 +1,8 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract::{Address, U256, api, StorageFlags};
+use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+use ruint::aliases::U256;
 
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
@@ -12,7 +13,7 @@ static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<
     }))
 };
 
-#[pvm_contract::contract("{{ sol_file_name }}")]
+#[pvm_contract_macros::contract("{{ sol_file_name }}")]
 mod contract {
     use super::*;
 
@@ -29,19 +30,19 @@ mod contract {
         }
     }
 
-    #[pvm_contract::constructor]
+    #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract::fallback]
+    #[pvm_contract_macros::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }
 
     // TODO: Implement the following methods from {{ sol_file_name }}:
 {% for func in functions %}
-    // #[pvm_contract::method]
+    // #[pvm_contract_macros::method]
     // pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
     //     todo!()
     // }

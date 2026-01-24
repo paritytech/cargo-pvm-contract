@@ -1,9 +1,10 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract::{api, Address, StorageFlags, U256};
+use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+use ruint::aliases::U256;
 
-#[pvm_contract::contract("MyToken.sol", no_alloc, buffer = 256)]
+#[pvm_contract_macros::contract("MyToken.sol", no_alloc, buffer = 256)]
 mod my_token {
     use super::*;
 
@@ -20,23 +21,23 @@ mod my_token {
         }
     }
 
-    #[pvm_contract::constructor]
+    #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract::method]
+    #[pvm_contract_macros::method]
     pub fn total_supply() -> U256 {
         get_total_supply()
     }
 
-    #[pvm_contract::method]
-    pub fn balance_of(account: Address) -> U256 {
-        get_balance(&account.into_array())
+    #[pvm_contract_macros::method]
+    pub fn balance_of(account: [u8; 20]) -> U256 {
+        get_balance(&account)
     }
 
-    #[pvm_contract::method]
-    pub fn transfer(to: Address, amount: U256) -> Result<(), Error> {
+    #[pvm_contract_macros::method]
+    pub fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
         let caller = get_caller();
         let sender_balance = get_balance(&caller);
 
@@ -45,30 +46,30 @@ mod my_token {
         }
 
         let new_sender_balance = sender_balance - amount;
-        let recipient_balance = get_balance(&to.into_array());
+        let recipient_balance = get_balance(&to);
         let new_recipient_balance = recipient_balance + amount;
 
         set_balance(&caller, new_sender_balance);
-        set_balance(&to.into_array(), new_recipient_balance);
-        emit_transfer(&caller, &to.into_array(), amount);
+        set_balance(&to, new_recipient_balance);
+        emit_transfer(&caller, &to, amount);
 
         Ok(())
     }
 
-    #[pvm_contract::method]
-    pub fn mint(to: Address, amount: U256) -> Result<(), Error> {
-        let new_recipient_balance = get_balance(&to.into_array()).saturating_add(amount);
-        set_balance(&to.into_array(), new_recipient_balance);
+    #[pvm_contract_macros::method]
+    pub fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
+        let new_recipient_balance = get_balance(&to).saturating_add(amount);
+        set_balance(&to, new_recipient_balance);
 
         let new_supply = get_total_supply().saturating_add(amount);
         set_total_supply(new_supply);
 
         let zero_address = [0u8; 20];
-        emit_transfer(&zero_address, &to.into_array(), amount);
+        emit_transfer(&zero_address, &to, amount);
         Ok(())
     }
 
-    #[pvm_contract::fallback]
+    #[pvm_contract_macros::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }

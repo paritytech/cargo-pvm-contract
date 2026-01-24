@@ -1,7 +1,8 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract::{api, Address, StorageFlags, U256};
+use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+use ruint::aliases::U256;
 
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
@@ -12,7 +13,7 @@ static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<
     }))
 };
 
-#[pvm_contract::contract("MyToken.sol")]
+#[pvm_contract_macros::contract("MyToken.sol")]
 mod my_token {
     use super::*;
     use alloc::vec;
@@ -30,54 +31,54 @@ mod my_token {
         }
     }
 
-    #[pvm_contract::constructor]
+    #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract::method]
+    #[pvm_contract_macros::method]
     pub fn total_supply() -> U256 {
         get_total_supply()
     }
 
-    #[pvm_contract::method]
-    pub fn balance_of(account: Address) -> U256 {
-        get_balance(&account.into_array())
+    #[pvm_contract_macros::method]
+    pub fn balance_of(account: [u8; 20]) -> U256 {
+        get_balance(&account)
     }
 
-    #[pvm_contract::method]
-    pub fn transfer(to: Address, amount: U256) -> Result<(), Error> {
-        let caller = pvm_contract::caller();
-        let sender_balance = get_balance(&caller.into_array());
+    #[pvm_contract_macros::method]
+    pub fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
+        let caller = get_caller();
+        let sender_balance = get_balance(&caller);
 
         if sender_balance < amount {
             return Err(Error::InsufficientBalance);
         }
 
         let new_sender_balance = sender_balance - amount;
-        let recipient_balance = get_balance(&to.into_array());
+        let recipient_balance = get_balance(&to);
         let new_recipient_balance = recipient_balance + amount;
 
-        set_balance(&caller.into_array(), new_sender_balance);
-        set_balance(&to.into_array(), new_recipient_balance);
-        emit_transfer(caller, to, amount);
+        set_balance(&caller, new_sender_balance);
+        set_balance(&to, new_recipient_balance);
+        emit_transfer(&caller, &to, amount);
 
         Ok(())
     }
 
-    #[pvm_contract::method]
-    pub fn mint(to: Address, amount: U256) -> Result<(), Error> {
-        let new_recipient_balance = get_balance(&to.into_array()).saturating_add(amount);
-        set_balance(&to.into_array(), new_recipient_balance);
+    #[pvm_contract_macros::method]
+    pub fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
+        let new_recipient_balance = get_balance(&to).saturating_add(amount);
+        set_balance(&to, new_recipient_balance);
 
         let new_supply = get_total_supply().saturating_add(amount);
         set_total_supply(new_supply);
 
-        emit_transfer(Address::ZERO, to, amount);
+        emit_transfer(&[0u8; 20], &to, amount);
         Ok(())
     }
 
-    #[pvm_contract::fallback]
+    #[pvm_contract_macros::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }
@@ -128,18 +129,24 @@ mod my_token {
         api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
     }
 
+    fn get_caller() -> [u8; 20] {
+        let mut caller = [0u8; 20];
+        api::caller(&mut caller);
+        caller
+    }
+
     const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
         0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d,
         0xaa, 0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23,
         0xb3, 0xef,
     ];
 
-    fn emit_transfer(from: Address, to: Address, value: U256) {
+    fn emit_transfer(from: &[u8; 20], to: &[u8; 20], value: U256) {
         let mut from_topic = [0u8; 32];
-        from_topic[12..32].copy_from_slice(from.as_slice());
+        from_topic[12..32].copy_from_slice(from);
 
         let mut to_topic = [0u8; 32];
-        to_topic[12..32].copy_from_slice(to.as_slice());
+        to_topic[12..32].copy_from_slice(to);
 
         let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
         let data = value.to_be_bytes::<32>();

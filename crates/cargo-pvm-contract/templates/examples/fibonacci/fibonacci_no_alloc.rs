@@ -1,12 +1,8 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract::api;
-
-#[pvm_contract::contract("Fibonacci.sol", no_alloc, buffer = 256)]
+#[pvm_contract_macros::contract("Fibonacci.sol", no_alloc, buffer = 256)]
 mod fibonacci {
-    use super::*;
-
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Error {}
 
@@ -16,17 +12,17 @@ mod fibonacci {
         }
     }
 
-    #[pvm_contract::constructor]
+    #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract::fallback]
+    #[pvm_contract_macros::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract::method]
+    #[pvm_contract_macros::method]
     pub fn fibonacci(n: u32) -> u32 {
         if n <= 1 {
             n

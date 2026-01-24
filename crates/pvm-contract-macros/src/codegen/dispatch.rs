@@ -37,8 +37,7 @@ pub fn generate_dispatch_arm(
         } else {
             quote! {
                 if input.len() < #min_size_lit {
-                    pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"InvalidCalldata");
-                    return;
+                    pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
                 }
             }
         }
@@ -126,16 +125,16 @@ fn generate_no_alloc_dispatch_arm(
                         #encode_and_return
                     }
                     Err(e) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
         } else {
             quote! {
                 match #mod_name::#fn_name(#(#call_args),*) {
-                    Ok(()) => {}
+                    Ok(()) => return,
                     Err(e) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
@@ -150,6 +149,7 @@ fn generate_no_alloc_dispatch_arm(
         } else {
             quote! {
                 #mod_name::#fn_name(#(#call_args),*);
+                return;
             }
         }
     };
@@ -159,7 +159,6 @@ fn generate_no_alloc_dispatch_arm(
             #size_check
             #(#decode_statements)*
             #body
-            return;
         }
     }
 }
@@ -173,7 +172,7 @@ fn generate_no_alloc_encode_and_return(outputs: &[crate::signature::SolType]) ->
         let encode = generate_encode(&outputs[0], quote!(result), false);
         return quote! {
             let encoded = #encode;
-            pvm_contract::api::return_value(pvm_contract::ReturnFlags::empty(), &encoded);
+            pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::empty(), &encoded);
         };
     }
 
@@ -196,6 +195,6 @@ fn generate_no_alloc_encode_and_return(outputs: &[crate::signature::SolType]) ->
             out[offset..offset + 32].copy_from_slice(&encoded);
             offset += 32;
         )*
-        pvm_contract::api::return_value(pvm_contract::ReturnFlags::empty(), &out);
+        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::empty(), &out);
     }}
 }

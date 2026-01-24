@@ -37,7 +37,7 @@ impl SolType {
     #[allow(dead_code)]
     pub fn rust_type(&self, use_alloc: bool) -> TokenStream {
         match self {
-            SolType::Address => quote!(pvm::Address),
+            SolType::Address => quote!([u8; 20]),
             SolType::Bool => quote!(bool),
             SolType::Uint(8) => quote!(u8),
             SolType::Uint(16) => quote!(u16),
@@ -112,8 +112,8 @@ impl SolType {
         let type_str = quote!(#ty).to_string().replace(' ', "");
 
         match type_str.as_str() {
-            "Address" | "pvm_contract::Address" => Some(SolType::Address),
-            "U256" | "pvm_contract::U256" => Some(SolType::Uint(256)),
+            "[u8;20]" => Some(SolType::Address),
+            "U256" | "ruint::aliases::U256" => Some(SolType::Uint(256)),
             "u256" => Some(SolType::Uint(256)),
             "u128" => Some(SolType::Uint(128)),
             "u64" => Some(SolType::Uint(64)),
@@ -127,7 +127,6 @@ impl SolType {
             "i8" => Some(SolType::Int(8)),
             "bool" => Some(SolType::Bool),
             "[u8;32]" => Some(SolType::Bytes(32)),
-            "[u8;20]" => Some(SolType::Bytes(20)),
             _ => None,
         }
     }

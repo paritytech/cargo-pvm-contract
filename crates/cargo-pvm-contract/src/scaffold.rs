@@ -13,7 +13,6 @@ struct CargoTomlTemplate<'a> {
     contract_name: &'a str,
     bin_source: &'a str,
     use_alloc: bool,
-    use_macros: bool,
     builder_version: &'a str,
     local_path: Option<String>,
 }
@@ -171,7 +170,7 @@ pub fn init_new_contract(contract_name: &str, use_alloc: bool) -> Result<()> {
     let build_rs_content = generate_build_rs()?;
     fs::write(target_dir.join("build.rs"), build_rs_content)?;
 
-    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, use_alloc, true)?;
+    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, use_alloc)?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
 
     println!("Successfully initialized contract project: {target_dir:?}");
@@ -296,13 +295,8 @@ fn init_from_example_files_inner(
     let build_rs_content = generate_build_rs()?;
     fs::write(target_dir.join("build.rs"), build_rs_content)?;
 
-    let use_macros = true;
-    let cargo_toml_content = generate_cargo_toml(
-        &contract_name,
-        &actual_contract_kebab,
-        use_alloc,
-        use_macros,
-    )?;
+    let cargo_toml_content =
+        generate_cargo_toml(&contract_name, &actual_contract_kebab, use_alloc)?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
 
     println!("Successfully initialized contract project from {sol_file_name}: {target_dir:?}");
@@ -477,7 +471,7 @@ fn generate_macro_contract_sol(
 
 fn solidity_to_rust_type(sol_type: &str) -> String {
     match sol_type {
-        "address" => "Address".to_string(),
+        "address" => "[u8; 20]".to_string(),
         "bool" => "bool".to_string(),
         "string" => "String".to_string(),
         "bytes" => "Vec<u8>".to_string(),
@@ -532,12 +526,7 @@ fn resolve_target_json() -> Result<(PathBuf, String)> {
     Ok((target_json, target_name))
 }
 
-fn generate_cargo_toml(
-    contract_name: &str,
-    bin_source: &str,
-    use_alloc: bool,
-    use_macros: bool,
-) -> Result<String> {
+fn generate_cargo_toml(contract_name: &str, bin_source: &str, use_alloc: bool) -> Result<String> {
     let local_path = std::env::var("CARGO_PVM_CONTRACT_PATH")
         .ok()
         .filter(|value| !value.trim().is_empty());
@@ -553,7 +542,6 @@ fn generate_cargo_toml(
         contract_name,
         bin_source,
         use_alloc,
-        use_macros,
         builder_version: BUILDER_VERSION,
         local_path,
     };

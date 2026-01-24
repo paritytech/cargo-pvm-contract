@@ -1,9 +1,10 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract::{Address, U256, api, ReturnFlags, StorageFlags};
+use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
+use ruint::aliases::U256;
 
-#[pvm_contract::contract(no_alloc, buffer = 256)]
+#[pvm_contract_macros::contract(no_alloc, buffer = 256)]
 mod contract {
     use super::*;
 
@@ -20,19 +21,19 @@ mod contract {
         }
     }
 
-    #[pvm_contract::constructor]
+    #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract::fallback]
+    #[pvm_contract_macros::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }
 
     // Add your contract methods here
     // Example:
-    // #[pvm_contract::method]
+    // #[pvm_contract_macros::method]
     // pub fn my_method(param: U256) -> Result<U256, Error> {
     //     Ok(param)
     // }
