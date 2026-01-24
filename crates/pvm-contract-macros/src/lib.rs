@@ -309,45 +309,91 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Derives ABI encoding/decoding methods for a struct, enabling it to be used
 /// as a parameter or return type in contract methods.
 ///
-/// # Generated Methods
+/// # Generated Code
 ///
-/// - `const SOL_NAME: &'static str` - The Solidity type signature (e.g., `"(uint256,uint256)"`)
-/// - `const ENCODED_SIZE: usize` - The ABI-encoded size in bytes
-/// - `fn abi_decode(input: &[u8], offset: usize) -> Self` - Decode from ABI bytes
-/// - `fn abi_encode(&self) -> [u8; N]` - Encode to fixed-size ABI bytes
+/// For this struct:
 ///
-/// # Example
-///
-/// ```ignore
-/// use ruint::aliases::U256;
-///
+/// ```
+/// # use ruint::aliases::U256;
 /// #[derive(pvm_contract_macros::SolType)]
 /// pub struct Point {
 ///     pub x: U256,
 ///     pub y: U256,
 /// }
+/// ```
 ///
-/// // Generated: Point::SOL_NAME = "(uint256,uint256)"
-/// // Generated: Point::ENCODED_SIZE = 64
-/// // Generated: Point::abi_decode(input, offset) -> Point
-/// // Generated: Point::abi_encode(&self) -> [u8; 64]
+/// The macro generates:
+///
+/// ```
+/// # use ruint::aliases::U256;
+/// # pub struct Point { pub x: U256, pub y: U256 }
+/// impl Point {
+///     /// Solidity tuple signature for ABI encoding
+///     pub const SOL_NAME: &'static str = "(uint256,uint256)";
+///
+///     /// Total size in bytes when ABI-encoded (each uint256 = 32 bytes)
+///     pub const ENCODED_SIZE: usize = 64;
+///
+///     /// Decode from ABI-encoded bytes at the given offset
+///     pub fn abi_decode(input: &[u8], offset: usize) -> Self {
+///         Self {
+///             x: U256::from_be_slice(&input[offset..offset + 32]),
+///             y: U256::from_be_slice(&input[offset + 32..offset + 64]),
+///         }
+///     }
+///
+///     /// Encode to fixed-size ABI bytes
+///     pub fn abi_encode(&self) -> [u8; 64] {
+///         let mut out = [0u8; 64];
+///         out[0..32].copy_from_slice(&self.x.to_be_bytes::<32>());
+///         out[32..64].copy_from_slice(&self.y.to_be_bytes::<32>());
+///         out
+///     }
+/// }
+/// ```
+///
+/// # Usage in Contract Methods
+///
+/// ```ignore
+/// #[pvm_contract_macros::method]
+/// pub fn set_point(point: Point) {
+///     // Macro calls Point::abi_decode() automatically
+/// }
+///
+/// #[pvm_contract_macros::method]
+/// pub fn get_point() -> Point {
+///     // Macro calls point.abi_encode() automatically
+///     Point { x: U256::from(10), y: U256::from(20) }
+/// }
 /// ```
 ///
 /// # Supported Field Types
 ///
-/// - `U256`, `u128`, `u64`, `u32`, `u16`, `u8` (unsigned integers)
-/// - `i128`, `i64`, `i32`, `i16`, `i8` (signed integers)
-/// - `bool`
-/// - `[u8; 20]` (address)
-/// - `[u8; N]` where N <= 32 (bytesN)
-/// - Fixed arrays of supported types
-/// - Tuples of supported types
-/// - Other structs that derive `SolType`
+/// | Rust Type | Solidity Type | Encoded Size |
+/// |-----------|---------------|--------------|
+/// | `U256` | `uint256` | 32 bytes |
+/// | `u128` | `uint128` | 32 bytes |
+/// | `u64` | `uint64` | 32 bytes |
+/// | `u32` | `uint32` | 32 bytes |
+/// | `u16` | `uint16` | 32 bytes |
+/// | `u8` | `uint8` | 32 bytes |
+/// | `i128` | `int128` | 32 bytes |
+/// | `i64` | `int64` | 32 bytes |
+/// | `i32` | `int32` | 32 bytes |
+/// | `i16` | `int16` | 32 bytes |
+/// | `i8` | `int8` | 32 bytes |
+/// | `bool` | `bool` | 32 bytes |
+/// | `[u8; 20]` | `address` | 32 bytes |
+/// | `[u8; N]` (N <= 32) | `bytesN` | 32 bytes |
+/// | `[T; N]` | `T[N]` | N * element size |
+/// | Other `SolType` struct | tuple | sum of field sizes |
 ///
 /// # Limitations
 ///
-/// - Dynamic types (`Vec`, `String`, `&[u8]`) are not supported
-/// - All fields must have a known size at compile time
+/// Dynamic types are **not supported** and will cause a compile error:
+/// - `Vec<T>` - use fixed arrays `[T; N]` instead
+/// - `String` - not supported
+/// - `&[u8]` / `&str` - not supported
 #[proc_macro_derive(SolType)]
 pub fn sol_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
