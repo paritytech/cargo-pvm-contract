@@ -265,39 +265,61 @@ out[offset..offset + 32].copy_from_slice(&encode(tuple.1));
 
 | Feature | Status | Workaround |
 |---------|--------|------------|
-| Custom structs | Not supported | Use tuples `(T1, T2, ...)` |
 | Nested dynamic types | Not supported | Flatten structure |
 | Dynamic return types | Partial | Only static types can be returned |
 | `int256` / `I256` | Decode only | Use `U256` and handle sign manually |
 | Dynamic arrays in no_alloc | Not supported | Use alloc mode or fixed arrays |
 
-### Custom Types
+### Custom Types with `#[derive(SolType)]`
 
-**Custom structs are NOT supported.** The macro only recognizes built-in Solidity types.
+Custom structs are supported via the `SolType` derive macro. This generates ABI encoding/decoding methods for structs containing only static types.
 
-To pass struct-like data:
-```solidity
-// Instead of:
-struct Point { uint256 x; uint256 y; }
-function setPoint(Point p) external;
-
-// Use tuple:
-function setPoint(uint256 x, uint256 y) external;
-// Or:
-function setPoint((uint256, uint256) p) external;
+```rust
+#[derive(pvm_contract_macros::SolType)]
+pub struct Point {
+    pub x: U256,
+    pub y: U256,
+}
 ```
 
-In Rust:
+This generates:
+- `Point::SOL_NAME` - Solidity type signature: `"(uint256,uint256)"`
+- `Point::ENCODED_SIZE` - Total encoded size in bytes: `64`
+- `Point::abi_decode(input: &[u8], offset: usize) -> Self`
+- `Point::abi_encode(&self) -> [u8; ENCODED_SIZE]`
+
+Use in contract methods:
 ```rust
 #[pvm_contract_macros::method]
-pub fn set_point(x: U256, y: U256) -> Result<(), Error> {
-    // ...
+pub fn set_point(point: Point) {
+    // point.x, point.y are available
 }
-// Or with tuple:
+
 #[pvm_contract_macros::method]
-pub fn set_point(p: (U256, U256)) -> Result<(), Error> {
+pub fn get_point() -> Point {
+    Point { x: U256::from(1), y: U256::from(2) }
+}
+```
+
+#### Supported Field Types
+
+The `SolType` derive only supports static types:
+- `U256`, `u128`, `u64`, `u32`, `u16`, `u8`
+- `I256`, `i128`, `i64`, `i32`, `i16`, `i8`
+- `bool`
+- `[u8; 20]` (address)
+- `[u8; N]` where N <= 32 (bytesN)
+- Other `SolType` structs (nested)
+
+Dynamic types (`Vec`, `String`, `&[u8]`, `&str`) are **not supported** and will cause a compile error.
+
+#### Alternative: Tuples
+
+You can also use tuples directly without defining a struct:
+```rust
+#[pvm_contract_macros::method]
+pub fn set_point(p: (U256, U256)) {
     let (x, y) = p;
-    // ...
 }
 ```
 
