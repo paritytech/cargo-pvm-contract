@@ -5,7 +5,7 @@ mod signature;
 mod solidity;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, ItemFn, ItemMod};
+use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
@@ -301,6 +301,58 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
 
     match codegen::expand_fallback(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derives ABI encoding/decoding methods for a struct, enabling it to be used
+/// as a parameter or return type in contract methods.
+///
+/// # Generated Methods
+///
+/// - `const SOL_NAME: &'static str` - The Solidity type signature (e.g., `"(uint256,uint256)"`)
+/// - `const ENCODED_SIZE: usize` - The ABI-encoded size in bytes
+/// - `fn abi_decode(input: &[u8], offset: usize) -> Self` - Decode from ABI bytes
+/// - `fn abi_encode(&self) -> [u8; N]` - Encode to fixed-size ABI bytes
+///
+/// # Example
+///
+/// ```ignore
+/// use ruint::aliases::U256;
+///
+/// #[derive(pvm_contract_macros::SolType)]
+/// pub struct Point {
+///     pub x: U256,
+///     pub y: U256,
+/// }
+///
+/// // Generated: Point::SOL_NAME = "(uint256,uint256)"
+/// // Generated: Point::ENCODED_SIZE = 64
+/// // Generated: Point::abi_decode(input, offset) -> Point
+/// // Generated: Point::abi_encode(&self) -> [u8; 64]
+/// ```
+///
+/// # Supported Field Types
+///
+/// - `U256`, `u128`, `u64`, `u32`, `u16`, `u8` (unsigned integers)
+/// - `i128`, `i64`, `i32`, `i16`, `i8` (signed integers)
+/// - `bool`
+/// - `[u8; 20]` (address)
+/// - `[u8; N]` where N <= 32 (bytesN)
+/// - Fixed arrays of supported types
+/// - Tuples of supported types
+/// - Other structs that derive `SolType`
+///
+/// # Limitations
+///
+/// - Dynamic types (`Vec`, `String`, `&[u8]`) are not supported
+/// - All fields must have a known size at compile time
+#[proc_macro_derive(SolType)]
+pub fn sol_type(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_type(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

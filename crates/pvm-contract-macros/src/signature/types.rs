@@ -13,6 +13,7 @@ pub enum SolType {
     Array(Box<SolType>),
     FixedArray(Box<SolType>, usize),
     Tuple(Vec<SolType>),
+    Custom(String),
 }
 
 impl SolType {
@@ -31,6 +32,7 @@ impl SolType {
                 let inner: Vec<_> = types.iter().map(|t| t.canonical_name()).collect();
                 format!("({})", inner.join(","))
             }
+            SolType::Custom(name) => name.clone(),
         }
     }
 
@@ -86,6 +88,10 @@ impl SolType {
                 let inner: Vec<_> = types.iter().map(|t| t.rust_type(use_alloc)).collect();
                 quote!((#(#inner),*))
             }
+            SolType::Custom(name) => {
+                let ident = syn::parse_str::<syn::Path>(name).unwrap();
+                quote!(#ident)
+            }
         }
     }
 
@@ -94,6 +100,7 @@ impl SolType {
             SolType::DynBytes | SolType::String | SolType::Array(_) => true,
             SolType::Tuple(types) => types.iter().any(|t| t.is_dynamic()),
             SolType::FixedArray(inner, _) => inner.is_dynamic(),
+            SolType::Custom(_) => false,
             _ => false,
         }
     }
@@ -104,7 +111,17 @@ impl SolType {
             SolType::Tuple(types) if !self.is_dynamic() => {
                 types.iter().map(|t| t.head_size()).sum()
             }
+            SolType::Custom(_) => 0,
             _ => 32,
+        }
+    }
+
+    pub fn has_custom_types(&self) -> bool {
+        match self {
+            SolType::Custom(_) => true,
+            SolType::Array(inner) | SolType::FixedArray(inner, _) => inner.has_custom_types(),
+            SolType::Tuple(types) => types.iter().any(|t| t.has_custom_types()),
+            _ => false,
         }
     }
 

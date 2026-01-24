@@ -113,6 +113,11 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
         SolType::DynBytes | SolType::String | SolType::Array(_) => {
             panic!("Dynamic types require special handling in tuple encoding");
         }
+        SolType::Custom(_) => {
+            quote! {
+                #value_expr.abi_encode()
+            }
+        }
         SolType::FixedArray(inner, size) => {
             let size_lit = *size;
             let inner_encodes: Vec<_> = (0..*size)

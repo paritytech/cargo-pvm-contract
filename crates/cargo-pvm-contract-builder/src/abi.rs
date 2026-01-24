@@ -93,14 +93,20 @@ fn parse_contract_file(path: &Path) -> Result<Option<ContractInfo>> {
     Ok(None)
 }
 
+const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
+
+fn is_pvm_path(segments: &[&syn::PathSegment], attr_name: &str) -> bool {
+    segments.len() == 2
+        && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
+        && segments[1].ident == attr_name
+}
+
 fn parse_contract_module(item_mod: &syn::ItemMod) -> Result<Option<ContractInfo>> {
     let sol_path = extract_contract_sol_path(&item_mod.attrs);
 
     let is_pvm_contract = item_mod.attrs.iter().any(|attr| {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        segments.len() == 2
-            && (segments[0].ident == "pvm_contract" || segments[0].ident == "pvm")
-            && segments[1].ident == "contract"
+        is_pvm_path(&segments, "contract")
     });
 
     if !is_pvm_contract {
@@ -136,10 +142,7 @@ fn parse_contract_module(item_mod: &syn::ItemMod) -> Result<Option<ContractInfo>
 fn extract_contract_sol_path(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        if segments.len() == 2
-            && (segments[0].ident == "pvm_contract" || segments[0].ident == "pvm")
-            && segments[1].ident == "contract"
-        {
+        if is_pvm_path(&segments, "contract") {
             if let syn::Meta::List(meta_list) = &attr.meta {
                 let tokens_str = meta_list.tokens.to_string();
                 if let Some(first_arg) = tokens_str.split(',').next() {
@@ -157,19 +160,14 @@ fn extract_contract_sol_path(attrs: &[syn::Attribute]) -> Option<String> {
 fn has_pvm_attr(attrs: &[syn::Attribute], name: &str) -> bool {
     attrs.iter().any(|attr| {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        segments.len() == 2
-            && (segments[0].ident == "pvm_contract" || segments[0].ident == "pvm")
-            && segments[1].ident == name
+        is_pvm_path(&segments, name)
     })
 }
 
 fn extract_method_rename(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        if segments.len() == 2
-            && (segments[0].ident == "pvm_contract" || segments[0].ident == "pvm")
-            && segments[1].ident == "method"
-        {
+        if is_pvm_path(&segments, "method") {
             if let syn::Meta::List(meta_list) = &attr.meta {
                 let tokens_str = meta_list.tokens.to_string();
                 if let Some(start) = tokens_str.find("rename") {

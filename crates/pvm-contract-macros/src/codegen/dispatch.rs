@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::decode::{calculate_min_input_size, generate_decode_params};
+use super::decode::{calculate_min_input_size, generate_decode_params, has_custom_types};
 use super::encode::{generate_encode, generate_encode_return};
 use crate::signature::{compute_selector, FunctionSignature};
 
@@ -45,10 +45,22 @@ pub fn generate_dispatch_arm(
         quote! {}
     };
 
-    let decode_statements: Vec<_> = param_names
-        .iter()
-        .zip(decodes.iter())
-        .map(|(name, decode)| quote! { let #name = #decode; })
+    let needs_runtime_offset = has_custom_types(&method.signature.inputs);
+    let offset_init = if needs_runtime_offset {
+        quote! { let mut __decode_offset: usize = 0; }
+    } else {
+        quote! {}
+    };
+
+    let decode_statements: Vec<_> = std::iter::once(offset_init)
+        .chain(
+            param_names
+                .iter()
+                .zip(decodes.iter())
+                .map(|(name, decode)| {
+                    quote! { let #name = #decode; }
+                }),
+        )
         .collect();
 
     let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();

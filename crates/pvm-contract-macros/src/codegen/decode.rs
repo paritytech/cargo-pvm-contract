@@ -171,6 +171,12 @@ pub fn generate_decode(
                 (#(#elem_decodes),*)
             }
         }
+        SolType::Custom(name) => {
+            let type_path: syn::Path = syn::parse_str(name).unwrap();
+            quote! {
+                #type_path::abi_decode(&#data_expr, #offset_lit)
+            }
+        }
     }
 }
 
@@ -183,17 +189,116 @@ fn generate_decode_array_element(
 }
 
 pub fn generate_decode_params(types: &[SolType], use_alloc: bool) -> Vec<TokenStream> {
-    let mut offset = 0;
+    let has_custom = types.iter().any(|t| t.has_custom_types());
+
+    if has_custom {
+        generate_decode_params_with_runtime_offset(types, use_alloc)
+    } else {
+        let mut offset = 0;
+        types
+            .iter()
+            .map(|ty| {
+                let decode = generate_decode(ty, quote!(input), offset, use_alloc);
+                offset += ty.head_size();
+                decode
+            })
+            .collect()
+    }
+}
+
+fn generate_decode_params_with_runtime_offset(
+    types: &[SolType],
+    use_alloc: bool,
+) -> Vec<TokenStream> {
     types
         .iter()
         .map(|ty| {
-            let decode = generate_decode(ty, quote!(input), offset, use_alloc);
-            offset += ty.head_size();
-            decode
+            let decode = generate_decode_runtime_offset(ty, use_alloc);
+            let size_increment = generate_size_increment(ty);
+            quote! {{
+                let __value = #decode;
+                __decode_offset += #size_increment;
+                __value
+            }}
         })
         .collect()
 }
 
+fn generate_decode_runtime_offset(ty: &SolType, use_alloc: bool) -> TokenStream {
+    match ty {
+        SolType::Address => {
+            quote! {{
+                let mut addr = [0u8; 20];
+                addr.copy_from_slice(&input[__decode_offset + 12..__decode_offset + 32]);
+                addr
+            }}
+        }
+        SolType::Bool => quote! { input[__decode_offset + 31] != 0 },
+        SolType::Uint(8) => quote! { input[__decode_offset + 31] },
+        SolType::Uint(16) => {
+            quote! { u16::from_be_bytes([input[__decode_offset + 30], input[__decode_offset + 31]]) }
+        }
+        SolType::Uint(32) => {
+            quote! { u32::from_be_bytes(input[__decode_offset + 28..__decode_offset + 32].try_into().unwrap()) }
+        }
+        SolType::Uint(64) => {
+            quote! { u64::from_be_bytes(input[__decode_offset + 24..__decode_offset + 32].try_into().unwrap()) }
+        }
+        SolType::Uint(128) => {
+            quote! { u128::from_be_bytes(input[__decode_offset + 16..__decode_offset + 32].try_into().unwrap()) }
+        }
+        SolType::Uint(_) => {
+            quote! { ruint::aliases::U256::from_be_slice(&input[__decode_offset..__decode_offset + 32]) }
+        }
+        SolType::Int(8) => quote! { input[__decode_offset + 31] as i8 },
+        SolType::Int(16) => {
+            quote! { i16::from_be_bytes([input[__decode_offset + 30], input[__decode_offset + 31]]) }
+        }
+        SolType::Int(32) => {
+            quote! { i32::from_be_bytes(input[__decode_offset + 28..__decode_offset + 32].try_into().unwrap()) }
+        }
+        SolType::Int(64) => {
+            quote! { i64::from_be_bytes(input[__decode_offset + 24..__decode_offset + 32].try_into().unwrap()) }
+        }
+        SolType::Int(128) => {
+            quote! { i128::from_be_bytes(input[__decode_offset + 16..__decode_offset + 32].try_into().unwrap()) }
+        }
+        SolType::Int(_) => {
+            quote! { ruint::aliases::I256::from_be_slice(&input[__decode_offset..__decode_offset + 32]) }
+        }
+        SolType::Bytes(size) => {
+            let size_lit = *size;
+            quote! {{
+                let mut bytes = [0u8; #size_lit];
+                bytes.copy_from_slice(&input[__decode_offset..__decode_offset + #size_lit]);
+                bytes
+            }}
+        }
+        SolType::Custom(name) => {
+            let type_path: syn::Path = syn::parse_str(name).unwrap();
+            quote! { #type_path::abi_decode(&input, __decode_offset) }
+        }
+        _ => generate_decode(ty, quote!(input), 0, use_alloc),
+    }
+}
+
+fn generate_size_increment(ty: &SolType) -> TokenStream {
+    match ty {
+        SolType::Custom(name) => {
+            let type_path: syn::Path = syn::parse_str(name).unwrap();
+            quote! { #type_path::ENCODED_SIZE }
+        }
+        _ => {
+            let size = ty.head_size();
+            quote! { #size }
+        }
+    }
+}
+
 pub fn calculate_min_input_size(types: &[SolType]) -> usize {
     types.iter().map(|t| t.head_size()).sum()
+}
+
+pub fn has_custom_types(types: &[SolType]) -> bool {
+    types.iter().any(|t| t.has_custom_types())
 }
