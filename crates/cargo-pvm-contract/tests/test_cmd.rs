@@ -113,7 +113,6 @@ fn mytoken_alloc_debug() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn mytoken_alloc_release() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_example(
@@ -139,7 +138,6 @@ fn mytoken_no_alloc_debug() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn mytoken_no_alloc_release() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir =
@@ -166,7 +164,6 @@ fn fibonacci_alloc_debug() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn fibonacci_alloc_release() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_example(
@@ -197,7 +194,6 @@ fn fibonacci_no_alloc_debug() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn fibonacci_no_alloc_release() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_example(
@@ -223,7 +219,6 @@ fn new_contract_alloc_debug() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn new_contract_alloc_release() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_new_contract(&temp_dir, "new-alloc-release", "alloc-with-alloy");
@@ -244,7 +239,6 @@ fn new_contract_no_alloc_debug() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn new_contract_no_alloc_release() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_new_contract(&temp_dir, "new-no-alloc-release", "no-alloc");
@@ -287,7 +281,6 @@ fn abi_json_has_correct_structure() {
 }
 
 #[test]
-#[ignore = "release builds have linker conflict with strip and emit-relocs"]
 fn polkavm_binary_is_valid() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_example(&temp_dir, "polkavm-test", "Fibonacci", "no-alloc");
