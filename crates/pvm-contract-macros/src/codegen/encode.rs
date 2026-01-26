@@ -115,7 +115,11 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
         }
         SolType::Custom(_) => {
             quote! {
-                #value_expr.abi_encode()
+                {
+                    let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
+                    ::pvm_contract_types::SolEncode::sol_encode_to(&#value_expr, &mut __buf);
+                    __buf
+                }
             }
         }
         SolType::FixedArray(inner, size) => {
