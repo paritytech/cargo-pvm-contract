@@ -23,24 +23,23 @@ pub trait SolEncode {
     ///
     /// The buffer must have at least `encode_len()` bytes available.
     fn encode_to(&self, buf: &mut [u8]);
+}
 
-    /// Returns the tail length for dynamic types in tuples/structs.
-    ///
-    /// For static types, this equals `encode_len()` (default).
-    /// For dynamic types, this excludes the offset pointer (just length + data + padding).
-    #[inline]
-    fn tail_len(&self) -> usize {
-        self.encode_len()
-    }
+/// Trait for dynamic types that need special encoding when embedded in structs/tuples.
+///
+/// Dynamic types (String, Vec<T>, bytes) encode differently when standalone vs embedded:
+/// - Standalone: offset pointer + length + data
+/// - Embedded (tail): length + data only (offset written by parent struct)
+///
+/// This trait is an implementation detail used by the derive macro.
+pub trait DynSolEncode: SolEncode {
+    /// Returns the tail length (excludes offset pointer).
+    /// For dynamic types: length prefix + data + padding.
+    fn tail_len(&self) -> usize;
 
-    /// Encode just the tail portion for dynamic types in tuples/structs.
-    ///
-    /// For static types, this equals `encode_to()` (default).
-    /// For dynamic types, this writes length + data + padding (no offset pointer).
-    #[inline]
-    fn encode_tail_to(&self, buf: &mut [u8]) {
-        self.encode_to(buf)
-    }
+    /// Encode just the tail portion (no offset pointer).
+    /// Writes: length prefix + data + padding.
+    fn encode_tail_to(&self, buf: &mut [u8]);
 }
 
 /// Marker trait for types with compile-time known encoded size.
@@ -196,7 +195,6 @@ impl_decode!([u8; 32], "bytes32", 32, |input: &[u8], offset: usize| {
     result
 });
 
-// alloc::string::String (string - dynamic type)
 #[cfg(feature = "alloc")]
 impl SolEncode for alloc::string::String {
     const SOL_NAME: &'static str = "string";
@@ -212,21 +210,19 @@ impl SolEncode for alloc::string::String {
         let data_len = bytes.len();
         let padding = (32 - (data_len % 32)) % 32;
 
-        // Offset pointer (32) - data starts at byte 32
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&32u64.to_be_bytes());
 
-        // Length prefix
         buf[32..64].fill(0);
         buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
 
-        // Data
         buf[64..64 + data_len].copy_from_slice(bytes);
-
-        // Padding
         buf[64 + data_len..64 + data_len + padding].fill(0);
     }
+}
 
+#[cfg(feature = "alloc")]
+impl DynSolEncode for alloc::string::String {
     fn tail_len(&self) -> usize {
         let data_len = self.len();
         let padding = (32 - (data_len % 32)) % 32;
@@ -238,49 +234,39 @@ impl SolEncode for alloc::string::String {
         let data_len = bytes.len();
         let padding = (32 - (data_len % 32)) % 32;
 
-        // Length prefix
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&(data_len as u64).to_be_bytes());
 
-        // Data
         buf[32..32 + data_len].copy_from_slice(bytes);
-
-        // Padding
         buf[32 + data_len..32 + data_len + padding].fill(0);
     }
 }
 
-// alloc::vec::Vec<T> (T[] - dynamic array type)
-// Each element is independently encoded to 32 bytes (NOT packed like String)
 #[cfg(feature = "alloc")]
 impl<T: SolEncode + StaticEncodedLen> SolEncode for alloc::vec::Vec<T> {
-    const SOL_NAME: &'static str = "T[]"; // Generic placeholder; actual name depends on T
+    const SOL_NAME: &'static str = "T[]";
 
     fn encode_len(&self) -> usize {
-        // offset (32) + length (32) + elements (each T::ENCODED_SIZE bytes)
         32 + 32 + self.len() * T::ENCODED_SIZE
     }
 
     fn encode_to(&self, buf: &mut [u8]) {
-        // Offset pointer (32) - data starts at byte 32
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-
-        // Delegate to encode_tail_to for the rest
-        self.encode_tail_to(&mut buf[32..]);
+        DynSolEncode::encode_tail_to(self, &mut buf[32..]);
     }
+}
 
+#[cfg(feature = "alloc")]
+impl<T: SolEncode + StaticEncodedLen> DynSolEncode for alloc::vec::Vec<T> {
     fn tail_len(&self) -> usize {
-        // length (32) + elements (each T::ENCODED_SIZE bytes)
         32 + self.len() * T::ENCODED_SIZE
     }
 
     fn encode_tail_to(&self, buf: &mut [u8]) {
-        // Length prefix
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
 
-        // Each element encoded to T::ENCODED_SIZE bytes (typically 32)
         let mut offset = 32;
         for elem in self.iter() {
             elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);
@@ -289,37 +275,31 @@ impl<T: SolEncode + StaticEncodedLen> SolEncode for alloc::vec::Vec<T> {
     }
 }
 
-// &[T] slice (T[] - dynamic array type)
-// Each element is independently encoded to 32 bytes (NOT packed like String)
 #[cfg(feature = "alloc")]
 impl<T: SolEncode + StaticEncodedLen> SolEncode for &[T] {
-    const SOL_NAME: &'static str = "T[]"; // Generic placeholder; actual name depends on T
+    const SOL_NAME: &'static str = "T[]";
 
     fn encode_len(&self) -> usize {
-        // offset (32) + length (32) + elements (each T::ENCODED_SIZE bytes)
         32 + 32 + self.len() * T::ENCODED_SIZE
     }
 
     fn encode_to(&self, buf: &mut [u8]) {
-        // Offset pointer (32) - data starts at byte 32
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-
-        // Delegate to encode_tail_to for the rest
-        self.encode_tail_to(&mut buf[32..]);
+        DynSolEncode::encode_tail_to(self, &mut buf[32..]);
     }
+}
 
+#[cfg(feature = "alloc")]
+impl<T: SolEncode + StaticEncodedLen> DynSolEncode for &[T] {
     fn tail_len(&self) -> usize {
-        // length (32) + elements (each T::ENCODED_SIZE bytes)
         32 + self.len() * T::ENCODED_SIZE
     }
 
     fn encode_tail_to(&self, buf: &mut [u8]) {
-        // Length prefix
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
 
-        // Each element encoded to T::ENCODED_SIZE bytes (typically 32)
         let mut offset = 32;
         for elem in self.iter() {
             elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);

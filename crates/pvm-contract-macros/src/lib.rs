@@ -505,24 +505,20 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     const SOL_NAME: &'static str = "(string,uint8)";
 ///
 ///     fn encode_len(&self) -> usize {
-///         // head_size (2 fields * 32) + tail of dynamic fields
-///         64 + ::pvm_contract_types::SolEncode::tail_len(&self.name)
+///         64 + ::pvm_contract_types::DynSolEncode::tail_len(&self.name)
 ///     }
 ///
 ///     fn encode_to(&self, buf: &mut [u8]) {
 ///         let mut __tail_offset: usize = 64;
 ///
-///         // Head[0..32]: offset pointer to name's data
 ///         buf[0..24].fill(0);
 ///         buf[24..32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
 ///
-///         // Head[32..64]: age value (static field)
 ///         buf[32..63].fill(0);
 ///         buf[63] = self.age;
 ///
-///         // Tail: name's encoded data (length + bytes + padding)
-///         let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&self.name);
-///         ::pvm_contract_types::SolEncode::encode_tail_to(
+///         let __tail_len = ::pvm_contract_types::DynSolEncode::tail_len(&self.name);
+///         ::pvm_contract_types::DynSolEncode::encode_tail_to(
 ///             &self.name,
 ///             &mut buf[__tail_offset..__tail_offset + __tail_len]
 ///         );

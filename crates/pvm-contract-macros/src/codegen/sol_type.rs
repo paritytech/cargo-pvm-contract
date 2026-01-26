@@ -120,7 +120,7 @@ fn generate_dynamic_encode_len(
                 Fields::Unit => return None,
             };
             Some(quote! {
-                ::pvm_contract_types::SolEncode::tail_len(&#field_access)
+                ::pvm_contract_types::DynSolEncode::tail_len(&#field_access)
             })
         })
         .collect();
@@ -135,8 +135,7 @@ fn generate_dynamic_encode_body(
     field_info: &[(Option<syn::Ident>, SolType)],
     head_size: usize,
 ) -> TokenStream {
-    let mut head_stmts = Vec::new();
-    let mut tail_stmts = Vec::new();
+    let mut stmts = Vec::new();
 
     for (i, (field_name, sol_type)) in field_info.iter().enumerate() {
         let field_access = match fields {
@@ -154,25 +153,22 @@ fn generate_dynamic_encode_body(
         let head_offset = i * 32;
 
         if sol_type.is_dynamic() {
-            head_stmts.push(quote! {
+            stmts.push(quote! {
                 buf[#head_offset..#head_offset + 24].fill(0);
                 buf[#head_offset + 24..#head_offset + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-            });
-            tail_stmts.push(quote! {
-                let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&#field_access);
-                ::pvm_contract_types::SolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                let __tail_len = ::pvm_contract_types::DynSolEncode::tail_len(&#field_access);
+                ::pvm_contract_types::DynSolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
                 __tail_offset += __tail_len;
             });
         } else {
             let encode_stmt = generate_field_encode(sol_type, &field_access, head_offset);
-            head_stmts.push(encode_stmt);
+            stmts.push(encode_stmt);
         }
     }
 
     quote! {
         let mut __tail_offset: usize = #head_size;
-        #(#head_stmts)*
-        #(#tail_stmts)*
+        #(#stmts)*
     }
 }
 
