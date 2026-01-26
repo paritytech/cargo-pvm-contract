@@ -361,550 +361,220 @@ impl DynSolEncode for &str {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_roundtrip_u256() {
-        let mut buf = [0u8; 32];
+    /// Generates all primitive type tests from a declarative specification.
+    macro_rules! sol_encode_tests {
+        (
+            // Roundtrip tests: encode then decode, verify equality
+            roundtrip {
+                $( $rt_name:ident : $rt_ty:ty => [ $($rt_val:expr),+ $(,)? ] );* $(;)?
+            }
 
-        let val = U256::from(0u64);
-        val.encode_to(&mut buf);
-        assert_eq!(U256::decode(&buf, 0), val);
+            // Encoding format tests: verify specific byte positions
+            format {
+                $( $fmt_name:ident : $fmt_val:expr => |$buf:ident| $check:expr );* $(;)?
+            }
 
-        let val = U256::from(42u64);
-        val.encode_to(&mut buf);
-        assert_eq!(U256::decode(&buf, 0), val);
+            // StaticEncodedLen: all types should have ENCODED_SIZE = 32
+            static_size { $( $st_ty:ty ),* $(,)? }
 
-        let val = U256::from(u64::MAX);
-        val.encode_to(&mut buf);
-        assert_eq!(U256::decode(&buf, 0), val);
+            // encode_len() should match ENCODED_SIZE for static types
+            encode_len { $( $el_val:expr ),* $(,)? }
+        ) => {
+            // Generate roundtrip tests
+            $(
+                #[test]
+                fn $rt_name() {
+                    let mut buf = [0u8; 32];
+                    $(
+                        let val: $rt_ty = $rt_val;
+                        val.encode_to(&mut buf);
+                        assert_eq!(<$rt_ty>::decode(&buf, 0), val, "roundtrip failed for {:?}", val);
+                    )+
+                }
+            )*
+
+            // Generate format tests
+            $(
+                #[test]
+                fn $fmt_name() {
+                    let mut $buf = [0u8; 32];
+                    ($fmt_val).encode_to(&mut $buf);
+                    $check
+                }
+            )*
+
+            // Generate static size test
+            #[test]
+            fn test_static_encoded_len() {
+                $( assert_eq!(<$st_ty as StaticEncodedLen>::ENCODED_SIZE, 32); )*
+            }
+
+            // Generate encode_len test
+            #[test]
+            fn test_encode_len_matches_static() {
+                $( assert_eq!(($el_val).encode_len(), 32); )*
+            }
+        };
     }
 
-    #[test]
-    fn test_roundtrip_u128() {
-        let mut buf = [0u8; 32];
+    sol_encode_tests! {
+        roundtrip {
+            test_u256: U256 => [U256::from(0u64), U256::from(42u64), U256::from(u64::MAX)];
+            test_u128: u128 => [0u128, 12345u128, u128::MAX];
+            test_u64: u64 => [0u64, 999u64, u64::MAX];
+            test_u32: u32 => [0u32, 1234u32, u32::MAX];
+            test_u16: u16 => [0u16, 256u16, u16::MAX];
+            test_u8: u8 => [0u8, 42u8, u8::MAX];
+            test_bool: bool => [false, true];
+            test_address: [u8; 20] => [[0u8; 20], [0x42u8; 20]];
+            test_bytes32: [u8; 32] => [[0u8; 32], [0xFFu8; 32]];
+        }
 
-        let val = 0u128;
-        val.encode_to(&mut buf);
-        assert_eq!(u128::decode(&buf, 0), val);
+        format {
+            test_fmt_u8: 0xABu8 => |buf| {
+                assert_eq!(buf[31], 0xAB);
+                assert!(buf[..31].iter().all(|&b| b == 0));
+            };
+            test_fmt_bool: true => |buf| {
+                assert_eq!(buf[31], 1);
+                assert!(buf[..31].iter().all(|&b| b == 0));
+            };
+            test_fmt_u16: 0x1234u16 => |buf| {
+                assert_eq!(&buf[30..32], &[0x12, 0x34]);
+                assert!(buf[..30].iter().all(|&b| b == 0));
+            };
+            test_fmt_u32: 0x12345678u32 => |buf| {
+                assert_eq!(&buf[28..32], &[0x12, 0x34, 0x56, 0x78]);
+                assert!(buf[..28].iter().all(|&b| b == 0));
+            };
+            test_fmt_u64: 0x0102030405060708u64 => |buf| {
+                assert_eq!(&buf[24..32], &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+                assert!(buf[..24].iter().all(|&b| b == 0));
+            };
+            test_fmt_u128: 0x0102030405060708090A0B0C0D0E0F10u128 => |buf| {
+                assert_eq!(&buf[16..32], &[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]);
+                assert!(buf[..16].iter().all(|&b| b == 0));
+            };
+            test_fmt_address: [0x42u8; 20] => |buf| {
+                assert!(buf[..12].iter().all(|&b| b == 0));
+                assert!(buf[12..32].iter().all(|&b| b == 0x42));
+            };
+            test_fmt_bytes32: [0xAAu8; 32] => |buf| {
+                assert!(buf.iter().all(|&b| b == 0xAA));
+            };
+        }
 
-        let val = 12345u128;
-        val.encode_to(&mut buf);
-        assert_eq!(u128::decode(&buf, 0), val);
+        static_size { U256, u128, u64, u32, u16, u8, bool, [u8; 20], [u8; 32] }
 
-        let val = u128::MAX;
-        val.encode_to(&mut buf);
-        assert_eq!(u128::decode(&buf, 0), val);
+        encode_len {
+            U256::from(42u64), 100u128, 100u64, 100u32, 100u16, 100u8,
+            true, [0u8; 20], [0u8; 32]
+        }
     }
 
-    #[test]
-    fn test_roundtrip_u64() {
-        let mut buf = [0u8; 32];
-
-        let val = 0u64;
-        val.encode_to(&mut buf);
-        assert_eq!(u64::decode(&buf, 0), val);
-
-        let val = 999u64;
-        val.encode_to(&mut buf);
-        assert_eq!(u64::decode(&buf, 0), val);
-
-        let val = u64::MAX;
-        val.encode_to(&mut buf);
-        assert_eq!(u64::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_roundtrip_u32() {
-        let mut buf = [0u8; 32];
-
-        let val = 0u32;
-        val.encode_to(&mut buf);
-        assert_eq!(u32::decode(&buf, 0), val);
-
-        let val = 1234u32;
-        val.encode_to(&mut buf);
-        assert_eq!(u32::decode(&buf, 0), val);
-
-        let val = u32::MAX;
-        val.encode_to(&mut buf);
-        assert_eq!(u32::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_roundtrip_u16() {
-        let mut buf = [0u8; 32];
-
-        let val = 0u16;
-        val.encode_to(&mut buf);
-        assert_eq!(u16::decode(&buf, 0), val);
-
-        let val = 256u16;
-        val.encode_to(&mut buf);
-        assert_eq!(u16::decode(&buf, 0), val);
-
-        let val = u16::MAX;
-        val.encode_to(&mut buf);
-        assert_eq!(u16::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_roundtrip_u8() {
-        let mut buf = [0u8; 32];
-
-        let val = 0u8;
-        val.encode_to(&mut buf);
-        assert_eq!(u8::decode(&buf, 0), val);
-
-        let val = 42u8;
-        val.encode_to(&mut buf);
-        assert_eq!(u8::decode(&buf, 0), val);
-
-        let val = u8::MAX;
-        val.encode_to(&mut buf);
-        assert_eq!(u8::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_roundtrip_bool() {
-        let mut buf = [0u8; 32];
-
-        let val = false;
-        val.encode_to(&mut buf);
-        assert_eq!(bool::decode(&buf, 0), val);
-
-        let val = true;
-        val.encode_to(&mut buf);
-        assert_eq!(bool::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_roundtrip_address() {
-        let mut buf = [0u8; 32];
-
-        let val = [0u8; 20];
-        val.encode_to(&mut buf);
-        assert_eq!(<[u8; 20]>::decode(&buf, 0), val);
-
-        let val = [0x42u8; 20];
-        val.encode_to(&mut buf);
-        assert_eq!(<[u8; 20]>::decode(&buf, 0), val);
-
-        let mut val = [0u8; 20];
-        val[0] = 0xAB;
-        val[19] = 0xCD;
-        val.encode_to(&mut buf);
-        assert_eq!(<[u8; 20]>::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_roundtrip_bytes32() {
-        let mut buf = [0u8; 32];
-
-        let val = [0u8; 32];
-        val.encode_to(&mut buf);
-        assert_eq!(<[u8; 32]>::decode(&buf, 0), val);
-
-        let val = [0xFFu8; 32];
-        val.encode_to(&mut buf);
-        assert_eq!(<[u8; 32]>::decode(&buf, 0), val);
-
-        let mut val = [0u8; 32];
-        val[0] = 0x12;
-        val[15] = 0x34;
-        val[31] = 0x56;
-        val.encode_to(&mut buf);
-        assert_eq!(<[u8; 32]>::decode(&buf, 0), val);
-    }
-
-    #[test]
-    fn test_encoding_format_u8() {
-        let mut buf = [0u8; 32];
-
-        let val = 1u8;
-        val.encode_to(&mut buf);
-        assert_eq!(buf[31], 1);
-        assert!(buf[..31].iter().all(|&b| b == 0));
-
-        let val = u8::MAX;
-        val.encode_to(&mut buf);
-        assert_eq!(buf[31], u8::MAX);
-        assert!(buf[..31].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_encoding_format_bool() {
-        let mut buf = [0u8; 32];
-
-        let val = true;
-        val.encode_to(&mut buf);
-        assert_eq!(buf[31], 1);
-        assert!(buf[..31].iter().all(|&b| b == 0));
-
-        let val = false;
-        val.encode_to(&mut buf);
-        assert_eq!(buf[31], 0);
-        assert!(buf[..31].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_encoding_format_address() {
-        let mut buf = [0u8; 32];
-
-        let addr = [0x42u8; 20];
-        addr.encode_to(&mut buf);
-        assert!(buf[..12].iter().all(|&b| b == 0));
-        assert_eq!(&buf[12..32], &addr[..]);
-    }
-
-    #[test]
-    fn test_encoding_format_u16() {
-        let mut buf = [0u8; 32];
-
-        let val = 0x1234u16;
-        val.encode_to(&mut buf);
-        assert_eq!(&buf[30..32], &[0x12, 0x34]);
-        assert!(buf[..30].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_encoding_format_u32() {
-        let mut buf = [0u8; 32];
-
-        let val = 0x12345678u32;
-        val.encode_to(&mut buf);
-        assert_eq!(&buf[28..32], &[0x12, 0x34, 0x56, 0x78]);
-        assert!(buf[..28].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_encoding_format_u64() {
-        let mut buf = [0u8; 32];
-
-        let val = 0x0102030405060708u64;
-        val.encode_to(&mut buf);
-        assert_eq!(
-            &buf[24..32],
-            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-        );
-        assert!(buf[..24].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_encoding_format_u128() {
-        let mut buf = [0u8; 32];
-
-        let val = 0x0102030405060708090A0B0C0D0E0F10u128;
-        val.encode_to(&mut buf);
-        assert_eq!(
-            &buf[16..32],
-            &[
-                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-                0x0F, 0x10
-            ]
-        );
-        assert!(buf[..16].iter().all(|&b| b == 0));
-    }
-
-    #[test]
-    fn test_encoding_format_bytes32() {
-        let mut buf = [0u8; 32];
-
-        let val = [0xAAu8; 32];
-        val.encode_to(&mut buf);
-        assert_eq!(&buf[..], &val[..]);
-    }
-
-    #[test]
-    fn test_static_encoded_len() {
-        assert_eq!(<U256 as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<u128 as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<u64 as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<u32 as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<u16 as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<u8 as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<bool as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<[u8; 20] as StaticEncodedLen>::ENCODED_SIZE, 32);
-        assert_eq!(<[u8; 32] as StaticEncodedLen>::ENCODED_SIZE, 32);
-    }
-
-    #[test]
-    fn test_encode_len_matches_static() {
-        assert_eq!(U256::from(42u64).encode_len(), 32);
-        assert_eq!(100u128.encode_len(), 32);
-        assert_eq!(100u64.encode_len(), 32);
-        assert_eq!(100u32.encode_len(), 32);
-        assert_eq!(100u16.encode_len(), 32);
-        assert_eq!(100u8.encode_len(), 32);
-        assert_eq!(true.encode_len(), 32);
-        assert_eq!([0u8; 20].encode_len(), 32);
-        assert_eq!([0u8; 32].encode_len(), 32);
-    }
+    // ========================================================================
+    // Dynamic type tests (String, Vec, &str) - require alloc
+    // ========================================================================
 
     #[cfg(feature = "alloc")]
-    #[test]
-    fn test_string_encode_len() {
-        let s = alloc::string::String::from("hello");
-        // 32 (offset) + 32 (length) + 5 (data) + 27 (padding) = 96
-        assert_eq!(s.encode_len(), 96);
+    mod dynamic_types {
+        use super::*;
 
-        let empty = alloc::string::String::from("");
-        // 32 + 32 + 0 + 0 = 64
-        assert_eq!(empty.encode_len(), 64);
+        #[test]
+        fn test_string_encoding() {
+            // encode_len: 32 (offset) + 32 (length) + data + padding
+            assert_eq!(alloc::string::String::from("").encode_len(), 64);
+            assert_eq!(alloc::string::String::from("hello").encode_len(), 96);
+            assert_eq!(alloc::string::String::from("a".repeat(32)).encode_len(), 96);
+            assert_eq!(
+                alloc::string::String::from("a".repeat(33)).encode_len(),
+                128
+            );
 
-        let long = alloc::string::String::from("a".repeat(32));
-        // 32 + 32 + 32 + 0 = 96
-        assert_eq!(long.encode_len(), 96);
+            // tail_len = encode_len - 32 (no offset)
+            let s = alloc::string::String::from("hello");
+            assert_eq!(s.tail_len(), 64);
+            assert_eq!(s.encode_len() - s.tail_len(), 32);
 
-        let long_plus_one = alloc::string::String::from("a".repeat(33));
-        // 32 + 32 + 33 + 31 = 128
-        assert_eq!(long_plus_one.encode_len(), 128);
+            // Verify encoding structure
+            let mut buf = alloc::vec![0u8; s.encode_len()];
+            s.encode_to(&mut buf);
+            assert_eq!(&buf[24..32], &32u64.to_be_bytes());
+            assert_eq!(&buf[56..64], &5u64.to_be_bytes());
+            assert_eq!(&buf[64..69], b"hello");
+            assert!(buf[69..].iter().all(|&b| b == 0));
+        }
+
+        #[test]
+        fn test_vec_encoding() {
+            let empty: alloc::vec::Vec<U256> = alloc::vec![];
+            assert_eq!(empty.encode_len(), 64);
+            assert_eq!(empty.tail_len(), 32);
+
+            let one = alloc::vec![U256::from(42u64)];
+            assert_eq!(one.encode_len(), 96);
+            assert_eq!(one.tail_len(), 64);
+
+            let two: alloc::vec::Vec<[u8; 20]> = alloc::vec![[0x11; 20], [0x22; 20]];
+            assert_eq!(two.encode_len(), 128);
+
+            // Verify encoding structure
+            let v = alloc::vec![U256::from(1u64), U256::from(2u64)];
+            let mut buf = alloc::vec![0u8; v.encode_len()];
+            v.encode_to(&mut buf);
+            assert_eq!(&buf[24..32], &32u64.to_be_bytes());
+            assert_eq!(&buf[56..64], &2u64.to_be_bytes());
+        }
+
+        #[test]
+        fn test_slice_encoding() {
+            let data = [U256::from(100u64), U256::from(200u64)];
+            let slice: &[U256] = &data;
+            assert_eq!(slice.encode_len(), 128);
+            assert_eq!(slice.tail_len(), 96);
+        }
+
+        #[test]
+        fn test_str_encoding() {
+            let s: &str = "hello";
+            assert_eq!(s.encode_len(), 96);
+            assert_eq!(s.tail_len(), 64);
+        }
     }
+
+    // ========================================================================
+    // Alloy comparison tests - verify byte-for-byte compatibility
+    // ========================================================================
 
     #[cfg(feature = "alloc")]
-    #[test]
-    fn test_string_encode_to() {
-        let s = alloc::string::String::from("hello");
-        let mut buf = alloc::vec![0u8; s.encode_len()];
-        s.encode_to(&mut buf);
-
-        // Check offset pointer (bytes 24-31 = 32)
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-
-        // Check length (bytes 56-63 = 5)
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 5]);
-
-        // Check data
-        assert_eq!(&buf[64..69], b"hello");
-
-        // Check padding (all zeros)
-        assert!(buf[69..].iter().all(|&b| b == 0));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_string_encode_empty() {
-        let s = alloc::string::String::from("");
-        let mut buf = alloc::vec![0u8; s.encode_len()];
-        s.encode_to(&mut buf);
-
-        // Check offset pointer (bytes 24-31 = 32)
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-
-        // Check length (bytes 56-63 = 0)
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 0]);
-
-        // All remaining bytes should be zero
-        assert!(buf[64..].iter().all(|&b| b == 0));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_string_encode_32_bytes() {
-        let s = alloc::string::String::from("a".repeat(32));
-        let mut buf = alloc::vec![0u8; s.encode_len()];
-        s.encode_to(&mut buf);
-
-        // Check offset pointer
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-
-        // Check length (bytes 56-63 = 32)
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 32]);
-
-        // Check data (all 'a')
-        assert!(buf[64..96].iter().all(|&b| b == b'a'));
-
-        // No padding needed for 32-byte aligned data
-        assert_eq!(buf.len(), 96);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_string_tail_len() {
-        let s = alloc::string::String::from("hello");
-        // tail = 32 (length) + 5 (data) + 27 (padding) = 64
-        assert_eq!(s.tail_len(), 64);
-        // full = 32 (offset) + 64 (tail) = 96
-        assert_eq!(s.encode_len(), 96);
-        assert_eq!(s.encode_len() - s.tail_len(), 32);
-
-        let empty = alloc::string::String::from("");
-        // tail = 32 (length) + 0 (data) + 0 (padding) = 32
-        assert_eq!(empty.tail_len(), 32);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_string_encode_tail_to() {
-        let s = alloc::string::String::from("hello");
-        let mut buf = alloc::vec![0u8; s.tail_len()];
-        s.encode_tail_to(&mut buf);
-
-        // Check length (bytes 24-31 = 5)
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 5]);
-
-        // Check data
-        assert_eq!(&buf[32..37], b"hello");
-
-        // Check padding (all zeros)
-        assert!(buf[37..].iter().all(|&b| b == 0));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_vec_u256_empty() {
-        let v: alloc::vec::Vec<U256> = alloc::vec![];
-        assert_eq!(v.encode_len(), 64);
-        assert_eq!(v.tail_len(), 32);
-
-        let mut buf = alloc::vec![0u8; v.encode_len()];
-        v.encode_to(&mut buf);
-
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 0]);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_vec_u256_one_element() {
-        let v: alloc::vec::Vec<U256> = alloc::vec![U256::from(42u64)];
-        assert_eq!(v.encode_len(), 96);
-        assert_eq!(v.tail_len(), 64);
-
-        let mut buf = alloc::vec![0u8; v.encode_len()];
-        v.encode_to(&mut buf);
-
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 1]);
-
-        let mut expected_elem = [0u8; 32];
-        U256::from(42u64).encode_to(&mut expected_elem);
-        assert_eq!(&buf[64..96], &expected_elem);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_vec_address_encoding() {
-        let addr1 = [0x11u8; 20];
-        let addr2 = [0x22u8; 20];
-        let v: alloc::vec::Vec<[u8; 20]> = alloc::vec![addr1, addr2];
-
-        assert_eq!(v.encode_len(), 128);
-        assert_eq!(v.tail_len(), 96);
-
-        let mut buf = alloc::vec![0u8; v.encode_len()];
-        v.encode_to(&mut buf);
-
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 2]);
-
-        assert!(buf[64..76].iter().all(|&b| b == 0));
-        assert!(buf[76..96].iter().all(|&b| b == 0x11));
-
-        assert!(buf[96..108].iter().all(|&b| b == 0));
-        assert!(buf[108..128].iter().all(|&b| b == 0x22));
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_vec_tail_encoding() {
-        let v: alloc::vec::Vec<U256> = alloc::vec![U256::from(1u64), U256::from(2u64)];
-        let mut buf = alloc::vec![0u8; v.tail_len()];
-        v.encode_tail_to(&mut buf);
-
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 2]);
-
-        let mut expected1 = [0u8; 32];
-        let mut expected2 = [0u8; 32];
-        U256::from(1u64).encode_to(&mut expected1);
-        U256::from(2u64).encode_to(&mut expected2);
-        assert_eq!(&buf[32..64], &expected1);
-        assert_eq!(&buf[64..96], &expected2);
-    }
-
-    #[cfg(feature = "alloc")]
-    #[test]
-    fn test_slice_encoding() {
-        let data: [U256; 2] = [U256::from(100u64), U256::from(200u64)];
-        let slice: &[U256] = &data;
-
-        assert_eq!(slice.encode_len(), 128);
-        assert_eq!(slice.tail_len(), 96);
-
-        let mut buf = alloc::vec![0u8; slice.encode_len()];
-        slice.encode_to(&mut buf);
-
-        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
-        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 2]);
-
-        let mut expected1 = [0u8; 32];
-        let mut expected2 = [0u8; 32];
-        U256::from(100u64).encode_to(&mut expected1);
-        U256::from(200u64).encode_to(&mut expected2);
-        assert_eq!(&buf[64..96], &expected1);
-        assert_eq!(&buf[96..128], &expected2);
-    }
-
-    #[cfg(all(test, feature = "alloc"))]
-    mod alloy_comparison_tests {
+    mod alloy_comparison {
         use super::*;
         use alloy_core::primitives::{Address, FixedBytes, U256 as AlloyU256};
         use alloy_core::sol_types::SolValue;
 
-        macro_rules! assert_encoding_eq {
-            ($our_val:expr, $alloy_val:expr, $msg:expr) => {{
-                let mut our_buf = alloc::vec![0u8; $our_val.encode_len()];
-                $our_val.encode_to(&mut our_buf);
-                let alloy_buf = $alloy_val.abi_encode();
-                assert_eq!(our_buf, alloy_buf, $msg);
-            }};
+        macro_rules! assert_matches_alloy {
+            ($( $name:ident: $our:expr => $alloy:expr );* $(;)?) => {
+                $(
+                    #[test]
+                    fn $name() {
+                        let mut our_buf = alloc::vec![0u8; $our.encode_len()];
+                        $our.encode_to(&mut our_buf);
+                        assert_eq!(our_buf, $alloy.abi_encode(), stringify!($name));
+                    }
+                )*
+            };
         }
 
-        #[test]
-        fn test_alloy_uint256() {
-            let value = U256::from(42u64);
-            let alloy_value = AlloyU256::from(42u64);
-            assert_encoding_eq!(value, alloy_value, "U256 encoding mismatch");
-        }
-
-        #[test]
-        fn test_alloy_address() {
-            let addr = [0x42u8; 20];
-            let alloy_addr = Address::from([0x42u8; 20]);
-            assert_encoding_eq!(addr, alloy_addr, "address encoding mismatch");
-        }
-
-        #[test]
-        fn test_alloy_bool() {
-            assert_encoding_eq!(true, true, "bool true encoding mismatch");
-            assert_encoding_eq!(false, false, "bool false encoding mismatch");
-        }
-
-        #[test]
-        fn test_alloy_bytes32() {
-            let value = [0xAAu8; 32];
-            let alloy_value = FixedBytes::<32>::from([0xAAu8; 32]);
-            assert_encoding_eq!(value, alloy_value, "bytes32 encoding mismatch");
-        }
-
-        #[test]
-        fn test_alloy_string() {
-            let s = alloc::string::String::from("hello");
-            let alloy_s = alloc::string::String::from("hello");
-            assert_encoding_eq!(s, alloy_s, "string encoding mismatch");
-        }
-
-        #[test]
-        fn test_alloy_uint256_array() {
-            let v: alloc::vec::Vec<U256> = alloc::vec![U256::from(1u64), U256::from(2u64)];
-            let alloy_v: alloc::vec::Vec<AlloyU256> =
-                alloc::vec![AlloyU256::from(1u64), AlloyU256::from(2u64)];
-            assert_encoding_eq!(v, alloy_v, "uint256[] encoding mismatch");
-        }
-
-        #[test]
-        fn test_alloy_str() {
-            let s: &str = "hello";
-            let alloy_s = alloc::string::String::from("hello");
-            assert_encoding_eq!(s, alloy_s, "&str encoding mismatch");
+        assert_matches_alloy! {
+            test_uint256: U256::from(42u64) => AlloyU256::from(42u64);
+            test_address: [0x42u8; 20] => Address::from([0x42u8; 20]);
+            test_bool_true: true => true;
+            test_bool_false: false => false;
+            test_bytes32: [0xAAu8; 32] => FixedBytes::<32>::from([0xAAu8; 32]);
+            test_string: alloc::string::String::from("hello") => alloc::string::String::from("hello");
+            test_str: "hello" => alloc::string::String::from("hello");
+            test_uint256_array: alloc::vec![U256::from(1u64), U256::from(2u64)]
+                => alloc::vec![AlloyU256::from(1u64), AlloyU256::from(2u64)];
         }
     }
 }
