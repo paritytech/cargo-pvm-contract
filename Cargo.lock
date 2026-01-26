@@ -859,6 +859,7 @@ name = "pvm-contract-macros"
 version = "0.2.3"
 dependencies = [
  "proc-macro2",
+ "pvm-contract-types",
  "quote",
  "syn",
  "tiny-keccak",

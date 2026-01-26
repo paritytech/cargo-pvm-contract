@@ -352,8 +352,8 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// For this struct:
 ///
-/// ```
-/// # use ruint::aliases::U256;
+/// ```ignore
+/// use ruint::aliases::U256;
 /// #[derive(pvm_contract_macros::SolType)]
 /// pub struct Point {
 ///     pub x: U256,
@@ -361,32 +361,16 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// The macro generates:
+/// The macro generates an implementation of the `SolEncode` trait:
 ///
-/// ```
-/// # use ruint::aliases::U256;
-/// # pub struct Point { pub x: U256, pub y: U256 }
-/// impl Point {
-///     /// Solidity tuple signature for ABI encoding
-///     pub const SOL_NAME: &'static str = "(uint256,uint256)";
+/// ```ignore
+/// impl ::pvm_contract_types::SolEncode for Point {
+///     const SOL_NAME: &'static str = "(uint256,uint256)";
+///     const ENCODED_SIZE: usize = 64;
 ///
-///     /// Total size in bytes when ABI-encoded (each uint256 = 32 bytes)
-///     pub const ENCODED_SIZE: usize = 64;
-///
-///     /// Decode from ABI-encoded bytes at the given offset
-///     pub fn abi_decode(input: &[u8], offset: usize) -> Self {
-///         Self {
-///             x: U256::from_be_slice(&input[offset..offset + 32]),
-///             y: U256::from_be_slice(&input[offset + 32..offset + 64]),
-///         }
-///     }
-///
-///     /// Encode to fixed-size ABI bytes
-///     pub fn abi_encode(&self) -> [u8; 64] {
-///         let mut out = [0u8; 64];
-///         out[0..32].copy_from_slice(&self.x.to_be_bytes::<32>());
-///         out[32..64].copy_from_slice(&self.y.to_be_bytes::<32>());
-///         out
+///     fn sol_encode_to(&self, buf: &mut [u8]) {
+///         buf[0..32].copy_from_slice(&self.x.to_be_bytes::<32>());
+///         buf[32..64].copy_from_slice(&self.y.to_be_bytes::<32>());
 ///     }
 /// }
 /// ```
@@ -395,13 +379,8 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[pvm_contract_macros::method]
-/// pub fn set_point(point: Point) {
-///     // Macro calls Point::abi_decode() automatically
-/// }
-///
-/// #[pvm_contract_macros::method]
 /// pub fn get_point() -> Point {
-///     // Macro calls point.abi_encode() automatically
+///     // Macro calls SolEncode::sol_encode_to() automatically
 ///     Point { x: U256::from(10), y: U256::from(20) }
 /// }
 /// ```
