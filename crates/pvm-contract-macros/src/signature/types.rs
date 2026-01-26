@@ -126,6 +126,19 @@ impl SolType {
     }
 
     pub fn from_rust_type(ty: &syn::Type) -> Option<Self> {
+        // Handle Vec<T> and alloc::vec::Vec<T> patterns
+        if let syn::Type::Path(type_path) = ty {
+            let last_segment = type_path.path.segments.last()?;
+            if last_segment.ident == "Vec" {
+                if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return Self::from_rust_type(inner_ty)
+                            .map(|inner| SolType::Array(Box::new(inner)));
+                    }
+                }
+            }
+        }
+
         let type_str = quote!(#ty).to_string().replace(' ', "");
 
         match type_str.as_str() {
