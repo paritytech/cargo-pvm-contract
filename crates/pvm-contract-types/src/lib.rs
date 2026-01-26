@@ -285,3 +285,300 @@ impl SolDecode for [u8; 32] {
         result
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_roundtrip_u256() {
+        let mut buf = [0u8; 32];
+
+        // Test zero value
+        let val = U256::from(0u64);
+        val.sol_encode_to(&mut buf);
+        assert_eq!(U256::sol_decode(&buf, 0), val);
+
+        // Test small value
+        let val = U256::from(42u64);
+        val.sol_encode_to(&mut buf);
+        assert_eq!(U256::sol_decode(&buf, 0), val);
+
+        // Test large value
+        let val = U256::from(u64::MAX);
+        val.sol_encode_to(&mut buf);
+        assert_eq!(U256::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_u128() {
+        let mut buf = [0u8; 32];
+
+        // Test zero value
+        let val = 0u128;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u128::sol_decode(&buf, 0), val);
+
+        // Test small value
+        let val = 12345u128;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u128::sol_decode(&buf, 0), val);
+
+        // Test max value
+        let val = u128::MAX;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u128::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_u64() {
+        let mut buf = [0u8; 32];
+
+        // Test zero value
+        let val = 0u64;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u64::sol_decode(&buf, 0), val);
+
+        // Test small value
+        let val = 999u64;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u64::sol_decode(&buf, 0), val);
+
+        // Test max value
+        let val = u64::MAX;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u64::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_u32() {
+        let mut buf = [0u8; 32];
+
+        // Test zero value
+        let val = 0u32;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u32::sol_decode(&buf, 0), val);
+
+        // Test small value
+        let val = 1234u32;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u32::sol_decode(&buf, 0), val);
+
+        // Test max value
+        let val = u32::MAX;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u32::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_u16() {
+        let mut buf = [0u8; 32];
+
+        // Test zero value
+        let val = 0u16;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u16::sol_decode(&buf, 0), val);
+
+        // Test small value
+        let val = 256u16;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u16::sol_decode(&buf, 0), val);
+
+        // Test max value
+        let val = u16::MAX;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u16::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_u8() {
+        let mut buf = [0u8; 32];
+
+        // Test zero value
+        let val = 0u8;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u8::sol_decode(&buf, 0), val);
+
+        // Test small value
+        let val = 42u8;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u8::sol_decode(&buf, 0), val);
+
+        // Test max value
+        let val = u8::MAX;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(u8::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_bool() {
+        let mut buf = [0u8; 32];
+
+        // Test false
+        let val = false;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(bool::sol_decode(&buf, 0), val);
+
+        // Test true
+        let val = true;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(bool::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_address() {
+        let mut buf = [0u8; 32];
+
+        // Test zero address
+        let val = [0u8; 20];
+        val.sol_encode_to(&mut buf);
+        assert_eq!(<[u8; 20]>::sol_decode(&buf, 0), val);
+
+        // Test non-zero address
+        let val = [0x42u8; 20];
+        val.sol_encode_to(&mut buf);
+        assert_eq!(<[u8; 20]>::sol_decode(&buf, 0), val);
+
+        // Test mixed address
+        let mut val = [0u8; 20];
+        val[0] = 0xAB;
+        val[19] = 0xCD;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(<[u8; 20]>::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_roundtrip_bytes32() {
+        let mut buf = [0u8; 32];
+
+        // Test zero bytes
+        let val = [0u8; 32];
+        val.sol_encode_to(&mut buf);
+        assert_eq!(<[u8; 32]>::sol_decode(&buf, 0), val);
+
+        // Test all ones
+        let val = [0xFFu8; 32];
+        val.sol_encode_to(&mut buf);
+        assert_eq!(<[u8; 32]>::sol_decode(&buf, 0), val);
+
+        // Test mixed pattern
+        let mut val = [0u8; 32];
+        val[0] = 0x12;
+        val[15] = 0x34;
+        val[31] = 0x56;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(<[u8; 32]>::sol_decode(&buf, 0), val);
+    }
+
+    #[test]
+    fn test_encoding_format_u8() {
+        let mut buf = [0u8; 32];
+
+        // u8 should be right-aligned (at byte 31)
+        let val = 1u8;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(buf[31], 1);
+        assert!(buf[..31].iter().all(|&b| b == 0));
+
+        // Test with max value
+        let val = u8::MAX;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(buf[31], u8::MAX);
+        assert!(buf[..31].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_encoding_format_bool() {
+        let mut buf = [0u8; 32];
+
+        // true should be 0x01 at byte 31
+        let val = true;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(buf[31], 1);
+        assert!(buf[..31].iter().all(|&b| b == 0));
+
+        // false should be 0x00 at byte 31
+        let val = false;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(buf[31], 0);
+        assert!(buf[..31].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_encoding_format_address() {
+        let mut buf = [0u8; 32];
+
+        // Address should have 12 zero prefix bytes
+        let addr = [0x42u8; 20];
+        addr.sol_encode_to(&mut buf);
+        assert!(buf[..12].iter().all(|&b| b == 0));
+        assert_eq!(&buf[12..32], &addr[..]);
+    }
+
+    #[test]
+    fn test_encoding_format_u16() {
+        let mut buf = [0u8; 32];
+
+        // u16 should be right-aligned (at bytes 30-31)
+        let val = 0x1234u16;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(&buf[30..32], &[0x12, 0x34]);
+        assert!(buf[..30].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_encoding_format_u32() {
+        let mut buf = [0u8; 32];
+
+        // u32 should be right-aligned (at bytes 28-31)
+        let val = 0x12345678u32;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(&buf[28..32], &[0x12, 0x34, 0x56, 0x78]);
+        assert!(buf[..28].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_encoding_format_u64() {
+        let mut buf = [0u8; 32];
+
+        // u64 should be right-aligned (at bytes 24-31)
+        let val = 0x0102030405060708u64;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(
+            &buf[24..32],
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
+        assert!(buf[..24].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_encoding_format_u128() {
+        let mut buf = [0u8; 32];
+
+        // u128 should be right-aligned (at bytes 16-31)
+        let val = 0x0102030405060708090A0B0C0D0E0F10u128;
+        val.sol_encode_to(&mut buf);
+        assert_eq!(
+            &buf[16..32],
+            &[
+                0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+                0x0F, 0x10
+            ]
+        );
+        assert!(buf[..16].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_encoding_format_bytes32() {
+        let mut buf = [0u8; 32];
+
+        // bytes32 should fill entire buffer
+        let val = [0xAAu8; 32];
+        val.sol_encode_to(&mut buf);
+        assert_eq!(&buf[..], &val[..]);
+    }
+}
