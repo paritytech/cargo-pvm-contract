@@ -549,32 +549,87 @@ mod tests {
     #[cfg(feature = "alloc")]
     mod alloy_comparison {
         use super::*;
-        use alloy_core::primitives::{Address, FixedBytes, U256 as AlloyU256};
+        use alloy_core::primitives::{Address, FixedBytes};
         use alloy_core::sol_types::SolValue;
 
+        trait AlloyEncode {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8>;
+        }
+
+        impl AlloyEncode for U256 {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                self.abi_encode()
+            }
+        }
+        impl AlloyEncode for bool {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                self.abi_encode()
+            }
+        }
+        impl AlloyEncode for [u8; 20] {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                Address::from(*self).abi_encode()
+            }
+        }
+        impl AlloyEncode for [u8; 32] {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                FixedBytes::from(*self).abi_encode()
+            }
+        }
+        impl AlloyEncode for alloc::string::String {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                self.abi_encode()
+            }
+        }
+        impl AlloyEncode for &str {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                alloc::string::String::from(*self).abi_encode()
+            }
+        }
+        impl AlloyEncode for alloc::vec::Vec<U256> {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                self.abi_encode()
+            }
+        }
+
         macro_rules! assert_matches_alloy {
-            ($( $name:ident: $our:expr => $alloy:expr );* $(;)?) => {
+            (with_decode { $( $name:ident: $ty:ty = $val:expr ),* $(,)? }) => {
                 $(
                     #[test]
                     fn $name() {
-                        let mut our_buf = alloc::vec![0u8; $our.encode_len()];
-                        $our.encode_to(&mut our_buf);
-                        assert_eq!(our_buf, $alloy.abi_encode(), stringify!($name));
+                        let val: $ty = $val;
+                        let mut buf = [0u8; 32];
+                        val.encode_to(&mut buf);
+                        assert_eq!(&buf[..], &val.alloy_encode()[..], "{}: encoding mismatch", stringify!($name));
+                        assert_eq!(<$ty>::decode(&buf, 0), val, "{}: decode roundtrip failed", stringify!($name));
+                    }
+                )*
+            };
+            (encode_only { $( $name:ident: $val:expr ),* $(,)? }) => {
+                $(
+                    #[test]
+                    fn $name() {
+                        let val = $val;
+                        let mut our_buf = alloc::vec![0u8; val.encode_len()];
+                        val.encode_to(&mut our_buf);
+                        assert_eq!(our_buf, val.alloy_encode(), "{}: encoding mismatch", stringify!($name));
                     }
                 )*
             };
         }
 
-        assert_matches_alloy! {
-            test_uint256: U256::from(42u64) => AlloyU256::from(42u64);
-            test_address: [0x42u8; 20] => Address::from([0x42u8; 20]);
-            test_bool_true: true => true;
-            test_bool_false: false => false;
-            test_bytes32: [0xAAu8; 32] => FixedBytes::<32>::from([0xAAu8; 32]);
-            test_string: alloc::string::String::from("hello") => alloc::string::String::from("hello");
-            test_str: "hello" => alloc::string::String::from("hello");
-            test_uint256_array: alloc::vec![U256::from(1u64), U256::from(2u64)]
-                => alloc::vec![AlloyU256::from(1u64), AlloyU256::from(2u64)];
-        }
+        assert_matches_alloy!(with_decode {
+            test_uint256: U256 = U256::from(42u64),
+            test_address: [u8; 20] = [0x42u8; 20],
+            test_bool_true: bool = true,
+            test_bool_false: bool = false,
+            test_bytes32: [u8; 32] = [0xAAu8; 32],
+        });
+
+        assert_matches_alloy!(encode_only {
+            test_string: alloc::string::String::from("hello"),
+            test_str: "hello",
+            test_uint256_array: alloc::vec![U256::from(1u64), U256::from(2u64)],
+        });
     }
 }
