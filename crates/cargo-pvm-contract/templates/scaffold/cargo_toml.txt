@@ -12,8 +12,10 @@ path = "src/{{ bin_source }}.rs"
 [dependencies]
 {% if let Some(path) = local_path -%}
 pvm-contract-macros = { path = "{{ path }}/crates/pvm-contract-macros" }
+pvm-contract-types = { path = "{{ path }}/crates/pvm-contract-types" }
 {% else -%}
 pvm-contract-macros = "{{ builder_version }}"
+pvm-contract-types = "{{ builder_version }}"
 {% endif -%}
 pallet-revive-uapi = { version = "0.9", default-features = false }
 polkavm-derive = { version = "0.31.0" }

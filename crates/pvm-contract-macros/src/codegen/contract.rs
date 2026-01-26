@@ -105,6 +105,24 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
     None
 }
 
+fn extract_method_dyn_len(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        let segments: Vec<_> = attr.path().segments.iter().collect();
+        if segments.len() == 2
+            && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
+            && segments[1].ident == "method"
+        {
+            if let syn::Meta::List(meta_list) = &attr.meta {
+                let tokens_str = meta_list.tokens.to_string();
+                if tokens_str.contains("dyn_len") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
     const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
     for attr in attrs {
@@ -281,11 +299,14 @@ fn parse_contract(
                     sig
                 };
 
+                let dyn_len = extract_method_dyn_len(&func.attrs);
+
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
                     signature,
                     param_names,
                     returns_result,
+                    dyn_len,
                 });
             }
         }
@@ -383,18 +404,21 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         .map(|m| generate_dispatch_arm(m, mod_name, use_alloc))
         .collect();
 
-    let fallback_call = if parsed.has_fallback {
+    let fallback_handler = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
-        if use_alloc {
-            quote! { #mod_name::#fallback_name().map(|()| None).map_err(|e| e.as_ref().to_vec()) }
-        } else {
-            quote! { #mod_name::#fallback_name().map(|()| None).map_err(|e| e.as_ref()) }
+        quote! {
+            match #mod_name::#fallback_name() {
+                Ok(()) => return,
+                Err(e) => {
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                }
+            }
         }
     } else {
-        if use_alloc {
-            quote! { Err(Vec::new()) }
-        } else {
-            quote! { Err(b"" as &[u8]) }
+        quote! {
+            pallet_revive_uapi::HostFnImpl::return_value(
+                pallet_revive_uapi::ReturnFlags::REVERT, b"");
         }
     };
 
@@ -406,49 +430,23 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let mut call_data = vec![0u8; call_data_len];
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
-                let result: Result<Option<Vec<u8>>, Vec<u8>> = (|| {
-                    if call_data.len() < 4 {
-                        return #fallback_call;
-                    }
+                if call_data_len < 4 {
+                    #fallback_handler
+                }
 
-                    let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
-                    let input = &call_data[4..];
+                let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+                let input = &call_data[4..];
 
-                    match selector {
-                        #(#dispatch_arms)*
-                        _ => #fallback_call,
-                    }
-                })();
-
-                match result {
-                    Ok(Some(data)) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::empty(), &data);
-                    }
-                    Ok(None) => {}
-                    Err(data) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, &data);
+                match selector {
+                    #(#dispatch_arms)*
+                    _ => {
+                        #fallback_handler
                     }
                 }
             }
         }
     } else {
         let buffer_size = args.buffer_size;
-        let no_alloc_fallback = if parsed.has_fallback {
-            let fallback_name = parsed.fallback_name.as_ref().unwrap();
-            quote! {
-                match #mod_name::#fallback_name() {
-                    Ok(()) => return,
-                    Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
-                    }
-                }
-            }
-        } else {
-            quote! {
-                pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, b"");
-            }
-        };
-
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
@@ -456,12 +454,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
                 }
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
-                    #no_alloc_fallback
+                    #fallback_handler
                 }
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
@@ -470,7 +469,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 match selector {
                     #(#dispatch_arms)*
                     _ => {
-                        #no_alloc_fallback
+                        #fallback_handler
                     }
                 }
             }

@@ -1,99 +1,109 @@
 #![no_std]
 
+#[cfg(feature = "alloc")]
 extern crate alloc;
 
 use ruint::aliases::U256;
 
-/// Trait for encoding Solidity types to ABI-encoded bytes.
+/// Trait for encoding Rust types to Solidity ABI-encoded bytes.
 ///
-/// This trait defines the interface for converting Rust types into their Solidity ABI-encoded
-/// representation. The encoding follows the Solidity ABI specification where values are
-/// typically padded to 32-byte boundaries.
-///
-/// # Associated Constants
-///
-/// - `SOL_NAME`: The Solidity type signature (e.g., "uint256", "address", "(uint256,uint256)")
-/// - `ENCODED_SIZE`: The size in bytes when ABI-encoded (typically 32 for primitives)
-///
-/// # Example
-///
-/// For a `uint256` type:
-/// - `SOL_NAME = "uint256"`
-/// - `ENCODED_SIZE = 32`
+/// Implemented by both static types (fixed size at compile time) and
+/// dynamic types (size determined at runtime).
 pub trait SolEncode {
-    /// The Solidity type name/signature for this type.
-    ///
-    /// Examples:
-    /// - "uint256" for unsigned 256-bit integers
-    /// - "address" for Ethereum addresses
-    /// - "(uint256,uint256)" for tuples
+    /// The Solidity type name/signature (e.g., "uint256", "address", "string").
     const SOL_NAME: &'static str;
 
-    /// The size in bytes when this type is ABI-encoded.
+    /// Returns the encoded length in bytes for this value.
     ///
-    /// For most Solidity types, this is 32 bytes (one word).
-    /// Complex types like arrays may have variable sizes.
-    const ENCODED_SIZE: usize;
+    /// For static types, this equals `StaticEncodedLen::ENCODED_SIZE`.
+    /// For dynamic types (String, bytes), this is computed at runtime.
+    fn encode_len(&self) -> usize;
 
-    /// Encode this value into the provided buffer at the current position.
+    /// Encode this value into the provided buffer.
     ///
-    /// # Arguments
+    /// The buffer must have at least `encode_len()` bytes available.
+    fn encode_to(&self, buf: &mut [u8]);
+
+    /// Returns the tail length for dynamic types in tuples/structs.
     ///
-    /// * `buf` - A mutable byte buffer where the encoded value will be written.
-    ///           The buffer must have at least `ENCODED_SIZE` bytes available.
+    /// For static types, this equals `encode_len()` (default).
+    /// For dynamic types, this excludes the offset pointer (just length + data + padding).
+    #[inline]
+    fn tail_len(&self) -> usize {
+        self.encode_len()
+    }
+
+    /// Encode just the tail portion for dynamic types in tuples/structs.
     ///
-    /// # Panics
-    ///
-    /// May panic if the buffer is too small to hold the encoded value.
-    fn sol_encode_to(&self, buf: &mut [u8]);
+    /// For static types, this equals `encode_to()` (default).
+    /// For dynamic types, this writes length + data + padding (no offset pointer).
+    #[inline]
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        self.encode_to(buf)
+    }
+}
+
+/// Marker trait for types with compile-time known encoded size.
+///
+/// Static types (U256, address, bool, etc.) implement this trait.
+/// Dynamic types (String, bytes, `Vec<T>`) do NOT implement this trait.
+///
+/// The macro uses this trait to generate fixed-size stack buffers.
+/// If a method returns a type without `StaticEncodedLen`, the user must
+/// add `#[pvm_contract::method(dyn_len)]` to use dynamic allocation.
+pub trait StaticEncodedLen: SolEncode {
+    /// The size in bytes when ABI-encoded (compile-time constant).
+    const ENCODED_SIZE: usize;
 }
 
 /// Trait for decoding Solidity ABI-encoded bytes into Rust types.
-///
-/// This trait defines the interface for converting Solidity ABI-encoded bytes back into
-/// Rust types. The decoding follows the Solidity ABI specification, reading from a
-/// specified offset in the input buffer.
-///
-/// # Associated Constants
-///
-/// - `SOL_NAME`: The Solidity type signature (e.g., "uint256", "address", "(uint256,uint256)")
-/// - `ENCODED_SIZE`: The size in bytes when ABI-encoded (typically 32 for primitives)
-///
-/// # Example
-///
-/// For a `uint256` type:
-/// - `SOL_NAME = "uint256"`
-/// - `ENCODED_SIZE = 32`
 pub trait SolDecode: Sized {
     /// The Solidity type name/signature for this type.
-    ///
-    /// Examples:
-    /// - "uint256" for unsigned 256-bit integers
-    /// - "address" for Ethereum addresses
-    /// - "(uint256,uint256)" for tuples
     const SOL_NAME: &'static str;
 
     /// The size in bytes when this type is ABI-encoded.
-    ///
-    /// For most Solidity types, this is 32 bytes (one word).
-    /// Complex types like arrays may have variable sizes.
     const ENCODED_SIZE: usize;
 
-    /// Decode a value from the provided input buffer starting at the given offset.
-    ///
-    /// # Arguments
-    ///
-    /// * `input` - The byte buffer containing ABI-encoded data.
-    /// * `offset` - The byte offset in the buffer where this value starts.
-    ///
-    /// # Returns
-    ///
-    /// A new instance of `Self` decoded from the buffer.
-    ///
-    /// # Panics
-    ///
-    /// May panic if the buffer doesn't contain enough data at the specified offset.
-    fn sol_decode(input: &[u8], offset: usize) -> Self;
+    /// Decode a value from the input buffer at the given offset.
+    fn decode(input: &[u8], offset: usize) -> Self;
+}
+
+// ============================================================================
+// Macro helpers for implementing traits with less boilerplate
+// ============================================================================
+
+macro_rules! impl_static_encode {
+    ($ty:ty, $sol_name:expr, $size:expr, $encode_fn:expr) => {
+        impl SolEncode for $ty {
+            const SOL_NAME: &'static str = $sol_name;
+
+            #[inline]
+            fn encode_len(&self) -> usize {
+                $size
+            }
+
+            fn encode_to(&self, buf: &mut [u8]) {
+                $encode_fn(self, buf)
+            }
+        }
+
+        impl StaticEncodedLen for $ty {
+            const ENCODED_SIZE: usize = $size;
+        }
+    };
+}
+
+macro_rules! impl_decode {
+    ($ty:ty, $sol_name:expr, $size:expr, $decode_fn:expr) => {
+        impl SolDecode for $ty {
+            const SOL_NAME: &'static str = $sol_name;
+            const ENCODED_SIZE: usize = $size;
+
+            fn decode(input: &[u8], offset: usize) -> Self {
+                $decode_fn(input, offset)
+            }
+        }
+    };
 }
 
 // ============================================================================
@@ -101,188 +111,220 @@ pub trait SolDecode: Sized {
 // ============================================================================
 
 // U256 (uint256)
-impl SolEncode for U256 {
-    const SOL_NAME: &'static str = "uint256";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        let bytes = self.to_be_bytes::<32>();
-        buf[..32].copy_from_slice(&bytes);
-    }
-}
-
-impl SolDecode for U256 {
-    const SOL_NAME: &'static str = "uint256";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        U256::from_be_slice(&input[offset..offset + 32])
-    }
-}
+impl_static_encode!(U256, "uint256", 32, |val: &U256, buf: &mut [u8]| {
+    buf[..32].copy_from_slice(&val.to_be_bytes::<32>());
+});
+impl_decode!(U256, "uint256", 32, |input: &[u8], offset: usize| {
+    U256::from_be_slice(&input[offset..offset + 32])
+});
 
 // u128 (uint128)
-impl SolEncode for u128 {
-    const SOL_NAME: &'static str = "uint128";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..16].fill(0);
-        buf[16..32].copy_from_slice(&self.to_be_bytes());
-    }
-}
-
-impl SolDecode for u128 {
-    const SOL_NAME: &'static str = "uint128";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
-        u128::from_be_bytes(bytes)
-    }
-}
+impl_static_encode!(u128, "uint128", 32, |val: &u128, buf: &mut [u8]| {
+    buf[..16].fill(0);
+    buf[16..32].copy_from_slice(&val.to_be_bytes());
+});
+impl_decode!(u128, "uint128", 32, |input: &[u8], offset: usize| {
+    let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
+    u128::from_be_bytes(bytes)
+});
 
 // u64 (uint64)
-impl SolEncode for u64 {
-    const SOL_NAME: &'static str = "uint64";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..24].fill(0);
-        buf[24..32].copy_from_slice(&self.to_be_bytes());
-    }
-}
-
-impl SolDecode for u64 {
-    const SOL_NAME: &'static str = "uint64";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
-        u64::from_be_bytes(bytes)
-    }
-}
+impl_static_encode!(u64, "uint64", 32, |val: &u64, buf: &mut [u8]| {
+    buf[..24].fill(0);
+    buf[24..32].copy_from_slice(&val.to_be_bytes());
+});
+impl_decode!(u64, "uint64", 32, |input: &[u8], offset: usize| {
+    let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
+    u64::from_be_bytes(bytes)
+});
 
 // u32 (uint32)
-impl SolEncode for u32 {
-    const SOL_NAME: &'static str = "uint32";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..28].fill(0);
-        buf[28..32].copy_from_slice(&self.to_be_bytes());
-    }
-}
-
-impl SolDecode for u32 {
-    const SOL_NAME: &'static str = "uint32";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
-        u32::from_be_bytes(bytes)
-    }
-}
+impl_static_encode!(u32, "uint32", 32, |val: &u32, buf: &mut [u8]| {
+    buf[..28].fill(0);
+    buf[28..32].copy_from_slice(&val.to_be_bytes());
+});
+impl_decode!(u32, "uint32", 32, |input: &[u8], offset: usize| {
+    let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
+    u32::from_be_bytes(bytes)
+});
 
 // u16 (uint16)
-impl SolEncode for u16 {
-    const SOL_NAME: &'static str = "uint16";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..30].fill(0);
-        buf[30..32].copy_from_slice(&self.to_be_bytes());
-    }
-}
-
-impl SolDecode for u16 {
-    const SOL_NAME: &'static str = "uint16";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        u16::from_be_bytes([input[offset + 30], input[offset + 31]])
-    }
-}
+impl_static_encode!(u16, "uint16", 32, |val: &u16, buf: &mut [u8]| {
+    buf[..30].fill(0);
+    buf[30..32].copy_from_slice(&val.to_be_bytes());
+});
+impl_decode!(u16, "uint16", 32, |input: &[u8], offset: usize| {
+    u16::from_be_bytes([input[offset + 30], input[offset + 31]])
+});
 
 // u8 (uint8)
-impl SolEncode for u8 {
-    const SOL_NAME: &'static str = "uint8";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..31].fill(0);
-        buf[31] = *self;
-    }
-}
-
-impl SolDecode for u8 {
-    const SOL_NAME: &'static str = "uint8";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        input[offset + 31]
-    }
-}
+impl_static_encode!(u8, "uint8", 32, |val: &u8, buf: &mut [u8]| {
+    buf[..31].fill(0);
+    buf[31] = *val;
+});
+impl_decode!(u8, "uint8", 32, |input: &[u8], offset: usize| {
+    input[offset + 31]
+});
 
 // bool
-impl SolEncode for bool {
-    const SOL_NAME: &'static str = "bool";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..31].fill(0);
-        buf[31] = if *self { 1 } else { 0 };
-    }
-}
-
-impl SolDecode for bool {
-    const SOL_NAME: &'static str = "bool";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        input[offset + 31] != 0
-    }
-}
+impl_static_encode!(bool, "bool", 32, |val: &bool, buf: &mut [u8]| {
+    buf[..31].fill(0);
+    buf[31] = if *val { 1 } else { 0 };
+});
+impl_decode!(bool, "bool", 32, |input: &[u8], offset: usize| {
+    input[offset + 31] != 0
+});
 
 // [u8; 20] (address)
-impl SolEncode for [u8; 20] {
-    const SOL_NAME: &'static str = "address";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..12].fill(0);
-        buf[12..32].copy_from_slice(self);
-    }
-}
-
-impl SolDecode for [u8; 20] {
-    const SOL_NAME: &'static str = "address";
-    const ENCODED_SIZE: usize = 32;
-
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        let mut result = [0u8; 20];
-        result.copy_from_slice(&input[offset + 12..offset + 32]);
-        result
-    }
-}
+impl_static_encode!([u8; 20], "address", 32, |val: &[u8; 20], buf: &mut [u8]| {
+    buf[..12].fill(0);
+    buf[12..32].copy_from_slice(val);
+});
+impl_decode!([u8; 20], "address", 32, |input: &[u8], offset: usize| {
+    let mut result = [0u8; 20];
+    result.copy_from_slice(&input[offset + 12..offset + 32]);
+    result
+});
 
 // [u8; 32] (bytes32)
-impl SolEncode for [u8; 32] {
-    const SOL_NAME: &'static str = "bytes32";
-    const ENCODED_SIZE: usize = 32;
+impl_static_encode!([u8; 32], "bytes32", 32, |val: &[u8; 32], buf: &mut [u8]| {
+    buf[..32].copy_from_slice(val);
+});
+impl_decode!([u8; 32], "bytes32", 32, |input: &[u8], offset: usize| {
+    let mut result = [0u8; 32];
+    result.copy_from_slice(&input[offset..offset + 32]);
+    result
+});
 
-    fn sol_encode_to(&self, buf: &mut [u8]) {
-        buf[..32].copy_from_slice(self);
+// alloc::string::String (string - dynamic type)
+#[cfg(feature = "alloc")]
+impl SolEncode for alloc::string::String {
+    const SOL_NAME: &'static str = "string";
+
+    fn encode_len(&self) -> usize {
+        let data_len = self.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + 32 + data_len + padding
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        let bytes = self.as_bytes();
+        let data_len = bytes.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        // Offset pointer (32) - data starts at byte 32
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+
+        // Length prefix
+        buf[32..64].fill(0);
+        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        // Data
+        buf[64..64 + data_len].copy_from_slice(bytes);
+
+        // Padding
+        buf[64 + data_len..64 + data_len + padding].fill(0);
+    }
+
+    fn tail_len(&self) -> usize {
+        let data_len = self.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + data_len + padding
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        let bytes = self.as_bytes();
+        let data_len = bytes.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        // Length prefix
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        // Data
+        buf[32..32 + data_len].copy_from_slice(bytes);
+
+        // Padding
+        buf[32 + data_len..32 + data_len + padding].fill(0);
     }
 }
 
-impl SolDecode for [u8; 32] {
-    const SOL_NAME: &'static str = "bytes32";
-    const ENCODED_SIZE: usize = 32;
+// alloc::vec::Vec<T> (T[] - dynamic array type)
+// Each element is independently encoded to 32 bytes (NOT packed like String)
+#[cfg(feature = "alloc")]
+impl<T: SolEncode + StaticEncodedLen> SolEncode for alloc::vec::Vec<T> {
+    const SOL_NAME: &'static str = "T[]"; // Generic placeholder; actual name depends on T
 
-    fn sol_decode(input: &[u8], offset: usize) -> Self {
-        let mut result = [0u8; 32];
-        result.copy_from_slice(&input[offset..offset + 32]);
-        result
+    fn encode_len(&self) -> usize {
+        // offset (32) + length (32) + elements (each T::ENCODED_SIZE bytes)
+        32 + 32 + self.len() * T::ENCODED_SIZE
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        // Offset pointer (32) - data starts at byte 32
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+
+        // Delegate to encode_tail_to for the rest
+        self.encode_tail_to(&mut buf[32..]);
+    }
+
+    fn tail_len(&self) -> usize {
+        // length (32) + elements (each T::ENCODED_SIZE bytes)
+        32 + self.len() * T::ENCODED_SIZE
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        // Length prefix
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
+
+        // Each element encoded to T::ENCODED_SIZE bytes (typically 32)
+        let mut offset = 32;
+        for elem in self.iter() {
+            elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);
+            offset += T::ENCODED_SIZE;
+        }
+    }
+}
+
+// &[T] slice (T[] - dynamic array type)
+// Each element is independently encoded to 32 bytes (NOT packed like String)
+#[cfg(feature = "alloc")]
+impl<T: SolEncode + StaticEncodedLen> SolEncode for &[T] {
+    const SOL_NAME: &'static str = "T[]"; // Generic placeholder; actual name depends on T
+
+    fn encode_len(&self) -> usize {
+        // offset (32) + length (32) + elements (each T::ENCODED_SIZE bytes)
+        32 + 32 + self.len() * T::ENCODED_SIZE
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        // Offset pointer (32) - data starts at byte 32
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+
+        // Delegate to encode_tail_to for the rest
+        self.encode_tail_to(&mut buf[32..]);
+    }
+
+    fn tail_len(&self) -> usize {
+        // length (32) + elements (each T::ENCODED_SIZE bytes)
+        32 + self.len() * T::ENCODED_SIZE
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        // Length prefix
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
+
+        // Each element encoded to T::ENCODED_SIZE bytes (typically 32)
+        let mut offset = 32;
+        for elem in self.iter() {
+            elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);
+            offset += T::ENCODED_SIZE;
+        }
     }
 }
 
@@ -298,195 +340,167 @@ mod tests {
     fn test_roundtrip_u256() {
         let mut buf = [0u8; 32];
 
-        // Test zero value
         let val = U256::from(0u64);
-        val.sol_encode_to(&mut buf);
-        assert_eq!(U256::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(U256::decode(&buf, 0), val);
 
-        // Test small value
         let val = U256::from(42u64);
-        val.sol_encode_to(&mut buf);
-        assert_eq!(U256::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(U256::decode(&buf, 0), val);
 
-        // Test large value
         let val = U256::from(u64::MAX);
-        val.sol_encode_to(&mut buf);
-        assert_eq!(U256::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(U256::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_u128() {
         let mut buf = [0u8; 32];
 
-        // Test zero value
         let val = 0u128;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u128::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u128::decode(&buf, 0), val);
 
-        // Test small value
         let val = 12345u128;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u128::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u128::decode(&buf, 0), val);
 
-        // Test max value
         let val = u128::MAX;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u128::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u128::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_u64() {
         let mut buf = [0u8; 32];
 
-        // Test zero value
         let val = 0u64;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u64::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u64::decode(&buf, 0), val);
 
-        // Test small value
         let val = 999u64;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u64::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u64::decode(&buf, 0), val);
 
-        // Test max value
         let val = u64::MAX;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u64::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u64::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_u32() {
         let mut buf = [0u8; 32];
 
-        // Test zero value
         let val = 0u32;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u32::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u32::decode(&buf, 0), val);
 
-        // Test small value
         let val = 1234u32;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u32::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u32::decode(&buf, 0), val);
 
-        // Test max value
         let val = u32::MAX;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u32::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u32::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_u16() {
         let mut buf = [0u8; 32];
 
-        // Test zero value
         let val = 0u16;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u16::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u16::decode(&buf, 0), val);
 
-        // Test small value
         let val = 256u16;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u16::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u16::decode(&buf, 0), val);
 
-        // Test max value
         let val = u16::MAX;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u16::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u16::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_u8() {
         let mut buf = [0u8; 32];
 
-        // Test zero value
         let val = 0u8;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u8::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u8::decode(&buf, 0), val);
 
-        // Test small value
         let val = 42u8;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u8::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u8::decode(&buf, 0), val);
 
-        // Test max value
         let val = u8::MAX;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(u8::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(u8::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_bool() {
         let mut buf = [0u8; 32];
 
-        // Test false
         let val = false;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(bool::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(bool::decode(&buf, 0), val);
 
-        // Test true
         let val = true;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(bool::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(bool::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_address() {
         let mut buf = [0u8; 32];
 
-        // Test zero address
         let val = [0u8; 20];
-        val.sol_encode_to(&mut buf);
-        assert_eq!(<[u8; 20]>::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(<[u8; 20]>::decode(&buf, 0), val);
 
-        // Test non-zero address
         let val = [0x42u8; 20];
-        val.sol_encode_to(&mut buf);
-        assert_eq!(<[u8; 20]>::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(<[u8; 20]>::decode(&buf, 0), val);
 
-        // Test mixed address
         let mut val = [0u8; 20];
         val[0] = 0xAB;
         val[19] = 0xCD;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(<[u8; 20]>::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(<[u8; 20]>::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_roundtrip_bytes32() {
         let mut buf = [0u8; 32];
 
-        // Test zero bytes
         let val = [0u8; 32];
-        val.sol_encode_to(&mut buf);
-        assert_eq!(<[u8; 32]>::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(<[u8; 32]>::decode(&buf, 0), val);
 
-        // Test all ones
         let val = [0xFFu8; 32];
-        val.sol_encode_to(&mut buf);
-        assert_eq!(<[u8; 32]>::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(<[u8; 32]>::decode(&buf, 0), val);
 
-        // Test mixed pattern
         let mut val = [0u8; 32];
         val[0] = 0x12;
         val[15] = 0x34;
         val[31] = 0x56;
-        val.sol_encode_to(&mut buf);
-        assert_eq!(<[u8; 32]>::sol_decode(&buf, 0), val);
+        val.encode_to(&mut buf);
+        assert_eq!(<[u8; 32]>::decode(&buf, 0), val);
     }
 
     #[test]
     fn test_encoding_format_u8() {
         let mut buf = [0u8; 32];
 
-        // u8 should be right-aligned (at byte 31)
         let val = 1u8;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(buf[31], 1);
         assert!(buf[..31].iter().all(|&b| b == 0));
 
-        // Test with max value
         let val = u8::MAX;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(buf[31], u8::MAX);
         assert!(buf[..31].iter().all(|&b| b == 0));
     }
@@ -495,15 +509,13 @@ mod tests {
     fn test_encoding_format_bool() {
         let mut buf = [0u8; 32];
 
-        // true should be 0x01 at byte 31
         let val = true;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(buf[31], 1);
         assert!(buf[..31].iter().all(|&b| b == 0));
 
-        // false should be 0x00 at byte 31
         let val = false;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(buf[31], 0);
         assert!(buf[..31].iter().all(|&b| b == 0));
     }
@@ -512,9 +524,8 @@ mod tests {
     fn test_encoding_format_address() {
         let mut buf = [0u8; 32];
 
-        // Address should have 12 zero prefix bytes
         let addr = [0x42u8; 20];
-        addr.sol_encode_to(&mut buf);
+        addr.encode_to(&mut buf);
         assert!(buf[..12].iter().all(|&b| b == 0));
         assert_eq!(&buf[12..32], &addr[..]);
     }
@@ -523,9 +534,8 @@ mod tests {
     fn test_encoding_format_u16() {
         let mut buf = [0u8; 32];
 
-        // u16 should be right-aligned (at bytes 30-31)
         let val = 0x1234u16;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(&buf[30..32], &[0x12, 0x34]);
         assert!(buf[..30].iter().all(|&b| b == 0));
     }
@@ -534,9 +544,8 @@ mod tests {
     fn test_encoding_format_u32() {
         let mut buf = [0u8; 32];
 
-        // u32 should be right-aligned (at bytes 28-31)
         let val = 0x12345678u32;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(&buf[28..32], &[0x12, 0x34, 0x56, 0x78]);
         assert!(buf[..28].iter().all(|&b| b == 0));
     }
@@ -545,9 +554,8 @@ mod tests {
     fn test_encoding_format_u64() {
         let mut buf = [0u8; 32];
 
-        // u64 should be right-aligned (at bytes 24-31)
         let val = 0x0102030405060708u64;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(
             &buf[24..32],
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
@@ -559,9 +567,8 @@ mod tests {
     fn test_encoding_format_u128() {
         let mut buf = [0u8; 32];
 
-        // u128 should be right-aligned (at bytes 16-31)
         let val = 0x0102030405060708090A0B0C0D0E0F10u128;
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(
             &buf[16..32],
             &[
@@ -576,9 +583,238 @@ mod tests {
     fn test_encoding_format_bytes32() {
         let mut buf = [0u8; 32];
 
-        // bytes32 should fill entire buffer
         let val = [0xAAu8; 32];
-        val.sol_encode_to(&mut buf);
+        val.encode_to(&mut buf);
         assert_eq!(&buf[..], &val[..]);
+    }
+
+    #[test]
+    fn test_static_encoded_len() {
+        assert_eq!(<U256 as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<u128 as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<u64 as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<u32 as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<u16 as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<u8 as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<bool as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<[u8; 20] as StaticEncodedLen>::ENCODED_SIZE, 32);
+        assert_eq!(<[u8; 32] as StaticEncodedLen>::ENCODED_SIZE, 32);
+    }
+
+    #[test]
+    fn test_encode_len_matches_static() {
+        assert_eq!(U256::from(42u64).encode_len(), 32);
+        assert_eq!(100u128.encode_len(), 32);
+        assert_eq!(100u64.encode_len(), 32);
+        assert_eq!(100u32.encode_len(), 32);
+        assert_eq!(100u16.encode_len(), 32);
+        assert_eq!(100u8.encode_len(), 32);
+        assert_eq!(true.encode_len(), 32);
+        assert_eq!([0u8; 20].encode_len(), 32);
+        assert_eq!([0u8; 32].encode_len(), 32);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_string_encode_len() {
+        let s = alloc::string::String::from("hello");
+        // 32 (offset) + 32 (length) + 5 (data) + 27 (padding) = 96
+        assert_eq!(s.encode_len(), 96);
+
+        let empty = alloc::string::String::from("");
+        // 32 + 32 + 0 + 0 = 64
+        assert_eq!(empty.encode_len(), 64);
+
+        let long = alloc::string::String::from("a".repeat(32));
+        // 32 + 32 + 32 + 0 = 96
+        assert_eq!(long.encode_len(), 96);
+
+        let long_plus_one = alloc::string::String::from("a".repeat(33));
+        // 32 + 32 + 33 + 31 = 128
+        assert_eq!(long_plus_one.encode_len(), 128);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_string_encode_to() {
+        let s = alloc::string::String::from("hello");
+        let mut buf = alloc::vec![0u8; s.encode_len()];
+        s.encode_to(&mut buf);
+
+        // Check offset pointer (bytes 24-31 = 32)
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+
+        // Check length (bytes 56-63 = 5)
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 5]);
+
+        // Check data
+        assert_eq!(&buf[64..69], b"hello");
+
+        // Check padding (all zeros)
+        assert!(buf[69..].iter().all(|&b| b == 0));
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_string_encode_empty() {
+        let s = alloc::string::String::from("");
+        let mut buf = alloc::vec![0u8; s.encode_len()];
+        s.encode_to(&mut buf);
+
+        // Check offset pointer (bytes 24-31 = 32)
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+
+        // Check length (bytes 56-63 = 0)
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 0]);
+
+        // All remaining bytes should be zero
+        assert!(buf[64..].iter().all(|&b| b == 0));
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_string_encode_32_bytes() {
+        let s = alloc::string::String::from("a".repeat(32));
+        let mut buf = alloc::vec![0u8; s.encode_len()];
+        s.encode_to(&mut buf);
+
+        // Check offset pointer
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+
+        // Check length (bytes 56-63 = 32)
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 32]);
+
+        // Check data (all 'a')
+        assert!(buf[64..96].iter().all(|&b| b == b'a'));
+
+        // No padding needed for 32-byte aligned data
+        assert_eq!(buf.len(), 96);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_string_tail_len() {
+        let s = alloc::string::String::from("hello");
+        // tail = 32 (length) + 5 (data) + 27 (padding) = 64
+        assert_eq!(s.tail_len(), 64);
+        // full = 32 (offset) + 64 (tail) = 96
+        assert_eq!(s.encode_len(), 96);
+        assert_eq!(s.encode_len() - s.tail_len(), 32);
+
+        let empty = alloc::string::String::from("");
+        // tail = 32 (length) + 0 (data) + 0 (padding) = 32
+        assert_eq!(empty.tail_len(), 32);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_string_encode_tail_to() {
+        let s = alloc::string::String::from("hello");
+        let mut buf = alloc::vec![0u8; s.tail_len()];
+        s.encode_tail_to(&mut buf);
+
+        // Check length (bytes 24-31 = 5)
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 5]);
+
+        // Check data
+        assert_eq!(&buf[32..37], b"hello");
+
+        // Check padding (all zeros)
+        assert!(buf[37..].iter().all(|&b| b == 0));
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_vec_u256_empty() {
+        let v: alloc::vec::Vec<U256> = alloc::vec![];
+        assert_eq!(v.encode_len(), 64);
+        assert_eq!(v.tail_len(), 32);
+
+        let mut buf = alloc::vec![0u8; v.encode_len()];
+        v.encode_to(&mut buf);
+
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_vec_u256_one_element() {
+        let v: alloc::vec::Vec<U256> = alloc::vec![U256::from(42u64)];
+        assert_eq!(v.encode_len(), 96);
+        assert_eq!(v.tail_len(), 64);
+
+        let mut buf = alloc::vec![0u8; v.encode_len()];
+        v.encode_to(&mut buf);
+
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 1]);
+
+        let mut expected_elem = [0u8; 32];
+        U256::from(42u64).encode_to(&mut expected_elem);
+        assert_eq!(&buf[64..96], &expected_elem);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_vec_address_encoding() {
+        let addr1 = [0x11u8; 20];
+        let addr2 = [0x22u8; 20];
+        let v: alloc::vec::Vec<[u8; 20]> = alloc::vec![addr1, addr2];
+
+        assert_eq!(v.encode_len(), 128);
+        assert_eq!(v.tail_len(), 96);
+
+        let mut buf = alloc::vec![0u8; v.encode_len()];
+        v.encode_to(&mut buf);
+
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 2]);
+
+        assert!(buf[64..76].iter().all(|&b| b == 0));
+        assert!(buf[76..96].iter().all(|&b| b == 0x11));
+
+        assert!(buf[96..108].iter().all(|&b| b == 0));
+        assert!(buf[108..128].iter().all(|&b| b == 0x22));
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_vec_tail_encoding() {
+        let v: alloc::vec::Vec<U256> = alloc::vec![U256::from(1u64), U256::from(2u64)];
+        let mut buf = alloc::vec![0u8; v.tail_len()];
+        v.encode_tail_to(&mut buf);
+
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 2]);
+
+        let mut expected1 = [0u8; 32];
+        let mut expected2 = [0u8; 32];
+        U256::from(1u64).encode_to(&mut expected1);
+        U256::from(2u64).encode_to(&mut expected2);
+        assert_eq!(&buf[32..64], &expected1);
+        assert_eq!(&buf[64..96], &expected2);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn test_slice_encoding() {
+        let data: [U256; 2] = [U256::from(100u64), U256::from(200u64)];
+        let slice: &[U256] = &data;
+
+        assert_eq!(slice.encode_len(), 128);
+        assert_eq!(slice.tail_len(), 96);
+
+        let mut buf = alloc::vec![0u8; slice.encode_len()];
+        slice.encode_to(&mut buf);
+
+        assert_eq!(&buf[24..32], &[0, 0, 0, 0, 0, 0, 0, 32]);
+        assert_eq!(&buf[56..64], &[0, 0, 0, 0, 0, 0, 0, 2]);
+
+        let mut expected1 = [0u8; 32];
+        let mut expected2 = [0u8; 32];
+        U256::from(100u64).encode_to(&mut expected1);
+        U256::from(200u64).encode_to(&mut expected2);
+        assert_eq!(&buf[64..96], &expected1);
+        assert_eq!(&buf[96..128], &expected2);
     }
 }

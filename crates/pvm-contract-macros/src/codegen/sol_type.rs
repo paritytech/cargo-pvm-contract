@@ -32,33 +32,148 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
-    for (_, sol_type) in &field_info {
-        if sol_type.is_dynamic() {
-            return Err(syn::Error::new_spanned(
-                &input,
-                "SolType derive does not support dynamic types (bytes, string, dynamic arrays). Use fixed-size types only.",
-            ));
-        }
-    }
-
-    let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
+    let has_dynamic = field_info.iter().any(|(_, t)| t.is_dynamic());
     let sol_name = build_sol_signature(&field_info);
 
-    let encode_body = generate_encode_body(fields, &field_info);
+    if has_dynamic {
+        expand_dynamic_sol_type(name, fields, &field_info, &sol_name)
+    } else {
+        expand_static_sol_type(name, fields, &field_info, &sol_name)
+    }
+}
 
-    let expanded = quote! {
+fn expand_static_sol_type(
+    name: &syn::Ident,
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+    sol_name: &str,
+) -> syn::Result<TokenStream> {
+    let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
+    let encode_body = generate_static_encode_body(fields, field_info);
+
+    Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const SOL_NAME: &'static str = #sol_name;
-            const ENCODED_SIZE: usize = #total_size;
 
             #[inline]
-            fn sol_encode_to(&self, buf: &mut [u8]) {
+            fn encode_len(&self) -> usize {
+                #total_size
+            }
+
+            fn encode_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
         }
-    };
 
-    Ok(expanded)
+        impl ::pvm_contract_types::StaticEncodedLen for #name {
+            const ENCODED_SIZE: usize = #total_size;
+        }
+    })
+}
+
+fn expand_dynamic_sol_type(
+    name: &syn::Ident,
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+    sol_name: &str,
+) -> syn::Result<TokenStream> {
+    let head_size: usize = field_info.len() * 32;
+    let encode_len_body = generate_dynamic_encode_len(fields, field_info, head_size);
+    let encode_body = generate_dynamic_encode_body(fields, field_info, head_size);
+
+    Ok(quote! {
+        impl ::pvm_contract_types::SolEncode for #name {
+            const SOL_NAME: &'static str = #sol_name;
+
+            fn encode_len(&self) -> usize {
+                #encode_len_body
+            }
+
+            fn encode_to(&self, buf: &mut [u8]) {
+                #encode_body
+            }
+        }
+    })
+}
+
+fn generate_dynamic_encode_len(
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+    head_size: usize,
+) -> TokenStream {
+    let tail_lens: Vec<TokenStream> = field_info
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (field_name, sol_type))| {
+            if !sol_type.is_dynamic() {
+                return None;
+            }
+            let field_access = match fields {
+                Fields::Named(_) => {
+                    let name = field_name.as_ref().unwrap();
+                    quote! { self.#name }
+                }
+                Fields::Unnamed(_) => {
+                    let idx = syn::Index::from(i);
+                    quote! { self.#idx }
+                }
+                Fields::Unit => return None,
+            };
+            Some(quote! {
+                ::pvm_contract_types::SolEncode::tail_len(&#field_access)
+            })
+        })
+        .collect();
+
+    quote! {
+        #head_size #(+ #tail_lens)*
+    }
+}
+
+fn generate_dynamic_encode_body(
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+    head_size: usize,
+) -> TokenStream {
+    let mut head_stmts = Vec::new();
+    let mut tail_stmts = Vec::new();
+
+    for (i, (field_name, sol_type)) in field_info.iter().enumerate() {
+        let field_access = match fields {
+            Fields::Named(_) => {
+                let name = field_name.as_ref().unwrap();
+                quote! { self.#name }
+            }
+            Fields::Unnamed(_) => {
+                let idx = syn::Index::from(i);
+                quote! { self.#idx }
+            }
+            Fields::Unit => continue,
+        };
+
+        let head_offset = i * 32;
+
+        if sol_type.is_dynamic() {
+            head_stmts.push(quote! {
+                buf[#head_offset..#head_offset + 24].fill(0);
+                buf[#head_offset + 24..#head_offset + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
+            });
+            tail_stmts.push(quote! {
+                let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&#field_access);
+                ::pvm_contract_types::SolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                __tail_offset += __tail_len;
+            });
+        } else {
+            let encode_stmt = generate_field_encode(sol_type, &field_access, head_offset);
+            head_stmts.push(encode_stmt);
+        }
+    }
+
+    quote! {
+        let mut __tail_offset: usize = #head_size;
+        #(#head_stmts)*
+        #(#tail_stmts)*
+    }
 }
 
 fn extract_field_info(fields: &Fields) -> syn::Result<Vec<(Option<syn::Ident>, SolType)>> {
@@ -90,7 +205,7 @@ fn type_to_sol_type(ty: &Type) -> syn::Result<SolType> {
             format!(
                 "Unsupported type for SolType derive. Supported types: \
                  U256, u128, u64, u32, u16, u8, i128, i64, i32, i16, i8, \
-                 bool, [u8; 20] (address), [u8; N] (bytesN). \
+                 bool, [u8; 20] (address), [u8; N] (bytesN), String. \
                  For custom structs, derive SolType on them first."
             ),
         )
@@ -102,7 +217,7 @@ fn build_sol_signature(field_info: &[(Option<syn::Ident>, SolType)]) -> String {
     format!("({})", types.join(","))
 }
 
-fn generate_encode_body(
+fn generate_static_encode_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> TokenStream {

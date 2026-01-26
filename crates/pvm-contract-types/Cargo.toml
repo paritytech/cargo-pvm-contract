@@ -7,4 +7,8 @@ repository.workspace = true
 description = "ABI encoding/decoding traits for PVM smart contracts"
 
 [dependencies]
-ruint = { version = "1.12", default-features = false, features = ["alloc"] }
+ruint = { version = "1.12", default-features = false }
+
+[features]
+default = []
+alloc = []

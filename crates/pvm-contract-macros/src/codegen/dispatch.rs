@@ -2,14 +2,15 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params, has_custom_types};
-use super::encode::{generate_encode, generate_encode_return};
-use crate::signature::{compute_selector, FunctionSignature};
+use super::encode::{generate_dynamic_value_encode, generate_encode};
+use crate::signature::{compute_selector, FunctionSignature, SolType};
 
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
     pub signature: FunctionSignature,
     pub param_names: Vec<syn::Ident>,
     pub returns_result: bool,
+    pub dyn_len: bool,
 }
 
 pub fn generate_dispatch_arm(
@@ -28,17 +29,10 @@ pub fn generate_dispatch_arm(
 
     let size_check = if min_size > 0 {
         let min_size_lit = min_size;
-        if use_alloc {
-            quote! {
-                if input.len() < #min_size_lit {
-                    return Err(b"InvalidCalldata".to_vec());
-                }
-            }
-        } else {
-            quote! {
-                if input.len() < #min_size_lit {
-                    pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
-                }
+        quote! {
+            if input.len() < #min_size_lit {
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
             }
         }
     } else {
@@ -64,80 +58,18 @@ pub fn generate_dispatch_arm(
         .collect();
 
     let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
-
     let has_return = !method.signature.outputs.is_empty();
-
-    if use_alloc {
-        let encode_return = generate_encode_return(&method.signature.outputs, use_alloc);
-        let result_handling = if method.returns_result {
-            if has_return {
-                quote! {
-                    #mod_name::#fn_name(#(#call_args),*).map(|result| {
-                        Some(#encode_return)
-                    }).map_err(|e| e.as_ref().to_vec())
-                }
-            } else {
-                quote! {
-                    #mod_name::#fn_name(#(#call_args),*).map(|()| None).map_err(|e| e.as_ref().to_vec())
-                }
-            }
-        } else {
-            if has_return {
-                quote! {
-                    Ok(Some({
-                        let result = #mod_name::#fn_name(#(#call_args),*);
-                        #encode_return
-                    }))
-                }
-            } else {
-                quote! {{
-                    #mod_name::#fn_name(#(#call_args),*);
-                    Ok(None)
-                }}
-            }
-        };
-
-        quote! {
-            [#s0, #s1, #s2, #s3] => {
-                #size_check
-                #(#decode_statements)*
-                #result_handling
-            }
-        }
-    } else {
-        generate_no_alloc_dispatch_arm(
-            method,
-            mod_name,
-            selector,
-            &size_check,
-            &decode_statements,
-            &call_args,
-        )
-    }
-}
-
-fn generate_no_alloc_dispatch_arm(
-    method: &MethodInfo,
-    mod_name: &syn::Ident,
-    selector: [u8; 4],
-    size_check: &TokenStream,
-    decode_statements: &[TokenStream],
-    call_args: &[TokenStream],
-) -> TokenStream {
-    let [s0, s1, s2, s3] = selector;
-    let fn_name = &method.fn_name;
-    let has_return = !method.signature.outputs.is_empty();
+    let encode_and_return =
+        generate_encode_and_return(&method.signature.outputs, use_alloc, method.dyn_len);
 
     let body = if method.returns_result {
         if has_return {
-            let encode_and_return = generate_no_alloc_encode_and_return(&method.signature.outputs);
             quote! {
                 match #mod_name::#fn_name(#(#call_args),*) {
-                    Ok(result) => {
-                        #encode_and_return
-                    }
+                    Ok(result) => { #encode_and_return }
                     Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                        pallet_revive_uapi::HostFnImpl::return_value(
+                            pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
@@ -146,23 +78,21 @@ fn generate_no_alloc_dispatch_arm(
                 match #mod_name::#fn_name(#(#call_args),*) {
                     Ok(()) => return,
                     Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                        pallet_revive_uapi::HostFnImpl::return_value(
+                            pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
         }
+    } else if has_return {
+        quote! {
+            let result = #mod_name::#fn_name(#(#call_args),*);
+            #encode_and_return
+        }
     } else {
-        if has_return {
-            let encode_and_return = generate_no_alloc_encode_and_return(&method.signature.outputs);
-            quote! {
-                let result = #mod_name::#fn_name(#(#call_args),*);
-                #encode_and_return
-            }
-        } else {
-            quote! {
-                #mod_name::#fn_name(#(#call_args),*);
-                return;
-            }
+        quote! {
+            #mod_name::#fn_name(#(#call_args),*);
+            return;
         }
     };
 
@@ -175,16 +105,45 @@ fn generate_no_alloc_dispatch_arm(
     }
 }
 
-fn generate_no_alloc_encode_and_return(outputs: &[crate::signature::SolType]) -> TokenStream {
+fn has_dynamic_outputs(outputs: &[SolType]) -> bool {
+    outputs.iter().any(|t| t.is_dynamic())
+}
+
+fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool, dyn_len: bool) -> TokenStream {
     if outputs.is_empty() {
-        return quote! {};
+        return quote! { return; };
+    }
+
+    let has_dynamic = has_dynamic_outputs(outputs);
+
+    if has_dynamic && !dyn_len {
+        let type_name = outputs
+            .iter()
+            .find(|t| t.is_dynamic())
+            .map(|t| t.canonical_name())
+            .unwrap_or_else(|| "dynamic".to_string());
+        let msg = format!(
+            "Return type `{}` is dynamic. Add `#[pvm_contract::method(dyn_len)]` to enable runtime buffer sizing.",
+            type_name
+        );
+        return quote! {
+            compile_error!(#msg);
+        };
+    }
+
+    if dyn_len {
+        if !use_alloc {
+            panic!("dyn_len requires alloc mode");
+        }
+        return generate_dynamic_encode_and_return(outputs, dyn_len);
     }
 
     if outputs.len() == 1 {
-        let encode = generate_encode(&outputs[0], quote!(result), false);
+        let encode = generate_encode(&outputs[0], quote!(result), use_alloc);
         return quote! {
             let encoded = #encode;
-            pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::empty(), &encoded);
+            pallet_revive_uapi::HostFnImpl::return_value(
+                pallet_revive_uapi::ReturnFlags::empty(), &encoded);
         };
     }
 
@@ -193,7 +152,7 @@ fn generate_no_alloc_encode_and_return(outputs: &[crate::signature::SolType]) ->
         .enumerate()
         .map(|(i, ty)| {
             let idx = syn::Index::from(i);
-            generate_encode(ty, quote!(result.#idx), false)
+            generate_encode(ty, quote!(result.#idx), use_alloc)
         })
         .collect();
 
@@ -207,6 +166,65 @@ fn generate_no_alloc_encode_and_return(outputs: &[crate::signature::SolType]) ->
             out[offset..offset + 32].copy_from_slice(&encoded);
             offset += 32;
         )*
-        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::empty(), &out);
+        pallet_revive_uapi::HostFnImpl::return_value(
+            pallet_revive_uapi::ReturnFlags::empty(), &out);
+    }}
+}
+
+fn generate_dynamic_encode_and_return(outputs: &[SolType], dyn_len: bool) -> TokenStream {
+    if dyn_len && outputs.len() == 1 {
+        return quote! {{
+            let len = ::pvm_contract_types::SolEncode::encode_len(&result);
+            let mut buf = alloc::vec![0u8; len];
+            ::pvm_contract_types::SolEncode::encode_to(&result, &mut buf);
+            pallet_revive_uapi::HostFnImpl::return_value(
+                pallet_revive_uapi::ReturnFlags::empty(), &buf);
+        }};
+    }
+
+    let head_size: usize = outputs.iter().map(|t| t.head_size()).sum();
+
+    let encodes: Vec<_> = outputs
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let value_expr = if outputs.len() == 1 {
+                quote!(result)
+            } else {
+                let idx = syn::Index::from(i);
+                quote!(result.#idx)
+            };
+
+            if ty.is_dynamic() {
+                let encode_tail = generate_dynamic_value_encode(ty, value_expr);
+                quote! {
+                    let offset = #head_size + tail.len();
+                    let offset_value = ruint::aliases::U256::from(offset);
+                    let mut offset_buf = [0u8; 32];
+                    <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
+                        &offset_value,
+                        &mut offset_buf,
+                    );
+                    head.extend_from_slice(&offset_buf);
+                    let encoded = #encode_tail;
+                    tail.extend_from_slice(&encoded);
+                }
+            } else {
+                let encode = generate_encode(ty, value_expr, true);
+                quote! {
+                    let encoded = #encode;
+                    head.extend_from_slice(&encoded);
+                }
+            }
+        })
+        .collect();
+
+    quote! {{
+        let mut head = alloc::vec::Vec::with_capacity(#head_size);
+        let mut tail = alloc::vec::Vec::new();
+        #(#encodes)*
+        head.extend_from_slice(&tail);
+        pallet_revive_uapi::HostFnImpl::return_value(
+            pallet_revive_uapi::ReturnFlags::empty(), &head);
     }}
 }

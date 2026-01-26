@@ -3,6 +3,23 @@ use quote::quote;
 
 use crate::signature::SolType;
 
+fn generate_sol_decode<T: quote::ToTokens>(
+    rust_type: T,
+    data_expr: &TokenStream,
+    offset: usize,
+) -> TokenStream {
+    let offset_lit = offset;
+    quote! {
+    <#rust_type as ::pvm_contract_types::SolDecode>::decode(&#data_expr, #offset_lit)
+    }
+}
+
+fn generate_sol_decode_runtime<T: quote::ToTokens>(rust_type: T) -> TokenStream {
+    quote! {
+    <#rust_type as ::pvm_contract_types::SolDecode>::decode(&input, __decode_offset)
+    }
+}
+
 pub fn generate_decode(
     ty: &SolType,
     data_expr: TokenStream,
@@ -12,48 +29,14 @@ pub fn generate_decode(
     let offset_lit = offset;
 
     match ty {
-        SolType::Address => {
-            quote! {{
-                let mut addr = [0u8; 20];
-                addr.copy_from_slice(&#data_expr[#offset_lit + 12..#offset_lit + 32]);
-                addr
-            }}
-        }
-        SolType::Bool => {
-            quote! {
-                #data_expr[#offset_lit + 31] != 0
-            }
-        }
-        SolType::Uint(8) => {
-            quote! {
-                #data_expr[#offset_lit + 31]
-            }
-        }
-        SolType::Uint(16) => {
-            quote! {
-                u16::from_be_bytes([#data_expr[#offset_lit + 30], #data_expr[#offset_lit + 31]])
-            }
-        }
-        SolType::Uint(32) => {
-            quote! {
-                u32::from_be_bytes(#data_expr[#offset_lit + 28..#offset_lit + 32].try_into().unwrap())
-            }
-        }
-        SolType::Uint(64) => {
-            quote! {
-                u64::from_be_bytes(#data_expr[#offset_lit + 24..#offset_lit + 32].try_into().unwrap())
-            }
-        }
-        SolType::Uint(128) => {
-            quote! {
-                u128::from_be_bytes(#data_expr[#offset_lit + 16..#offset_lit + 32].try_into().unwrap())
-            }
-        }
-        SolType::Uint(_) => {
-            quote! {
-                ruint::aliases::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
-            }
-        }
+        SolType::Address => generate_sol_decode(quote!([u8; 20]), &data_expr, offset),
+        SolType::Bool => generate_sol_decode(quote!(bool), &data_expr, offset),
+        SolType::Uint(8) => generate_sol_decode(quote!(u8), &data_expr, offset),
+        SolType::Uint(16) => generate_sol_decode(quote!(u16), &data_expr, offset),
+        SolType::Uint(32) => generate_sol_decode(quote!(u32), &data_expr, offset),
+        SolType::Uint(64) => generate_sol_decode(quote!(u64), &data_expr, offset),
+        SolType::Uint(128) => generate_sol_decode(quote!(u128), &data_expr, offset),
+        SolType::Uint(_) => generate_sol_decode(quote!(ruint::aliases::U256), &data_expr, offset),
         SolType::Int(8) => {
             quote! {
                 #data_expr[#offset_lit + 31] as i8
@@ -84,6 +67,7 @@ pub fn generate_decode(
                 ruint::aliases::I256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
             }
         }
+        SolType::Bytes(32) => generate_sol_decode(quote!([u8; 32]), &data_expr, offset),
         SolType::Bytes(size) => {
             let size_lit = *size;
             quote! {{
@@ -174,7 +158,7 @@ pub fn generate_decode(
         SolType::Custom(name) => {
             let type_path: syn::Path = syn::parse_str(name).unwrap();
             quote! {
-                #type_path::abi_decode(&#data_expr, #offset_lit)
+            <#type_path as ::pvm_contract_types::SolDecode>::decode(&#data_expr, #offset_lit)
             }
         }
     }
@@ -226,30 +210,14 @@ fn generate_decode_params_with_runtime_offset(
 
 fn generate_decode_runtime_offset(ty: &SolType, use_alloc: bool) -> TokenStream {
     match ty {
-        SolType::Address => {
-            quote! {{
-                let mut addr = [0u8; 20];
-                addr.copy_from_slice(&input[__decode_offset + 12..__decode_offset + 32]);
-                addr
-            }}
-        }
-        SolType::Bool => quote! { input[__decode_offset + 31] != 0 },
-        SolType::Uint(8) => quote! { input[__decode_offset + 31] },
-        SolType::Uint(16) => {
-            quote! { u16::from_be_bytes([input[__decode_offset + 30], input[__decode_offset + 31]]) }
-        }
-        SolType::Uint(32) => {
-            quote! { u32::from_be_bytes(input[__decode_offset + 28..__decode_offset + 32].try_into().unwrap()) }
-        }
-        SolType::Uint(64) => {
-            quote! { u64::from_be_bytes(input[__decode_offset + 24..__decode_offset + 32].try_into().unwrap()) }
-        }
-        SolType::Uint(128) => {
-            quote! { u128::from_be_bytes(input[__decode_offset + 16..__decode_offset + 32].try_into().unwrap()) }
-        }
-        SolType::Uint(_) => {
-            quote! { ruint::aliases::U256::from_be_slice(&input[__decode_offset..__decode_offset + 32]) }
-        }
+        SolType::Address => generate_sol_decode_runtime(quote!([u8; 20])),
+        SolType::Bool => generate_sol_decode_runtime(quote!(bool)),
+        SolType::Uint(8) => generate_sol_decode_runtime(quote!(u8)),
+        SolType::Uint(16) => generate_sol_decode_runtime(quote!(u16)),
+        SolType::Uint(32) => generate_sol_decode_runtime(quote!(u32)),
+        SolType::Uint(64) => generate_sol_decode_runtime(quote!(u64)),
+        SolType::Uint(128) => generate_sol_decode_runtime(quote!(u128)),
+        SolType::Uint(_) => generate_sol_decode_runtime(quote!(ruint::aliases::U256)),
         SolType::Int(8) => quote! { input[__decode_offset + 31] as i8 },
         SolType::Int(16) => {
             quote! { i16::from_be_bytes([input[__decode_offset + 30], input[__decode_offset + 31]]) }
@@ -266,6 +234,7 @@ fn generate_decode_runtime_offset(ty: &SolType, use_alloc: bool) -> TokenStream 
         SolType::Int(_) => {
             quote! { ruint::aliases::I256::from_be_slice(&input[__decode_offset..__decode_offset + 32]) }
         }
+        SolType::Bytes(32) => generate_sol_decode_runtime(quote!([u8; 32])),
         SolType::Bytes(size) => {
             let size_lit = *size;
             quote! {{
@@ -276,7 +245,7 @@ fn generate_decode_runtime_offset(ty: &SolType, use_alloc: bool) -> TokenStream 
         }
         SolType::Custom(name) => {
             let type_path: syn::Path = syn::parse_str(name).unwrap();
-            quote! { #type_path::abi_decode(&input, __decode_offset) }
+            quote! { <#type_path as ::pvm_contract_types::SolDecode>::decode(&input, __decode_offset) }
         }
         _ => generate_decode(ty, quote!(input), 0, use_alloc),
     }
@@ -286,7 +255,7 @@ fn generate_size_increment(ty: &SolType) -> TokenStream {
     match ty {
         SolType::Custom(name) => {
             let type_path: syn::Path = syn::parse_str(name).unwrap();
-            quote! { #type_path::ENCODED_SIZE }
+            quote! { <#type_path as ::pvm_contract_types::SolDecode>::ENCODED_SIZE }
         }
         _ => {
             let size = ty.head_size();

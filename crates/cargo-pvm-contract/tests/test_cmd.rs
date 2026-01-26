@@ -86,6 +86,7 @@ fn verify_cargo_toml(project_dir: &Path, use_alloc: bool) {
         std::fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml exists");
 
     assert!(cargo_toml.contains("pvm-contract-macros"));
+    assert!(cargo_toml.contains("pvm-contract-types"));
     assert!(cargo_toml.contains("polkavm-derive"));
     assert!(cargo_toml.contains("pallet-revive-uapi"));
     assert!(cargo_toml.contains("ruint"));

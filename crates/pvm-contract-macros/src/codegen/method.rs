@@ -4,11 +4,13 @@ use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitStr, Token};
 
 pub struct MethodArgs {
     pub rename: Option<String>,
+    pub dyn_len: bool,
 }
 
 impl Parse for MethodArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut rename = None;
+        let mut dyn_len = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -16,6 +18,8 @@ impl Parse for MethodArgs {
                 input.parse::<Token![=]>()?;
                 let name: LitStr = input.parse()?;
                 rename = Some(name.value());
+            } else if ident == "dyn_len" {
+                dyn_len = true;
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -28,7 +32,7 @@ impl Parse for MethodArgs {
             }
         }
 
-        Ok(MethodArgs { rename })
+        Ok(MethodArgs { rename, dyn_len })
     }
 }
 

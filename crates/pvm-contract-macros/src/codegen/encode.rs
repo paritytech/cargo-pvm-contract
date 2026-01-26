@@ -3,23 +3,24 @@ use quote::quote;
 
 use crate::signature::SolType;
 
-fn generate_sol_encode(value_expr: &TokenStream) -> TokenStream {
+fn generate_sol_encode<T: quote::ToTokens>(rust_type: T, value_expr: &TokenStream) -> TokenStream {
     quote! {{
-        let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
-        ::pvm_contract_types::SolEncode::sol_encode_to(&#value_expr, &mut __buf);
+        let mut __buf = [0u8; <#rust_type as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+        <#rust_type as ::pvm_contract_types::SolEncode>::encode_to(&#value_expr, &mut __buf);
         __buf
     }}
 }
 
 pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -> TokenStream {
     match ty {
-        SolType::Address | SolType::Bool => generate_sol_encode(&value_expr),
-        SolType::Uint(8)
-        | SolType::Uint(16)
-        | SolType::Uint(32)
-        | SolType::Uint(64)
-        | SolType::Uint(128)
-        | SolType::Uint(_) => generate_sol_encode(&value_expr),
+        SolType::Address => generate_sol_encode(quote!([u8; 20]), &value_expr),
+        SolType::Bool => generate_sol_encode(quote!(bool), &value_expr),
+        SolType::Uint(8) => generate_sol_encode(quote!(u8), &value_expr),
+        SolType::Uint(16) => generate_sol_encode(quote!(u16), &value_expr),
+        SolType::Uint(32) => generate_sol_encode(quote!(u32), &value_expr),
+        SolType::Uint(64) => generate_sol_encode(quote!(u64), &value_expr),
+        SolType::Uint(128) => generate_sol_encode(quote!(u128), &value_expr),
+        SolType::Uint(_) => generate_sol_encode(quote!(ruint::aliases::U256), &value_expr),
         SolType::Int(8) => {
             quote! {{
                 let mut out = [0u8; 32];
@@ -63,7 +64,7 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
                 #value_expr.to_be_bytes::<32>()
             }
         }
-        SolType::Bytes(32) => generate_sol_encode(&value_expr),
+        SolType::Bytes(32) => generate_sol_encode(quote!([u8; 32]), &value_expr),
         SolType::Bytes(size) => {
             let size_lit = *size;
             quote! {{
@@ -75,11 +76,12 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
         SolType::DynBytes | SolType::String | SolType::Array(_) => {
             panic!("Dynamic types require special handling in tuple encoding");
         }
-        SolType::Custom(_) => {
+        SolType::Custom(name) => {
+            let type_path: syn::Path = syn::parse_str(name).unwrap();
             quote! {
                 {
-                    let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
-                    ::pvm_contract_types::SolEncode::sol_encode_to(&#value_expr, &mut __buf);
+                    let mut __buf = [0u8; <#type_path as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+                    <#type_path as ::pvm_contract_types::SolEncode>::encode_to(&#value_expr, &mut __buf);
                     __buf
                 }
             }
@@ -146,30 +148,43 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
     }
 }
 
-pub fn generate_encode_return(types: &[SolType], use_alloc: bool) -> TokenStream {
-    if types.is_empty() {
-        return quote! { &[] };
+pub fn generate_dynamic_value_encode(ty: &SolType, value_expr: TokenStream) -> TokenStream {
+    match ty {
+        SolType::String => {
+            quote! {{
+                let bytes = #value_expr.as_bytes();
+                let mut out = alloc::vec::Vec::new();
+                let len = bytes.len();
+                let len_value = ruint::aliases::U256::from(len);
+                let mut len_buf = [0u8; 32];
+                <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(&len_value, &mut len_buf);
+                out.extend_from_slice(&len_buf);
+                out.extend_from_slice(bytes);
+                let padding = (32 - (len % 32)) % 32;
+                out.extend(core::iter::repeat(0u8).take(padding));
+                out
+            }}
+        }
+        SolType::DynBytes => {
+            quote! {{
+                let bytes: &[u8] = #value_expr.as_ref();
+                let mut out = alloc::vec::Vec::new();
+                let len = bytes.len();
+                let len_value = ruint::aliases::U256::from(len);
+                let mut len_buf = [0u8; 32];
+                <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(&len_value, &mut len_buf);
+                out.extend_from_slice(&len_buf);
+                out.extend_from_slice(bytes);
+                let padding = (32 - (len % 32)) % 32;
+                out.extend(core::iter::repeat(0u8).take(padding));
+                out
+            }}
+        }
+        SolType::Array(_) => {
+            panic!("Dynamic array encoding not yet implemented");
+        }
+        _ => {
+            panic!("generate_dynamic_value_encode called with non-dynamic type");
+        }
     }
-
-    if types.len() == 1 {
-        let encode = generate_encode(&types[0], quote!(result), use_alloc);
-        return quote! { #encode.to_vec() };
-    }
-
-    let encodes: Vec<_> = types
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let idx = syn::Index::from(i);
-            generate_encode(ty, quote!(result.#idx), use_alloc)
-        })
-        .collect();
-
-    let total_size: usize = types.iter().map(|t| t.head_size()).sum();
-
-    quote! {{
-        let mut out = alloc::vec::Vec::with_capacity(#total_size);
-        #(out.extend_from_slice(&#encodes);)*
-        out
-    }}
 }

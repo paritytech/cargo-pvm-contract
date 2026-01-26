@@ -139,67 +139,24 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 /// }
 /// ```
 ///
-/// ## Dispatch Logic (alloc mode)
+/// ## Dispatch Logic
 ///
-/// With allocation enabled (default), the `call()` function uses `Vec`:
+/// alloc and no_alloc modes use the same direct dispatch logic.
+/// The only difference is buffer allocation:
 ///
-/// ```ignore
-/// #[polkavm_derive::polkavm_export]
-/// pub extern "C" fn call() {
-///     let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-///     let mut call_data = vec![0u8; call_data_len];
-///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
-///
-///     let result: Result<Option<Vec<u8>>, Vec<u8>> = (|| {
-///         if call_data.len() < 4 {
-///             return my_token::fallback().map(|()| None).map_err(|e| e.as_ref().to_vec());
-///         }
-///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
-///         let input = &call_data[4..];
-///
-///         match selector {
-///             [0x70, 0xa0, 0x82, 0x31] => {
-///                 // balanceOf(address) -> uint256
-///                 let mut account = [0u8; 20];
-///                 account.copy_from_slice(&input[12..32]);
-///                 Ok(Some({
-///                     let result = my_token::balance_of(account);
-///                     let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
-///                     ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
-///                     __buf.to_vec()
-///                 }))
-///             }
-///             // ... other methods omitted for brevity
-///             _ => my_token::fallback().map(|()| None).map_err(|e| e.as_ref().to_vec()),
-///         }
-///     })();
-///
-///     match result {
-///         Ok(Some(data)) => {
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::empty(), &data);
-///         }
-///         Ok(None) => {}
-///         Err(data) => {
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::REVERT, &data);
-///         }
-///     }
-/// }
-/// ```
-///
-/// ## Dispatch Logic (no_alloc mode)
-///
-/// With `no_alloc`, returns happen directly in selector arms (no Result wrapper):
+/// - **alloc mode**: `let mut call_data = vec![0u8; call_data_len];`
+/// - **no_alloc mode**: `let mut call_data = [0u8; BUFFER_SIZE];` with overflow check
 ///
 /// ```ignore
 /// #[pvm_contract_macros::contract("MyToken.sol", no_alloc, buffer = 512)]
 /// mod my_token {
+///     // Infallible method (no Result wrapper)
 ///     #[pvm_contract::method]
-///     pub fn balance_of(account: Address) -> U256 {
-///         // your implementation
-///         U256::ZERO
-///     }
+///     pub fn balance_of(account: Address) -> U256 { U256::ZERO }
+///
+///     // Fallible method (returns Result)
+///     #[pvm_contract::method]
+///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
 /// }
 ///
 /// // Generates:
@@ -214,28 +171,45 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///     }
 ///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
-///     if call_data_len < 4 {
-///         // fallback handling
-///     }
+///     if call_data_len < 4 { /* fallback handling */ }
 ///
 ///     let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///     let input = &call_data[4..call_data_len];
 ///
 ///     match selector {
+///         // balanceOf(address) -> uint256 - Infallible method
 ///         [0x70, 0xa0, 0x82, 0x31] => {
-///             // balanceOf(address) -> uint256
-///             let mut account = [0u8; 20];
-///             account.copy_from_slice(&input[12..32]);
+///             // Decode parameters
+///             let account = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input, 0);
+///
+///             // Call the method
 ///             let result = my_token::balance_of(account);
-///             let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
-///             ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
+///
+///             // Encode return value
+///             let mut __buf = [0u8; <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
+///             <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
 ///             pallet_revive_uapi::HostFnImpl::return_value(
 ///                 pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 ///         }
-///         // ... other methods omitted for brevity
-///         _ => {
-///             // fallback
+///
+///         // transfer(address,uint256) - Fallible method
+///         [0xa9, 0x05, 0x9c, 0xbb] => {
+///             // Decode parameters
+///             let to = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input, 0);
+///             let amount = <ruint::aliases::U256 as ::pvm_contract_types::SolDecode>::decode(&input, 32);
+///
+///             // Call method and handle Result
+///             match my_token::transfer(to, amount) {
+///                 Ok(()) => return,
+///                 Err(e) => {
+///                     // Revert with error message (Error must impl AsRef<[u8]>)
+///                     pallet_revive_uapi::HostFnImpl::return_value(
+///                         pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+///                 }
+///             }
 ///         }
+///
+///         _ => { /* fallback */ }
 ///     }
 /// }
 /// ```
@@ -261,6 +235,31 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Attributes
 ///
 /// - `rename = "name"` - Override the Solidity function name to match (default: snake_case conversion)
+/// - `dyn_len` - Use dynamic length encoding for return values (required for types without `StaticEncodedLen`)
+///
+/// # Static vs Dynamic Return Types
+///
+/// By default, the macro requires return types to implement `StaticEncodedLen`, which provides
+/// a compile-time known `ENCODED_SIZE` constant. This enables stack-allocated output buffers:
+///
+/// ```ignore
+/// // Static return - uses compile-time buffer size
+/// #[pvm_contract::method]
+/// pub fn balance_of(account: Address) -> U256 { ... }
+/// // Generated: let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
+/// ```
+///
+/// For types that don't implement `StaticEncodedLen` (dynamic types), use the `dyn_len` attribute:
+///
+/// ```ignore
+/// // Dynamic return - uses runtime-computed buffer size
+/// #[pvm_contract::method(dyn_len)]
+/// pub fn greeting() -> String { ... }
+/// // Generated: let len = result.encode_len(); let mut buf = vec![0u8; len];
+/// ```
+///
+/// Without `dyn_len`, returning a type that doesn't implement `StaticEncodedLen` will produce
+/// a compile error like: `the trait StaticEncodedLen is not implemented for String`.
 ///
 /// # Name Matching
 ///
@@ -291,6 +290,57 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // Infallible - always succeeds
 /// #[pvm_contract::method]
 /// pub fn balance_of(account: Address) -> U256 { ... }
+/// ```
+///
+/// # Generated Code
+///
+/// The `#[method]` attribute is used by `#[contract]` to generate dispatch arms. Here are
+/// examples of the generated call handling for static and dynamic return types (alloc mode).
+///
+/// ## Static return (U256)
+///
+/// Types implementing `StaticEncodedLen` use compile-time buffer sizing:
+///
+/// ```ignore
+/// #[pvm_contract::method]
+/// pub fn balance_of(account: Address) -> U256 { ... }
+///
+/// // Generated code:
+///
+/// // 1) Decode input parameters
+/// let account = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input, 0);
+///
+/// // 2) Call the method
+/// let result = my_token::balance_of(account);
+///
+/// // 3) Encode output (compile-time buffer size)
+/// let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
+/// <U256 as SolEncode>::encode_to(&result, &mut buf);
+///
+/// // 4) Return value to caller
+/// pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+/// ```
+///
+/// ## Dynamic return (dyn_len)
+///
+/// For types without `StaticEncodedLen` (including String), use `dyn_len` to enable runtime buffer sizing:
+///
+/// ```ignore
+/// #[pvm_contract::method(dyn_len)]
+/// pub fn greeting() -> String { ... }
+///
+/// // Generated code:
+///
+/// // 1) Call the method
+/// let result = my_token::greeting();
+///
+/// // 2) Encode output (runtime buffer size)
+/// let len = <String as SolEncode>::encode_len(&result);
+/// let mut buf = alloc::vec![0u8; len];
+/// <String as SolEncode>::encode_to(&result, &mut buf);
+///
+/// // 3) Return value to caller
+/// pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::empty(), &buf);
 /// ```
 #[proc_macro_attribute]
 pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -355,6 +405,15 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Derives ABI encoding/decoding methods for a struct, enabling it to be used
 /// as a parameter or return type in contract methods.
 ///
+/// # Generated Traits
+///
+/// This derive macro generates implementations for both:
+/// - `SolEncode` - Base trait with `encode_len()` and `encode_to()` methods
+/// - `StaticEncodedLen` - Marker trait with compile-time `ENCODED_SIZE` constant
+///
+/// Types deriving `SolType` can be returned from methods without the `dyn_len` attribute
+/// since they have a compile-time known size.
+///
 /// # Generated Code
 ///
 /// For this struct:
@@ -368,17 +427,22 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// The macro generates an implementation of the `SolEncode` trait:
+/// The macro generates implementations for both traits:
 ///
 /// ```ignore
 /// impl ::pvm_contract_types::SolEncode for Point {
 ///     const SOL_NAME: &'static str = "(uint256,uint256)";
-///     const ENCODED_SIZE: usize = 64;
 ///
-///     fn sol_encode_to(&self, buf: &mut [u8]) {
+///     fn encode_len(&self) -> usize { 64 }
+///
+///     fn encode_to(&self, buf: &mut [u8]) {
 ///         buf[0..32].copy_from_slice(&self.x.to_be_bytes::<32>());
 ///         buf[32..64].copy_from_slice(&self.y.to_be_bytes::<32>());
 ///     }
+/// }
+///
+/// impl ::pvm_contract_types::StaticEncodedLen for Point {
+///     const ENCODED_SIZE: usize = 64;
 /// }
 /// ```
 ///
@@ -387,7 +451,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```ignore
 /// #[pvm_contract_macros::method]
 /// pub fn get_point() -> Point {
-///     // Macro calls SolEncode::sol_encode_to() automatically
+///     // Macro calls SolEncode::encode_to() automatically
 ///     Point { x: U256::from(10), y: U256::from(20) }
 /// }
 /// ```
@@ -411,13 +475,65 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `[u8; 20]` | `address` | 32 bytes |
 /// | `[u8; N]` (N <= 32) | `bytesN` | 32 bytes |
 /// | `[T; N]` | `T[N]` | N * element size |
+/// | `String` | `string` | dynamic |
 /// | Other `SolType` struct | tuple | sum of field sizes |
+///
+/// # Static vs Dynamic Structs
+///
+/// Structs with only static fields implement both `SolEncode` and `StaticEncodedLen`.
+/// Structs with any dynamic fields (like `String`) implement only `SolEncode`.
+///
+/// ```ignore
+/// // Static struct - implements both traits
+/// #[derive(SolType)]
+/// pub struct Point { pub x: U256, pub y: U256 }
+///
+/// // Dynamic struct - implements only SolEncode
+/// #[derive(SolType)]
+/// pub struct User { pub name: String, pub age: u8 }
+/// ```
+///
+/// Dynamic structs must be returned with `#[pvm_contract::method(dyn_len)]`.
+///
+/// ## Generated Code for Dynamic Structs
+///
+/// For a dynamic struct like `User { name: String, age: u8 }`, the macro generates:
+///
+/// ```ignore
+/// impl ::pvm_contract_types::SolEncode for User {
+///     const SOL_NAME: &'static str = "(string,uint8)";
+///
+///     fn encode_len(&self) -> usize {
+///         // head_size (2 fields * 32) + tail of dynamic fields
+///         64 + ::pvm_contract_types::SolEncode::tail_len(&self.name)
+///     }
+///
+///     fn encode_to(&self, buf: &mut [u8]) {
+///         let mut __tail_offset: usize = 64;
+///
+///         // Head[0..32]: offset pointer to name's data
+///         buf[0..24].fill(0);
+///         buf[24..32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
+///
+///         // Head[32..64]: age value (static field)
+///         buf[32..63].fill(0);
+///         buf[63] = self.age;
+///
+///         // Tail: name's encoded data (length + bytes + padding)
+///         let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&self.name);
+///         ::pvm_contract_types::SolEncode::encode_tail_to(
+///             &self.name,
+///             &mut buf[__tail_offset..__tail_offset + __tail_len]
+///         );
+///         __tail_offset += __tail_len;
+///     }
+/// }
+/// ```
 ///
 /// # Limitations
 ///
-/// Dynamic types are **not supported** and will cause a compile error:
+/// Some dynamic types are not yet supported:
 /// - `Vec<T>` - use fixed arrays `[T; N]` instead
-/// - `String` - not supported
 /// - `&[u8]` / `&str` - not supported
 #[proc_macro_derive(SolType)]
 pub fn sol_type(input: TokenStream) -> TokenStream {
