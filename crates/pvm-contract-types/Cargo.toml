@@ -9,6 +9,9 @@ description = "ABI encoding/decoding traits for PVM smart contracts"
 [dependencies]
 ruint = { version = "1.12", default-features = false }
 
+[dev-dependencies]
+alloy-core = { version = "1.5", features = ["sol-types"] }
+
 [features]
 default = []
 alloc = []

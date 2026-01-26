@@ -817,4 +817,100 @@ mod tests {
         assert_eq!(&buf[64..96], &expected1);
         assert_eq!(&buf[96..128], &expected2);
     }
+
+    // ========================================================================
+    // Alloy Comparison Tests - Verify byte-for-byte ABI encoding compatibility
+    // ========================================================================
+
+    #[cfg(all(test, feature = "alloc"))]
+    mod alloy_comparison_tests {
+        use super::*;
+        use alloy_core::primitives::{Address, U256 as AlloyU256};
+
+        #[test]
+        fn test_alloy_uint256() {
+            let value = U256::from(42u64);
+            let mut our_buf = [0u8; 32];
+            value.encode_to(&mut our_buf);
+
+            let alloy_value = AlloyU256::from(42u64);
+            let alloy_bytes = alloy_value.to_be_bytes::<32>();
+
+            assert_eq!(&our_buf[..], &alloy_bytes[..], "U256 encoding mismatch");
+        }
+
+        #[test]
+        fn test_alloy_address() {
+            let addr = [0x42u8; 20];
+            let mut our_buf = [0u8; 32];
+            addr.encode_to(&mut our_buf);
+
+            let alloy_addr = Address::from([0x42u8; 20]);
+            let mut alloy_buf = [0u8; 32];
+            alloy_buf[..12].fill(0);
+            alloy_buf[12..32].copy_from_slice(alloy_addr.as_slice());
+
+            assert_eq!(&our_buf[..], &alloy_buf[..], "address encoding mismatch");
+        }
+
+        #[test]
+        fn test_alloy_bool() {
+            let value = true;
+            let mut our_buf = [0u8; 32];
+            value.encode_to(&mut our_buf);
+
+            let mut alloy_buf = [0u8; 32];
+            alloy_buf[31] = 1;
+
+            assert_eq!(&our_buf[..], &alloy_buf[..], "bool encoding mismatch");
+        }
+
+        #[test]
+        fn test_alloy_bytes32() {
+            let value = [0xAAu8; 32];
+            let mut our_buf = [0u8; 32];
+            value.encode_to(&mut our_buf);
+
+            let alloy_buf = [0xAAu8; 32];
+
+            assert_eq!(&our_buf[..], &alloy_buf[..], "bytes32 encoding mismatch");
+        }
+
+        #[test]
+        fn test_alloy_string() {
+            let s = alloc::string::String::from("hello");
+            let mut our_buf = alloc::vec![0u8; s.encode_len()];
+            s.encode_to(&mut our_buf);
+
+            let mut alloy_buf = alloc::vec![0u8; 96];
+            alloy_buf[..32].fill(0);
+            alloy_buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+            alloy_buf[32..64].fill(0);
+            alloy_buf[56..64].copy_from_slice(&5u64.to_be_bytes());
+            alloy_buf[64..69].copy_from_slice(b"hello");
+            alloy_buf[69..].fill(0);
+
+            assert_eq!(&our_buf[..], &alloy_buf[..], "string encoding mismatch");
+        }
+
+        #[test]
+        fn test_alloy_uint256_array() {
+            let v: alloc::vec::Vec<U256> = alloc::vec![U256::from(1u64), U256::from(2u64)];
+            let mut our_buf = alloc::vec![0u8; v.encode_len()];
+            v.encode_to(&mut our_buf);
+
+            let mut alloy_buf = alloc::vec![0u8; 128];
+            alloy_buf[..32].fill(0);
+            alloy_buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+            alloy_buf[32..64].fill(0);
+            alloy_buf[56..64].copy_from_slice(&2u64.to_be_bytes());
+
+            let one = AlloyU256::from(1u64);
+            let two = AlloyU256::from(2u64);
+            alloy_buf[64..96].copy_from_slice(&one.to_be_bytes::<32>());
+            alloy_buf[96..128].copy_from_slice(&two.to_be_bytes::<32>());
+
+            assert_eq!(&our_buf[..], &alloy_buf[..], "uint256[] encoding mismatch");
+        }
+    }
 }
