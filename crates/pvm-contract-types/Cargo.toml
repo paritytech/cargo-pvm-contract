@@ -1,0 +1,10 @@
+[package]
+name = "pvm-contract-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ABI encoding/decoding traits for PVM smart contracts"
+
+[dependencies]
+ruint = { version = "1.12", default-features = false, features = ["alloc"] }
