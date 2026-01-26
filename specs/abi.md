@@ -29,7 +29,7 @@ All values are encoded as 32-byte words, big-endian, right-aligned (for integers
 | `int32` | `i32` | Two's complement |
 | `int64` | `i64` | Two's complement |
 | `int128` | `i128` | Two's complement |
-| `int256` / `int` | `I256` | Two's complement (not yet fully supported) |
+| `int256` / `int` | `I256` | Two's complement |
 | `bytes1`..`bytes32` | `[u8; N]` | Left-aligned, zero-padded |
 | `bytes` | `Vec<u8>` (alloc) / `&[u8]` (no_alloc) | Dynamic |
 | `string` | `String` (alloc) / `&str` (no_alloc) | Dynamic, UTF-8 |
@@ -224,7 +224,14 @@ out[..N].copy_from_slice(&value);
 
 ### Dynamic Types
 
-**Not fully supported for return values.** The macro will panic at compile time if you try to return dynamic types directly.
+Dynamic types (String, Vec<T>) are supported for return values with the `dyn_len` attribute:
+```rust
+#[pvm_contract::method(dyn_len)]
+pub fn get_name() -> String {
+    "hello".to_string()
+}
+```
+Without `dyn_len`, returning a dynamic type will cause a compile error.
 
 ### Composite Types
 
@@ -265,10 +272,8 @@ out[offset..offset + 32].copy_from_slice(&encode(tuple.1));
 
 | Feature | Status | Workaround |
 |---------|--------|------------|
-| Nested dynamic types | Not supported | Flatten structure |
-| Dynamic return types | Partial | Only static types can be returned |
-| `int256` / `I256` | Decode only | Use `U256` and handle sign manually |
-| Dynamic arrays in no_alloc | Not supported | Use alloc mode or fixed arrays |
+| Nested dynamic types (`Vec<String>`) | Not supported | Flatten structure or use static arrays |
+| Dynamic arrays in `no_alloc` mode | Not supported | Use `alloc` feature or fixed arrays |
 
 ### Custom Types with `#[derive(SolType)]`
 

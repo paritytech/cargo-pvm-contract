@@ -5,6 +5,37 @@ extern crate alloc;
 
 use ruint::aliases::U256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(transparent)]
+pub struct I256(pub U256);
+
+impl I256 {
+    pub const ZERO: Self = Self(U256::ZERO);
+    pub const MIN: Self = Self(U256::from_limbs([0, 0, 0, 0x8000_0000_0000_0000]));
+    pub const MAX: Self = Self(U256::from_limbs([
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+        0x7FFF_FFFF_FFFF_FFFF,
+    ]));
+
+    pub fn from_be_bytes(bytes: [u8; 32]) -> Self {
+        Self(U256::from_be_bytes(bytes))
+    }
+
+    pub fn from_be_slice(slice: &[u8]) -> Self {
+        Self(U256::from_be_slice(slice))
+    }
+
+    pub fn to_be_bytes<const N: usize>(&self) -> [u8; N] {
+        self.0.to_be_bytes()
+    }
+
+    pub fn is_negative(&self) -> bool {
+        self.0.bit(255)
+    }
+}
+
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.
 ///
 /// Implemented by both static types (fixed size at compile time) and
@@ -115,6 +146,14 @@ impl_static_encode!(U256, "uint256", 32, |val: &U256, buf: &mut [u8]| {
 });
 impl_decode!(U256, "uint256", 32, |input: &[u8], offset: usize| {
     U256::from_be_slice(&input[offset..offset + 32])
+});
+
+// I256 (int256)
+impl_static_encode!(I256, "int256", 32, |val: &I256, buf: &mut [u8]| {
+    buf[..32].copy_from_slice(&val.to_be_bytes::<32>());
+});
+impl_decode!(I256, "int256", 32, |input: &[u8], offset: usize| {
+    I256::from_be_slice(&input[offset..offset + 32])
 });
 
 // u128 (uint128)
@@ -243,6 +282,24 @@ impl DynSolEncode for alloc::string::String {
 }
 
 #[cfg(feature = "alloc")]
+impl SolDecode for alloc::string::String {
+    const SOL_NAME: &'static str = "string";
+    const ENCODED_SIZE: usize = 0;
+
+    fn decode(input: &[u8], offset: usize) -> Self {
+        let data_offset =
+            u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        let len = u64::from_be_bytes(
+            input[offset + data_offset + 24..offset + data_offset + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        let data = &input[offset + data_offset + 32..offset + data_offset + 32 + len];
+        alloc::string::String::from_utf8(data.to_vec()).unwrap()
+    }
+}
+
+#[cfg(feature = "alloc")]
 impl<T: SolEncode + StaticEncodedLen> SolEncode for alloc::vec::Vec<T> {
     const SOL_NAME: &'static str = "T[]";
 
@@ -272,6 +329,30 @@ impl<T: SolEncode + StaticEncodedLen> DynSolEncode for alloc::vec::Vec<T> {
             elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);
             offset += T::ENCODED_SIZE;
         }
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: SolDecode + StaticEncodedLen> SolDecode for alloc::vec::Vec<T> {
+    const SOL_NAME: &'static str = "T[]";
+    const ENCODED_SIZE: usize = 0;
+
+    fn decode(input: &[u8], offset: usize) -> Self {
+        let data_offset =
+            u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        let len = u64::from_be_bytes(
+            input[offset + data_offset + 24..offset + data_offset + 32]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+
+        let mut result = alloc::vec::Vec::with_capacity(len);
+        let mut elem_offset = offset + data_offset + 32;
+        for _ in 0..len {
+            result.push(T::decode(input, elem_offset));
+            elem_offset += <T as StaticEncodedLen>::ENCODED_SIZE;
+        }
+        result
     }
 }
 
@@ -593,7 +674,7 @@ mod tests {
         }
 
         macro_rules! assert_matches_alloy {
-            (with_decode { $( $name:ident: $ty:ty = $val:expr ),* $(,)? }) => {
+            (static { $( $name:ident: $ty:ty = $val:expr ),* $(,)? }) => {
                 $(
                     #[test]
                     fn $name() {
@@ -605,20 +686,32 @@ mod tests {
                     }
                 )*
             };
+            (dynamic { $( $name:ident: $ty:ty = $val:expr ),* $(,)? }) => {
+                $(
+                    #[test]
+                    fn $name() {
+                        let val: $ty = $val;
+                        let mut buf = alloc::vec![0u8; val.encode_len()];
+                        val.encode_to(&mut buf);
+                        assert_eq!(buf, val.alloy_encode(), "{}: encoding mismatch", stringify!($name));
+                        assert_eq!(<$ty>::decode(&buf, 0), val, "{}: decode roundtrip failed", stringify!($name));
+                    }
+                )*
+            };
             (encode_only { $( $name:ident: $val:expr ),* $(,)? }) => {
                 $(
                     #[test]
                     fn $name() {
                         let val = $val;
-                        let mut our_buf = alloc::vec![0u8; val.encode_len()];
-                        val.encode_to(&mut our_buf);
-                        assert_eq!(our_buf, val.alloy_encode(), "{}: encoding mismatch", stringify!($name));
+                        let mut buf = alloc::vec![0u8; val.encode_len()];
+                        val.encode_to(&mut buf);
+                        assert_eq!(buf, val.alloy_encode(), "{}: encoding mismatch", stringify!($name));
                     }
                 )*
             };
         }
 
-        assert_matches_alloy!(with_decode {
+        assert_matches_alloy!(static {
             test_uint256: U256 = U256::from(42u64),
             test_address: [u8; 20] = [0x42u8; 20],
             test_bool_true: bool = true,
@@ -626,10 +719,11 @@ mod tests {
             test_bytes32: [u8; 32] = [0xAAu8; 32],
         });
 
-        assert_matches_alloy!(encode_only {
-            test_string: alloc::string::String::from("hello"),
-            test_str: "hello",
-            test_uint256_array: alloc::vec![U256::from(1u64), U256::from(2u64)],
+        assert_matches_alloy!(dynamic {
+            test_string: alloc::string::String = alloc::string::String::from("hello"),
+            test_uint256_array: alloc::vec::Vec<U256> = alloc::vec![U256::from(1u64), U256::from(2u64)],
         });
+
+        assert_matches_alloy!(encode_only { test_str: "hello" });
     }
 }

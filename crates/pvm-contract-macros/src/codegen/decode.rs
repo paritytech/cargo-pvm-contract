@@ -64,7 +64,7 @@ pub fn generate_decode(
         }
         SolType::Int(_) => {
             quote! {
-                ruint::aliases::I256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
+                ::pvm_contract_types::I256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32])
             }
         }
         SolType::Bytes(32) => generate_sol_decode(quote!([u8; 32]), &data_expr, offset),
@@ -232,7 +232,7 @@ fn generate_decode_runtime_offset(ty: &SolType, use_alloc: bool) -> TokenStream 
             quote! { i128::from_be_bytes(input[__decode_offset + 16..__decode_offset + 32].try_into().unwrap()) }
         }
         SolType::Int(_) => {
-            quote! { ruint::aliases::I256::from_be_slice(&input[__decode_offset..__decode_offset + 32]) }
+            quote! { ::pvm_contract_types::I256::from_be_slice(&input[__decode_offset..__decode_offset + 32]) }
         }
         SolType::Bytes(32) => generate_sol_decode_runtime(quote!([u8; 32])),
         SolType::Bytes(size) => {
