@@ -15,7 +15,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 /// - `no_alloc` - Disables the allocator (uses fixed-size stack buffers)
 /// - `buffer = N` - Sets the calldata buffer size for no_alloc mode (default: 256)
 ///
-/// # Usage with Solidity Interface (Recommended)
+/// # Usage with Solidity Interface
 ///
 /// Create a Solidity interface file defining your contract's ABI:
 ///
@@ -115,7 +115,8 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///
 /// ## Error Type
 ///
-/// An empty `Error` enum is generated inside the contract module. Add your own variants:
+/// The scaffold generates an empty `Error` enum inside the contract module.
+/// You are expected to add your own error variants as needed:
 ///
 /// ```ignore
 /// mod my_token {
@@ -157,15 +158,6 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///         let input = &call_data[4..];
 ///
 ///         match selector {
-///             [0x18, 0x16, 0x0d, 0xdd] => {
-///                 // totalSupply() -> uint256
-///                 Ok(Some({
-///                     let result = my_token::total_supply();
-///                     let mut __buf = [0u8; 32];
-///                     ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
-///                     __buf.to_vec()
-///                 }))
-///             }
 ///             [0x70, 0xa0, 0x82, 0x31] => {
 ///                 // balanceOf(address) -> uint256
 ///                 let mut account = [0u8; 20];
@@ -177,6 +169,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///                     __buf.to_vec()
 ///                 }))
 ///             }
+///             // ... other methods omitted for brevity
 ///             _ => my_token::fallback().map(|()| None).map_err(|e| e.as_ref().to_vec()),
 ///         }
 ///     })();
@@ -223,14 +216,17 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///     let input = &call_data[4..call_data_len];
 ///
 ///     match selector {
-///         [0x18, 0x16, 0x0d, 0xdd] => {
-///             // totalSupply() -> uint256
-///             let result = my_token::total_supply();
+///         [0x70, 0xa0, 0x82, 0x31] => {
+///             // balanceOf(address) -> uint256
+///             let mut account = [0u8; 20];
+///             account.copy_from_slice(&input[12..32]);
+///             let result = my_token::balance_of(account);
 ///             let mut __buf = [0u8; 32];
 ///             ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
 ///             pallet_revive_uapi::HostFnImpl::return_value(
 ///                 pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 ///         }
+///         // ... other methods omitted for brevity
 ///         _ => {
 ///             // fallback
 ///         }
