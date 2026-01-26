@@ -5,7 +5,7 @@ use crate::signature::SolType;
 
 fn generate_sol_encode(value_expr: &TokenStream) -> TokenStream {
     quote! {{
-        let mut __buf = [0u8; 32];
+        let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
         ::pvm_contract_types::SolEncode::sol_encode_to(&#value_expr, &mut __buf);
         __buf
     }}

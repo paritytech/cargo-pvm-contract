@@ -164,7 +164,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///                 account.copy_from_slice(&input[12..32]);
 ///                 Ok(Some({
 ///                     let result = my_token::balance_of(account);
-///                     let mut __buf = [0u8; 32];
+///                     let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
 ///                     ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
 ///                     __buf.to_vec()
 ///                 }))
@@ -194,7 +194,13 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///
 /// ```ignore
 /// #[pvm_contract_macros::contract("MyToken.sol", no_alloc, buffer = 512)]
-/// mod my_token { /* ... */ }
+/// mod my_token {
+///     #[pvm_contract::method]
+///     pub fn balance_of(account: Address) -> U256 {
+///         // your implementation
+///         U256::ZERO
+///     }
+/// }
 ///
 /// // Generates:
 /// #[polkavm_derive::polkavm_export]
@@ -221,7 +227,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///             let mut account = [0u8; 20];
 ///             account.copy_from_slice(&input[12..32]);
 ///             let result = my_token::balance_of(account);
-///             let mut __buf = [0u8; 32];
+///             let mut __buf = [0u8; <_ as ::pvm_contract_types::SolEncode>::ENCODED_SIZE];
 ///             ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
 ///             pallet_revive_uapi::HostFnImpl::return_value(
 ///                 pallet_revive_uapi::ReturnFlags::empty(), &__buf);
