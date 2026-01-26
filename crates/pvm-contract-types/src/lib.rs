@@ -37,52 +37,24 @@ impl I256 {
 }
 
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.
-///
-/// Implemented by both static types (fixed size at compile time) and
-/// dynamic types (size determined at runtime).
 pub trait SolEncode {
-    /// The Solidity type name/signature (e.g., "uint256", "address", "string").
     const SOL_NAME: &'static str;
+    const IS_DYNAMIC: bool;
 
-    /// Returns the encoded length in bytes for this value.
-    ///
-    /// For static types, this equals `StaticEncodedLen::ENCODED_SIZE`.
-    /// For dynamic types (String, bytes), this is computed at runtime.
     fn encode_len(&self) -> usize;
-
-    /// Encode this value into the provided buffer.
-    ///
-    /// The buffer must have at least `encode_len()` bytes available.
     fn encode_to(&self, buf: &mut [u8]);
-}
 
-/// Trait for dynamic types that need special encoding when embedded in structs/tuples.
-///
-/// Dynamic types (String, Vec<T>, bytes) encode differently when standalone vs embedded:
-/// - Standalone: offset pointer + length + data
-/// - Embedded (tail): length + data only (offset written by parent struct)
-///
-/// This trait is an implementation detail used by the derive macro.
-pub trait DynSolEncode: SolEncode {
-    /// Returns the tail length (excludes offset pointer).
-    /// For dynamic types: length prefix + data + padding.
-    fn tail_len(&self) -> usize;
+    fn tail_len(&self) -> usize {
+        self.encode_len()
+    }
 
-    /// Encode just the tail portion (no offset pointer).
-    /// Writes: length prefix + data + padding.
-    fn encode_tail_to(&self, buf: &mut [u8]);
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        self.encode_to(buf);
+    }
 }
 
 /// Marker trait for types with compile-time known encoded size.
-///
-/// Static types (U256, address, bool, etc.) implement this trait.
-/// Dynamic types (String, bytes, `Vec<T>`) do NOT implement this trait.
-///
-/// The macro uses this trait to generate fixed-size stack buffers.
-/// If a method returns a type without `StaticEncodedLen`, the user must
-/// add `#[pvm_contract::method(dyn_len)]` to use dynamic allocation.
 pub trait StaticEncodedLen: SolEncode {
-    /// The size in bytes when ABI-encoded (compile-time constant).
     const ENCODED_SIZE: usize;
 }
 
@@ -91,11 +63,25 @@ pub trait SolDecode: Sized {
     /// The Solidity type name/signature for this type.
     const SOL_NAME: &'static str;
 
-    /// The size in bytes when this type is ABI-encoded.
+    /// Whether this type has dynamic size. Used by Vec<T> to determine decoding strategy.
+    const IS_DYNAMIC: bool;
+
+    /// The size in bytes when this type is ABI-encoded (for static types).
+    /// For dynamic types, this is the head size (32 bytes for offset pointer).
     const ENCODED_SIZE: usize;
 
     /// Decode a value from the input buffer at the given offset.
+    /// For static types: reads directly from offset.
+    /// For dynamic types: reads offset pointer, then decodes from that location.
     fn decode(input: &[u8], offset: usize) -> Self;
+
+    /// Decode a value directly from a tail position (no offset pointer indirection).
+    /// For static types: same as decode.
+    /// For dynamic types: reads length + data directly from the position.
+    /// Used by Vec<T> to decode dynamic elements where offset is already resolved.
+    fn decode_tail(input: &[u8], offset: usize) -> Self {
+        Self::decode(input, offset)
+    }
 }
 
 // ============================================================================
@@ -106,6 +92,7 @@ macro_rules! impl_static_encode {
     ($ty:ty, $sol_name:expr, $size:expr, $encode_fn:expr) => {
         impl SolEncode for $ty {
             const SOL_NAME: &'static str = $sol_name;
+            const IS_DYNAMIC: bool = false;
 
             #[inline]
             fn encode_len(&self) -> usize {
@@ -127,6 +114,7 @@ macro_rules! impl_decode {
     ($ty:ty, $sol_name:expr, $size:expr, $decode_fn:expr) => {
         impl SolDecode for $ty {
             const SOL_NAME: &'static str = $sol_name;
+            const IS_DYNAMIC: bool = false;
             const ENCODED_SIZE: usize = $size;
 
             fn decode(input: &[u8], offset: usize) -> Self {
@@ -237,6 +225,7 @@ impl_decode!([u8; 32], "bytes32", 32, |input: &[u8], offset: usize| {
 #[cfg(feature = "alloc")]
 impl SolEncode for alloc::string::String {
     const SOL_NAME: &'static str = "string";
+    const IS_DYNAMIC: bool = true;
 
     fn encode_len(&self) -> usize {
         let data_len = self.len();
@@ -258,10 +247,7 @@ impl SolEncode for alloc::string::String {
         buf[64..64 + data_len].copy_from_slice(bytes);
         buf[64 + data_len..64 + data_len + padding].fill(0);
     }
-}
 
-#[cfg(feature = "alloc")]
-impl DynSolEncode for alloc::string::String {
     fn tail_len(&self) -> usize {
         let data_len = self.len();
         let padding = (32 - (data_len % 32)) % 32;
@@ -284,113 +270,169 @@ impl DynSolEncode for alloc::string::String {
 #[cfg(feature = "alloc")]
 impl SolDecode for alloc::string::String {
     const SOL_NAME: &'static str = "string";
-    const ENCODED_SIZE: usize = 0;
+    const IS_DYNAMIC: bool = true;
+    const ENCODED_SIZE: usize = 32;
 
     fn decode(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
-        let len = u64::from_be_bytes(
-            input[offset + data_offset + 24..offset + data_offset + 32]
-                .try_into()
-                .unwrap(),
-        ) as usize;
-        let data = &input[offset + data_offset + 32..offset + data_offset + 32 + len];
+        Self::decode_tail(input, offset + data_offset)
+    }
+
+    fn decode_tail(input: &[u8], offset: usize) -> Self {
+        let len = u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        let data = &input[offset + 32..offset + 32 + len];
         alloc::string::String::from_utf8(data.to_vec()).unwrap()
     }
 }
 
 #[cfg(feature = "alloc")]
-impl<T: SolEncode + StaticEncodedLen> SolEncode for alloc::vec::Vec<T> {
+impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
     const SOL_NAME: &'static str = "T[]";
+    const IS_DYNAMIC: bool = true;
 
     fn encode_len(&self) -> usize {
-        32 + 32 + self.len() * T::ENCODED_SIZE
+        32 + self.tail_len()
     }
 
     fn encode_to(&self, buf: &mut [u8]) {
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-        DynSolEncode::encode_tail_to(self, &mut buf[32..]);
+        self.encode_tail_to(&mut buf[32..]);
     }
-}
 
-#[cfg(feature = "alloc")]
-impl<T: SolEncode + StaticEncodedLen> DynSolEncode for alloc::vec::Vec<T> {
     fn tail_len(&self) -> usize {
-        32 + self.len() * T::ENCODED_SIZE
+        if T::IS_DYNAMIC {
+            let tails_len: usize = self.iter().map(|e| e.tail_len()).sum();
+            32 + self.len() * 32 + tails_len
+        } else {
+            32 + self.iter().map(|e| e.tail_len()).sum::<usize>()
+        }
     }
 
     fn encode_tail_to(&self, buf: &mut [u8]) {
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
 
-        let mut offset = 32;
-        for elem in self.iter() {
-            elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);
-            offset += T::ENCODED_SIZE;
+        if T::IS_DYNAMIC {
+            let mut offset_pos = 32;
+            let mut tail_pos = 32 + self.len() * 32;
+            for elem in self.iter() {
+                let rel_offset = tail_pos - 32;
+                buf[offset_pos..offset_pos + 32].fill(0);
+                buf[offset_pos + 24..offset_pos + 32]
+                    .copy_from_slice(&(rel_offset as u64).to_be_bytes());
+                offset_pos += 32;
+
+                let tail_len = elem.tail_len();
+                elem.encode_tail_to(&mut buf[tail_pos..tail_pos + tail_len]);
+                tail_pos += tail_len;
+            }
+        } else {
+            let mut pos = 32;
+            for elem in self.iter() {
+                let len = elem.tail_len();
+                elem.encode_tail_to(&mut buf[pos..pos + len]);
+                pos += len;
+            }
         }
     }
 }
 
 #[cfg(feature = "alloc")]
-impl<T: SolDecode + StaticEncodedLen> SolDecode for alloc::vec::Vec<T> {
+impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     const SOL_NAME: &'static str = "T[]";
-    const ENCODED_SIZE: usize = 0;
+    const IS_DYNAMIC: bool = true;
+    const ENCODED_SIZE: usize = 32;
 
     fn decode(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
-        let len = u64::from_be_bytes(
-            input[offset + data_offset + 24..offset + data_offset + 32]
-                .try_into()
-                .unwrap(),
-        ) as usize;
+        Self::decode_tail(input, offset + data_offset)
+    }
+
+    fn decode_tail(input: &[u8], offset: usize) -> Self {
+        let len = u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
 
         let mut result = alloc::vec::Vec::with_capacity(len);
-        let mut elem_offset = offset + data_offset + 32;
-        for _ in 0..len {
-            result.push(T::decode(input, elem_offset));
-            elem_offset += <T as StaticEncodedLen>::ENCODED_SIZE;
+        let array_data_start = offset + 32;
+
+        if T::IS_DYNAMIC {
+            for i in 0..len {
+                let elem_offset = u64::from_be_bytes(
+                    input[array_data_start + i * 32 + 24..array_data_start + i * 32 + 32]
+                        .try_into()
+                        .unwrap(),
+                ) as usize;
+                result.push(T::decode_tail(input, array_data_start + elem_offset));
+            }
+        } else {
+            let mut elem_offset = array_data_start;
+            for _ in 0..len {
+                result.push(T::decode(input, elem_offset));
+                elem_offset += T::ENCODED_SIZE;
+            }
         }
         result
     }
 }
 
 #[cfg(feature = "alloc")]
-impl<T: SolEncode + StaticEncodedLen> SolEncode for &[T] {
+impl<T: SolEncode> SolEncode for &[T] {
     const SOL_NAME: &'static str = "T[]";
+    const IS_DYNAMIC: bool = true;
 
     fn encode_len(&self) -> usize {
-        32 + 32 + self.len() * T::ENCODED_SIZE
+        32 + self.tail_len()
     }
 
     fn encode_to(&self, buf: &mut [u8]) {
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-        DynSolEncode::encode_tail_to(self, &mut buf[32..]);
+        self.encode_tail_to(&mut buf[32..]);
     }
-}
 
-#[cfg(feature = "alloc")]
-impl<T: SolEncode + StaticEncodedLen> DynSolEncode for &[T] {
     fn tail_len(&self) -> usize {
-        32 + self.len() * T::ENCODED_SIZE
+        if T::IS_DYNAMIC {
+            let tails_len: usize = self.iter().map(|e| e.tail_len()).sum();
+            32 + self.len() * 32 + tails_len
+        } else {
+            32 + self.iter().map(|e| e.tail_len()).sum::<usize>()
+        }
     }
 
     fn encode_tail_to(&self, buf: &mut [u8]) {
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
 
-        let mut offset = 32;
-        for elem in self.iter() {
-            elem.encode_to(&mut buf[offset..offset + T::ENCODED_SIZE]);
-            offset += T::ENCODED_SIZE;
+        if T::IS_DYNAMIC {
+            let mut offset_pos = 32;
+            let mut tail_pos = 32 + self.len() * 32;
+            for elem in self.iter() {
+                let rel_offset = tail_pos - 32;
+                buf[offset_pos..offset_pos + 32].fill(0);
+                buf[offset_pos + 24..offset_pos + 32]
+                    .copy_from_slice(&(rel_offset as u64).to_be_bytes());
+                offset_pos += 32;
+
+                let tail_len = elem.tail_len();
+                elem.encode_tail_to(&mut buf[tail_pos..tail_pos + tail_len]);
+                tail_pos += tail_len;
+            }
+        } else {
+            let mut pos = 32;
+            for elem in self.iter() {
+                let len = elem.tail_len();
+                elem.encode_tail_to(&mut buf[pos..pos + len]);
+                pos += len;
+            }
         }
     }
 }
 
 impl SolEncode for &str {
     const SOL_NAME: &'static str = "string";
+    const IS_DYNAMIC: bool = true;
 
     fn encode_len(&self) -> usize {
         let data_len = self.len();
@@ -412,9 +454,7 @@ impl SolEncode for &str {
         buf[64..64 + data_len].copy_from_slice(bytes);
         buf[64 + data_len..64 + data_len + padding].fill(0);
     }
-}
 
-impl DynSolEncode for &str {
     fn tail_len(&self) -> usize {
         let data_len = self.len();
         let padding = (32 - (data_len % 32)) % 32;
@@ -621,6 +661,24 @@ mod tests {
             assert_eq!(s.encode_len(), 96);
             assert_eq!(s.tail_len(), 64);
         }
+
+        #[test]
+        fn test_vec_string_encoding() {
+            let empty: alloc::vec::Vec<alloc::string::String> = alloc::vec![];
+            assert_eq!(empty.encode_len(), 64);
+            assert_eq!(empty.tail_len(), 32);
+
+            let one = alloc::vec![alloc::string::String::from("hello")];
+            let expected_len = 32 + 32 + 32 + 64; // offset + length + elem_offset + "hello" tail
+            assert_eq!(one.encode_len(), expected_len);
+
+            let two = alloc::vec![
+                alloc::string::String::from("hello"),
+                alloc::string::String::from("world"),
+            ];
+            let expected_len = 32 + 32 + 64 + 64 + 64; // offset + length + 2 offsets + 2 tails
+            assert_eq!(two.encode_len(), expected_len);
+        }
     }
 
     // ========================================================================
@@ -668,6 +726,11 @@ mod tests {
             }
         }
         impl AlloyEncode for alloc::vec::Vec<U256> {
+            fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
+                self.abi_encode()
+            }
+        }
+        impl AlloyEncode for alloc::vec::Vec<alloc::string::String> {
             fn alloy_encode(&self) -> alloc::vec::Vec<u8> {
                 self.abi_encode()
             }
@@ -722,6 +785,14 @@ mod tests {
         assert_matches_alloy!(dynamic {
             test_string: alloc::string::String = alloc::string::String::from("hello"),
             test_uint256_array: alloc::vec::Vec<U256> = alloc::vec![U256::from(1u64), U256::from(2u64)],
+            test_string_array: alloc::vec::Vec<alloc::string::String> = alloc::vec![
+                alloc::string::String::from("hello"),
+                alloc::string::String::from("world"),
+            ],
+            test_string_array_empty: alloc::vec::Vec<alloc::string::String> = alloc::vec![],
+            test_string_array_single: alloc::vec::Vec<alloc::string::String> = alloc::vec![
+                alloc::string::String::from("test"),
+            ],
         });
 
         assert_matches_alloy!(encode_only { test_str: "hello" });
