@@ -476,7 +476,9 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `[u8; N]` (N <= 32) | `bytesN` | 32 bytes |
 /// | `[T; N]` | `T[N]` | N * element size |
 /// | `Vec<T>` | `T[]` | dynamic |
+/// | `&[T]` | `T[]` | dynamic |
 /// | `String` | `string` | dynamic |
+/// | `&str` | `string` | dynamic |
 /// | Other `SolType` struct | tuple | sum of field sizes |
 ///
 /// # Static vs Dynamic Structs
@@ -527,10 +529,6 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// # Limitations
-///
-/// Some dynamic types are not yet supported:
-/// - `&[u8]` / `&str` - not supported
 #[proc_macro_derive(SolType)]
 pub fn sol_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
