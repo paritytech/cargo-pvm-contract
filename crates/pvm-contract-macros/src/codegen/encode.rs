@@ -3,62 +3,23 @@ use quote::quote;
 
 use crate::signature::SolType;
 
+fn generate_sol_encode(value_expr: &TokenStream) -> TokenStream {
+    quote! {{
+        let mut __buf = [0u8; 32];
+        ::pvm_contract_types::SolEncode::sol_encode_to(&#value_expr, &mut __buf);
+        __buf
+    }}
+}
+
 pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -> TokenStream {
     match ty {
-        SolType::Address => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[12..32].copy_from_slice(&#value_expr);
-                out
-            }}
-        }
-        SolType::Bool => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[31] = if #value_expr { 1 } else { 0 };
-                out
-            }}
-        }
-        SolType::Uint(8) => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[31] = #value_expr;
-                out
-            }}
-        }
-        SolType::Uint(16) => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[30..32].copy_from_slice(&#value_expr.to_be_bytes());
-                out
-            }}
-        }
-        SolType::Uint(32) => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[28..32].copy_from_slice(&#value_expr.to_be_bytes());
-                out
-            }}
-        }
-        SolType::Uint(64) => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[24..32].copy_from_slice(&#value_expr.to_be_bytes());
-                out
-            }}
-        }
-        SolType::Uint(128) => {
-            quote! {{
-                let mut out = [0u8; 32];
-                out[16..32].copy_from_slice(&#value_expr.to_be_bytes());
-                out
-            }}
-        }
-        SolType::Uint(_) => {
-            quote! {
-                #value_expr.to_be_bytes::<32>()
-            }
-        }
+        SolType::Address | SolType::Bool => generate_sol_encode(&value_expr),
+        SolType::Uint(8)
+        | SolType::Uint(16)
+        | SolType::Uint(32)
+        | SolType::Uint(64)
+        | SolType::Uint(128)
+        | SolType::Uint(_) => generate_sol_encode(&value_expr),
         SolType::Int(8) => {
             quote! {{
                 let mut out = [0u8; 32];
@@ -102,6 +63,7 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
                 #value_expr.to_be_bytes::<32>()
             }
         }
+        SolType::Bytes(32) => generate_sol_encode(&value_expr),
         SolType::Bytes(size) => {
             let size_lit = *size;
             quote! {{

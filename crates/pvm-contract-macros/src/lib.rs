@@ -161,7 +161,9 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///                 // totalSupply() -> uint256
 ///                 Ok(Some({
 ///                     let result = my_token::total_supply();
-///                     result.to_be_bytes::<32>().to_vec()
+///                     let mut __buf = [0u8; 32];
+///                     ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
+///                     __buf.to_vec()
 ///                 }))
 ///             }
 ///             [0x70, 0xa0, 0x82, 0x31] => {
@@ -170,7 +172,9 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///                 account.copy_from_slice(&input[12..32]);
 ///                 Ok(Some({
 ///                     let result = my_token::balance_of(account);
-///                     result.to_be_bytes::<32>().to_vec()
+///                     let mut __buf = [0u8; 32];
+///                     ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
+///                     __buf.to_vec()
 ///                 }))
 ///             }
 ///             _ => my_token::fallback().map(|()| None).map_err(|e| e.as_ref().to_vec()),
@@ -220,11 +224,12 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///
 ///     match selector {
 ///         [0x18, 0x16, 0x0d, 0xdd] => {
-///             // totalSupply() -> returns directly
+///             // totalSupply() -> uint256
 ///             let result = my_token::total_supply();
-///             let encoded = result.to_be_bytes::<32>();
+///             let mut __buf = [0u8; 32];
+///             ::pvm_contract_types::SolEncode::sol_encode_to(&result, &mut __buf);
 ///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::empty(), &encoded);
+///                 pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 ///         }
 ///         _ => {
 ///             // fallback
