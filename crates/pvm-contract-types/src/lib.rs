@@ -308,6 +308,51 @@ impl<T: SolEncode + StaticEncodedLen> DynSolEncode for &[T] {
     }
 }
 
+impl SolEncode for &str {
+    const SOL_NAME: &'static str = "string";
+
+    fn encode_len(&self) -> usize {
+        let data_len = self.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + 32 + data_len + padding
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        let bytes = self.as_bytes();
+        let data_len = bytes.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+
+        buf[32..64].fill(0);
+        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        buf[64..64 + data_len].copy_from_slice(bytes);
+        buf[64 + data_len..64 + data_len + padding].fill(0);
+    }
+}
+
+impl DynSolEncode for &str {
+    fn tail_len(&self) -> usize {
+        let data_len = self.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + data_len + padding
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        let bytes = self.as_bytes();
+        let data_len = bytes.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        buf[32..32 + data_len].copy_from_slice(bytes);
+        buf[32 + data_len..32 + data_len + padding].fill(0);
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -853,6 +898,13 @@ mod tests {
             let alloy_v: alloc::vec::Vec<AlloyU256> =
                 alloc::vec![AlloyU256::from(1u64), AlloyU256::from(2u64)];
             assert_encoding_eq!(v, alloy_v, "uint256[] encoding mismatch");
+        }
+
+        #[test]
+        fn test_alloy_str() {
+            let s: &str = "hello";
+            let alloy_s = alloc::string::String::from("hello");
+            assert_encoding_eq!(s, alloy_s, "&str encoding mismatch");
         }
     }
 }
