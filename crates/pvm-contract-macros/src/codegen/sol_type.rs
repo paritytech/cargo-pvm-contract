@@ -373,6 +373,10 @@ fn generate_field_encode(
                 #(#encode_stmts)*
             }
         }
-        _ => panic!("Dynamic types not supported in SolType derive"),
+        SolType::String | SolType::DynBytes | SolType::Array(_) | SolType::Custom(_) => {
+            quote! {
+                ::pvm_contract_types::SolEncode::encode_to(&#value_expr, &mut buf[#offset..]);
+            }
+        }
     }
 }
