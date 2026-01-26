@@ -59,17 +59,7 @@ pub trait StaticEncodedLen: SolEncode {
 }
 
 /// Trait for decoding Solidity ABI-encoded bytes into Rust types.
-pub trait SolDecode: Sized {
-    /// The Solidity type name/signature for this type.
-    const SOL_NAME: &'static str;
-
-    /// Whether this type has dynamic size. Used by Vec<T> to determine decoding strategy.
-    const IS_DYNAMIC: bool;
-
-    /// The size in bytes when this type is ABI-encoded (for static types).
-    /// For dynamic types, this is the head size (32 bytes for offset pointer).
-    const ENCODED_SIZE: usize;
-
+pub trait SolDecode: SolEncode + Sized {
     /// Decode a value from the input buffer at the given offset.
     /// For static types: reads directly from offset.
     /// For dynamic types: reads offset pointer, then decodes from that location.
@@ -113,10 +103,6 @@ macro_rules! impl_static_encode {
 macro_rules! impl_decode {
     ($ty:ty, $sol_name:expr, $size:expr, $decode_fn:expr) => {
         impl SolDecode for $ty {
-            const SOL_NAME: &'static str = $sol_name;
-            const IS_DYNAMIC: bool = false;
-            const ENCODED_SIZE: usize = $size;
-
             fn decode(input: &[u8], offset: usize) -> Self {
                 $decode_fn(input, offset)
             }
@@ -269,10 +255,6 @@ impl SolEncode for alloc::string::String {
 
 #[cfg(feature = "alloc")]
 impl SolDecode for alloc::string::String {
-    const SOL_NAME: &'static str = "string";
-    const IS_DYNAMIC: bool = true;
-    const ENCODED_SIZE: usize = 32;
-
     fn decode(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
@@ -341,10 +323,6 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
 
 #[cfg(feature = "alloc")]
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
-    const SOL_NAME: &'static str = "T[]";
-    const IS_DYNAMIC: bool = true;
-    const ENCODED_SIZE: usize = 32;
-
     fn decode(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
@@ -370,7 +348,7 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
             let mut elem_offset = array_data_start;
             for _ in 0..len {
                 result.push(T::decode(input, elem_offset));
-                elem_offset += T::ENCODED_SIZE;
+                elem_offset += 32;
             }
         }
         result
