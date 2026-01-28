@@ -1,0 +1,144 @@
+use crate::{SolDecode, SolEncode};
+
+impl SolEncode for alloc::string::String {
+    const SOL_NAME: &'static str = "string";
+    const IS_DYNAMIC: bool = true;
+
+    fn encode_len(&self) -> usize {
+        let data_len = self.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + 32 + data_len + padding
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        let bytes = self.as_bytes();
+        let data_len = bytes.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+
+        buf[32..64].fill(0);
+        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        buf[64..64 + data_len].copy_from_slice(bytes);
+        buf[64 + data_len..64 + data_len + padding].fill(0);
+    }
+
+    fn tail_len(&self) -> usize {
+        let data_len = self.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + data_len + padding
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        let bytes = self.as_bytes();
+        let data_len = bytes.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        buf[32..32 + data_len].copy_from_slice(bytes);
+        buf[32 + data_len..32 + data_len + padding].fill(0);
+    }
+}
+
+impl SolDecode for alloc::string::String {
+    fn decode(input: &[u8], offset: usize) -> Self {
+        let data_offset =
+            u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        Self::decode_tail(input, offset + data_offset)
+    }
+
+    fn decode_tail(input: &[u8], offset: usize) -> Self {
+        let len = u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        let data = &input[offset + 32..offset + 32 + len];
+        alloc::string::String::from_utf8(data.to_vec()).unwrap()
+    }
+}
+
+impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
+    const SOL_NAME: &'static str = "T[]";
+    const IS_DYNAMIC: bool = true;
+
+    fn encode_len(&self) -> usize {
+        32 + self.tail_len()
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+        self.encode_tail_to(&mut buf[32..]);
+    }
+
+    fn tail_len(&self) -> usize {
+        if T::IS_DYNAMIC {
+            let tails_len: usize = self.iter().map(|e| e.tail_len()).sum();
+            32 + self.len() * 32 + tails_len
+        } else {
+            32 + self.iter().map(|e| e.tail_len()).sum::<usize>()
+        }
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
+
+        if T::IS_DYNAMIC {
+            let mut offset_pos = 32;
+            let mut tail_pos = 32 + self.len() * 32;
+            for elem in self.iter() {
+                let rel_offset = tail_pos - 32;
+                buf[offset_pos..offset_pos + 32].fill(0);
+                buf[offset_pos + 24..offset_pos + 32]
+                    .copy_from_slice(&(rel_offset as u64).to_be_bytes());
+                offset_pos += 32;
+
+                let tail_len = elem.tail_len();
+                elem.encode_tail_to(&mut buf[tail_pos..tail_pos + tail_len]);
+                tail_pos += tail_len;
+            }
+        } else {
+            let mut pos = 32;
+            for elem in self.iter() {
+                let len = elem.tail_len();
+                elem.encode_tail_to(&mut buf[pos..pos + len]);
+                pos += len;
+            }
+        }
+    }
+}
+
+impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
+    fn decode(input: &[u8], offset: usize) -> Self {
+        let data_offset =
+            u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        Self::decode_tail(input, offset + data_offset)
+    }
+
+    fn decode_tail(input: &[u8], offset: usize) -> Self {
+        let len = u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+
+        let mut result = alloc::vec::Vec::with_capacity(len);
+        let array_data_start = offset + 32;
+
+        if T::IS_DYNAMIC {
+            for i in 0..len {
+                let elem_offset = u64::from_be_bytes(
+                    input[array_data_start + i * 32 + 24..array_data_start + i * 32 + 32]
+                        .try_into()
+                        .unwrap(),
+                ) as usize;
+                result.push(T::decode_tail(input, array_data_start + elem_offset));
+            }
+        } else {
+            let mut elem_offset = array_data_start;
+            for _ in 0..len {
+                result.push(T::decode(input, elem_offset));
+                elem_offset += 32;
+            }
+        }
+        result
+    }
+}

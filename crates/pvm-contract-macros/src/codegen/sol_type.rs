@@ -54,6 +54,7 @@ fn expand_static_sol_type(
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const SOL_NAME: &'static str = #sol_name;
+            const IS_DYNAMIC: bool = false;
 
             #[inline]
             fn encode_len(&self) -> usize {
@@ -84,6 +85,7 @@ fn expand_dynamic_sol_type(
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const SOL_NAME: &'static str = #sol_name;
+            const IS_DYNAMIC: bool = true;
 
             fn encode_len(&self) -> usize {
                 #encode_len_body
@@ -120,7 +122,7 @@ fn generate_dynamic_encode_len(
                 Fields::Unit => return None,
             };
             Some(quote! {
-                ::pvm_contract_types::DynSolEncode::tail_len(&#field_access)
+                ::pvm_contract_types::SolEncode::tail_len(&#field_access)
             })
         })
         .collect();
@@ -156,8 +158,8 @@ fn generate_dynamic_encode_body(
             stmts.push(quote! {
                 buf[#head_offset..#head_offset + 24].fill(0);
                 buf[#head_offset + 24..#head_offset + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-                let __tail_len = ::pvm_contract_types::DynSolEncode::tail_len(&#field_access);
-                ::pvm_contract_types::DynSolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&#field_access);
+                ::pvm_contract_types::SolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
                 __tail_offset += __tail_len;
             });
         } else {

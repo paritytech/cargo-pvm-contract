@@ -272,7 +272,6 @@ out[offset..offset + 32].copy_from_slice(&encode(tuple.1));
 
 | Feature | Status | Workaround |
 |---------|--------|------------|
-| Nested dynamic types (`Vec<String>`) | Not supported | Flatten structure or use static arrays |
 | Dynamic arrays in `no_alloc` mode | Not supported | Use `alloc` feature or fixed arrays |
 
 ### Custom Types with `#[derive(SolType)]`
