@@ -1,7 +1,7 @@
 [package]
 name = "{{ contract_name }}"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 rust-version = "1.92"
 build = "build.rs"
 
@@ -17,7 +17,7 @@ pallet-revive-uapi = { version = "0.10", default-features = false }
 {% if use_alloc -%}
 picoalloc = { version = "5", default-features = false }
 {% endif -%}
-polkavm-derive = { version = "0.30.0" }
+polkavm-derive = { version = "0.31.0" }
 
 [build-dependencies]
 {% if let Some(path) = builder_path -%}
@@ -31,5 +31,4 @@ codegen-units = 1
 lto = true
 opt-level = "z"
 panic = "abort"
-strip = true
 overflow-checks = false
