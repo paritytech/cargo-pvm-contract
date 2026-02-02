@@ -110,8 +110,33 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
                 out
             }}
         }
-        SolType::DynBytes | SolType::String | SolType::Array(_) => {
-            panic!("Dynamic types require special handling in tuple encoding");
+        SolType::String => {
+            if use_alloc {
+                quote! {{
+                    // Solidity string encoding: offset (32) + length (32) + data (padded to 32)
+                    let s: &str = #value_expr.as_str();
+                    let len = s.len();
+                    let padded_len = (len + 31) / 32 * 32;
+                    let mut out = alloc::vec::Vec::with_capacity(64 + padded_len);
+                    // Offset pointing to data (always 32 for single string)
+                    out.extend_from_slice(&[0u8; 32][..31]);
+                    out.push(32);
+                    // Length
+                    let mut len_bytes = [0u8; 32];
+                    len_bytes[24..32].copy_from_slice(&(len as u64).to_be_bytes());
+                    out.extend_from_slice(&len_bytes);
+                    // Data
+                    out.extend_from_slice(s.as_bytes());
+                    // Padding
+                    out.resize(64 + padded_len, 0);
+                    out
+                }}
+            } else {
+                panic!("String encoding requires alloc");
+            }
+        }
+        SolType::DynBytes | SolType::Array(_) => {
+            panic!("Dynamic Byte & Array types require special handling in tuple encoding");
         }
         SolType::FixedArray(inner, size) => {
             let size_lit = *size;

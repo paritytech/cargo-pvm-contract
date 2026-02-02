@@ -128,6 +128,7 @@ impl SolType {
             "bool" => Some(SolType::Bool),
             "[u8;32]" => Some(SolType::Bytes(32)),
             "[u8;20]" => Some(SolType::Bytes(20)),
+            "String" | "alloc::string::String" => Some(SolType::String),
             _ => None,
         }
     }

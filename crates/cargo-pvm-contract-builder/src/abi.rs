@@ -244,6 +244,7 @@ fn rust_type_to_solidity(ty: &syn::Type) -> String {
         "bool" => "bool".to_string(),
         "[u8;32]" => "bytes32".to_string(),
         "[u8;20]" => "bytes20".to_string(),
+        "String" | "alloc::string::String" => "string".to_string(),
         _ => "bytes".to_string(),
     }
 }
@@ -296,6 +297,7 @@ fn rust_type_str_to_solidity(type_str: &str) -> String {
         "u8" => "uint8".to_string(),
         "bool" => "bool".to_string(),
         "()" => "".to_string(),
+        "String" | "alloc::string::String" => "string".to_string(),
         _ => "bytes".to_string(),
     }
 }
