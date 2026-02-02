@@ -521,6 +521,9 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
                 });
                 quote! { #new_func }
             }
+            syn::Item::Struct(s) if has_pvm_storage_attr(&s.attrs) => {
+                expand_storage_struct(s)
+            }
             other => quote! { #other },
         })
         .collect();
@@ -531,4 +534,75 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
 
         #(#items)*
     }
+}
+
+fn has_pvm_storage_attr(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        let segments: Vec<_> = attr.path().segments.iter().collect();
+        if segments.len() == 2 && segments[0].ident == "pvm" && segments[1].ident == "storage" {
+            return true;
+        }
+    }
+    false
+}
+
+fn expand_storage_struct(input: &syn::ItemStruct) -> TokenStream {
+    let struct_name = &input.ident;
+    let vis = &input.vis;
+
+    let fields = match &input.fields {
+        syn::Fields::Named(fields) => &fields.named,
+        _ => return quote! { compile_error!("storage macro only supports structs with named fields"); },
+    };
+
+    let mut methods = Vec::new();
+
+    for field in fields {
+        let field_name = match field.ident.as_ref() {
+            Some(name) => name,
+            None => continue,
+        };
+        let field_type = &field.ty;
+        let field_vis = &field.vis;
+
+        // Create the namespace string: "StructName::field_name"
+        let namespace = format!("{}::{}", struct_name, field_name);
+        let namespace_bytes = proc_macro2::Literal::byte_string(namespace.as_bytes());
+
+        // Check if the type is Mapping<K, V>
+        let is_mapping = is_mapping_type(field_type);
+
+        let method = if is_mapping {
+            quote! {
+                #field_vis fn #field_name() -> #field_type {
+                    <#field_type>::new(#namespace_bytes)
+                }
+            }
+        } else {
+            quote! {
+                #field_vis fn #field_name() -> pvm_contract::storage::Lazy<#field_type> {
+                    pvm_contract::storage::Lazy::new(#namespace_bytes)
+                }
+            }
+        };
+
+        methods.push(method);
+    }
+
+    quote! {
+        #vis struct #struct_name;
+
+        impl #struct_name {
+            #(#methods)*
+        }
+    }
+}
+
+fn is_mapping_type(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "Mapping";
+        }
+    }
+    false
 }

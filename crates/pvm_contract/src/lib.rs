@@ -1,6 +1,9 @@
 #![no_std]
 
-pub use pvm_contract_macros::{constructor, contract, fallback, method};
+#[cfg(target_arch = "riscv64")]
+pub mod storage;
+
+pub use pvm_contract_macros::{constructor, contract, fallback, method, storage};
 
 pub use alloy_primitives::{Address, FixedBytes, I256, U256};
 

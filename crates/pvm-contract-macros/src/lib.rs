@@ -5,7 +5,8 @@ mod signature;
 mod solidity;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, ItemFn, ItemMod};
+use quote::quote;
+use syn::{parse_macro_input, ItemFn, ItemMod, ItemStruct, Type};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
@@ -304,4 +305,124 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
+}
+
+/// Generates storage accessor functions from a struct definition.
+///
+/// Transforms a struct with typed fields into a unit struct with associated
+/// functions that return `Lazy<T>` or `Mapping<K, V>` wrappers.
+///
+/// # Example
+///
+/// ```ignore
+/// use pvm_contract::storage::{Lazy, Mapping};
+///
+/// #[pvm_contract::storage]
+/// struct Storage {
+///     counter: u64,
+///     total_supply: u128,
+///     balances: Mapping<[u8; 20], u128>,
+/// }
+///
+/// // Expands to:
+/// struct Storage;
+/// impl Storage {
+///     fn counter() -> Lazy<u64> { Lazy::new(b"Storage::counter") }
+///     fn total_supply() -> Lazy<u128> { Lazy::new(b"Storage::total_supply") }
+///     fn balances() -> Mapping<[u8; 20], u128> { Mapping::new(b"Storage::balances") }
+/// }
+/// ```
+///
+/// # Usage
+///
+/// ```ignore
+/// // Set a value
+/// Storage::counter().set(&42u64);
+///
+/// // Get a value
+/// let count = Storage::counter().get();  // Option<u64>
+///
+/// // Use mapping
+/// Storage::balances().insert(&addr, &1000u128);
+/// let balance = Storage::balances().get(&addr);  // Option<u128>
+/// ```
+///
+/// # Field Types
+///
+/// - Plain types (e.g., `u64`, `u128`, `[u8; 32]`) are wrapped in `Lazy<T>`
+/// - `Mapping<K, V>` fields are kept as-is
+#[proc_macro_attribute]
+pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemStruct);
+
+    match expand_storage(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+fn expand_storage(input: ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
+    let struct_name = &input.ident;
+    let vis = &input.vis;
+
+    let fields = match &input.fields {
+        syn::Fields::Named(fields) => &fields.named,
+        _ => return Err(syn::Error::new_spanned(
+            &input,
+            "storage macro only supports structs with named fields"
+        )),
+    };
+
+    let mut methods = Vec::new();
+
+    for field in fields {
+        let field_name = field.ident.as_ref().ok_or_else(|| {
+            syn::Error::new_spanned(field, "expected named field")
+        })?;
+        let field_type = &field.ty;
+        let field_vis = &field.vis;
+
+        // Create the namespace string: "StructName::field_name"
+        let namespace = format!("{}::{}", struct_name, field_name);
+        let namespace_bytes = proc_macro2::Literal::byte_string(namespace.as_bytes());
+
+        // Check if the type is Mapping<K, V>
+        let is_mapping = is_mapping_type(field_type);
+
+        let method = if is_mapping {
+            // For Mapping types, use turbofish syntax to avoid parse issues with generics
+            quote! {
+                #field_vis fn #field_name() -> #field_type {
+                    <#field_type>::new(#namespace_bytes)
+                }
+            }
+        } else {
+            // For other types, wrap in Lazy<T>
+            quote! {
+                #field_vis fn #field_name() -> pvm_contract::storage::Lazy<#field_type> {
+                    pvm_contract::storage::Lazy::new(#namespace_bytes)
+                }
+            }
+        };
+
+        methods.push(method);
+    }
+
+    Ok(quote! {
+        #vis struct #struct_name;
+
+        impl #struct_name {
+            #(#methods)*
+        }
+    })
+}
+
+/// Check if a type is `Mapping<...>`
+fn is_mapping_type(ty: &Type) -> bool {
+    if let Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "Mapping";
+        }
+    }
+    false
 }
