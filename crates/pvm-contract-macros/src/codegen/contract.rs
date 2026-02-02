@@ -356,7 +356,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #[pvm_contract::polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
                 match #mod_name::#constructor_name() {
@@ -369,7 +369,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     } else {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #[pvm_contract::polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {}
         }
@@ -398,7 +398,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let call_fn = if use_alloc {
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #[pvm_contract::polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pvm_contract::api::call_data_size() as usize;
@@ -433,7 +433,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         let buffer_size = args.buffer_size;
         quote! {
-            #[no_mangle]
+            #[unsafe(no_mangle)]
             #[pvm_contract::polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pvm_contract::api::call_data_size() as usize;
