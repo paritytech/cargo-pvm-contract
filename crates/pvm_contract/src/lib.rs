@@ -5,9 +5,12 @@ pub mod storage;
 
 pub use pvm_contract_macros::{constructor, contract, fallback, method, storage};
 
-pub use alloy_primitives::{Address, FixedBytes, I256, U256};
+pub use primitive_types::H160 as Address;
+pub use alloy_primitives::{FixedBytes, I256, U256};
 
 pub use pallet_revive_uapi::{HostFn, HostFnImpl as api, ReturnFlags, StorageFlags};
+
+pub use parity_scale_codec::{Encode, Decode};
 
 pub use polkavm_derive;
 

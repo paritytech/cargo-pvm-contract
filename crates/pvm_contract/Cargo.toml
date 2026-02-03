@@ -9,6 +9,7 @@ description = "Runtime library for PVM smart contracts"
 [dependencies]
 pvm-contract-macros = { path = "../pvm-contract-macros" }
 alloy-primitives = { version = "0.8", default-features = false }
+primitive-types = { version = "0.14", default-features = false, features = ["codec"] }
 pallet-revive-uapi = { version = "0.9", default-features = false }
 parity-scale-codec = { version = "3.6", default-features = false }
 polkavm-derive.workspace = true
