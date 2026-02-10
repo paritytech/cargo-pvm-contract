@@ -1,10 +1,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
+use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
-use super::dispatch::{generate_dispatch_arm, MethodInfo};
+use super::dispatch::{MethodInfo, generate_dispatch_arm};
 use crate::signature::{FunctionSignature, SolType};
-use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
+use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
 pub struct ContractArgs {
     pub no_alloc: bool,
@@ -77,6 +77,7 @@ struct ParsedContract {
     has_constructor: bool,
     has_fallback: bool,
     constructor_name: Option<Ident>,
+    constructor_returns_result: bool,
     fallback_name: Option<Ident>,
 }
 
@@ -243,6 +244,7 @@ fn parse_contract(
     let mut has_constructor = false;
     let mut has_fallback = false;
     let mut constructor_name = None;
+    let mut constructor_returns_result = false;
     let mut fallback_name = None;
     let mut implemented_sol_methods = Vec::new();
 
@@ -251,6 +253,7 @@ fn parse_contract(
             if has_pvm_attr(&func.attrs, "constructor") {
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
+                constructor_returns_result = is_result_return_type(&func.sig.output);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
                 fallback_name = Some(func.sig.ident.clone());
@@ -337,6 +340,7 @@ fn parse_contract(
         has_constructor,
         has_fallback,
         constructor_name,
+        constructor_returns_result,
         fallback_name,
     })
 }
@@ -380,14 +384,23 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
-        quote! {
-            #[polkavm_derive::polkavm_export]
-            pub extern "C" fn deploy() {
-                match #mod_name::#constructor_name() {
-                    Ok(()) => {}
-                    Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+        if parsed.constructor_returns_result {
+            quote! {
+                #[polkavm_derive::polkavm_export]
+                pub extern "C" fn deploy() {
+                    match #mod_name::#constructor_name() {
+                        Ok(()) => {}
+                        Err(e) => {
+                            pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                        }
                     }
+                }
+            }
+        } else {
+            quote! {
+                #[polkavm_derive::polkavm_export]
+                pub extern "C" fn deploy() {
+                    #mod_name::#constructor_name();
                 }
             }
         }
