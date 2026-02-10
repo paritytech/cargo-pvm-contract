@@ -142,7 +142,44 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
                     }}
                 }
             } else {
-                panic!("Dynamic tuple encoding not yet implemented");
+                if !use_alloc {
+                    panic!("Dynamic tuple encoding requires alloc mode");
+                }
+                let head_size = types.len() * 32;
+                let mut stmts = Vec::new();
+
+                for (i, t) in types.iter().enumerate() {
+                    let idx = syn::Index::from(i);
+                    let elem_expr = quote!(#value_expr.#idx);
+
+                    if t.is_dynamic() {
+                        stmts.push(quote! {{
+                            let __off = #head_size + __tail.len();
+                            let __off_value = ruint::aliases::U256::from(__off);
+                            let mut __off_buf = [0u8; 32];
+                            <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
+                                &__off_value, &mut __off_buf);
+                            __head.extend_from_slice(&__off_buf);
+                            let __tl = ::pvm_contract_types::SolEncode::tail_len(&#elem_expr);
+                            let mut __tbuf = alloc::vec![0u8; __tl];
+                            ::pvm_contract_types::SolEncode::encode_tail_to(&#elem_expr, &mut __tbuf);
+                            __tail.extend_from_slice(&__tbuf);
+                        }});
+                    } else {
+                        let encode = generate_encode(t, elem_expr, use_alloc);
+                        stmts.push(quote! {
+                            __head.extend_from_slice(&#encode);
+                        });
+                    }
+                }
+
+                quote! {{
+                    let mut __head = alloc::vec::Vec::with_capacity(#head_size);
+                    let mut __tail = alloc::vec::Vec::new();
+                    #(#stmts)*
+                    __head.extend_from_slice(&__tail);
+                    __head
+                }}
             }
         }
     }
@@ -181,7 +218,13 @@ pub fn generate_dynamic_value_encode(ty: &SolType, value_expr: TokenStream) -> T
             }}
         }
         SolType::Array(_) => {
-            panic!("Dynamic array encoding not yet implemented");
+            quote! {{
+                let __arr = &#value_expr;
+                let __tl = ::pvm_contract_types::SolEncode::tail_len(__arr);
+                let mut out = alloc::vec![0u8; __tl];
+                ::pvm_contract_types::SolEncode::encode_tail_to(__arr, &mut out);
+                out
+            }}
         }
         _ => {
             panic!("generate_dynamic_value_encode called with non-dynamic type");
