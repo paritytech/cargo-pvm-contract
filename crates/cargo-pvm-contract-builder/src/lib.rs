@@ -17,7 +17,7 @@ use std::{
     process::Command,
 };
 
-pub use abi::{generate_abi, AbiJson};
+pub use abi::{AbiJson, generate_abi};
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";

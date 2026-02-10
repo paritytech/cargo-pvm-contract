@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Ident, ItemFn, LitStr, Token};
+use syn::{Ident, ItemFn, LitStr, Token, parse::Parse, parse::ParseStream};
 
 pub struct MethodArgs {
     pub rename: Option<String>,

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use inquire::{Select, Text};
 use log::debug;
 use std::path::PathBuf;

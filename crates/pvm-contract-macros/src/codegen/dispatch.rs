@@ -3,7 +3,7 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params, has_custom_types};
 use super::encode::{generate_dynamic_value_encode, generate_encode};
-use crate::signature::{compute_selector, FunctionSignature, SolType};
+use crate::signature::{FunctionSignature, SolType, compute_selector};
 
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
