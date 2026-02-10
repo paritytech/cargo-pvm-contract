@@ -1817,7 +1817,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-macros"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "pvm-contract-types",
@@ -1829,9 +1829,11 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-types"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "alloy-core",
+ "proptest",
+ "pvm-contract-macros",
  "ruint",
 ]
 
