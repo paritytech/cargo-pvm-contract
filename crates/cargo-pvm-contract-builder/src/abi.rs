@@ -7,7 +7,7 @@ use tiny_keccak::{Hasher, Keccak};
 pub struct ContractInfo {
     pub sol_path: Option<String>,
     pub methods: Vec<MethodInfo>,
-    pub has_constructor: bool,
+    pub constructor: Option<Vec<ParamInfo>>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,12 +113,13 @@ fn parse_contract_module(item_mod: &syn::ItemMod) -> Result<Option<ContractInfo>
     };
 
     let mut methods = Vec::new();
-    let mut has_constructor = false;
+    let mut constructor = None;
 
     for item in content {
         if let syn::Item::Fn(func) = item {
             if has_pvm_attr(&func.attrs, "constructor") {
-                has_constructor = true;
+                let method = parse_method_fn(func)?;
+                constructor = Some(method.inputs);
             } else if has_pvm_attr(&func.attrs, "method") {
                 let method = parse_method_fn(func)?;
                 methods.push(method);
@@ -129,7 +130,7 @@ fn parse_contract_module(item_mod: &syn::ItemMod) -> Result<Option<ContractInfo>
     Ok(Some(ContractInfo {
         sol_path,
         methods,
-        has_constructor,
+        constructor,
     }))
 }
 
@@ -391,9 +392,16 @@ fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
 fn generate_abi_from_methods(contract: &ContractInfo) -> AbiJson {
     let mut items = Vec::new();
 
-    if contract.has_constructor {
+    if let Some(ref params) = contract.constructor {
+        let inputs: Vec<AbiParam> = params
+            .iter()
+            .map(|p| AbiParam {
+                name: p.name.clone(),
+                param_type: p.sol_type.clone(),
+            })
+            .collect();
         items.push(AbiItem::Constructor {
-            inputs: vec![],
+            inputs,
             state_mutability: "nonpayable".to_string(),
         });
     }

@@ -8,7 +8,7 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
         SolType::Address => {
             quote! {{
                 let mut out = [0u8; 32];
-                out[12..32].copy_from_slice(#value_expr.as_slice());
+                out[12..32].copy_from_slice(#value_expr.as_bytes());
                 out
             }}
         }

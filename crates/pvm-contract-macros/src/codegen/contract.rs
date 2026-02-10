@@ -2,8 +2,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
 
+use super::decode::{calculate_min_input_size, generate_decode, generate_decode_params};
 use super::dispatch::{generate_dispatch_arm, MethodInfo};
-use crate::signature::{FunctionSignature, SolType};
+use super::encode::generate_encode;
+use crate::signature::{compute_selector, FunctionSignature, SolType};
 use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
 
 pub struct ContractArgs {
@@ -71,12 +73,17 @@ fn load_sol_interface(path: &str) -> Result<SolInterface, String> {
     parse_solidity_interface(&source)
 }
 
+struct ConstructorInfo {
+    fn_name: Ident,
+    param_names: Vec<Ident>,
+    param_types: Vec<SolType>,
+}
+
 struct ParsedContract {
     mod_name: Ident,
     methods: Vec<MethodInfo>,
-    has_constructor: bool,
     has_fallback: bool,
-    constructor_name: Option<Ident>,
+    constructor: Option<ConstructorInfo>,
     fallback_name: Option<Ident>,
 }
 
@@ -218,17 +225,34 @@ fn parse_contract(
         .ok_or_else(|| syn::Error::new_spanned(input, "Contract module must have a body"))?;
 
     let mut methods = Vec::new();
-    let mut has_constructor = false;
     let mut has_fallback = false;
-    let mut constructor_name = None;
+    let mut constructor: Option<ConstructorInfo> = None;
     let mut fallback_name = None;
     let mut implemented_sol_methods = Vec::new();
 
     for item in &content.1 {
         if let syn::Item::Fn(func) = item {
             if has_pvm_attr(&func.attrs, "constructor") {
-                has_constructor = true;
-                constructor_name = Some(func.sig.ident.clone());
+                let param_names: Vec<Ident> = func.sig.inputs.iter().filter_map(|arg| {
+                    if let syn::FnArg::Typed(pat_type) = arg {
+                        if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                            return Some(pat_ident.ident.clone());
+                        }
+                    }
+                    None
+                }).collect();
+                let param_types: Vec<SolType> = func.sig.inputs.iter().filter_map(|arg| {
+                    if let syn::FnArg::Typed(pat_type) = arg {
+                        SolType::from_rust_type(&pat_type.ty)
+                    } else {
+                        None
+                    }
+                }).collect();
+                constructor = Some(ConstructorInfo {
+                    fn_name: func.sig.ident.clone(),
+                    param_names,
+                    param_types,
+                });
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
                 fallback_name = Some(func.sig.ident.clone());
@@ -309,9 +333,8 @@ fn parse_contract(
     Ok(ParsedContract {
         mod_name,
         methods,
-        has_constructor,
         has_fallback,
-        constructor_name,
+        constructor,
         fallback_name,
     })
 }
@@ -342,27 +365,48 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {}
     };
 
-    let panic_handler = quote! {
-        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-        #[panic_handler]
-        fn panic(_info: &core::panic::PanicInfo) -> ! {
-            unsafe {
-                core::arch::asm!("unimp");
-                core::hint::unreachable_unchecked()
-            }
-        }
-    };
+    let deploy_fn = if let Some(ref ctor) = parsed.constructor {
+        let constructor_name = &ctor.fn_name;
+        let param_names = &ctor.param_names;
 
-    let deploy_fn = if parsed.has_constructor {
-        let constructor_name = parsed.constructor_name.as_ref().unwrap();
-        quote! {
-            #[unsafe(no_mangle)]
-            #[pvm_contract::polkavm_derive::polkavm_export]
-            pub extern "C" fn deploy() {
-                match #mod_name::#constructor_name() {
-                    Ok(()) => {}
-                    Err(e) => {
-                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+        if ctor.param_types.is_empty() {
+            quote! {
+                #[unsafe(no_mangle)]
+                #[pvm_contract::polkavm_derive::polkavm_export]
+                pub extern "C" fn deploy() {
+                    match #mod_name::#constructor_name() {
+                        Ok(()) => {}
+                        Err(e) => {
+                            pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        }
+                    }
+                }
+            }
+        } else {
+            let decodes = generate_decode_params(&ctor.param_types, use_alloc);
+            let min_size = calculate_min_input_size(&ctor.param_types);
+            let decode_stmts: Vec<_> = param_names.iter().zip(decodes.iter())
+                .map(|(name, decode)| quote! { let #name = #decode; }).collect();
+            let call_args: Vec<_> = param_names.iter().map(|n| quote!(#n)).collect();
+
+            quote! {
+                #[unsafe(no_mangle)]
+                #[pvm_contract::polkavm_derive::polkavm_export]
+                pub extern "C" fn deploy() {
+                    let call_data_len = pvm_contract::api::call_data_size() as usize;
+                    let mut call_data = vec![0u8; call_data_len];
+                    pvm_contract::api::call_data_copy(&mut call_data, 0);
+                    let input = &call_data[..];
+                    if input.len() < #min_size {
+                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"InvalidConstructorArgs");
+                        return;
+                    }
+                    #(#decode_stmts)*
+                    match #mod_name::#constructor_name(#(#call_args),*) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        }
                     }
                 }
             }
@@ -483,15 +527,17 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
+    let reference_type = generate_reference_type(&parsed.methods);
+
     Ok(quote! {
         use pvm_contract::HostFn as _;
 
         #alloc_setup
 
-        #panic_handler
-
+        #[cfg(pvm_entry_point)]
         #deploy_fn
 
+        #[cfg(pvm_entry_point)]
         #call_fn
 
         #(#mod_attrs)*
@@ -500,7 +546,94 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
             #mod_content
         }
+
+        #reference_type
     })
+}
+
+fn generate_reference_method(method: &MethodInfo) -> TokenStream {
+    let fn_name = &method.fn_name;
+    let sig = &method.signature;
+    let [s0, s1, s2, s3] = compute_selector(&sig.canonical_signature());
+
+    let params: Vec<TokenStream> = method.param_names.iter().zip(sig.inputs.iter())
+        .map(|(name, ty)| { let rt = ty.rust_type(true); quote! { #name: #rt } }).collect();
+
+    let encodes: Vec<TokenStream> = method.param_names.iter().zip(sig.inputs.iter())
+        .map(|(name, ty)| {
+            let enc = generate_encode(ty, quote!(#name), true);
+            quote! { calldata.extend_from_slice(&#enc); }
+        }).collect();
+
+    let ret_ty = match sig.outputs.as_slice() {
+        [] => quote! { () },
+        [one] => one.rust_type(true),
+        many => { let tys: Vec<_> = many.iter().map(|t| t.rust_type(true)).collect(); quote! { (#(#tys),*) } }
+    };
+
+    let output_size: usize = sig.outputs.iter().map(|t| t.head_size()).sum();
+
+    let decode_return = match sig.outputs.as_slice() {
+        [] => quote! { () },
+        [one] => generate_decode(one, quote!(output), 0, true),
+        many => {
+            let mut offset = 0;
+            let decs: Vec<_> = many.iter().map(|t| {
+                let d = generate_decode(t, quote!(output), offset, true);
+                offset += t.head_size();
+                d
+            }).collect();
+            quote! { (#(#decs),*) }
+        }
+    };
+
+    let output_arg = if sig.outputs.is_empty() {
+        quote! { None }
+    } else {
+        quote! { Some(&mut output_ref) }
+    };
+
+    quote! {
+        pub fn #fn_name(&self, #(#params),*) -> pvm_contract::call::CallResult<#ret_ty> {
+            extern crate alloc;
+            let mut calldata = alloc::vec![#s0, #s1, #s2, #s3];
+            #(#encodes)*
+            let mut output_buf = [0u8; #output_size];
+            let mut output_ref: &mut [u8] = &mut output_buf[..];
+            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
+                pvm_contract::CallFlags::ALLOW_REENTRY,
+                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata, #output_arg,
+            );
+            match result {
+                Ok(()) => {
+                    let written = #output_size - output_ref.len();
+                    let output = &output_buf[..written];
+                    Ok(#decode_return)
+                }
+                Err(e) => Err(pvm_contract::call::CallError::from(e)),
+            }
+        }
+    }
+}
+
+fn generate_reference_type(methods: &[MethodInfo]) -> TokenStream {
+    let proxy_methods: Vec<TokenStream> = methods.iter().map(generate_reference_method).collect();
+    quote! {
+        #[derive(pvm_contract::Encode, pvm_contract::Decode)]
+        pub struct Reference {
+            addr: pvm_contract::Address,
+        }
+
+        impl Reference {
+            pub fn at(addr: pvm_contract::Address) -> Self { Self { addr } }
+            pub fn address(&self) -> &pvm_contract::Address { &self.addr }
+            #(#proxy_methods)*
+        }
+
+        pub fn reference(addr: pvm_contract::Address) -> Reference {
+            Reference::at(addr)
+        }
+    }
 }
 
 fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {

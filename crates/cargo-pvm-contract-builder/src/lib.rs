@@ -63,6 +63,20 @@ impl PvmBuilder {
 
     /// Build the PolkaVM binary.
     pub fn build(self) {
+        // Re-run build.rs if the entry point env var changes
+        println!("cargo:rerun-if-env-changed=PVM_ENTRY_POINT_CRATE");
+
+        // Determine if this crate should generate entry points (deploy/call).
+        // The builder sets PVM_ENTRY_POINT_CRATE to the package name of the
+        // primary contract being built. Only that crate gets entry points;
+        // dependency contracts skip them to avoid duplicate symbol conflicts.
+        if let Ok(entry_crate) = env::var("PVM_ENTRY_POINT_CRATE") {
+            let pkg_name = env::var("CARGO_PKG_NAME").unwrap_or_default();
+            if entry_crate == pkg_name {
+                println!("cargo:rustc-cfg=pvm_entry_point");
+            }
+        }
+
         // Check if we're in a recursive build
         if env::var(INTERNAL_BUILD_ENV).is_ok() {
             return;
@@ -154,6 +168,18 @@ fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     Ok(bins)
 }
 
+/// Get the package name from Cargo.toml.
+fn get_package_name(cargo_toml: &Path) -> Result<String> {
+    let content = fs::read_to_string(cargo_toml)
+        .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
+    let doc: toml_edit::DocumentMut = content.parse().context("Failed to parse Cargo.toml")?;
+    doc.get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(|s| s.to_string())
+        .context("No package name found in Cargo.toml")
+}
+
 /// Build the project.
 fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> Result<()> {
     let profile = Profile::detect();
@@ -173,7 +199,8 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
     }
 
     let target_dir = build_dir;
-    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build)?;
+    let pkg_name = get_package_name(project_cargo_toml)?;
+    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build, &pkg_name)?;
 
     // Link each ELF to PolkaVM
     let elf_dir = target_dir
@@ -221,6 +248,7 @@ fn build_elf(
     target_dir: &Path,
     profile: &Profile,
     bins: &[String],
+    pkg_name: &str,
 ) -> Result<()> {
     let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
 
@@ -243,6 +271,9 @@ fn build_elf(
         .env("CARGO_PROFILE_RELEASE_STRIP", "false")
         .env("RUSTC_BOOTSTRAP", "1")
         .env(INTERNAL_BUILD_ENV, "1")
+        // Tell each crate's build.rs which crate should generate entry points.
+        // Only the primary contract gets deploy/call; dependencies skip them.
+        .env("PVM_ENTRY_POINT_CRATE", pkg_name)
         .arg("build")
         .arg("--manifest-path")
         .arg(manifest_path)
