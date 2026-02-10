@@ -13,13 +13,13 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
             return Err(syn::Error::new_spanned(
                 input,
                 "SolType can only be derived for structs",
-            ))
+            ));
         }
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
                 "SolType can only be derived for structs",
-            ))
+            ));
         }
     };
 
@@ -50,6 +50,7 @@ fn expand_static_sol_type(
 ) -> syn::Result<TokenStream> {
     let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
     let encode_body = generate_static_encode_body(fields, field_info);
+    let decode_body = generate_static_decode_body(fields, field_info);
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
@@ -69,6 +70,12 @@ fn expand_static_sol_type(
         impl ::pvm_contract_types::StaticEncodedLen for #name {
             const ENCODED_SIZE: usize = #total_size;
         }
+
+        impl ::pvm_contract_types::SolDecode for #name {
+            fn decode_at(input: &[u8], offset: usize) -> Self {
+                #decode_body
+            }
+        }
     })
 }
 
@@ -81,6 +88,7 @@ fn expand_dynamic_sol_type(
     let head_size: usize = field_info.len() * 32;
     let encode_len_body = generate_dynamic_encode_len(fields, field_info, head_size);
     let encode_body = generate_dynamic_encode_body(fields, field_info, head_size);
+    let decode_body = generate_dynamic_decode_body(fields, field_info);
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
@@ -93,6 +101,16 @@ fn expand_dynamic_sol_type(
 
             fn encode_to(&self, buf: &mut [u8]) {
                 #encode_body
+            }
+        }
+
+        impl ::pvm_contract_types::SolDecode for #name {
+            fn decode_at(input: &[u8], offset: usize) -> Self {
+                #decode_body
+            }
+
+            fn decode_tail(input: &[u8], offset: usize) -> Self {
+                Self::decode_at(input, offset)
             }
         }
     })
@@ -242,6 +260,120 @@ fn generate_static_encode_body(
 
     quote! {
         #(#encode_stmts)*
+    }
+}
+
+fn generate_static_decode_body(
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+) -> TokenStream {
+    match fields {
+        Fields::Named(named) => {
+            let mut offset = 0usize;
+            let field_decodes: Vec<_> = named
+                .named
+                .iter()
+                .zip(field_info.iter())
+                .map(|(field, (field_name, sol_type))| {
+                    let name = field_name.as_ref().unwrap();
+                    let ty = &field.ty;
+                    let field_offset = offset;
+                    offset += sol_type.head_size();
+                    quote! {
+                        #name: <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #field_offset)
+                    }
+                })
+                .collect();
+
+            quote! {
+                Self { #(#field_decodes),* }
+            }
+        }
+        Fields::Unnamed(unnamed) => {
+            let mut offset = 0usize;
+            let field_decodes: Vec<_> = unnamed
+                .unnamed
+                .iter()
+                .zip(field_info.iter())
+                .map(|(field, (_, sol_type))| {
+                    let ty = &field.ty;
+                    let field_offset = offset;
+                    offset += sol_type.head_size();
+                    quote! {
+                        <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #field_offset)
+                    }
+                })
+                .collect();
+
+            quote! {
+                Self(#(#field_decodes),*)
+            }
+        }
+        Fields::Unit => quote! { Self },
+    }
+}
+
+fn generate_dynamic_decode_body(
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+) -> TokenStream {
+    match fields {
+        Fields::Named(named) => {
+            let field_decodes: Vec<_> = named
+                .named
+                .iter()
+                .zip(field_info.iter())
+                .enumerate()
+                .map(|(i, (field, (field_name, sol_type)))| {
+                    let name = field_name.as_ref().unwrap();
+                    let ty = &field.ty;
+                    let head_offset = i * 32;
+                    let decode = generate_dynamic_field_decode(ty, sol_type, head_offset);
+                    quote! {
+                        #name: #decode
+                    }
+                })
+                .collect();
+
+            quote! {
+                Self { #(#field_decodes),* }
+            }
+        }
+        Fields::Unnamed(unnamed) => {
+            let field_decodes: Vec<_> = unnamed
+                .unnamed
+                .iter()
+                .zip(field_info.iter())
+                .enumerate()
+                .map(|(i, (field, (_, sol_type)))| {
+                    let ty = &field.ty;
+                    let head_offset = i * 32;
+                    generate_dynamic_field_decode(ty, sol_type, head_offset)
+                })
+                .collect();
+
+            quote! {
+                Self(#(#field_decodes),*)
+            }
+        }
+        Fields::Unit => quote! { Self },
+    }
+}
+
+fn generate_dynamic_field_decode(ty: &Type, sol_type: &SolType, head_offset: usize) -> TokenStream {
+    if sol_type.is_dynamic() {
+        let rel_offset_start = head_offset + 24;
+        let rel_offset_end = head_offset + 32;
+        quote! {{
+            let __field_offset =
+                u64::from_be_bytes(input[offset + #rel_offset_start..offset + #rel_offset_end].try_into().unwrap())
+                    as usize;
+            <#ty as ::pvm_contract_types::SolDecode>::decode_tail(input, offset + __field_offset)
+        }}
+    } else {
+        quote! {
+            <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #head_offset)
+        }
     }
 }
 

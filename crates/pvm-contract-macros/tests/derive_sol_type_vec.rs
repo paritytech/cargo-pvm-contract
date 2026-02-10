@@ -1,8 +1,8 @@
 use pvm_contract_macros::SolType;
-use pvm_contract_types::SolEncode;
+use pvm_contract_types::{SolDecode, SolEncode};
 use ruint::aliases::U256;
 
-#[derive(SolType)]
+#[derive(Debug, PartialEq, Eq, SolType)]
 struct WithVecU256 {
     items: Vec<U256>,
 }
@@ -52,6 +52,9 @@ fn test_derive_with_vec_u256() {
     let elem2_bytes = &buf[96..128];
     assert_eq!(elem2_bytes[31], 2);
     assert!(elem2_bytes[0..31].iter().all(|&b| b == 0));
+
+    let decoded = WithVecU256::decode(&buf);
+    assert_eq!(decoded, s);
 }
 
 #[test]
@@ -81,7 +84,7 @@ fn test_derive_with_empty_vec() {
     assert!(length_bytes.iter().all(|&b| b == 0));
 }
 
-#[derive(SolType)]
+#[derive(Debug, PartialEq, Eq, SolType)]
 struct MixedFields {
     id: u32,
     items: Vec<U256>,
@@ -135,6 +138,9 @@ fn test_derive_with_mixed_fields() {
 
     let elem2_bytes = &buf[128..160];
     assert_eq!(elem2_bytes[31], 200);
+
+    let decoded = MixedFields::decode(&buf);
+    assert_eq!(decoded, s);
 }
 
 #[test]
@@ -147,7 +153,7 @@ fn test_dynamic_struct_no_static_encoded_len() {
     assert_eq!(len, 96);
 }
 
-#[derive(SolType)]
+#[derive(Debug, PartialEq, Eq, SolType)]
 struct MultipleVecs {
     first: Vec<U256>,
     second: Vec<U256>,
@@ -217,4 +223,7 @@ fn test_derive_with_multiple_vec_fields() {
         second_len_bytes[31],
     ]);
     assert_eq!(second_len, 2);
+
+    let decoded = MultipleVecs::decode(&buf);
+    assert_eq!(decoded, s);
 }
