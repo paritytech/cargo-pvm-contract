@@ -77,6 +77,84 @@ fn encode_decode_u8_proptest() {
 }
 
 #[test]
+fn encode_decode_i128_proptest() {
+    proptest!(|(val: i128)| {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(i128::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_i64_proptest() {
+    proptest!(|(val: i64)| {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(i64::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_i32_proptest() {
+    proptest!(|(val: i32)| {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(i32::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_i16_proptest() {
+    proptest!(|(val: i16)| {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(i16::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_i8_proptest() {
+    proptest!(|(val: i8)| {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(i8::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_signed_negative_values() {
+    let val_i128: i128 = -1;
+    let mut buf = vec![0u8; 32];
+    val_i128.encode_to(&mut buf);
+    assert_eq!(&buf[..16], &[0xff; 16]);
+    assert_eq!(i128::decode(&buf), val_i128);
+
+    let val_i64: i64 = -1;
+    let mut buf = vec![0u8; 32];
+    val_i64.encode_to(&mut buf);
+    assert_eq!(&buf[..24], &[0xff; 24]);
+    assert_eq!(i64::decode(&buf), val_i64);
+
+    let val_i32: i32 = -1;
+    let mut buf = vec![0u8; 32];
+    val_i32.encode_to(&mut buf);
+    assert_eq!(&buf[..28], &[0xff; 28]);
+    assert_eq!(i32::decode(&buf), val_i32);
+
+    let val_i16: i16 = -1;
+    let mut buf = vec![0u8; 32];
+    val_i16.encode_to(&mut buf);
+    assert_eq!(&buf[..30], &[0xff; 30]);
+    assert_eq!(i16::decode(&buf), val_i16);
+
+    let val_i8: i8 = -1;
+    let mut buf = vec![0u8; 32];
+    val_i8.encode_to(&mut buf);
+    assert_eq!(&buf[..31], &[0xff; 31]);
+    assert_eq!(i8::decode(&buf), val_i8);
+}
+
+#[test]
 fn encode_decode_user_type_static_proptest() {
     #[derive(Clone, Debug, PartialEq, Eq, SolType)]
     struct UserStatic {

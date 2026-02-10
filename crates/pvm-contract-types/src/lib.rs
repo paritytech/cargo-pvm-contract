@@ -145,6 +145,70 @@ impl_static_type!(
 );
 
 impl_static_type!(
+    i128,
+    "int128",
+    |val: &i128, buf: &mut [u8]| {
+        let fill = if *val < 0 { 0xff } else { 0 };
+        buf[..16].fill(fill);
+        buf[16..32].copy_from_slice(&val.to_be_bytes());
+    },
+    |input: &[u8], offset: usize| {
+        let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
+        i128::from_be_bytes(bytes)
+    }
+);
+
+impl_static_type!(
+    i64,
+    "int64",
+    |val: &i64, buf: &mut [u8]| {
+        let fill = if *val < 0 { 0xff } else { 0 };
+        buf[..24].fill(fill);
+        buf[24..32].copy_from_slice(&val.to_be_bytes());
+    },
+    |input: &[u8], offset: usize| {
+        let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
+        i64::from_be_bytes(bytes)
+    }
+);
+
+impl_static_type!(
+    i32,
+    "int32",
+    |val: &i32, buf: &mut [u8]| {
+        let fill = if *val < 0 { 0xff } else { 0 };
+        buf[..28].fill(fill);
+        buf[28..32].copy_from_slice(&val.to_be_bytes());
+    },
+    |input: &[u8], offset: usize| {
+        let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
+        i32::from_be_bytes(bytes)
+    }
+);
+
+impl_static_type!(
+    i16,
+    "int16",
+    |val: &i16, buf: &mut [u8]| {
+        let fill = if *val < 0 { 0xff } else { 0 };
+        buf[..30].fill(fill);
+        buf[30..32].copy_from_slice(&val.to_be_bytes());
+    },
+    |input: &[u8], offset: usize| i16::from_be_bytes([input[offset + 30], input[offset + 31]])
+);
+
+impl_static_type!(
+    i8,
+    "int8",
+    |val: &i8, buf: &mut [u8]| {
+        let fill = if *val < 0 { 0xff } else { 0 };
+        buf[..31].fill(fill);
+        buf[31] = *val as u8;
+    },
+    |input: &[u8], offset: usize| input[offset + 31] as i8
+);
+
+impl_static_type!(
     bool,
     "bool",
     |val: &bool, buf: &mut [u8]| {
