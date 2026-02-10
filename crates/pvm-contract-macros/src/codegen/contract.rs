@@ -606,7 +606,7 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
             );
             match result {
                 Ok(()) => {
-                    let written = #output_size - output_ref.len();
+                    let written = output_ref.len();
                     let output = &output_buf[..written];
                     Ok(#decode_return)
                 }
