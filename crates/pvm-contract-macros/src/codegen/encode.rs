@@ -118,16 +118,16 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
                     let len = s.len();
                     let padded_len = (len + 31) / 32 * 32;
                     let mut out = alloc::vec::Vec::with_capacity(64 + padded_len);
-                    // Offset pointing to data (always 32 for single string)
-                    out.extend_from_slice(&[0u8; 32][..31]);
+                    
+                    // Encode offset
+                    out.extend_from_slice(&[0u8; 31]);
                     out.push(32);
-                    // Length
                     let mut len_bytes = [0u8; 32];
                     len_bytes[24..32].copy_from_slice(&(len as u64).to_be_bytes());
+                    // Encode length
                     out.extend_from_slice(&len_bytes);
-                    // Data
+                    // Encode data + padding
                     out.extend_from_slice(s.as_bytes());
-                    // Padding
                     out.resize(64 + padded_len, 0);
                     out
                 }}
@@ -136,7 +136,7 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
             }
         }
         SolType::DynBytes | SolType::Array(_) => {
-            panic!("Dynamic Byte & Array types require special handling in tuple encoding");
+            panic!("`DynBytes` & `Array` types require special handling in tuple encoding");
         }
         SolType::FixedArray(inner, size) => {
             let size_lit = *size;
