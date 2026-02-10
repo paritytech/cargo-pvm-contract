@@ -45,7 +45,7 @@ impl SolEncode for alloc::string::String {
 }
 
 impl SolDecode for alloc::string::String {
-    fn decode(input: &[u8], offset: usize) -> Self {
+    fn decode_at(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
         Self::decode_tail(input, offset + data_offset)
@@ -111,7 +111,7 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
 }
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
-    fn decode(input: &[u8], offset: usize) -> Self {
+    fn decode_at(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
         Self::decode_tail(input, offset + data_offset)
@@ -135,8 +135,9 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
         } else {
             let mut elem_offset = array_data_start;
             for _ in 0..len {
-                result.push(T::decode(input, elem_offset));
-                elem_offset += 32;
+                let elem = T::decode_at(input, elem_offset);
+                elem_offset += elem.tail_len();
+                result.push(elem);
             }
         }
         result

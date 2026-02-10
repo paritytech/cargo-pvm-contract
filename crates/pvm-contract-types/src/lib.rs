@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate self as pvm_contract_types;
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -32,17 +34,19 @@ pub trait StaticEncodedLen: SolEncode {
 
 /// Trait for decoding Solidity ABI-encoded bytes into Rust types.
 pub trait SolDecode: SolEncode + Sized {
-    /// Decode a value from the input buffer at the given offset.
-    /// For static types: reads directly from offset.
-    /// For dynamic types: reads offset pointer, then decodes from that location.
-    fn decode(input: &[u8], offset: usize) -> Self;
+    /// Decode a value from ABI-encoded input.
+    fn decode(input: &[u8]) -> Self {
+        Self::decode_at(input, 0)
+    }
 
-    /// Decode a value directly from a tail position (no offset pointer indirection).
-    /// For static types: same as decode.
-    /// For dynamic types: reads length + data directly from the position.
-    /// Used by Vec<T> to decode dynamic elements where offset is already resolved.
+    /// Internal offset-based decode helper used by generated code.
+    #[doc(hidden)]
+    fn decode_at(input: &[u8], offset: usize) -> Self;
+
+    /// Internal tail decode helper used by dynamic container decoding.
+    #[doc(hidden)]
     fn decode_tail(input: &[u8], offset: usize) -> Self {
-        Self::decode(input, offset)
+        Self::decode_at(input, offset)
     }
 }
 
@@ -67,7 +71,7 @@ macro_rules! impl_static_type {
         }
 
         impl SolDecode for $ty {
-            fn decode(input: &[u8], offset: usize) -> Self {
+            fn decode_at(input: &[u8], offset: usize) -> Self {
                 $decode_fn(input, offset)
             }
         }
