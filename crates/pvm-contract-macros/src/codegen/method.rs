@@ -37,7 +37,7 @@ impl Parse for MethodArgs {
 }
 
 pub fn expand_method(args: MethodArgs, input: ItemFn) -> syn::Result<TokenStream> {
-    let _ = args.rename;
+    let _ = (args.rename, args.dyn_len);
 
     let fn_name = &input.sig.ident;
     let fn_vis = &input.vis;
