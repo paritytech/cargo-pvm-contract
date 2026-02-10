@@ -11,6 +11,8 @@ ruint = { version = "1.12", default-features = false }
 
 [dev-dependencies]
 alloy-core = { version = "1.5", features = ["sol-types"] }
+pvm-contract-macros = { path = "../pvm-contract-macros" }
+proptest = "1"
 
 [features]
 default = []
