@@ -276,7 +276,7 @@ out[offset..offset + 32].copy_from_slice(&encode(tuple.1));
 
 ### Custom Types with `#[derive(SolType)]`
 
-Custom structs are supported via the `SolType` derive macro. This generates ABI encoding/decoding methods for structs containing only static types.
+Custom structs are supported via the `SolType` derive macro. This generates `SolEncode`, `SolDecode`, and (for static-only structs) `StaticEncodedLen` implementations.
 
 ```rust
 #[derive(pvm_contract_macros::SolType)]
@@ -287,10 +287,9 @@ pub struct Point {
 ```
 
 This generates:
-- `Point::SOL_NAME` - Solidity type signature: `"(uint256,uint256)"`
-- `Point::ENCODED_SIZE` - Total encoded size in bytes: `64`
-- `Point::abi_decode(input: &[u8], offset: usize) -> Self`
-- `Point::abi_encode(&self) -> [u8; ENCODED_SIZE]`
+- `SolEncode` impl with `SOL_NAME = "(uint256,uint256)"`, `encode_len`, `encode_to`
+- `StaticEncodedLen` impl with `ENCODED_SIZE = 64` (static structs only)
+- `SolDecode` impl with `decode`, `decode_at`
 
 Use in contract methods:
 ```rust
@@ -305,17 +304,36 @@ pub fn get_point() -> Point {
 }
 ```
 
+#### Static vs Dynamic Structs
+
+Structs with only static fields generate `StaticEncodedLen` and can be returned without `dyn_len`.
+Structs with any dynamic field (String, Vec) are dynamic and must be returned with `#[pvm_contract::method(dyn_len)]`.
+
+```rust
+#[derive(pvm_contract_macros::SolType)]
+pub struct User {
+    pub name: String,
+    pub age: u8,
+}
+
+#[pvm_contract::method(dyn_len)]
+pub fn get_user() -> User {
+    User { name: "Alice".into(), age: 30 }
+}
+```
+
 #### Supported Field Types
 
-The `SolType` derive only supports static types:
 - `U256`, `u128`, `u64`, `u32`, `u16`, `u8`
-- `I256`, `i128`, `i64`, `i32`, `i16`, `i8`
+- `i128`, `i64`, `i32`, `i16`, `i8`
 - `bool`
 - `[u8; 20]` (address)
-- `[u8; N]` where N <= 32 (bytesN)
+- `[u8; 32]` (bytes32)
+- `String` (dynamic, requires alloc)
+- `Vec<T>` (dynamic, requires alloc)
 - Other `SolType` structs (nested)
 
-Dynamic types (`Vec`, `String`, `&[u8]`, `&str`) are **not supported** and will cause a compile error.
+Note: `&str` implements `SolEncode` but not `SolDecode` (borrowed types cannot be decoded from a buffer). Use `String` for decode support.
 
 #### Alternative: Tuples
 
