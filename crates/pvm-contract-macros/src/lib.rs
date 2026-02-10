@@ -5,7 +5,7 @@ mod signature;
 mod solidity;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
+use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
@@ -180,7 +180,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///         // balanceOf(address) -> uint256 - Infallible method
 ///         [0x70, 0xa0, 0x82, 0x31] => {
 ///             // Decode parameters
-///             let account = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input, 0);
+///             let account = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input);
 ///
 ///             // Call the method
 ///             let result = my_token::balance_of(account);
@@ -195,8 +195,8 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///         // transfer(address,uint256) - Fallible method
 ///         [0xa9, 0x05, 0x9c, 0xbb] => {
 ///             // Decode parameters
-///             let to = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input, 0);
-///             let amount = <ruint::aliases::U256 as ::pvm_contract_types::SolDecode>::decode(&input, 32);
+///             let to = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input);
+///             let amount = <ruint::aliases::U256 as ::pvm_contract_types::SolDecode>::decode_at(&input, 32);
 ///
 ///             // Call method and handle Result
 ///             match my_token::transfer(to, amount) {
@@ -308,7 +308,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // Generated code:
 ///
 /// // 1) Decode input parameters
-/// let account = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input, 0);
+/// let account = <[u8; 20] as ::pvm_contract_types::SolDecode>::decode(&input);
 ///
 /// // 2) Call the method
 /// let result = my_token::balance_of(account);
@@ -355,7 +355,9 @@ pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Marks a function as the contract constructor, called during deployment.
 ///
-/// # Example
+/// # Examples
+///
+/// Constructor that can revert:
 ///
 /// ```ignore
 /// #[pvm_contract::constructor]
@@ -365,7 +367,16 @@ pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// Must return `Result<(), Error>`. Returning `Err` reverts the deployment.
+/// Constructor that never reverts:
+///
+/// ```ignore
+/// #[pvm_contract::constructor]
+/// pub fn new() {
+///     set_owner(pvm_contract::caller());
+/// }
+/// ```
+///
+/// When returning `Result<(), Error>`, returning `Err` reverts the deployment.
 #[proc_macro_attribute]
 pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
@@ -427,7 +438,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// The macro generates implementations for both traits:
+/// The macro generates implementations for ABI traits:
 ///
 /// ```ignore
 /// impl ::pvm_contract_types::SolEncode for Point {
@@ -443,6 +454,15 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// impl ::pvm_contract_types::StaticEncodedLen for Point {
 ///     const ENCODED_SIZE: usize = 64;
+/// }
+///
+/// impl ::pvm_contract_types::SolDecode for Point {
+///     fn decode_at(input: &[u8], offset: usize) -> Self {
+///         Self {
+///             x: <U256 as ::pvm_contract_types::SolDecode>::decode_at(input, offset),
+///             y: <U256 as ::pvm_contract_types::SolDecode>::decode_at(input, offset + 32),
+///         }
+///     }
 /// }
 /// ```
 ///
@@ -483,8 +503,8 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Static vs Dynamic Structs
 ///
-/// Structs with only static fields implement both `SolEncode` and `StaticEncodedLen`.
-/// Structs with any dynamic fields (like `String`) implement only `SolEncode`.
+/// Structs with only static fields implement `SolEncode`, `StaticEncodedLen`, and `SolDecode`.
+/// Structs with any dynamic fields (like `String`) implement `SolEncode` and `SolDecode`.
 ///
 /// ```ignore
 /// // Static struct - implements both traits

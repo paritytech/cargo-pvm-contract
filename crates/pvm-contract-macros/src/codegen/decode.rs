@@ -10,13 +10,13 @@ fn generate_sol_decode<T: quote::ToTokens>(
 ) -> TokenStream {
     let offset_lit = offset;
     quote! {
-    <#rust_type as ::pvm_contract_types::SolDecode>::decode(&#data_expr, #offset_lit)
+    <#rust_type as ::pvm_contract_types::SolDecode>::decode_at(&#data_expr, #offset_lit)
     }
 }
 
 fn generate_sol_decode_runtime<T: quote::ToTokens>(rust_type: T) -> TokenStream {
     quote! {
-    <#rust_type as ::pvm_contract_types::SolDecode>::decode(&input, __decode_offset)
+    <#rust_type as ::pvm_contract_types::SolDecode>::decode_at(&input, __decode_offset)
     }
 }
 
@@ -158,7 +158,7 @@ pub fn generate_decode(
         SolType::Custom(name) => {
             let type_path: syn::Path = syn::parse_str(name).unwrap();
             quote! {
-            <#type_path as ::pvm_contract_types::SolDecode>::decode(&#data_expr, #offset_lit)
+            <#type_path as ::pvm_contract_types::SolDecode>::decode_at(&#data_expr, #offset_lit)
             }
         }
     }
@@ -245,7 +245,7 @@ fn generate_decode_runtime_offset(ty: &SolType, use_alloc: bool) -> TokenStream 
         }
         SolType::Custom(name) => {
             let type_path: syn::Path = syn::parse_str(name).unwrap();
-            quote! { <#type_path as ::pvm_contract_types::SolDecode>::decode(&input, __decode_offset) }
+            quote! { <#type_path as ::pvm_contract_types::SolDecode>::decode_at(&input, __decode_offset) }
         }
         _ => generate_decode(ty, quote!(input), 0, use_alloc),
     }
