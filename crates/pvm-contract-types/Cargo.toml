@@ -13,7 +13,12 @@ ruint = { version = "1.12", default-features = false }
 alloy-core = { version = "1.5", features = ["sol-types"] }
 pvm-contract-macros = { path = "../pvm-contract-macros" }
 proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 default = []
 alloc = []
+
+[[bench]]
+name = "encoding"
+harness = false

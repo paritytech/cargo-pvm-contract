@@ -1,0 +1,22 @@
+[package]
+name = "pvm-contract-benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Binary size comparison tool for PolkaVM contracts"
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+tabled = "0.16"
+walkdir = "2.5"
+cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
+tempfile = "3.13"
+polkavm-linker.workspace = true
+
+[[bin]]
+name = "build-and-measure"
+path = "src/bin/build-and-measure.rs"
+
+[dev-dependencies]

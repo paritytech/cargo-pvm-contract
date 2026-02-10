@@ -1,0 +1,241 @@
+name: Benchmark
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92
+          components: rust-src
+
+      - name: Install Rust nightly
+        run: |
+          rustup toolchain install nightly --component rust-src --profile minimal
+
+      - name: Install solc
+        run: |
+          SOLC_VERSION=0.8.26
+          curl -L https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solc-static-linux \
+          -o solc
+          chmod +x solc
+          sudo mv solc /usr/local/bin/solc
+
+      - name: Build benchmarks (current)
+        run: cargo +nightly run -p pvm-contract-benchmarks --bin build-and-measure
+
+      - name: Save current artifacts
+        run: |
+          cp -r target/benchmark-artifacts target/benchmark-artifacts-current
+          cp -r target/benchmark-results target/benchmark-results-current
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/benchmark-artifacts-current/
+            target/benchmark-results-current/
+
+      - name: Compare against baseline (PR only)
+        id: benchmark-compare
+        if: github.event_name == 'pull_request'
+        run: |
+          # Ensure origin/main ref is up-to-date for worktree
+          git fetch origin main
+
+          # Build baseline from origin/main in a worktree
+          git worktree add ../baseline-worktree origin/main
+
+          pushd ../baseline-worktree
+          cargo +nightly run -p pvm-contract-benchmarks --bin build-and-measure
+          popd
+
+          BASELINE_DIR="../baseline-worktree/target/benchmark-artifacts"
+          CURRENT_DIR="target/benchmark-artifacts"
+
+          # Compare binary sizes, generate dashboard, enforce 5% regression threshold
+          python3 - "$BASELINE_DIR" "$CURRENT_DIR" <<'PYTHON'
+          import sys, os, pathlib, datetime
+
+          baseline_dir = pathlib.Path(sys.argv[1])
+          current_dir = pathlib.Path(sys.argv[2])
+
+          baseline_files = {f.name: f for f in baseline_dir.glob("*.polkavm")}
+          current_files = {f.name: f for f in current_dir.glob("*.polkavm")}
+
+          all_names = sorted(set(baseline_files) | set(current_files))
+
+          if not all_names:
+              print("No benchmark artifacts found.")
+              sys.exit(1)
+
+          header = f"| {'Artifact':<50} | {'Baseline':>10} | {'Current':>10} | {'Delta':>8} | {'Status':>6} |"
+          sep    = f"|{'-'*52}|{'-'*12}|{'-'*12}|{'-'*10}|{'-'*8}|"
+
+          rows = []
+          regressions = []
+          total_baseline = 0
+          total_current = 0
+
+          for name in all_names:
+              b_path = baseline_files.get(name)
+              c_path = current_files.get(name)
+
+              if b_path and c_path:
+                  b_size = b_path.stat().st_size
+                  c_size = c_path.stat().st_size
+                  total_baseline += b_size
+                  total_current += c_size
+                  if b_size == 0:
+                      delta_pct = 0.0
+                  else:
+                      delta_pct = ((c_size - b_size) / b_size) * 100.0
+                  status = "OK" if delta_pct <= 5.0 else "FAIL"
+                  rows.append(f"| {name:<50} | {b_size:>10} | {c_size:>10} | {delta_pct:>+7.2f}% | {status:>6} |")
+                  if delta_pct > 5.0:
+                      regressions.append((name, b_size, c_size, delta_pct))
+              elif c_path and not b_path:
+                  c_size = c_path.stat().st_size
+                  total_current += c_size
+                  rows.append(f"| {name:<50} | {'(new)':>10} | {c_size:>10} | {'N/A':>8} | {'NEW':>6} |")
+              elif b_path and not c_path:
+                  b_size = b_path.stat().st_size
+                  total_baseline += b_size
+                  rows.append(f"| {name:<50} | {b_size:>10} | {'(gone)':>10} | {'N/A':>8} | {'DEL':>6} |")
+
+          # Build the comparison table
+          table = header + "\n" + sep + "\n"
+          for row in rows:
+              table += row + "\n"
+
+          if total_baseline > 0:
+              total_delta = ((total_current - total_baseline) / total_baseline) * 100.0
+              table += sep + "\n"
+              table += f"| {'**Total**':<50} | {total_baseline:>10} | {total_current:>10} | {total_delta:>+7.2f}% | {'':>6} |\n"
+
+          # Build the summary sections
+          if regressions:
+              verdict = f"### REGRESSION: {len(regressions)} artifact(s) exceed 5% threshold\n\n"
+              for name, b, c, pct in regressions:
+                  verdict += f"- **{name}**: {b} -> {c} ({pct:+.2f}%)\n"
+          else:
+              verdict = "### OK: All artifacts within 5% regression threshold\n"
+
+          run_id = os.environ.get("GITHUB_RUN_ID", "local")
+          sha = os.environ.get("GITHUB_SHA", "unknown")[:8]
+          ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+          # Dashboard: full report with metadata
+          dashboard = f"# Benchmark Dashboard\n\n"
+          dashboard += f"> Run `{run_id}` | Commit `{sha}` | {ts}\n\n"
+          dashboard += f"## Binary Size Comparison (vs main)\n\n"
+          dashboard += table + "\n"
+          dashboard += verdict + "\n"
+          dashboard += f"---\n*Threshold: 5% regression per artifact. "
+          dashboard += f"{len(all_names)} artifact(s) compared.*\n"
+
+          # PR comment: compact version with marker
+          comment = f"<!-- benchmark-report -->\n"
+          comment += f"## Benchmark Size Comparison (vs main)\n\n"
+          comment += table + "\n"
+          comment += verdict + "\n"
+          comment += f"<sub>Run {run_id} | {sha} | {ts}</sub>\n"
+
+          # Console output (same as before)
+          summary = "## Benchmark Size Comparison (vs main)\n\n"
+          summary += table + "\n" + verdict
+
+          print(summary)
+
+          # Write to GitHub Actions step summary
+          gh_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if gh_summary:
+              with open(gh_summary, "a") as f:
+                  f.write(summary)
+
+          # Write dashboard markdown for artifact upload
+          dashboard_path = pathlib.Path("target/benchmark-dashboard.md")
+          dashboard_path.write_text(dashboard)
+
+          # Write PR comment body for the comment step
+          comment_path = pathlib.Path("target/benchmark-comment.md")
+          comment_path.write_text(comment)
+
+          if regressions:
+              print(f"\n::error::Binary size regression detected in {len(regressions)} artifact(s). Threshold: 5%.")
+              sys.exit(1)
+          PYTHON
+
+      - name: Upload benchmark dashboard
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-dashboard-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/benchmark-dashboard.md
+          if-no-files-found: ignore
+
+      - name: Post benchmark comment on PR
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const commentPath = 'target/benchmark-comment.md';
+            if (!fs.existsSync(commentPath)) {
+              core.info('No benchmark comment file found, skipping.');
+              return;
+            }
+            const body = fs.readFileSync(commentPath, 'utf8');
+            const marker = '<!-- benchmark-report -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: body,
+              });
+              core.info(`Updated existing benchmark comment ${existing.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+              core.info('Created new benchmark comment');
+            }
+
+      - name: Post benchmark report (push to main)
+        if: github.event_name == 'push'
+        run: |
+          echo "## Benchmark Results (main)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          cat target/benchmark-results/binary-sizes.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup worktree
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          git worktree remove ../baseline-worktree --force 2>/dev/null || true

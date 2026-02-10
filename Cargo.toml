@@ -4,6 +4,8 @@ members = [
     "crates/cargo-pvm-contract-builder",
     "crates/pvm-contract-macros",
     "crates/pvm-contract-types",
+    "crates/pvm-contract-benchmarks",
+    "crates/pvm-contract-builder-dsl",
 ]
 resolver = "2"
 
