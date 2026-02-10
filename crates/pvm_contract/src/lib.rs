@@ -5,7 +5,7 @@ pub mod storage;
 
 pub use pvm_contract_macros::{constructor, contract, fallback, method, storage};
 
-pub use primitive_types::H160 as Address;
+pub use ethereum_types::Address;
 pub use alloy_primitives::{FixedBytes, I256, U256};
 
 pub use pallet_revive_uapi::{HostFn, HostFnImpl as api, ReturnFlags, StorageFlags};

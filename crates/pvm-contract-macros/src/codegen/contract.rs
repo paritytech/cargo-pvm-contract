@@ -521,7 +521,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
                 });
                 quote! { #new_func }
             }
-            syn::Item::Struct(s) if has_pvm_storage_attr(&s.attrs) => {
+            syn::Item::Struct(s) if has_pvm_attr(&s.attrs, "storage") => {
                 match super::expand_storage(s) {
                     Ok(tokens) => tokens,
                     Err(err) => err.to_compile_error(),
@@ -538,14 +538,3 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
         #(#items)*
     }
 }
-
-fn has_pvm_storage_attr(attrs: &[Attribute]) -> bool {
-    for attr in attrs {
-        let segments: Vec<_> = attr.path().segments.iter().collect();
-        if segments.len() == 2 && segments[0].ident == "pvm" && segments[1].ident == "storage" {
-            return true;
-        }
-    }
-    false
-}
-
