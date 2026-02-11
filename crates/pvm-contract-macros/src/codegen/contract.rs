@@ -847,126 +847,124 @@ fn push_sol_type_components(parts: &mut Vec<TokenStream>, sol_type: &SolType) {
 /// Generate JSON components fragment for a SolType (used in .sol interface mode).
 
 fn generate_reference_method(method: &MethodInfo) -> TokenStream {
-    // If all types are resolved, use the existing legacy codegen path
-    if method.all_inputs_resolved && method.return_resolved {
-        return generate_reference_method_legacy(method);
-    }
-
-    // Trait-based reference method for unresolved types
     let fn_name = &method.fn_name;
-    let sol_name = &method.signature.name;
-    let param_names = &method.param_names;
-    let param_types = &method.param_types;
+    let fully_resolved = method.all_inputs_resolved && method.return_resolved;
+    let sig = &method.signature;
 
-    // Build function params using original Rust types
-    let params: Vec<TokenStream> = param_names.iter().zip(param_types.iter())
-        .map(|(name, ty)| quote! { #name: #ty }).collect();
+    // --- Varying piece 1: function params ---
+    let params: Vec<TokenStream> = if fully_resolved {
+        method.param_names.iter().zip(sig.inputs.iter())
+            .map(|(name, ty)| { let rt = ty.rust_type(true); quote! { #name: #rt } }).collect()
+    } else {
+        method.param_names.iter().zip(method.param_types.iter())
+            .map(|(name, ty)| quote! { #name: #ty }).collect()
+    };
 
-    // Selector via compute_selector
-    let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
-        quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-    }).collect();
-
-    // Encode params via SolAbi::abi_encode
-    let encodes: Vec<TokenStream> = param_names.iter().zip(param_types.iter())
-        .map(|(name, ty)| {
-            quote! { <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut calldata); }
+    // --- Varying piece 2: selector + calldata init ---
+    let selector_setup = if fully_resolved {
+        let [s0, s1, s2, s3] = compute_selector(&sig.canonical_signature());
+        quote! { let mut calldata = alloc::vec![#s0, #s1, #s2, #s3]; }
+    } else {
+        let sol_name = &sig.name;
+        let param_types = &method.param_types;
+        let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
+            quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
         }).collect();
-
-    // Return type handling
-    let ret_ty = match &method.return_type {
-        None => quote! { () },
-        Some(ty) => quote! { #ty },
-    };
-
-    let (output_size, output_arg, decode_return) = match &method.return_type {
-        None => (
-            quote! { 0usize },
-            quote! { None },
-            quote! { () },
-        ),
-        Some(ty) => (
-            quote! { <#ty as pvm_contract::SolAbi>::HEAD_SIZE },
-            quote! { Some(&mut output_ref) },
-            quote! { <#ty as pvm_contract::SolAbi>::abi_decode(output, 0) },
-        ),
-    };
-
-    quote! {
-        pub fn #fn_name(&self, #(#params),*) -> pvm_contract::call::CallResult<#ret_ty> {
-            extern crate alloc;
+        quote! {
             let __sel = pvm_contract::compute_selector(#sol_name, &[
                 #(#sol_name_exprs),*
             ]);
             let mut calldata = alloc::vec![__sel[0], __sel[1], __sel[2], __sel[3]];
-            #(#encodes)*
-            let __out_size: usize = #output_size;
-            let mut output_buf = alloc::vec![0u8; __out_size];
-            let mut output_ref: &mut [u8] = &mut output_buf[..];
-            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
-                pvm_contract::CallFlags::ALLOW_REENTRY,
-                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata, #output_arg,
-            );
-            match result {
-                Ok(()) => {
-                    let written = output_ref.len();
-                    let output = &output_buf[..written];
-                    Ok(#decode_return)
-                }
-                Err(e) => Err(pvm_contract::call::CallError::from(e)),
+        }
+    };
+
+    // --- Varying piece 3: encode statements ---
+    let encodes: Vec<TokenStream> = if fully_resolved {
+        method.param_names.iter().zip(sig.inputs.iter())
+            .map(|(name, ty)| {
+                let enc = generate_encode(ty, quote!(#name), true);
+                quote! { calldata.extend_from_slice(&#enc); }
+            }).collect()
+    } else {
+        method.param_names.iter().zip(method.param_types.iter())
+            .map(|(name, ty)| {
+                quote! { <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut calldata); }
+            }).collect()
+    };
+
+    // --- Varying piece 4: return type ---
+    let ret_ty = if fully_resolved {
+        match sig.outputs.as_slice() {
+            [] => quote! { () },
+            [one] => one.rust_type(true),
+            many => { let tys: Vec<_> = many.iter().map(|t| t.rust_type(true)).collect(); quote! { (#(#tys),*) } }
+        }
+    } else {
+        match &method.return_type {
+            None => quote! { () },
+            Some(ty) => quote! { #ty },
+        }
+    };
+
+    // --- Varying piece 5: output buffer setup ---
+    let output_setup = if fully_resolved {
+        let output_size: usize = sig.outputs.iter().map(|t| t.head_size()).sum();
+        quote! {
+            let mut output_buf = [0u8; #output_size];
+        }
+    } else {
+        match &method.return_type {
+            None => quote! {
+                let mut output_buf = alloc::vec![0u8; 0usize];
+            },
+            Some(ty) => quote! {
+                let __out_size: usize = <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
+                let mut output_buf = alloc::vec![0u8; __out_size];
+            },
+        }
+    };
+
+    // --- Varying piece 6: decode return ---
+    let decode_return = if fully_resolved {
+        match sig.outputs.as_slice() {
+            [] => quote! { () },
+            [one] => generate_decode(one, quote!(output), 0, true),
+            many => {
+                let mut offset = 0;
+                let decs: Vec<_> = many.iter().map(|t| {
+                    let d = generate_decode(t, quote!(output), offset, true);
+                    offset += t.head_size();
+                    d
+                }).collect();
+                quote! { (#(#decs),*) }
             }
         }
-    }
-}
-
-fn generate_reference_method_legacy(method: &MethodInfo) -> TokenStream {
-    let fn_name = &method.fn_name;
-    let sig = &method.signature;
-    let [s0, s1, s2, s3] = compute_selector(&sig.canonical_signature());
-
-    let params: Vec<TokenStream> = method.param_names.iter().zip(sig.inputs.iter())
-        .map(|(name, ty)| { let rt = ty.rust_type(true); quote! { #name: #rt } }).collect();
-
-    let encodes: Vec<TokenStream> = method.param_names.iter().zip(sig.inputs.iter())
-        .map(|(name, ty)| {
-            let enc = generate_encode(ty, quote!(#name), true);
-            quote! { calldata.extend_from_slice(&#enc); }
-        }).collect();
-
-    let ret_ty = match sig.outputs.as_slice() {
-        [] => quote! { () },
-        [one] => one.rust_type(true),
-        many => { let tys: Vec<_> = many.iter().map(|t| t.rust_type(true)).collect(); quote! { (#(#tys),*) } }
-    };
-
-    let output_size: usize = sig.outputs.iter().map(|t| t.head_size()).sum();
-
-    let decode_return = match sig.outputs.as_slice() {
-        [] => quote! { () },
-        [one] => generate_decode(one, quote!(output), 0, true),
-        many => {
-            let mut offset = 0;
-            let decs: Vec<_> = many.iter().map(|t| {
-                let d = generate_decode(t, quote!(output), offset, true);
-                offset += t.head_size();
-                d
-            }).collect();
-            quote! { (#(#decs),*) }
+    } else {
+        match &method.return_type {
+            None => quote! { () },
+            Some(ty) => quote! { <#ty as pvm_contract::SolAbi>::abi_decode(output, 0) },
         }
     };
 
-    let output_arg = if sig.outputs.is_empty() {
-        quote! { None }
+    // --- Varying piece 7: output_arg ---
+    let has_output = if fully_resolved {
+        !sig.outputs.is_empty()
     } else {
+        method.return_type.is_some()
+    };
+    let output_arg = if has_output {
         quote! { Some(&mut output_ref) }
+    } else {
+        quote! { None }
     };
 
+    // --- Single function body template ---
     quote! {
         pub fn #fn_name(&self, #(#params),*) -> pvm_contract::call::CallResult<#ret_ty> {
             extern crate alloc;
-            let mut calldata = alloc::vec![#s0, #s1, #s2, #s3];
+            #selector_setup
             #(#encodes)*
-            let mut output_buf = [0u8; #output_size];
+            #output_setup
             let mut output_ref: &mut [u8] = &mut output_buf[..];
             let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
                 pvm_contract::CallFlags::ALLOW_REENTRY,

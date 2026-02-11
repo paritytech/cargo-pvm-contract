@@ -21,32 +21,21 @@ pub fn generate_dispatch_arm(
     mod_name: &syn::Ident,
     use_alloc: bool,
 ) -> TokenStream {
-    if use_alloc && method.all_inputs_resolved && method.return_resolved {
-        generate_dispatch_arm_legacy(method, mod_name, use_alloc)
-    } else if use_alloc && !method.all_inputs_resolved {
-        // Fully trait-based dispatch (if-else block, not a match arm)
-        generate_trait_dispatch_arm(method, mod_name)
-    } else if use_alloc && method.all_inputs_resolved && !method.return_resolved {
-        // Legacy decode but trait-based return encode
-        generate_dispatch_arm_mixed(method, mod_name)
-    } else {
-        // no_alloc with unresolved types
-        let fn_name_str = method.fn_name.to_string();
-        quote! {
-            compile_error!(concat!("Trait-based dispatch requires alloc for method: ", #fn_name_str));
+    if !method.all_inputs_resolved {
+        if !use_alloc {
+            let fn_name_str = method.fn_name.to_string();
+            return quote! {
+                compile_error!(concat!("Trait-based dispatch requires alloc for method: ", #fn_name_str));
+            };
         }
+        return generate_trait_dispatch_arm(method, mod_name);
     }
-}
 
-fn generate_dispatch_arm_legacy(
-    method: &MethodInfo,
-    mod_name: &syn::Ident,
-    use_alloc: bool,
-) -> TokenStream {
+    // All inputs resolved — legacy decode path
+    let fn_name = &method.fn_name;
     let selector = compute_selector(&method.signature.canonical_signature());
     let [s0, s1, s2, s3] = selector;
 
-    let fn_name = &method.fn_name;
     let param_names = &method.param_names;
     let decodes = generate_decode_params(&method.signature.inputs, use_alloc);
 
@@ -79,94 +68,56 @@ fn generate_dispatch_arm_legacy(
 
     let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
 
-    let has_return = !method.signature.outputs.is_empty();
-    let encode_return = generate_encode_return(&method.signature.outputs, use_alloc);
+    let result_handling = if method.return_resolved {
+        // Legacy result handling — types are fully known at macro time
+        let has_return = !method.signature.outputs.is_empty();
+        let encode_return = generate_encode_return(&method.signature.outputs, use_alloc);
 
-    let result_handling = if method.returns_result {
-        if use_alloc {
-            if has_return {
-                quote! {
-                    #mod_name::#fn_name(#(#call_args),*).map(|result| {
-                        Some(#encode_return)
-                    }).map_err(|e| e.as_ref().to_vec())
+        if method.returns_result {
+            if use_alloc {
+                if has_return {
+                    quote! {
+                        #mod_name::#fn_name(#(#call_args),*).map(|result| {
+                            Some(#encode_return)
+                        }).map_err(|e| e.as_ref().to_vec())
+                    }
+                } else {
+                    quote! {
+                        #mod_name::#fn_name(#(#call_args),*).map(|()| None).map_err(|e| e.as_ref().to_vec())
+                    }
                 }
             } else {
-                quote! {
-                    #mod_name::#fn_name(#(#call_args),*).map(|()| None).map_err(|e| e.as_ref().to_vec())
+                if has_return {
+                    quote! {
+                        #mod_name::#fn_name(#(#call_args),*).map(|result| {
+                            Some(#encode_return)
+                        }).map_err(|e| e.as_ref())
+                    }
+                } else {
+                    quote! {
+                        #mod_name::#fn_name(#(#call_args),*).map(|()| None).map_err(|e| e.as_ref())
+                    }
                 }
             }
         } else {
             if has_return {
                 quote! {
-                    #mod_name::#fn_name(#(#call_args),*).map(|result| {
-                        Some(#encode_return)
-                    }).map_err(|e| e.as_ref())
+                    Ok(Some({
+                        let result = #mod_name::#fn_name(#(#call_args),*);
+                        #encode_return
+                    }))
                 }
             } else {
-                quote! {
-                    #mod_name::#fn_name(#(#call_args),*).map(|()| None).map_err(|e| e.as_ref())
-                }
+                quote! {{
+                    #mod_name::#fn_name(#(#call_args),*);
+                    Ok(None)
+                }}
             }
         }
     } else {
-        if has_return {
-            quote! {
-                Ok(Some({
-                    let result = #mod_name::#fn_name(#(#call_args),*);
-                    #encode_return
-                }))
-            }
-        } else {
-            quote! {{
-                #mod_name::#fn_name(#(#call_args),*);
-                Ok(None)
-            }}
-        }
+        // Trait-based return encoding
+        generate_trait_result_handling(method, mod_name, &call_args)
     };
-
-    quote! {
-        [#s0, #s1, #s2, #s3] => {
-            #size_check
-            #(#decode_statements)*
-            #result_handling
-        }
-    }
-}
-
-/// Generate dispatch for a method where all inputs are resolved (legacy decode)
-/// but the return type needs trait-based encoding.
-fn generate_dispatch_arm_mixed(
-    method: &MethodInfo,
-    mod_name: &syn::Ident,
-) -> TokenStream {
-    let selector = compute_selector(&method.signature.canonical_signature());
-    let [s0, s1, s2, s3] = selector;
-
-    let param_names = &method.param_names;
-    let decodes = generate_decode_params(&method.signature.inputs, true);
-
-    let min_size = calculate_min_input_size(&method.signature.inputs);
-
-    let size_check = if min_size > 0 {
-        let min_size_lit = min_size;
-        quote! {
-            if input.len() < #min_size_lit {
-                return Err(b"InvalidCalldata".to_vec());
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let decode_statements: Vec<_> = param_names
-        .iter()
-        .zip(decodes.iter())
-        .map(|(name, decode)| quote! { let #name = #decode; })
-        .collect();
-
-    let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
-
-    let result_handling = generate_trait_result_handling(method, mod_name, &call_args);
 
     quote! {
         [#s0, #s1, #s2, #s3] => {
@@ -244,7 +195,6 @@ pub fn generate_trait_dispatch_arm(
 }
 
 /// Shared helper: generate result handling for trait-based return encoding.
-/// Used by both `generate_trait_dispatch_arm` and `generate_dispatch_arm_mixed`.
 fn generate_trait_result_handling(
     method: &MethodInfo,
     mod_name: &syn::Ident,
