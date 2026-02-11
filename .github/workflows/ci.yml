@@ -36,3 +36,33 @@ jobs:
         run: cargo test -p pvm-contract-types --features alloc && cargo test -p pvm-contract-macros
       - name: Run integration tests
         run: cargo test -p cargo-pvm-contract
+
+  check-examples:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92
+          components: rust-src
+      - name: Install solc
+        run: |
+          SOLC_VERSION=0.8.26
+          curl -L https://github.com/ethereum/solidity/releases/download/v${SOLC_VERSION}/solc-static-linux \
+          -o solc
+          chmod +x solc
+          sudo mv solc /usr/local/bin/solc
+      - name: Build CLI
+        run: cargo build -p cargo-pvm-contract
+      - name: Regenerate examples
+        run: ./scripts/regenerate-examples.sh
+      - name: Check for differences
+        run: |
+          if ! git diff --exit-code examples/; then
+            echo "❌ Scaffold output has changed. Run ./scripts/regenerate-examples.sh and commit the changes."
+            exit 1
+          fi
+          echo "✅ Examples match checked-in snapshots"
+
