@@ -1,0 +1,40 @@
+#![no_main]
+#![no_std]
+
+use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
+use ruint::aliases::U256;
+
+#[pvm_contract_macros::contract(no_alloc, buffer = 256)]
+mod contract {
+    use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Error {
+        // Add your errors here
+    }
+
+    impl AsRef<[u8]> for Error {
+        fn as_ref(&self) -> &[u8] {
+            match *self {
+                // Match your errors here
+            }
+        }
+    }
+
+    #[pvm_contract_macros::constructor]
+    pub fn new() -> Result<(), Error> {
+        Ok(())
+    }
+
+    #[pvm_contract_macros::fallback]
+    pub fn fallback() -> Result<(), Error> {
+        Ok(())
+    }
+
+    // Add your contract methods here
+    // Example:
+    // #[pvm_contract_macros::method]
+    // pub fn my_method(param: U256) -> Result<U256, Error> {
+    //     Ok(param)
+    // }
+}
