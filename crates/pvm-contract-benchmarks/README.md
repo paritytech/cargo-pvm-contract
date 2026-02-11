@@ -50,12 +50,33 @@ This will:
 
 ### Interpret Results
 
-The report shows:
+**IMPORTANT: Only release profile results matter for decision-making.**
+
+The benchmark report includes both debug and release builds, but:
+- **Release profile** is the source of truth for binary size comparisons
+- **Debug profile** is included only for diagnostics and troubleshooting
+- All CI regression checks and PR decisions are based on release artifacts only
+
+#### View Release-Only Results
+
+After running the benchmark, filter the report to show only release rows:
+
+```bash
+# View only release profile results
+grep -E '(^\|.*Profile|release)' target/benchmark-results/binary-sizes.md
+
+# Or exclude debug rows entirely
+grep -v 'debug' target/benchmark-results/binary-sizes.md | grep -E '(^\||Contract)'
+```
+
+#### Report Structure
+
+The full report shows:
 - **Overall Comparison**: All variants in a single table
 - **Per-Contract Comparison**: Grouped by contract name
 - **Size Differences**: Percentage overhead vs no-alloc baseline
 
-Example output:
+Example output (release rows only):
 ```
 | Contract  | Variant    | Profile | Size (bytes) | Size (KB) |
 |-----------|------------|---------|--------------|-----------|
