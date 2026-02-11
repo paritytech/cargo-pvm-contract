@@ -242,13 +242,8 @@ name = "cargo-pvm-contract-builder"
 version = "0.3.0"
 dependencies = [
  "anyhow",
- "log",
+ "object",
  "polkavm-linker",
- "quote",
- "serde",
- "serde_json",
- "syn",
- "tiny-keccak",
  "toml_edit 0.22.27",
 ]
 
@@ -1230,11 +1225,13 @@ name = "pvm_contract"
 version = "0.3.0"
 dependencies = [
  "alloy-primitives",
+ "const_format",
  "ethereum-types",
  "pallet-revive-uapi",
  "parity-scale-codec",
  "polkavm-derive 0.31.0",
  "pvm-contract-macros",
+ "tiny-keccak",
 ]
 
 [[package]]

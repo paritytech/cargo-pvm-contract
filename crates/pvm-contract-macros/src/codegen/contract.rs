@@ -3,7 +3,7 @@ use quote::quote;
 use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
 
 use super::decode::{calculate_min_input_size, generate_decode, generate_decode_params};
-use super::dispatch::{generate_dispatch_arm, MethodInfo};
+use super::dispatch::{generate_dispatch_arm, generate_trait_dispatch_arm, MethodInfo};
 use super::encode::generate_encode;
 use crate::signature::{compute_selector, FunctionSignature, SolType};
 use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
@@ -77,6 +77,8 @@ struct ConstructorInfo {
     fn_name: Ident,
     param_names: Vec<Ident>,
     param_types: Vec<SolType>,
+    raw_param_types: Vec<syn::Type>,
+    all_resolved: bool,
 }
 
 struct ParsedContract {
@@ -241,6 +243,13 @@ fn parse_contract(
                     }
                     None
                 }).collect();
+                let raw_param_types: Vec<syn::Type> = func.sig.inputs.iter().filter_map(|arg| {
+                    if let syn::FnArg::Typed(pat_type) = arg {
+                        Some((*pat_type.ty).clone())
+                    } else {
+                        None
+                    }
+                }).collect();
                 let param_types: Vec<SolType> = func.sig.inputs.iter().filter_map(|arg| {
                     if let syn::FnArg::Typed(pat_type) = arg {
                         SolType::from_rust_type(&pat_type.ty)
@@ -248,10 +257,13 @@ fn parse_contract(
                         None
                     }
                 }).collect();
+                let all_resolved = raw_param_types.iter().all(|ty| SolType::from_rust_type(ty).is_some());
                 constructor = Some(ConstructorInfo {
                     fn_name: func.sig.ident.clone(),
                     param_names,
                     param_types,
+                    raw_param_types,
+                    all_resolved,
                 });
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
@@ -271,10 +283,37 @@ fn parse_contract(
                     })
                     .collect();
 
+                let param_types: Vec<syn::Type> = func
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter_map(|arg| {
+                        if let syn::FnArg::Typed(pat_type) = arg {
+                            Some((*pat_type.ty).clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
                 let returns_result = is_result_return_type(&func.sig.output);
+
+                // Extract the raw return type (inner of Result if applicable)
+                let return_type = match &func.sig.output {
+                    syn::ReturnType::Default => None,
+                    syn::ReturnType::Type(_, ty) => {
+                        if returns_result {
+                            extract_result_ok_type(ty)
+                        } else {
+                            Some((**ty).clone())
+                        }
+                    }
+                };
 
                 let sol_fn_name = extract_method_rename(&func.attrs)
                     .unwrap_or_else(|| to_snake_case(&func.sig.ident.to_string()));
+
+                let is_sol_interface = sol_interface.is_some();
 
                 let signature = if let Some(sol_iface) = sol_interface {
                     let rust_fn_name = func.sig.ident.to_string();
@@ -301,11 +340,27 @@ fn parse_contract(
                     sig
                 };
 
+                // For .sol interface path, types are always fully resolved
+                let (all_inputs_resolved, return_resolved) = if is_sol_interface {
+                    (true, true)
+                } else {
+                    let inputs_ok = param_types.iter().all(|ty| SolType::from_rust_type(ty).is_some());
+                    let return_ok = match &return_type {
+                        None => true,
+                        Some(ty) => SolType::from_rust_type(ty).is_some(),
+                    };
+                    (inputs_ok, return_ok)
+                };
+
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
                     signature,
                     param_names,
+                    param_types,
+                    return_type,
                     returns_result,
+                    all_inputs_resolved,
+                    return_resolved,
                 });
             }
         }
@@ -369,7 +424,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let constructor_name = &ctor.fn_name;
         let param_names = &ctor.param_names;
 
-        if ctor.param_types.is_empty() {
+        if ctor.param_names.is_empty() {
             quote! {
                 #[unsafe(no_mangle)]
                 #[pvm_contract::polkavm_derive::polkavm_export]
@@ -382,7 +437,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     }
                 }
             }
-        } else {
+        } else if ctor.all_resolved {
             let decodes = generate_decode_params(&ctor.param_types, use_alloc);
             let min_size = calculate_min_input_size(&ctor.param_types);
             let decode_stmts: Vec<_> = param_names.iter().zip(decodes.iter())
@@ -410,6 +465,43 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     }
                 }
             }
+        } else {
+            // Trait-based constructor decode for unresolved types
+            let raw_types = &ctor.raw_param_types;
+            let head_size_exprs: Vec<TokenStream> = raw_types.iter().map(|ty| {
+                quote! { <#ty as pvm_contract::SolAbi>::HEAD_SIZE }
+            }).collect();
+            let decode_stmts: Vec<TokenStream> = param_names.iter().zip(raw_types.iter()).map(|(name, ty)| {
+                quote! {
+                    let #name = <#ty as pvm_contract::SolAbi>::abi_decode(input, __offset);
+                    __offset += <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
+                }
+            }).collect();
+            let call_args: Vec<_> = param_names.iter().map(|n| quote!(#n)).collect();
+
+            quote! {
+                #[unsafe(no_mangle)]
+                #[pvm_contract::polkavm_derive::polkavm_export]
+                pub extern "C" fn deploy() {
+                    let call_data_len = pvm_contract::api::call_data_size() as usize;
+                    let mut call_data = vec![0u8; call_data_len];
+                    pvm_contract::api::call_data_copy(&mut call_data, 0);
+                    let input = &call_data[..];
+                    let __min_size: usize = 0usize #(+ #head_size_exprs)*;
+                    if input.len() < __min_size {
+                        pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, b"InvalidConstructorArgs");
+                        return;
+                    }
+                    let mut __offset: usize = 0;
+                    #(#decode_stmts)*
+                    match #mod_name::#constructor_name(#(#call_args),*) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            pvm_contract::api::return_value(pvm_contract::ReturnFlags::REVERT, e.as_ref());
+                        }
+                    }
+                }
+            }
         }
     } else {
         quote! {
@@ -419,10 +511,28 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let dispatch_arms: Vec<_> = parsed
-        .methods
+    // Partition methods: static (all resolved) use match arms, trait methods use if-else blocks
+    let (static_methods, trait_methods): (Vec<_>, Vec<_>) = parsed.methods.iter()
+        .partition(|m| m.all_inputs_resolved && m.return_resolved);
+
+    let static_dispatch_arms: Vec<_> = static_methods
         .iter()
         .map(|m| generate_dispatch_arm(m, mod_name, use_alloc))
+        .collect();
+
+    // Methods with resolved inputs but unresolved return also go through match arms
+    let mixed_methods: Vec<_> = parsed.methods.iter()
+        .filter(|m| m.all_inputs_resolved && !m.return_resolved)
+        .collect();
+    let mixed_dispatch_arms: Vec<_> = mixed_methods
+        .iter()
+        .map(|m| generate_dispatch_arm(m, mod_name, use_alloc))
+        .collect();
+
+    // Methods with unresolved inputs go through if-else blocks in the _ arm
+    let trait_dispatch_blocks: Vec<_> = trait_methods.iter()
+        .filter(|m| !m.all_inputs_resolved)
+        .map(|m| generate_trait_dispatch_arm(m, mod_name))
         .collect();
 
     let fallback_call = if parsed.has_fallback {
@@ -441,6 +551,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let call_fn = if use_alloc {
+        let wildcard_body = if trait_dispatch_blocks.is_empty() {
+            quote! { #fallback_call }
+        } else {
+            quote! {
+                #(#trait_dispatch_blocks)*
+                #fallback_call
+            }
+        };
+
         quote! {
             #[unsafe(no_mangle)]
             #[pvm_contract::polkavm_derive::polkavm_export]
@@ -458,8 +577,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     let input = &call_data[4..];
 
                     match selector {
-                        #(#dispatch_arms)*
-                        _ => #fallback_call,
+                        #(#static_dispatch_arms)*
+                        #(#mixed_dispatch_arms)*
+                        _ => {
+                            #wildcard_body
+                        }
                     }
                 })();
 
@@ -498,7 +620,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     let input = &call_data[4..call_data_len];
 
                     match selector {
-                        #(#dispatch_arms)*
+                        #(#static_dispatch_arms)*
+                        #(#mixed_dispatch_arms)*
                         _ => #fallback_call,
                     }
                 })();
@@ -528,6 +651,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let reference_type = generate_reference_type(&parsed.methods);
+    let abi_section = generate_abi_section(&parsed, sol_interface.as_ref());
 
     Ok(quote! {
         use pvm_contract::HostFn as _;
@@ -540,6 +664,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #[cfg(pvm_entry_point)]
         #call_fn
 
+        #abi_section
+
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
             #error_enum
@@ -551,7 +677,249 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     })
 }
 
+fn generate_abi_section(parsed: &ParsedContract, sol_interface: Option<&SolInterface>) -> TokenStream {
+    let is_sol = sol_interface.is_some();
+
+    // Build a flat list of concatcp expressions. Each element is a single expr
+    // (string literal or trait constant). This avoids nested quote! splicing issues.
+    let mut parts: Vec<TokenStream> = Vec::new();
+    parts.push(quote! { "[" });
+
+    let mut first_entry = true;
+
+    // Constructor ABI entry
+    if let Some(ref ctor) = parsed.constructor {
+        first_entry = false;
+        parts.push(quote! { "{\"type\":\"constructor\",\"inputs\":[" });
+        push_abi_params(&mut parts, &ctor.param_names, &ctor.raw_param_types,
+            if ctor.all_resolved { Some(&ctor.param_types) } else { None },
+            ctor.all_resolved, &ctor.param_types);
+        parts.push(quote! { "],\"stateMutability\":\"nonpayable\"}" });
+    }
+
+    // Method ABI entries
+    for method in &parsed.methods {
+        if !first_entry {
+            parts.push(quote! { "," });
+        }
+        first_entry = false;
+
+        let method_name = &method.signature.name;
+        let mutability = if method.return_type.is_some() { "view" } else { "nonpayable" };
+
+        parts.push(quote! { "{\"type\":\"function\",\"name\":\"" });
+        parts.push(quote! { #method_name });
+        parts.push(quote! { "\",\"inputs\":[" });
+
+        push_abi_params(&mut parts, &method.param_names, &method.param_types,
+            if is_sol { Some(&method.signature.inputs) } else { None },
+            is_sol, &method.signature.inputs);
+
+        parts.push(quote! { "],\"outputs\":[" });
+
+        push_abi_outputs(&mut parts, &method.return_type,
+            if is_sol { &method.signature.outputs } else { &[] }, is_sol);
+
+        parts.push(quote! { "],\"stateMutability\":\"" });
+        parts.push(quote! { #mutability });
+        parts.push(quote! { "\"}" });
+    }
+
+    parts.push(quote! { "]" });
+
+    quote! {
+        #[cfg(pvm_entry_point)]
+        const __PVM_ABI_JSON: &str = pvm_contract::const_format::concatcp!(
+            #(#parts),*
+        );
+
+        #[cfg(pvm_entry_point)]
+        #[unsafe(link_section = ".rodata.pvm_abi")]
+        #[unsafe(no_mangle)]
+        #[used]
+        static __PVM_ABI: [u8; __PVM_ABI_JSON.len()] = {
+            let b = __PVM_ABI_JSON.as_bytes();
+            let mut a = [0u8; __PVM_ABI_JSON.len()];
+            let mut i = 0;
+            while i < b.len() {
+                a[i] = b[i];
+                i += 1;
+            }
+            a
+        };
+    }
+}
+
+/// Push ABI parameter expressions into the flat parts list.
+fn push_abi_params(
+    parts: &mut Vec<TokenStream>,
+    param_names: &[Ident],
+    rust_types: &[syn::Type],
+    sol_types_opt: Option<&[SolType]>,
+    is_sol: bool,
+    sol_types_for_sol: &[SolType],
+) {
+    for (i, name) in param_names.iter().enumerate() {
+        if i > 0 {
+            parts.push(quote! { "," });
+        }
+        let name_str = name.to_string();
+
+        if is_sol {
+            let sol_type = sol_types_opt
+                .and_then(|s| s.get(i))
+                .or_else(|| sol_types_for_sol.get(i));
+            if let Some(sol_type) = sol_type {
+                let type_str = sol_type.canonical_name();
+                parts.push(quote! { "{\"name\":\"" });
+                parts.push(quote! { #name_str });
+                parts.push(quote! { "\",\"type\":\"" });
+                parts.push(quote! { #type_str });
+                parts.push(quote! { "\"" });
+                push_sol_type_components(parts, sol_type);
+                parts.push(quote! { "}" });
+            }
+        } else {
+            let ty = &rust_types[i];
+            parts.push(quote! { "{\"name\":\"" });
+            parts.push(quote! { #name_str });
+            parts.push(quote! { "\",\"type\":\"" });
+            parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE });
+            parts.push(quote! { "\"" });
+            parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS });
+            parts.push(quote! { "}" });
+        }
+    }
+}
+
+/// Push ABI output expressions into the flat parts list.
+fn push_abi_outputs(
+    parts: &mut Vec<TokenStream>,
+    return_type: &Option<syn::Type>,
+    sol_outputs: &[SolType],
+    is_sol: bool,
+) {
+    if is_sol {
+        for (i, sol_type) in sol_outputs.iter().enumerate() {
+            if i > 0 {
+                parts.push(quote! { "," });
+            }
+            let type_str = sol_type.canonical_name();
+            parts.push(quote! { "{\"name\":\"\"" });
+            parts.push(quote! { ",\"type\":\"" });
+            parts.push(quote! { #type_str });
+            parts.push(quote! { "\"" });
+            push_sol_type_components(parts, sol_type);
+            parts.push(quote! { "}" });
+        }
+    } else if let Some(ty) = return_type {
+        parts.push(quote! { "{\"name\":\"\"" });
+        parts.push(quote! { ",\"type\":\"" });
+        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE });
+        parts.push(quote! { "\"" });
+        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS });
+        parts.push(quote! { "}" });
+    }
+}
+
+/// Push JSON components fragment for a SolType (recursive for nested tuples).
+fn push_sol_type_components(parts: &mut Vec<TokenStream>, sol_type: &SolType) {
+    if let SolType::Tuple(fields) = sol_type {
+        parts.push(quote! { ",\"components\":[" });
+        for (i, field) in fields.iter().enumerate() {
+            if i > 0 {
+                parts.push(quote! { "," });
+            }
+            let field_name = format!("_field{}", i);
+            let field_type = field.canonical_name();
+            parts.push(quote! { "{\"name\":\"" });
+            parts.push(quote! { #field_name });
+            parts.push(quote! { "\",\"type\":\"" });
+            parts.push(quote! { #field_type });
+            parts.push(quote! { "\"" });
+            push_sol_type_components(parts, field);
+            parts.push(quote! { "}" });
+        }
+        parts.push(quote! { "]" });
+    }
+}
+
+/// Generate JSON components fragment for a SolType (used in .sol interface mode).
+
 fn generate_reference_method(method: &MethodInfo) -> TokenStream {
+    // If all types are resolved, use the existing legacy codegen path
+    if method.all_inputs_resolved && method.return_resolved {
+        return generate_reference_method_legacy(method);
+    }
+
+    // Trait-based reference method for unresolved types
+    let fn_name = &method.fn_name;
+    let sol_name = &method.signature.name;
+    let param_names = &method.param_names;
+    let param_types = &method.param_types;
+
+    // Build function params using original Rust types
+    let params: Vec<TokenStream> = param_names.iter().zip(param_types.iter())
+        .map(|(name, ty)| quote! { #name: #ty }).collect();
+
+    // Selector via compute_selector
+    let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
+        quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
+    }).collect();
+
+    // Encode params via SolAbi::abi_encode
+    let encodes: Vec<TokenStream> = param_names.iter().zip(param_types.iter())
+        .map(|(name, ty)| {
+            quote! { <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut calldata); }
+        }).collect();
+
+    // Return type handling
+    let ret_ty = match &method.return_type {
+        None => quote! { () },
+        Some(ty) => quote! { #ty },
+    };
+
+    let (output_size, output_arg, decode_return) = match &method.return_type {
+        None => (
+            quote! { 0usize },
+            quote! { None },
+            quote! { () },
+        ),
+        Some(ty) => (
+            quote! { <#ty as pvm_contract::SolAbi>::HEAD_SIZE },
+            quote! { Some(&mut output_ref) },
+            quote! { <#ty as pvm_contract::SolAbi>::abi_decode(output, 0) },
+        ),
+    };
+
+    quote! {
+        pub fn #fn_name(&self, #(#params),*) -> pvm_contract::call::CallResult<#ret_ty> {
+            extern crate alloc;
+            let __sel = pvm_contract::compute_selector(#sol_name, &[
+                #(#sol_name_exprs),*
+            ]);
+            let mut calldata = alloc::vec![__sel[0], __sel[1], __sel[2], __sel[3]];
+            #(#encodes)*
+            let __out_size: usize = #output_size;
+            let mut output_buf = alloc::vec![0u8; __out_size];
+            let mut output_ref: &mut [u8] = &mut output_buf[..];
+            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
+                pvm_contract::CallFlags::ALLOW_REENTRY,
+                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata, #output_arg,
+            );
+            match result {
+                Ok(()) => {
+                    let written = output_ref.len();
+                    let output = &output_buf[..written];
+                    Ok(#decode_return)
+                }
+                Err(e) => Err(pvm_contract::call::CallError::from(e)),
+            }
+        }
+    }
+}
+
+fn generate_reference_method_legacy(method: &MethodInfo) -> TokenStream {
     let fn_name = &method.fn_name;
     let sig = &method.signature;
     let [s0, s1, s2, s3] = compute_selector(&sig.canonical_signature());

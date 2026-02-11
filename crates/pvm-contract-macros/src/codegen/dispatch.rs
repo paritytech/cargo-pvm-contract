@@ -9,10 +9,36 @@ pub struct MethodInfo {
     pub fn_name: syn::Ident,
     pub signature: FunctionSignature,
     pub param_names: Vec<syn::Ident>,
+    pub param_types: Vec<syn::Type>,
+    pub return_type: Option<syn::Type>,
     pub returns_result: bool,
+    pub all_inputs_resolved: bool,
+    pub return_resolved: bool,
 }
 
 pub fn generate_dispatch_arm(
+    method: &MethodInfo,
+    mod_name: &syn::Ident,
+    use_alloc: bool,
+) -> TokenStream {
+    if use_alloc && method.all_inputs_resolved && method.return_resolved {
+        generate_dispatch_arm_legacy(method, mod_name, use_alloc)
+    } else if use_alloc && !method.all_inputs_resolved {
+        // Fully trait-based dispatch (if-else block, not a match arm)
+        generate_trait_dispatch_arm(method, mod_name)
+    } else if use_alloc && method.all_inputs_resolved && !method.return_resolved {
+        // Legacy decode but trait-based return encode
+        generate_dispatch_arm_mixed(method, mod_name)
+    } else {
+        // no_alloc with unresolved types
+        let fn_name_str = method.fn_name.to_string();
+        quote! {
+            compile_error!(concat!("Trait-based dispatch requires alloc for method: ", #fn_name_str));
+        }
+    }
+}
+
+fn generate_dispatch_arm_legacy(
     method: &MethodInfo,
     mod_name: &syn::Ident,
     use_alloc: bool,
@@ -103,6 +129,171 @@ pub fn generate_dispatch_arm(
             #size_check
             #(#decode_statements)*
             #result_handling
+        }
+    }
+}
+
+/// Generate dispatch for a method where all inputs are resolved (legacy decode)
+/// but the return type needs trait-based encoding.
+fn generate_dispatch_arm_mixed(
+    method: &MethodInfo,
+    mod_name: &syn::Ident,
+) -> TokenStream {
+    let selector = compute_selector(&method.signature.canonical_signature());
+    let [s0, s1, s2, s3] = selector;
+
+    let param_names = &method.param_names;
+    let decodes = generate_decode_params(&method.signature.inputs, true);
+
+    let min_size = calculate_min_input_size(&method.signature.inputs);
+
+    let size_check = if min_size > 0 {
+        let min_size_lit = min_size;
+        quote! {
+            if input.len() < #min_size_lit {
+                return Err(b"InvalidCalldata".to_vec());
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    let decode_statements: Vec<_> = param_names
+        .iter()
+        .zip(decodes.iter())
+        .map(|(name, decode)| quote! { let #name = #decode; })
+        .collect();
+
+    let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
+
+    let result_handling = generate_trait_result_handling(method, mod_name, &call_args);
+
+    quote! {
+        [#s0, #s1, #s2, #s3] => {
+            #size_check
+            #(#decode_statements)*
+            #result_handling
+        }
+    }
+}
+
+/// Generate an if-else dispatch block for a method where input types are not all resolvable.
+/// This produces a block (not a match arm) that uses `return` to exit early when matched.
+pub fn generate_trait_dispatch_arm(
+    method: &MethodInfo,
+    mod_name: &syn::Ident,
+) -> TokenStream {
+    let param_names = &method.param_names;
+    let param_types = &method.param_types;
+    let sol_name = &method.signature.name;
+
+    // Build the selector computation using SolAbi::SOL_NAME for each param type
+    let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
+        quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
+    }).collect();
+
+    // Build min size computation using SolAbi::HEAD_SIZE
+    let head_size_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
+        quote! { <#ty as pvm_contract::SolAbi>::HEAD_SIZE }
+    }).collect();
+
+    // Build decode statements using SolAbi::abi_decode
+    let decode_statements: Vec<TokenStream> = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
+        quote! {
+            let #name = <#ty as pvm_contract::SolAbi>::abi_decode(input, __offset);
+            __offset += <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
+        }
+    }).collect();
+
+    let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
+
+    let result_handling = generate_trait_result_handling(method, mod_name, &call_args);
+
+    let min_size_calc = if head_size_exprs.is_empty() {
+        quote! { let __min_size: usize = 0; }
+    } else {
+        quote! {
+            let __min_size: usize = 0usize #(+ #head_size_exprs)*;
+        }
+    };
+
+    let size_check = if !param_types.is_empty() {
+        quote! {
+            if input.len() < __min_size {
+                return Err(b"InvalidCalldata".to_vec());
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    quote! {
+        {
+            let __sel = pvm_contract::compute_selector(#sol_name, &[
+                #(#sol_name_exprs),*
+            ]);
+            if selector == __sel {
+                #min_size_calc
+                #size_check
+                let mut __offset: usize = 0;
+                #(#decode_statements)*
+                #result_handling
+            }
+        }
+    }
+}
+
+/// Shared helper: generate result handling for trait-based return encoding.
+/// Used by both `generate_trait_dispatch_arm` and `generate_dispatch_arm_mixed`.
+fn generate_trait_result_handling(
+    method: &MethodInfo,
+    mod_name: &syn::Ident,
+    call_args: &[TokenStream],
+) -> TokenStream {
+    let fn_name = &method.fn_name;
+
+    match (&method.return_type, method.returns_result) {
+        // No return type, returns Result<(), Error>
+        (None, true) => {
+            quote! {
+                return #mod_name::#fn_name(#(#call_args),*).map(|()| None).map_err(|e| e.as_ref().to_vec());
+            }
+        }
+        // No return type, no Result
+        (None, false) => {
+            quote! {
+                #mod_name::#fn_name(#(#call_args),*);
+                return Ok(None);
+            }
+        }
+        // Has return type, returns Result<T, Error>
+        (Some(ret_ty), true) => {
+            quote! {
+                return #mod_name::#fn_name(#(#call_args),*).map(|result| {
+                    let mut __ret_buf = alloc::vec::Vec::new();
+                    if <#ret_ty as pvm_contract::SolAbi>::IS_DYNAMIC {
+                        let mut __w = [0u8; 32];
+                        __w[24..32].copy_from_slice(&(32u64).to_be_bytes());
+                        __ret_buf.extend_from_slice(&__w);
+                    }
+                    <#ret_ty as pvm_contract::SolAbi>::abi_encode(&result, &mut __ret_buf);
+                    Some(__ret_buf)
+                }).map_err(|e| e.as_ref().to_vec());
+            }
+        }
+        // Has return type, no Result
+        (Some(ret_ty), false) => {
+            quote! {
+                let result = #mod_name::#fn_name(#(#call_args),*);
+                let mut __ret_buf = alloc::vec::Vec::new();
+                if <#ret_ty as pvm_contract::SolAbi>::IS_DYNAMIC {
+                    let mut __w = [0u8; 32];
+                    __w[24..32].copy_from_slice(&(32u64).to_be_bytes());
+                    __ret_buf.extend_from_slice(&__w);
+                }
+                <#ret_ty as pvm_contract::SolAbi>::abi_encode(&result, &mut __ret_buf);
+                return Ok(Some(__ret_buf));
+            }
         }
     }
 }

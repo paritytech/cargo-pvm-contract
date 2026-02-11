@@ -13,3 +13,5 @@ ethereum-types = { version = "0.14", default-features = false, features = ["code
 pallet-revive-uapi = { version = "0.9", default-features = false }
 parity-scale-codec = { version = "3.6", default-features = false }
 polkavm-derive.workspace = true
+tiny-keccak = { workspace = true }
+const_format = { workspace = true }

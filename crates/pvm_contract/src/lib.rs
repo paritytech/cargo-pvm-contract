@@ -1,11 +1,15 @@
 #![no_std]
 
+extern crate alloc;
+
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 pub mod storage;
 
+pub mod abi;
+
 pub mod call;
 
-pub use pvm_contract_macros::{constructor, contract, fallback, method, storage};
+pub use pvm_contract_macros::{constructor, contract, fallback, method, storage, SolAbi};
 
 pub use ethereum_types::Address;
 pub use alloy_primitives::{FixedBytes, I256, U256};
@@ -14,7 +18,10 @@ pub use pallet_revive_uapi::{CallFlags, HostFn, HostFnImpl as api, ReturnFlags, 
 
 pub use parity_scale_codec::{Encode, Decode};
 
+pub use abi::{SolAbi, compute_selector};
+
 pub use polkavm_derive;
+pub use const_format;
 
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #[panic_handler]

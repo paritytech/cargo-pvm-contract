@@ -5,7 +5,7 @@ mod signature;
 mod solidity;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, ItemFn, ItemMod, ItemStruct};
+use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod, ItemStruct};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
@@ -355,6 +355,42 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemStruct);
 
     match codegen::expand_storage(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive macro for implementing `SolAbi` on structs.
+///
+/// # Newtypes
+///
+/// For single-field tuple structs, delegates to the inner type:
+///
+/// ```ignore
+/// #[derive(SolAbi)]
+/// struct EntityId(pub [u8; 32]);
+/// // EntityId now encodes as bytes32
+/// ```
+///
+/// # Named Structs
+///
+/// For named structs, encodes as a Solidity tuple:
+///
+/// ```ignore
+/// #[derive(SolAbi)]
+/// struct Point {
+///     x: u64,
+///     y: u64,
+/// }
+/// // Point encodes as (uint64,uint64)
+/// ```
+///
+/// All field types must be resolvable to Solidity types at macro expansion time.
+#[proc_macro_derive(SolAbi)]
+pub fn derive_sol_abi(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_derive_sol_abi(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

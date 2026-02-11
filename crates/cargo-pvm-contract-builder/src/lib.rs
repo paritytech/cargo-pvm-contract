@@ -17,7 +17,7 @@ use std::{
     process::Command,
 };
 
-pub use abi::{generate_abi, AbiJson};
+pub use abi::extract_abi_from_elf;
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
@@ -185,9 +185,6 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
     let profile = Profile::detect();
     let build_dir = get_build_dir();
     let target_root = get_target_root();
-    let manifest_dir = project_cargo_toml
-        .parent()
-        .context("Invalid manifest path")?;
 
     let bins_to_build = match bin_names {
         Some(names) => names,
@@ -217,26 +214,23 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
         link_to_polkavm(&elf_path, &output_path)?;
 
         let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
-        generate_abi_file(manifest_dir, &abi_path)?;
+        generate_abi_file(&elf_path, &abi_path)?;
     }
 
     Ok(())
 }
 
-fn generate_abi_file(manifest_dir: &Path, output_path: &Path) -> Result<()> {
-    match abi::generate_abi(manifest_dir) {
-        Ok(Some(abi)) => {
-            let json =
-                serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
-            fs::write(output_path, json)
+fn generate_abi_file(elf_path: &Path, output_path: &Path) -> Result<()> {
+    let elf_bytes = fs::read(elf_path)
+        .with_context(|| format!("Failed to read ELF: {}", elf_path.display()))?;
+    match abi::extract_abi_from_elf(&elf_bytes)? {
+        Some(json) => {
+            fs::write(output_path, &json)
                 .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
             eprintln!("Created ABI: {}", output_path.display());
         }
-        Ok(None) => {
-            eprintln!("No pvm_contract found, skipping ABI generation");
-        }
-        Err(e) => {
-            eprintln!("Warning: Failed to generate ABI: {e}");
+        None => {
+            eprintln!("No ABI section found, skipping ABI generation");
         }
     }
     Ok(())
@@ -250,7 +244,7 @@ fn build_elf(
     bins: &[String],
     pkg_name: &str,
 ) -> Result<()> {
-    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
+    let rustflags = "-Zunstable-options -Cpanic=immediate-abort -Clink-arg=--undefined=__PVM_ABI";
 
     let mut args = polkavm_linker::TargetJsonArgs::default();
     args.is_64_bit = true;
