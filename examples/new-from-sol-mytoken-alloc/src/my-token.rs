@@ -40,26 +40,26 @@ mod contract {
         Ok(())
     }
 
-    // TODO: Implement the following methods from MyToken.sol:
+     // TODO: Implement the following methods from MyToken.sol:
 
-    // #[pvm_contract_macros::method]
-    // pub fn balance_of(account: [u8; 20]) -> Result<U256, Error> {
-    //     todo!()
-    // }
+     #[pvm_contract_macros::method]
+     pub fn balance_of(account: [u8; 20]) -> Result<U256, Error> {
+         todo!()
+     }
 
-    // #[pvm_contract_macros::method]
-    // pub fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
-    //     todo!()
-    // }
+     #[pvm_contract_macros::method]
+     pub fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
+         todo!()
+     }
 
-    // #[pvm_contract_macros::method]
-    // pub fn total_supply() -> Result<U256, Error> {
-    //     todo!()
-    // }
+     #[pvm_contract_macros::method]
+     pub fn total_supply() -> Result<U256, Error> {
+         todo!()
+     }
 
-    // #[pvm_contract_macros::method]
-    // pub fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
-    //     todo!()
-    // }
+     #[pvm_contract_macros::method]
+     pub fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
+         todo!()
+     }
 
 }

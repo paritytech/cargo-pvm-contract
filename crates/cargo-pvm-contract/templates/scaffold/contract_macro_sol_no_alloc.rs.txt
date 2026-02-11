@@ -31,11 +31,11 @@ mod contract {
         Ok(())
     }
 
-    // TODO: Implement the following methods from {{ sol_file_name }}:
+     // TODO: Implement the following methods from {{ sol_file_name }}:
 {% for func in functions %}
-    // #[pvm_contract_macros::method]
-    // pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
-    //     todo!()
-    // }
+     #[pvm_contract_macros::method]
+     pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
+         todo!()
+     }
 {% endfor %}
 }

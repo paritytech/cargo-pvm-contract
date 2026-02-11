@@ -31,11 +31,11 @@ mod contract {
         Ok(())
     }
 
-    // TODO: Implement the following methods from Fibonacci.sol:
+     // TODO: Implement the following methods from Fibonacci.sol:
 
-    // #[pvm_contract_macros::method]
-    // pub fn fibonacci(arg0: u32) -> Result<u32, Error> {
-    //     todo!()
-    // }
+     #[pvm_contract_macros::method]
+     pub fn fibonacci(arg0: u32) -> Result<u32, Error> {
+         todo!()
+     }
 
 }

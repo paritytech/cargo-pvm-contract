@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "{{ contract_name }}"
 version = "0.1.0"

@@ -1,3 +1,5 @@
+[workspace]
+
 [package]
 name = "example-fibonacci-no-alloc"
 version = "0.1.0"
