@@ -1,36 +1,32 @@
+#![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #![no_main]
 #![no_std]
 
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-use pvm_contract_builder_dsl::pallet_revive_uapi::StorageFlags;
-#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-use pvm_contract_builder_dsl::pallet_revive_uapi::{HostFn as _, HostFnImpl as api, StorageFlags};
-use pvm_contract_builder_dsl::ruint::aliases::U256;
+use pallet_revive_uapi::StorageFlags;
+use pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
+use pvm_contract_builder_dsl::{solidity_selector, ContractBuilder};
+use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
+use ruint::aliases::U256;
 
-#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
-mod api {
-    use super::StorageFlags;
+const TOTAL_SUPPLY_SELECTOR: [u8; 4] = solidity_selector("totalSupply()");
+const BALANCE_OF_SELECTOR: [u8; 4] = solidity_selector("balanceOf(address)");
+const TRANSFER_SELECTOR: [u8; 4] = solidity_selector("transfer(address,uint256)");
+const MINT_SELECTOR: [u8; 4] = solidity_selector("mint(address,uint256)");
 
-    pub fn hash_keccak_256(_input: &[u8], output: &mut [u8; 32]) {
-        *output = [0u8; 32]
+const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
+    0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d, 0xaa,
+    0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23, 0xb3, 0xef,
+];
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unsafe {
+        core::arch::asm!("unimp");
+        core::hint::unreachable_unchecked()
     }
-
-    pub fn get_storage(
-        _flags: StorageFlags,
-        _key: &[u8; 32],
-        _output: &mut &mut [u8],
-    ) -> Result<(), ()> {
-        Err(())
-    }
-
-    pub fn set_storage(_flags: StorageFlags, _key: &[u8; 32], _value: &[u8; 32]) {}
-
-    pub fn caller(output: &mut [u8; 20]) {
-        *output = [0u8; 20]
-    }
-
-    pub fn deposit_event(_topics: &[[u8; 32]], _data: &[u8; 32]) {}
 }
+
+use pallet_revive_uapi::HostFnImpl as api;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -45,59 +41,68 @@ impl AsRef<[u8]> for Error {
     }
 }
 
-pvm_contract_builder_dsl::pvm_contract! {
-    no_alloc(buffer = 256);
+#[unsafe(no_mangle)]
+#[polkavm_derive::polkavm_export]
+pub extern "C" fn deploy() {}
 
-    constructor fn new() -> Result<(), Error> {
-        Ok(())
+#[unsafe(no_mangle)]
+#[polkavm_derive::polkavm_export]
+pub extern "C" fn call() {
+    ContractBuilder::new()
+        .method(TOTAL_SUPPLY_SELECTOR, total_supply_handler)
+        .method(BALANCE_OF_SELECTOR, balance_of_handler)
+        .method(TRANSFER_SELECTOR, transfer_handler)
+        .method(MINT_SELECTOR, mint_handler)
+        .dispatch::<HostFnImpl, 256>()
+}
+
+fn total_supply_handler(_input: &[u8]) {
+    let result = get_total_supply();
+    let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
+    result.encode_to(&mut buf);
+    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+}
+
+fn balance_of_handler(input: &[u8]) {
+    let account = <[u8; 20]>::decode_at(input, 0);
+    let result = get_balance(&account);
+    let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
+    result.encode_to(&mut buf);
+    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+}
+
+fn transfer_handler(input: &[u8]) {
+    let to = <[u8; 20]>::decode_at(input, 0);
+    let amount = U256::decode_at(input, <[u8; 20] as StaticEncodedLen>::ENCODED_SIZE);
+
+    let caller = get_caller();
+    let sender_balance = get_balance(&caller);
+
+    if sender_balance < amount {
+        HostFnImpl::return_value(ReturnFlags::REVERT, Error::InsufficientBalance.as_ref());
     }
 
-    fallback fn fallback() -> Result<(), Error> {
-        Ok(())
-    }
+    let new_sender_balance = sender_balance - amount;
+    let recipient_balance = get_balance(&to);
+    let new_recipient_balance = recipient_balance + amount;
 
-    #[method("totalSupply()", returns(U256))]
-    fn total_supply() -> U256 {
-        get_total_supply()
-    }
+    set_balance(&caller, new_sender_balance);
+    set_balance(&to, new_recipient_balance);
+    emit_transfer(&caller, &to, amount);
+}
 
-    #[method("balanceOf(address)", returns(U256))]
-    fn balance_of(account: [u8; 20]) -> U256 {
-        get_balance(&account)
-    }
+fn mint_handler(input: &[u8]) {
+    let to = <[u8; 20]>::decode_at(input, 0);
+    let amount = U256::decode_at(input, <[u8; 20] as StaticEncodedLen>::ENCODED_SIZE);
 
-    #[method("transfer(address,uint256)", result)]
-    fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
-        let caller = get_caller();
-        let sender_balance = get_balance(&caller);
+    let new_recipient_balance = get_balance(&to).saturating_add(amount);
+    set_balance(&to, new_recipient_balance);
 
-        if sender_balance < amount {
-            return Err(Error::InsufficientBalance);
-        }
+    let new_supply = get_total_supply().saturating_add(amount);
+    set_total_supply(new_supply);
 
-        let new_sender_balance = sender_balance - amount;
-        let recipient_balance = get_balance(&to);
-        let new_recipient_balance = recipient_balance + amount;
-
-        set_balance(&caller, new_sender_balance);
-        set_balance(&to, new_recipient_balance);
-        emit_transfer(&caller, &to, amount);
-
-        Ok(())
-    }
-
-    #[method("mint(address,uint256)", result)]
-    fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
-        let new_recipient_balance = get_balance(&to).saturating_add(amount);
-        set_balance(&to, new_recipient_balance);
-
-        let new_supply = get_total_supply().saturating_add(amount);
-        set_total_supply(new_supply);
-
-        let zero_address = [0u8; 20];
-        emit_transfer(&zero_address, &to, amount);
-        Ok(())
-    }
+    let zero_address = [0u8; 20];
+    emit_transfer(&zero_address, &to, amount);
 }
 
 fn total_supply_key() -> [u8; 32] {
@@ -151,11 +156,6 @@ fn get_caller() -> [u8; 20] {
     api::caller(&mut caller);
     caller
 }
-
-const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
-    0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d, 0xaa,
-    0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23, 0xb3, 0xef,
-];
 
 fn emit_transfer(from: &[u8; 20], to: &[u8; 20], value: U256) {
     let mut from_topic = [0u8; 32];

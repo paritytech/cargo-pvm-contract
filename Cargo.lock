@@ -2178,7 +2178,6 @@ dependencies = [
  "polkavm-derive 0.31.0",
  "pvm-contract-types",
  "ruint",
- "tiny-keccak",
 ]
 
 [[package]]
