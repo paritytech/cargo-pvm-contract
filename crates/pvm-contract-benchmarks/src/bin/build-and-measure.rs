@@ -213,7 +213,7 @@ overflow-checks = false
 
 fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result<String> {
     if variant == Variant::BuilderDsl {
-        let examples_dir = base_path.join("crates/pvm-contract-builder-dsl/examples");
+        let examples_dir = base_path.join("crates/pvm-contract-builder-dsl/contracts");
         let source_file = format!("{}_builder.rs", contract);
         let source_path = examples_dir.join(&source_file);
         return fs::read_to_string(&source_path)
@@ -361,6 +361,18 @@ fn build_variant(
     Ok(())
 }
 
+fn variants_for_contract(contract: &str) -> Vec<Variant> {
+    match contract {
+        "multi" => vec![Variant::NoAlloc, Variant::BuilderDsl],
+        _ => vec![
+            Variant::NoAlloc,
+            Variant::WithAlloc,
+            Variant::Alloy,
+            Variant::BuilderDsl,
+        ],
+    }
+}
+
 fn main() -> Result<()> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let base_path = manifest_dir
@@ -373,20 +385,17 @@ fn main() -> Result<()> {
     let artifacts_dir = PathBuf::from("target/benchmark-artifacts");
     fs::create_dir_all(&artifacts_dir).context("Failed to create artifacts directory")?;
 
-    let contracts = vec!["fibonacci", "mytoken"];
-    let variants = vec![
-        Variant::NoAlloc,
-        Variant::WithAlloc,
-        Variant::Alloy,
-        Variant::BuilderDsl,
-    ];
+    let contracts = vec!["fibonacci", "mytoken", "multi"];
     let profiles = vec!["debug", "release"];
 
-    let total = contracts.len() * variants.len() * profiles.len();
+    let total: usize = contracts
+        .iter()
+        .map(|contract| variants_for_contract(contract).len() * profiles.len())
+        .sum();
     let mut count = 0;
 
     for contract in &contracts {
-        for variant in &variants {
+        for variant in variants_for_contract(contract) {
             for profile in &profiles {
                 count += 1;
                 println!(
@@ -397,7 +406,7 @@ fn main() -> Result<()> {
                     variant.name(),
                     profile
                 );
-                build_variant(contract, *variant, profile, &artifacts_dir, &base_path)?;
+                build_variant(contract, variant, profile, &artifacts_dir, &base_path)?;
             }
         }
     }
