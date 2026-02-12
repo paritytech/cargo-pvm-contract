@@ -1,10 +1,10 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
+use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
-use super::dispatch::{generate_dispatch_arm, MethodInfo};
+use super::dispatch::{MethodInfo, generate_dispatch_arm};
 use crate::signature::{FunctionSignature, SolType};
-use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
+use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -90,51 +90,6 @@ impl Parse for ContractArgs {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::ContractArgs;
-
-    #[test]
-    fn parses_no_alloc_with_nested_buffer() {
-        let args = syn::parse_str::<ContractArgs>("\"MyToken.sol\", no_alloc(buffer = 512)")
-            .expect("nested no_alloc(buffer = N) should parse");
-
-        assert_eq!(
-            args,
-            ContractArgs {
-                no_alloc: true,
-                buffer_size: 512,
-                sol_path: Some("MyToken.sol".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parses_no_alloc_without_nested_buffer() {
-        let args = syn::parse_str::<ContractArgs>("no_alloc")
-            .expect("no_alloc without options should parse");
-
-        assert_eq!(
-            args,
-            ContractArgs {
-                no_alloc: true,
-                buffer_size: 256,
-                sol_path: None,
-            }
-        );
-    }
-
-    #[test]
-    fn rejects_top_level_buffer_argument() {
-        let error = syn::parse_str::<ContractArgs>("no_alloc, buffer = 512")
-            .expect_err("top-level buffer argument should be rejected");
-
-        assert!(error
-            .to_string()
-            .contains("`buffer` must be nested inside `no_alloc(...)`"));
-    }
-}
-
 fn load_sol_interface(path: &str) -> Result<SolInterface, String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR not set".to_string())?;
@@ -160,17 +115,16 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
         if segments.len() == 2
             && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
             && segments[1].ident == "method"
+            && let syn::Meta::List(meta_list) = &attr.meta
         {
-            if let syn::Meta::List(meta_list) = &attr.meta {
-                let tokens_str = meta_list.tokens.to_string();
-                if let Some(start) = tokens_str.find("rename") {
-                    let after_rename = &tokens_str[start..];
-                    if let Some(eq_pos) = after_rename.find('=') {
-                        let after_eq = after_rename[eq_pos + 1..].trim();
-                        let name = after_eq.trim_matches(|c| c == '"' || c == ' ');
-                        if !name.is_empty() {
-                            return Some(name.to_string());
-                        }
+            let tokens_str = meta_list.tokens.to_string();
+            if let Some(start) = tokens_str.find("rename") {
+                let after_rename = &tokens_str[start..];
+                if let Some(eq_pos) = after_rename.find('=') {
+                    let after_eq = after_rename[eq_pos + 1..].trim();
+                    let name = after_eq.trim_matches(|c| c == '"' || c == ' ');
+                    if !name.is_empty() {
+                        return Some(name.to_string());
                     }
                 }
             }
@@ -197,10 +151,10 @@ fn is_result_return_type(output: &syn::ReturnType) -> bool {
     match output {
         syn::ReturnType::Default => false,
         syn::ReturnType::Type(_, ty) => {
-            if let syn::Type::Path(type_path) = ty.as_ref() {
-                if let Some(segment) = type_path.path.segments.last() {
-                    return segment.ident == "Result";
-                }
+            if let syn::Type::Path(type_path) = ty.as_ref()
+                && let Some(segment) = type_path.path.segments.last()
+            {
+                return segment.ident == "Result";
             }
             false
         }
@@ -266,21 +220,18 @@ fn infer_signature_from_rust(func: &syn::ItemFn) -> syn::Result<FunctionSignatur
 }
 
 fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
-    if let syn::Type::Path(type_path) = ty {
-        if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "Result" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first() {
-                        if let syn::Type::Tuple(tuple) = ok_ty {
-                            if tuple.elems.is_empty() {
-                                return None;
-                            }
-                        }
-                        return Some(ok_ty.clone());
-                    }
-                }
-            }
+    if let syn::Type::Path(type_path) = ty
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+    {
+        if let syn::Type::Tuple(tuple) = ok_ty
+            && tuple.elems.is_empty()
+        {
+            return None;
         }
+        return Some(ok_ty.clone());
     }
     None
 }
@@ -318,10 +269,10 @@ fn parse_contract(
                     .inputs
                     .iter()
                     .filter_map(|arg| {
-                        if let syn::FnArg::Typed(pat_type) = arg {
-                            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                                return Some(pat_ident.ident.clone());
-                            }
+                        if let syn::FnArg::Typed(pat_type) = arg
+                            && let syn::Pat::Ident(pat_ident) = &*pat_type.pat
+                        {
+                            return Some(pat_ident.ident.clone());
                         }
                         None
                     })
@@ -586,5 +537,52 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
         use pallet_revive_uapi::HostFn as _;
 
         #(#items)*
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContractArgs;
+
+    #[test]
+    fn parses_no_alloc_with_nested_buffer() {
+        let args = syn::parse_str::<ContractArgs>("\"MyToken.sol\", no_alloc(buffer = 512)")
+            .expect("nested no_alloc(buffer = N) should parse");
+
+        assert_eq!(
+            args,
+            ContractArgs {
+                no_alloc: true,
+                buffer_size: 512,
+                sol_path: Some("MyToken.sol".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_no_alloc_without_nested_buffer() {
+        let args = syn::parse_str::<ContractArgs>("no_alloc")
+            .expect("no_alloc without options should parse");
+
+        assert_eq!(
+            args,
+            ContractArgs {
+                no_alloc: true,
+                buffer_size: 256,
+                sol_path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_top_level_buffer_argument() {
+        let error = syn::parse_str::<ContractArgs>("no_alloc, buffer = 512")
+            .expect_err("top-level buffer argument should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("`buffer` must be nested inside `no_alloc(...)`")
+        );
     }
 }

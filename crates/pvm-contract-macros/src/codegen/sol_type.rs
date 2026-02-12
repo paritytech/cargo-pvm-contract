@@ -218,12 +218,11 @@ fn type_to_sol_type(ty: &Type) -> syn::Result<SolType> {
     SolType::from_rust_type(ty).ok_or_else(|| {
         syn::Error::new_spanned(
             ty,
-            format!(
-                "Unsupported type for SolType derive. Supported types: \
+            "Unsupported type for SolType derive. Supported types: \
                  U256, u128, u64, u32, u16, u8, i128, i64, i32, i16, i8, \
                  bool, [u8; 20] (address), [u8; N] (bytesN), String. \
                  For custom structs, derive SolType on them first."
-            ),
+                .to_string(),
         )
     })
 }

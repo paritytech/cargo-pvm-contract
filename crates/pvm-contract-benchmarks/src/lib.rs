@@ -63,7 +63,7 @@ pub fn collect_variants<P: AsRef<Path>>(dir: P) -> anyhow::Result<Vec<ContractVa
     for entry in WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "polkavm"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "polkavm"))
     {
         match ContractVariant::from_polkavm_file(entry.path()) {
             Ok(variant) => variants.push(variant),
@@ -101,7 +101,7 @@ pub fn generate_report(variants: &[ContractVariant]) -> String {
     for variant in variants {
         by_contract
             .entry(variant.name.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(variant);
     }
 
@@ -142,7 +142,7 @@ pub fn generate_report(variants: &[ContractVariant]) -> String {
                         variant, profile, diff_bytes, diff_pct
                     ));
                 }
-                report.push_str("\n");
+                report.push('\n');
             }
         }
     }

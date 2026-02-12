@@ -57,6 +57,12 @@ pub struct ContractBuilder {
 
 fn noop_handler(_: &[u8]) {}
 
+impl Default for ContractBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ContractBuilder {
     /// Create a new empty contract builder.
     pub fn new() -> Self {

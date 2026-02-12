@@ -121,14 +121,14 @@ impl FunctionSignature {
             "bytes" => Ok(SolType::DynBytes),
             _ if s.starts_with("uint") => {
                 let bits: usize = s[4..].parse().unwrap_or(256);
-                if bits == 0 || bits > 256 || bits % 8 != 0 {
+                if bits == 0 || bits > 256 || !bits.is_multiple_of(8) {
                     return Err(format!("Invalid uint size: {}", bits));
                 }
                 Ok(SolType::Uint(bits))
             }
             _ if s.starts_with("int") => {
                 let bits: usize = s[3..].parse().unwrap_or(256);
-                if bits == 0 || bits > 256 || bits % 8 != 0 {
+                if bits == 0 || bits > 256 || !bits.is_multiple_of(8) {
                     return Err(format!("Invalid int size: {}", bits));
                 }
                 Ok(SolType::Int(bits))

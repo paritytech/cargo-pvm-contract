@@ -4,7 +4,7 @@
 
 use pallet_revive_uapi::StorageFlags;
 use pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
-use pvm_contract_builder_dsl::{solidity_selector, ContractBuilder};
+use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
 use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
 use ruint::aliases::U256;
 

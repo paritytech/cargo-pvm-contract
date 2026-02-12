@@ -210,7 +210,7 @@ fn build_variant(
     {
         let entry = entry.context("Failed to read directory entry")?;
         let path = entry.path();
-        if path.is_file() && path.extension().map_or(false, |ext| ext == "sol") {
+        if path.is_file() && path.extension().is_some_and(|ext| ext == "sol") {
             let file_name = path.file_name().unwrap();
             let dest = temp_path.join(file_name);
             fs::copy(&path, &dest).with_context(|| format!("Failed to copy {}", path.display()))?;
@@ -269,7 +269,7 @@ fn build_variant(
                     .map(|e| e.path())
                     .collect::<Vec<_>>()
                     .into_iter()
-                    .find(|p| p.extension().map_or(false, |ext| ext == "polkavm"))
+                    .find(|p| p.extension().is_some_and(|ext| ext == "polkavm"))
             })
             .into_iter()
             .collect();

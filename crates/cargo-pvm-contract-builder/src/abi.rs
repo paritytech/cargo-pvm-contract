@@ -60,14 +60,14 @@ pub fn generate_abi(manifest_dir: &Path) -> Result<Option<AbiJson>> {
     for entry in std::fs::read_dir(&src_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "rs") {
-            if let Some(contract) = parse_contract_file(&path)? {
-                if let Some(sol_path) = &contract.sol_path {
-                    let sol_full_path = manifest_dir.join(sol_path);
-                    return generate_abi_from_sol(&sol_full_path);
-                } else {
-                    return Ok(Some(generate_abi_from_methods(&contract)));
-                }
+        if path.extension().is_some_and(|ext| ext == "rs")
+            && let Some(contract) = parse_contract_file(&path)?
+        {
+            if let Some(sol_path) = &contract.sol_path {
+                let sol_full_path = manifest_dir.join(sol_path);
+                return generate_abi_from_sol(&sol_full_path);
+            } else {
+                return Ok(Some(generate_abi_from_methods(&contract)));
             }
         }
     }
@@ -83,10 +83,10 @@ fn parse_contract_file(path: &Path) -> Result<Option<ContractInfo>> {
         syn::parse_file(&content).with_context(|| format!("Failed to parse {}", path.display()))?;
 
     for item in &file.items {
-        if let syn::Item::Mod(item_mod) = item {
-            if let Some(contract_info) = parse_contract_module(item_mod)? {
-                return Ok(Some(contract_info));
-            }
+        if let syn::Item::Mod(item_mod) = item
+            && let Some(contract_info) = parse_contract_module(item_mod)?
+        {
+            return Ok(Some(contract_info));
         }
     }
 
@@ -142,14 +142,14 @@ fn parse_contract_module(item_mod: &syn::ItemMod) -> Result<Option<ContractInfo>
 fn extract_contract_sol_path(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        if is_pvm_path(&segments, "contract") {
-            if let syn::Meta::List(meta_list) = &attr.meta {
-                let tokens_str = meta_list.tokens.to_string();
-                if let Some(first_arg) = tokens_str.split(',').next() {
-                    let trimmed = first_arg.trim().trim_matches('"');
-                    if trimmed.ends_with(".sol") {
-                        return Some(trimmed.to_string());
-                    }
+        if is_pvm_path(&segments, "contract")
+            && let syn::Meta::List(meta_list) = &attr.meta
+        {
+            let tokens_str = meta_list.tokens.to_string();
+            if let Some(first_arg) = tokens_str.split(',').next() {
+                let trimmed = first_arg.trim().trim_matches('"');
+                if trimmed.ends_with(".sol") {
+                    return Some(trimmed.to_string());
                 }
             }
         }
@@ -167,17 +167,17 @@ fn has_pvm_attr(attrs: &[syn::Attribute], name: &str) -> bool {
 fn extract_method_rename(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
-        if is_pvm_path(&segments, "method") {
-            if let syn::Meta::List(meta_list) = &attr.meta {
-                let tokens_str = meta_list.tokens.to_string();
-                if let Some(start) = tokens_str.find("rename") {
-                    let after_rename = &tokens_str[start..];
-                    if let Some(eq_pos) = after_rename.find('=') {
-                        let after_eq = after_rename[eq_pos + 1..].trim();
-                        let name = after_eq.trim_matches(|c| c == '"' || c == ' ');
-                        if !name.is_empty() {
-                            return Some(name.to_string());
-                        }
+        if is_pvm_path(&segments, "method")
+            && let syn::Meta::List(meta_list) = &attr.meta
+        {
+            let tokens_str = meta_list.tokens.to_string();
+            if let Some(start) = tokens_str.find("rename") {
+                let after_rename = &tokens_str[start..];
+                if let Some(eq_pos) = after_rename.find('=') {
+                    let after_eq = after_rename[eq_pos + 1..].trim();
+                    let name = after_eq.trim_matches(|c| c == '"' || c == ' ');
+                    if !name.is_empty() {
+                        return Some(name.to_string());
                     }
                 }
             }
@@ -252,16 +252,16 @@ fn parse_return_type(output: &syn::ReturnType) -> Vec<ParamInfo> {
         syn::ReturnType::Type(_, ty) => {
             let type_str = quote::quote!(#ty).to_string().replace(' ', "");
 
-            if type_str.starts_with("Result<") {
-                if let Some(inner) = extract_result_ok_type(&type_str) {
-                    if inner == "()" {
-                        return vec![];
-                    }
-                    return vec![ParamInfo {
-                        name: String::new(),
-                        sol_type: rust_type_str_to_solidity(&inner),
-                    }];
+            if type_str.starts_with("Result<")
+                && let Some(inner) = extract_result_ok_type(&type_str)
+            {
+                if inner == "()" {
+                    return vec![];
                 }
+                return vec![ParamInfo {
+                    name: String::new(),
+                    sol_type: rust_type_str_to_solidity(&inner),
+                }];
             }
 
             if type_str == "()" {
@@ -306,10 +306,10 @@ fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> {
 
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("function ") {
-            if let Some(func) = parse_sol_function_line(line) {
-                items.push(func);
-            }
+        if line.starts_with("function ")
+            && let Some(func) = parse_sol_function_line(line)
+        {
+            items.push(func);
         }
     }
 

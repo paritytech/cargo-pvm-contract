@@ -20,8 +20,7 @@ pub fn parse_solidity_interface(source: &str) -> Result<SolInterface, String> {
     for line in source.lines() {
         let line = line.trim();
 
-        if line.starts_with("interface ") {
-            let rest = &line[10..];
+        if let Some(rest) = line.strip_prefix("interface ") {
             if let Some(end) = rest.find(|c: char| c == '{' || c.is_whitespace()) {
                 interface_name = rest[..end].trim().to_string();
             } else {
@@ -29,10 +28,10 @@ pub fn parse_solidity_interface(source: &str) -> Result<SolInterface, String> {
             }
         }
 
-        if line.starts_with("function ") {
-            if let Some(func) = parse_function_line(line) {
-                functions.push(func);
-            }
+        if line.starts_with("function ")
+            && let Some(func) = parse_function_line(line)
+        {
+            functions.push(func);
         }
     }
 

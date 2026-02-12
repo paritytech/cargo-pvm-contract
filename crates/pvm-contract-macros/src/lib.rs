@@ -5,7 +5,7 @@ mod signature;
 mod solidity;
 
 use proc_macro::TokenStream;
-use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
+use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
@@ -215,7 +215,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 ///     }
 /// }
 /// ```
-/// 
+///
 /// ### alloc generated `call()` example
 ///
 /// ```ignore
