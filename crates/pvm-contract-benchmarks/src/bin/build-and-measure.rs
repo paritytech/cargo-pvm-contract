@@ -8,6 +8,7 @@ enum Variant {
     NoAlloc,
     WithAlloc,
     Alloy,
+    BuilderDsl,
 }
 
 impl Variant {
@@ -16,6 +17,7 @@ impl Variant {
             Variant::NoAlloc => "no-alloc",
             Variant::WithAlloc => "with-alloc",
             Variant::Alloy => "alloy",
+            Variant::BuilderDsl => "builder-dsl",
         }
     }
 
@@ -24,6 +26,7 @@ impl Variant {
             Variant::NoAlloc => cargo_toml_no_alloc(contract, base_path),
             Variant::WithAlloc => cargo_toml_with_alloc(contract, base_path),
             Variant::Alloy => cargo_toml_alloy(contract, base_path),
+            Variant::BuilderDsl => cargo_toml_builder_dsl(contract, base_path),
         }
     }
 }
@@ -162,7 +165,61 @@ overflow-checks = false
     )
 }
 
+fn cargo_toml_builder_dsl(contract: &str, base_path: &Path) -> String {
+    let dsl_path = base_path.join("crates/pvm-contract-builder-dsl");
+    let types_path = base_path.join("crates/pvm-contract-types");
+    let builder_path = base_path.join("crates/cargo-pvm-contract-builder");
+
+    format!(
+        r#"[package]
+name = "{}"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+build = "build.rs"
+
+[[bin]]
+name = "{}"
+path = "src/{}.rs"
+
+[dependencies]
+pvm-contract-builder-dsl = {{ path = "{}" }}
+pvm-contract-types = {{ path = "{}" }}
+pallet-revive-uapi = {{ version = "0.10", default-features = false }}
+polkavm-derive = {{ version = "0.31.0" }}
+ruint = {{ version = "1.17", default-features = false }}
+
+[build-dependencies]
+cargo-pvm-contract-builder = {{ path = "{}" }}
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+overflow-checks = false
+"#,
+        contract,
+        contract,
+        contract,
+        dsl_path.display(),
+        types_path.display(),
+        builder_path.display()
+    )
+}
+
 fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result<String> {
+    if variant == Variant::BuilderDsl {
+        let examples_dir = base_path.join("crates/pvm-contract-builder-dsl/examples");
+        let source_file = format!("{}_builder.rs", contract);
+        let source_path = examples_dir.join(&source_file);
+        return fs::read_to_string(&source_path)
+            .with_context(|| format!("Failed to read {}", source_path.display()));
+    }
+
     let template_dir = base_path
         .join("crates/cargo-pvm-contract/templates/examples")
         .join(contract);
@@ -171,6 +228,7 @@ fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result
         Variant::NoAlloc => format!("{}_no_alloc.rs", contract),
         Variant::WithAlloc => format!("{}_with_alloc.rs", contract),
         Variant::Alloy => format!("{}_alloy.rs", contract),
+        Variant::BuilderDsl => unreachable!(),
     };
 
     let source_path = template_dir.join(&source_file);
@@ -316,7 +374,12 @@ fn main() -> Result<()> {
     fs::create_dir_all(&artifacts_dir).context("Failed to create artifacts directory")?;
 
     let contracts = vec!["fibonacci", "mytoken"];
-    let variants = vec![Variant::NoAlloc, Variant::WithAlloc, Variant::Alloy];
+    let variants = vec![
+        Variant::NoAlloc,
+        Variant::WithAlloc,
+        Variant::Alloy,
+        Variant::BuilderDsl,
+    ];
     let profiles = vec!["debug", "release"];
 
     let total = contracts.len() * variants.len() * profiles.len();
