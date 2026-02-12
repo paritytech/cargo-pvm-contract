@@ -10,7 +10,6 @@ pub struct MethodInfo {
     pub signature: FunctionSignature,
     pub param_names: Vec<syn::Ident>,
     pub returns_result: bool,
-    pub dyn_len: bool,
 }
 
 pub fn generate_dispatch_arm(
@@ -59,8 +58,7 @@ pub fn generate_dispatch_arm(
 
     let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
     let has_return = !method.signature.outputs.is_empty();
-    let encode_and_return =
-        generate_encode_and_return(&method.signature.outputs, use_alloc, method.dyn_len);
+    let encode_and_return = generate_encode_and_return(&method.signature.outputs, use_alloc);
 
     let body = if method.returns_result {
         if has_return {
@@ -109,21 +107,21 @@ fn has_dynamic_outputs(outputs: &[SolType]) -> bool {
     outputs.iter().any(|t| t.is_dynamic())
 }
 
-fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool, dyn_len: bool) -> TokenStream {
+fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStream {
     if outputs.is_empty() {
         return quote! { return; };
     }
 
     let has_dynamic = has_dynamic_outputs(outputs);
 
-    if has_dynamic && !dyn_len {
+    if has_dynamic && !use_alloc {
         let type_name = outputs
             .iter()
             .find(|t| t.is_dynamic())
             .map(|t| t.canonical_name())
             .unwrap_or_else(|| "dynamic".to_string());
         let msg = format!(
-            "Return type `{}` is dynamic. Add `#[pvm_contract::method(dyn_len)]` to enable runtime buffer sizing.",
+            "Return type `{}` is dynamic and requires alloc mode. Remove `no_alloc` from `#[contract]` or use static types.",
             type_name
         );
         return quote! {
@@ -131,11 +129,8 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool, dyn_len: boo
         };
     }
 
-    if dyn_len {
-        if !use_alloc {
-            panic!("dyn_len requires alloc mode");
-        }
-        return generate_dynamic_encode_and_return(outputs, dyn_len);
+    if has_dynamic {
+        return generate_dynamic_encode_and_return(outputs);
     }
 
     if outputs.len() == 1 {
@@ -171,8 +166,8 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool, dyn_len: boo
     }}
 }
 
-fn generate_dynamic_encode_and_return(outputs: &[SolType], dyn_len: bool) -> TokenStream {
-    if dyn_len && outputs.len() == 1 {
+fn generate_dynamic_encode_and_return(outputs: &[SolType]) -> TokenStream {
+    if outputs.len() == 1 {
         return quote! {{
             let len = ::pvm_contract_types::SolEncode::encode_len(&result);
             let mut buf = alloc::vec![0u8; len];

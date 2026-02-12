@@ -4,13 +4,11 @@ use syn::{Ident, ItemFn, LitStr, Token, parse::Parse, parse::ParseStream};
 
 pub struct MethodArgs {
     pub rename: Option<String>,
-    pub dyn_len: bool,
 }
 
 impl Parse for MethodArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut rename = None;
-        let mut dyn_len = false;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -18,8 +16,6 @@ impl Parse for MethodArgs {
                 input.parse::<Token![=]>()?;
                 let name: LitStr = input.parse()?;
                 rename = Some(name.value());
-            } else if ident == "dyn_len" {
-                dyn_len = true;
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -32,12 +28,12 @@ impl Parse for MethodArgs {
             }
         }
 
-        Ok(MethodArgs { rename, dyn_len })
+        Ok(MethodArgs { rename })
     }
 }
 
 pub fn expand_method(args: MethodArgs, input: ItemFn) -> syn::Result<TokenStream> {
-    let _ = (args.rename, args.dyn_len);
+    let _ = args.rename;
 
     let fn_name = &input.sig.ident;
     let fn_vis = &input.vis;

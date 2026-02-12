@@ -106,24 +106,6 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
     None
 }
 
-fn extract_method_dyn_len(attrs: &[Attribute]) -> bool {
-    for attr in attrs {
-        let segments: Vec<_> = attr.path().segments.iter().collect();
-        if segments.len() == 2
-            && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
-            && segments[1].ident == "method"
-        {
-            if let syn::Meta::List(meta_list) = &attr.meta {
-                let tokens_str = meta_list.tokens.to_string();
-                if tokens_str.contains("dyn_len") {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
     const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
     for attr in attrs {
@@ -302,14 +284,11 @@ fn parse_contract(
                     sig
                 };
 
-                let dyn_len = extract_method_dyn_len(&func.attrs);
-
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
                     signature,
                     param_names,
                     returns_result,
-                    dyn_len,
                 });
             }
         }
