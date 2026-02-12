@@ -250,7 +250,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     // Static return - uses compile-time buffer size
 ///     #[pvm_contract::method]
 ///     pub fn balance_of(account: Address) -> U256 { ... }
-/// 
+///
 ///     // Dynamic return - automatically uses runtime-computed buffer size
 ///     #[pvm_contract::method]
 ///     pub fn greeting() -> String { ... }
