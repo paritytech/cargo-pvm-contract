@@ -223,3 +223,48 @@ fn generate_dynamic_encode_and_return(outputs: &[SolType]) -> TokenStream {
             pallet_revive_uapi::ReturnFlags::empty(), &head);
     }}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_dispatch_arm_uses_dynamic_encoding_for_string_return_in_alloc_mode() {
+        let method = MethodInfo {
+            fn_name: syn::parse_str("greeting").unwrap(),
+            signature: FunctionSignature {
+                name: "greeting".to_string(),
+                inputs: vec![],
+                outputs: vec![SolType::String],
+            },
+            param_names: vec![],
+            returns_result: false,
+        };
+        let mod_name: syn::Ident = syn::parse_str("contract").unwrap();
+
+        let arm = generate_dispatch_arm(&method, &mod_name, true).to_string();
+
+        assert!(arm.contains("encode_len"));
+        assert!(!arm.contains("compile_error"));
+    }
+
+    #[test]
+    fn generate_dispatch_arm_emits_compile_error_for_string_return_in_no_alloc_mode() {
+        let method = MethodInfo {
+            fn_name: syn::parse_str("greeting").unwrap(),
+            signature: FunctionSignature {
+                name: "greeting".to_string(),
+                inputs: vec![],
+                outputs: vec![SolType::String],
+            },
+            param_names: vec![],
+            returns_result: false,
+        };
+        let mod_name: syn::Ident = syn::parse_str("contract").unwrap();
+
+        let arm = generate_dispatch_arm(&method, &mod_name, false).to_string();
+
+        assert!(arm.contains("compile_error"));
+        assert!(arm.contains("requires alloc mode"));
+    }
+}
