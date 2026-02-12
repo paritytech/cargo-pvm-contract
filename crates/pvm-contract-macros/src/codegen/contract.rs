@@ -1,11 +1,12 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
+use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
 
-use super::dispatch::{MethodInfo, generate_dispatch_arm};
+use super::dispatch::{generate_dispatch_arm, MethodInfo};
 use crate::signature::{FunctionSignature, SolType};
-use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
+use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
     pub no_alloc: bool,
     pub buffer_size: usize,
@@ -39,11 +40,38 @@ impl Parse for ContractArgs {
             match ident.to_string().as_str() {
                 "no_alloc" => {
                     args.no_alloc = true;
+
+                    if input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in input);
+
+                        while !content.is_empty() {
+                            let option: Ident = content.parse()?;
+                            match option.to_string().as_str() {
+                                "buffer" => {
+                                    content.parse::<Token![=]>()?;
+                                    let size: LitInt = content.parse()?;
+                                    args.buffer_size = size.base10_parse()?;
+                                }
+                                other => {
+                                    return Err(syn::Error::new(
+                                        option.span(),
+                                        format!("Unknown no_alloc option: {}", other),
+                                    ));
+                                }
+                            }
+
+                            if content.peek(Token![,]) {
+                                content.parse::<Token![,]>()?;
+                            }
+                        }
+                    }
                 }
                 "buffer" => {
-                    input.parse::<Token![=]>()?;
-                    let size: LitInt = input.parse()?;
-                    args.buffer_size = size.base10_parse()?;
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        "`buffer` must be nested inside `no_alloc(...)`, e.g. `no_alloc(buffer = 512)`",
+                    ));
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -59,6 +87,51 @@ impl Parse for ContractArgs {
         }
 
         Ok(args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ContractArgs;
+
+    #[test]
+    fn parses_no_alloc_with_nested_buffer() {
+        let args = syn::parse_str::<ContractArgs>("\"MyToken.sol\", no_alloc(buffer = 512)")
+            .expect("nested no_alloc(buffer = N) should parse");
+
+        assert_eq!(
+            args,
+            ContractArgs {
+                no_alloc: true,
+                buffer_size: 512,
+                sol_path: Some("MyToken.sol".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_no_alloc_without_nested_buffer() {
+        let args = syn::parse_str::<ContractArgs>("no_alloc")
+            .expect("no_alloc without options should parse");
+
+        assert_eq!(
+            args,
+            ContractArgs {
+                no_alloc: true,
+                buffer_size: 256,
+                sol_path: None,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_top_level_buffer_argument() {
+        let error = syn::parse_str::<ContractArgs>("no_alloc, buffer = 512")
+            .expect_err("top-level buffer argument should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("`buffer` must be nested inside `no_alloc(...)`"));
     }
 }
 

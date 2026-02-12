@@ -5,15 +5,15 @@ mod signature;
 mod solidity;
 
 use proc_macro::TokenStream;
-use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
+use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
 /// # Attributes
 ///
 /// - `"path/to/Interface.sol"` - Optional Solidity interface file defining method signatures
-/// - `no_alloc` - Disables the allocator (uses fixed-size stack buffers)
-/// - `buffer = N` - Sets the calldata buffer size for no_alloc mode (default: 256)
+/// - `no_alloc` - Disables the allocator (uses fixed-size stack buffers, default buffer: 256)
+/// - `no_alloc(buffer = N)` - Disables the allocator and sets a custom calldata buffer size
 ///
 /// # Usage with Solidity Interface
 ///
@@ -147,8 +147,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// - **alloc mode**: `let mut call_data = vec![0u8; call_data_len];`
 /// - **no_alloc mode**: `let mut call_data = [0u8; BUFFER_SIZE];` with overflow check
 ///
+/// ### no_alloc generated `call()` example
+///
 /// ```ignore
-/// #[pvm_contract_macros::contract("MyToken.sol", no_alloc, buffer = 512)]
+/// #[pvm_contract_macros::contract("MyToken.sol", no_alloc(buffer = 512))]
 /// mod my_token {
 ///     // Infallible method (no Result wrapper)
 ///     #[pvm_contract::method]
@@ -213,6 +215,34 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     }
 /// }
 /// ```
+/// 
+/// ### alloc generated `call()` example
+///
+/// ```ignore
+/// #[pvm_contract_macros::contract("MyToken.sol")]
+/// mod my_token {
+///     // methods...
+/// }
+///
+/// // Generates:
+/// #[polkavm_derive::polkavm_export]
+/// pub extern "C" fn call() {
+///     let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+///     let mut call_data = alloc::vec![0u8; call_data_len];
+///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..], 0);
+///
+///     if call_data_len < 4 { /* fallback handling */ }
+///
+///     let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+///     let input = &call_data[4..];
+///
+///     match selector {
+///         [0x70, 0xa0, 0x82, 0x31] => { /* dispatch arm */ }
+///         [0xa9, 0x05, 0x9c, 0xbb] => { /* dispatch arm */ }
+///         _ => { /* fallback */ }
+///     }
+/// }
+/// ```
 ///
 /// # Return Type Flexibility
 ///
@@ -242,7 +272,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// **Alloc mode (default)**:
 /// - Static return types (U256, Address, etc.) use compile-time sized buffers
-/// - Dynamic return types (String, Vec<T>, etc.) automatically use runtime-sized buffers
+/// - Dynamic return types (String, `Vec<T>`, etc.) automatically use runtime-sized buffers
 ///
 /// ```ignore
 /// #[pvm_contract::contract] // alloc mode (default)
@@ -324,7 +354,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ## Dynamic return (alloc mode)
 ///
-/// In alloc mode, dynamic types (String, Vec<T>) automatically use runtime buffer sizing:
+/// In alloc mode, dynamic types (String, `Vec<T>`) automatically use runtime buffer sizing:
 ///
 /// ```ignore
 /// #[pvm_contract::method]
@@ -338,7 +368,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // 2) Encode output (runtime buffer size)
 /// let len = <String as SolEncode>::encode_len(&result);
 /// let mut buf = alloc::vec![0u8; len];
-/// <String as SolEncode::encode_to(&result, &mut buf);
+/// <String as SolEncode>::encode_to(&result, &mut buf);
 ///
 /// // 3) Return value to caller
 /// pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::empty(), &buf);

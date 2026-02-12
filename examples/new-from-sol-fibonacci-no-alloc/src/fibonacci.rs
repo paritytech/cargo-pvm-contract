@@ -4,7 +4,7 @@
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 use ruint::aliases::U256;
 
-#[pvm_contract_macros::contract("Fibonacci.sol", no_alloc, buffer = 256)]
+#[pvm_contract_macros::contract("Fibonacci.sol", no_alloc(buffer = 256))]
 mod contract {
     use super::*;
 

@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 
-#[pvm_contract_macros::contract("Fibonacci.sol", no_alloc, buffer = 256)]
+#[pvm_contract_macros::contract("Fibonacci.sol", no_alloc(buffer = 256))]
 mod fibonacci {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Error {}
