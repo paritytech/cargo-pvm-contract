@@ -5,6 +5,7 @@ use inquire::{Select, Text};
 use log::debug;
 use std::path::PathBuf;
 
+mod build;
 mod scaffold;
 
 // Embed the templates directory into the binary
@@ -14,17 +15,31 @@ static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 #[command(name = "cargo", bin_name = "cargo", author, version)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: CargoCommand,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
-    /// Initialize contract projects for PolkaVM
-    PvmContract(PvmContractArgs),
+enum CargoCommand {
+    /// PolkaVM contract tools
+    PvmContract(PvmContractCommand),
+}
+
+#[derive(Parser, Debug)]
+struct PvmContractCommand {
+    #[command(subcommand)]
+    subcommand: PvmSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum PvmSubcommand {
+    /// Initialize a new contract project
+    Init(InitArgs),
+    /// Build contract(s) to PolkaVM bytecode
+    Build(build::BuildArgs),
 }
 
 #[derive(Parser, Debug, Default)]
-struct PvmContractArgs {
+struct InitArgs {
     #[arg(long, value_enum)]
     init_type: Option<InitType>,
     #[arg(long)]
@@ -167,11 +182,14 @@ fn main() -> Result<()> {
 
     let Cli { command } = Cli::parse();
     match command {
-        Commands::PvmContract(args) => init_command(args),
+        CargoCommand::PvmContract(cmd) => match cmd.subcommand {
+            PvmSubcommand::Init(args) => init_command(args),
+            PvmSubcommand::Build(args) => build::build_contracts(&args),
+        },
     }
 }
 
-fn init_command(args: PvmContractArgs) -> Result<()> {
+fn init_command(args: InitArgs) -> Result<()> {
     // Get init_type from args or prompt
     let init_type = match args.init_type {
         Some(t) => t,

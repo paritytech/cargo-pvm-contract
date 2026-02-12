@@ -223,6 +223,7 @@ dependencies = [
  "anyhow",
  "askama",
  "assert_cmd",
+ "cargo-pvm-contract-builder",
  "clap",
  "convert_case 0.6.0",
  "env_logger",
@@ -235,6 +236,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tiny-keccak",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

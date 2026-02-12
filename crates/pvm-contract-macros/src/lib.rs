@@ -14,6 +14,7 @@ use syn::{parse_macro_input, DeriveInput, ItemFn, ItemMod, ItemStruct};
 /// - `"path/to/Interface.sol"` - Optional Solidity interface file defining method signatures
 /// - `no_alloc` - Disables the allocator (uses fixed-size stack buffers)
 /// - `buffer = N` - Sets the calldata buffer size for no_alloc mode (default: 256)
+/// - `cdm = "@namespace/name"` - Enable CDM (Contract Deployment Manager) support
 ///
 /// # Usage with Solidity Interface (Recommended)
 ///

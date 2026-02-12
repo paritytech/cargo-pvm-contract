@@ -1,3 +1,4 @@
+mod allocator;
 mod contract;
 mod decode;
 mod derive_sol_abi;

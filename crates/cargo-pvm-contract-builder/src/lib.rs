@@ -63,20 +63,6 @@ impl PvmBuilder {
 
     /// Build the PolkaVM binary.
     pub fn build(self) {
-        // Re-run build.rs if the entry point env var changes
-        println!("cargo:rerun-if-env-changed=PVM_ENTRY_POINT_CRATE");
-
-        // Determine if this crate should generate entry points (deploy/call).
-        // The builder sets PVM_ENTRY_POINT_CRATE to the package name of the
-        // primary contract being built. Only that crate gets entry points;
-        // dependency contracts skip them to avoid duplicate symbol conflicts.
-        if let Ok(entry_crate) = env::var("PVM_ENTRY_POINT_CRATE") {
-            let pkg_name = env::var("CARGO_PKG_NAME").unwrap_or_default();
-            if entry_crate == pkg_name {
-                println!("cargo:rustc-cfg=pvm_entry_point");
-            }
-        }
-
         // Check if we're in a recursive build
         if env::var(INTERNAL_BUILD_ENV).is_ok() {
             return;
@@ -140,7 +126,7 @@ fn get_build_dir() -> PathBuf {
 }
 
 /// Get the list of binary targets from Cargo.toml.
-fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
+pub fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(cargo_toml)
         .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
 
@@ -169,7 +155,7 @@ fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
 }
 
 /// Get the package name from Cargo.toml.
-fn get_package_name(cargo_toml: &Path) -> Result<String> {
+pub fn get_package_name(cargo_toml: &Path) -> Result<String> {
     let content = fs::read_to_string(cargo_toml)
         .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
     let doc: toml_edit::DocumentMut = content.parse().context("Failed to parse Cargo.toml")?;
@@ -180,7 +166,53 @@ fn get_package_name(cargo_toml: &Path) -> Result<String> {
         .context("No package name found in Cargo.toml")
 }
 
-/// Build the project.
+/// Build a contract externally (called by `cargo pvm-contract build`).
+///
+/// Unlike `PvmBuilder::build()` which runs inside build.rs, this is called
+/// from the CLI tool and takes explicit paths instead of reading env vars.
+///
+/// `pkg_name` is the entry-point crate name (used for `PVM_ENTRY_POINT_CRATE`).
+/// `bin_names` are the binary targets to build.
+pub fn build_contract(
+    project_cargo_toml: &Path,
+    output_dir: &Path,
+    profile_name: &str,
+    pkg_name: &str,
+    bin_names: Vec<String>,
+) -> Result<()> {
+    let profile = Profile { name: profile_name.to_string() };
+    let target_dir = output_dir.join("pvmbuild");
+
+    if bin_names.is_empty() {
+        anyhow::bail!("No binary targets to build");
+    }
+
+    build_elf(project_cargo_toml, &target_dir, &profile, &bin_names, pkg_name)?;
+
+    let elf_dir = target_dir
+        .join("riscv64emac-unknown-none-polkavm")
+        .join(profile.directory());
+
+    for bin in &bin_names {
+        let elf_path = elf_dir.join(bin);
+        if !elf_path.exists() {
+            anyhow::bail!("ELF binary not found at: {}", elf_path.display());
+        }
+
+        let polkavm_path = output_dir.join(format!("{}.{}.polkavm", bin, profile.directory()));
+        link_to_polkavm(&elf_path, &polkavm_path)?;
+
+        let abi_path = output_dir.join(format!("{}.{}.abi.json", bin, profile.directory()));
+        generate_abi_file(&elf_path, &abi_path)?;
+
+        let cdm_path = output_dir.join(format!("{}.{}.cdm.json", bin, profile.directory()));
+        generate_cdm_file(&elf_path, &cdm_path)?;
+    }
+
+    Ok(())
+}
+
+/// Build the project (called from build.rs context).
 fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> Result<()> {
     let profile = Profile::detect();
     let build_dir = get_build_dir();
@@ -215,12 +247,15 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
 
         let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
         generate_abi_file(&elf_path, &abi_path)?;
+
+        let cdm_path = target_root.join(format!("{}.{}.cdm.json", bin, profile.directory()));
+        generate_cdm_file(&elf_path, &cdm_path)?;
     }
 
     Ok(())
 }
 
-fn generate_abi_file(elf_path: &Path, output_path: &Path) -> Result<()> {
+pub fn generate_abi_file(elf_path: &Path, output_path: &Path) -> Result<()> {
     let elf_bytes = fs::read(elf_path)
         .with_context(|| format!("Failed to read ELF: {}", elf_path.display()))?;
     match abi::extract_abi_from_elf(&elf_bytes)? {
@@ -236,6 +271,22 @@ fn generate_abi_file(elf_path: &Path, output_path: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn generate_cdm_file(elf_path: &Path, output_path: &Path) -> Result<()> {
+    let elf_bytes = fs::read(elf_path)
+        .with_context(|| format!("Failed to read ELF: {}", elf_path.display()))?;
+    match abi::extract_cdm_from_elf(&elf_bytes)? {
+        Some(json) => {
+            fs::write(output_path, &json)
+                .with_context(|| format!("Failed to write CDM metadata to {}", output_path.display()))?;
+            eprintln!("Created CDM metadata: {}", output_path.display());
+        }
+        None => {
+            // No CDM metadata - contract doesn't have cdm attribute. This is normal.
+        }
+    }
+    Ok(())
+}
+
 /// Build the ELF binary using cargo.
 fn build_elf(
     manifest_path: &Path,
@@ -244,7 +295,13 @@ fn build_elf(
     bins: &[String],
     pkg_name: &str,
 ) -> Result<()> {
-    let rustflags = "-Zunstable-options -Cpanic=immediate-abort -Clink-arg=--undefined=__PVM_ABI";
+    // Include pkg_name in RUSTFLAGS to force cargo cache invalidation when
+    // switching between contracts. Without this, cached proc macro expansions
+    // from a different PVM_ENTRY_POINT_CRATE value could be reused incorrectly.
+    let rustflags = format!(
+        "-Zunstable-options -Cpanic=immediate-abort -Clink-arg=--undefined=__PVM_ABI -Clink-arg=--undefined=__PVM_CDM --cfg pvm_entry_crate=\"{}\"",
+        pkg_name
+    );
 
     let mut args = polkavm_linker::TargetJsonArgs::default();
     args.is_64_bit = true;
@@ -258,7 +315,7 @@ fn build_elf(
     cmd.current_dir(work_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS") // We set RUSTFLAGS, but cargo prefers this one
         .env_remove("RUSTC") // Prevent host toolchain override from build.rs
-        .env("RUSTFLAGS", rustflags)
+        .env("RUSTFLAGS", &rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
         // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
         // Stripping is done later by polkavm_linker after processing relocations.
@@ -294,7 +351,7 @@ fn build_elf(
 }
 
 /// Link an ELF binary to PolkaVM bytecode.
-fn link_to_polkavm(elf_path: &Path, output_path: &Path) -> Result<()> {
+pub fn link_to_polkavm(elf_path: &Path, output_path: &Path) -> Result<()> {
     let elf_bytes = fs::read(elf_path)
         .with_context(|| format!("Failed to read ELF from {}", elf_path.display()))?;
 

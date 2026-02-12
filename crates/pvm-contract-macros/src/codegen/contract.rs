@@ -12,6 +12,7 @@ pub struct ContractArgs {
     pub no_alloc: bool,
     pub buffer_size: usize,
     pub sol_path: Option<String>,
+    pub cdm: Option<String>,
 }
 
 impl Default for ContractArgs {
@@ -20,6 +21,7 @@ impl Default for ContractArgs {
             no_alloc: false,
             buffer_size: 256,
             sol_path: None,
+            cdm: None,
         }
     }
 }
@@ -46,6 +48,11 @@ impl Parse for ContractArgs {
                     input.parse::<Token![=]>()?;
                     let size: LitInt = input.parse()?;
                     args.buffer_size = size.base10_parse()?;
+                }
+                "cdm" => {
+                    input.parse::<Token![=]>()?;
+                    let name: LitStr = input.parse()?;
+                    args.cdm = Some(name.value());
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -404,6 +411,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = !args.no_alloc;
 
+    // Determine at macro expansion time whether this crate is the entry point.
+    let is_entry_point = match std::env::var("PVM_ENTRY_POINT_CRATE") {
+        Ok(entry_crate) => {
+            let pkg_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+            entry_crate == pkg_name
+        }
+        Err(_) => false,
+    };
+
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
@@ -411,10 +427,16 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let mod_content = strip_pvm_attrs(&input);
 
     let alloc_setup = if use_alloc {
+        let allocator = if is_entry_point {
+            super::allocator::generate_allocator(None)
+        } else {
+            quote! {}
+        };
         quote! {
             extern crate alloc;
             use alloc::vec;
             use alloc::vec::Vec;
+            #allocator
         }
     } else {
         quote! {}
@@ -650,31 +672,52 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let reference_type = generate_reference_type(&parsed.methods);
+    let reference_type = generate_reference_type(&parsed.methods, args.cdm.as_deref());
     let abi_section = generate_abi_section(&parsed, sol_interface.as_ref());
 
-    Ok(quote! {
-        use pvm_contract::HostFn as _;
+    let cdm_section = args.cdm.as_deref().map(|name| generate_cdm_section(name, is_entry_point));
 
-        #alloc_setup
+    if is_entry_point {
+        Ok(quote! {
+            use pvm_contract::HostFn as _;
 
-        #[cfg(pvm_entry_point)]
-        #deploy_fn
+            #alloc_setup
 
-        #[cfg(pvm_entry_point)]
-        #call_fn
+            #deploy_fn
 
-        #abi_section
+            #call_fn
 
-        #(#mod_attrs)*
-        #mod_vis mod #mod_name {
-            #error_enum
+            #abi_section
 
-            #mod_content
-        }
+            #cdm_section
 
-        #reference_type
-    })
+            #(#mod_attrs)*
+            #mod_vis mod #mod_name {
+                #error_enum
+
+                #mod_content
+            }
+
+            #reference_type
+        })
+    } else {
+        // Not the entry point — only emit the module content and reference type.
+        // Deploy/call functions, ABI, and CDM are only needed in the entry-point binary.
+        Ok(quote! {
+            use pvm_contract::HostFn as _;
+
+            #alloc_setup
+
+            #(#mod_attrs)*
+            #mod_vis mod #mod_name {
+                #error_enum
+
+                #mod_content
+            }
+
+            #reference_type
+        })
+    }
 }
 
 fn generate_abi_section(parsed: &ParsedContract, sol_interface: Option<&SolInterface>) -> TokenStream {
@@ -727,19 +770,47 @@ fn generate_abi_section(parsed: &ParsedContract, sol_interface: Option<&SolInter
 
     parts.push(quote! { "]" });
 
+    // ABI metadata is only extracted from the entry-point ELF binary.
+    // The caller already handles the entry-point vs dependency split.
     quote! {
-        #[cfg(pvm_entry_point)]
         const __PVM_ABI_JSON: &str = pvm_contract::const_format::concatcp!(
             #(#parts),*
         );
 
-        #[cfg(pvm_entry_point)]
         #[unsafe(link_section = ".rodata.pvm_abi")]
         #[unsafe(no_mangle)]
         #[used]
         static __PVM_ABI: [u8; __PVM_ABI_JSON.len()] = {
             let b = __PVM_ABI_JSON.as_bytes();
             let mut a = [0u8; __PVM_ABI_JSON.len()];
+            let mut i = 0;
+            while i < b.len() {
+                a[i] = b[i];
+                i += 1;
+            }
+            a
+        };
+    }
+}
+
+fn generate_cdm_section(cdm_name: &str, is_entry_point: bool) -> TokenStream {
+    // CDM metadata is only extracted from the entry-point ELF binary.
+    // No reason to emit it when compiled as a library dependency.
+    if !is_entry_point {
+        return quote! {};
+    }
+
+    quote! {
+        const __PVM_CDM_JSON: &str = pvm_contract::const_format::concatcp!(
+            "{\"cdmPackage\":\"", #cdm_name, "\"}"
+        );
+
+        #[unsafe(link_section = ".rodata.pvm_cdm")]
+        #[unsafe(no_mangle)]
+        #[used]
+        static __PVM_CDM: [u8; __PVM_CDM_JSON.len()] = {
+            let b = __PVM_CDM_JSON.as_bytes();
+            let mut a = [0u8; __PVM_CDM_JSON.len()];
             let mut i = 0;
             while i < b.len() {
                 a[i] = b[i];
@@ -982,8 +1053,15 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
     }
 }
 
-fn generate_reference_type(methods: &[MethodInfo]) -> TokenStream {
+fn generate_reference_type(methods: &[MethodInfo], cdm: Option<&str>) -> TokenStream {
     let proxy_methods: Vec<TokenStream> = methods.iter().map(generate_reference_method).collect();
+
+    let cdm_fn = if let Some(cdm_name) = cdm {
+        generate_cdm_reference(cdm_name)
+    } else {
+        quote! {}
+    };
+
     quote! {
         #[derive(pvm_contract::Encode, pvm_contract::Decode)]
         pub struct Reference {
@@ -998,6 +1076,118 @@ fn generate_reference_type(methods: &[MethodInfo]) -> TokenStream {
 
         pub fn reference(addr: pvm_contract::Address) -> Reference {
             Reference::at(addr)
+        }
+
+        #cdm_fn
+    }
+}
+
+/// Generate the `cdm_reference()` function that resolves the contract address at runtime
+/// by calling the ContractRegistry's `getAddress(string)` method.
+fn generate_cdm_reference(cdm_name: &str) -> TokenStream {
+    // Compute the selector for getAddress(string) at macro expansion time
+    let selector = compute_selector("getAddress(string)");
+    let [s0, s1, s2, s3] = selector;
+
+    quote! {
+        /// The address of the contracts registry, baked in at compile time from
+        /// the `CONTRACTS_REGISTRY_ADDR` environment variable.
+        const __CDM_REGISTRY_ADDR: [u8; 20] = {
+            const fn hex(c: u8) -> u8 {
+                match c {
+                    b'0'..=b'9' => c - b'0',
+                    b'a'..=b'f' => c - b'a' + 10,
+                    b'A'..=b'F' => c - b'A' + 10,
+                    _ => panic!("Invalid hex character in CONTRACTS_REGISTRY_ADDR"),
+                }
+            }
+
+            match option_env!("CONTRACTS_REGISTRY_ADDR") {
+                Some(s) => {
+                    let b = s.as_bytes();
+                    let off = if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
+                        2
+                    } else {
+                        0
+                    };
+                    assert!(b.len() - off == 40, "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (with optional 0x prefix)");
+                    let mut r = [0u8; 20];
+                    let mut i = 0;
+                    while i < 20 {
+                        r[i] = hex(b[off + i * 2]) << 4 | hex(b[off + i * 2 + 1]);
+                        i += 1;
+                    }
+                    r
+                }
+                None => [0u8; 20],
+            }
+        };
+
+        /// Get a runtime-resolved reference to this contract via CDM.
+        ///
+        /// Looks up the contract address from the ContractRegistry at runtime
+        /// using the CDM name registered at compile time. The registry address
+        /// is baked in from the `CONTRACTS_REGISTRY_ADDR` environment variable.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the cross-contract call to the registry fails or the
+        /// contract is not registered.
+        pub fn cdm_reference() -> Reference {
+            extern crate alloc;
+
+            let cdm_name: &str = #cdm_name;
+            let name_len = cdm_name.len();
+            let padded_len = (name_len + 31) / 32 * 32;
+
+            // Build calldata: selector + ABI-encoded string
+            // String ABI encoding: offset (32 bytes) + length (32 bytes) + data (padded to 32)
+            let mut calldata = alloc::vec![0u8; 4 + 32 + 32 + padded_len];
+
+            // Selector for getAddress(string)
+            calldata[0] = #s0;
+            calldata[1] = #s1;
+            calldata[2] = #s2;
+            calldata[3] = #s3;
+
+            // Offset to string data (always 32 = 0x20)
+            calldata[4 + 24..4 + 32].copy_from_slice(&(32u64).to_be_bytes());
+
+            // String length
+            calldata[4 + 32 + 24..4 + 32 + 32].copy_from_slice(&(name_len as u64).to_be_bytes());
+
+            // String data
+            calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
+
+            // Output buffer: address is returned as bytes32 (20 bytes right-aligned in 32 bytes)
+            let mut output_buf = [0u8; 32];
+            let mut output_ref: &mut [u8] = &mut output_buf[..];
+
+            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
+                pvm_contract::CallFlags::ALLOW_REENTRY,
+                &__CDM_REGISTRY_ADDR,
+                u64::MAX,
+                &[0u8; 32],
+                &calldata,
+                Some(&mut output_ref),
+            );
+
+            match result {
+                Ok(()) => {
+                    let written = output_ref.len();
+                    let output = &output_buf[..written];
+                    // Decode address from ABI-encoded response (20 bytes at offset 12..32)
+                    let mut addr = [0u8; 20];
+                    addr.copy_from_slice(&output[12..32]);
+                    if addr == [0u8; 20] {
+                        panic!("CDM: contract not found in registry");
+                    }
+                    Reference::at(pvm_contract::Address::from(addr))
+                }
+                Err(_) => {
+                    panic!("CDM: registry call failed");
+                }
+            }
         }
     }
 }

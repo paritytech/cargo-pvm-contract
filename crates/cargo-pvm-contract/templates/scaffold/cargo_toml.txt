@@ -3,7 +3,6 @@ name = "{{ contract_name }}"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "{{ contract_name }}"
@@ -18,13 +17,6 @@ pallet-revive-uapi = { version = "0.10", default-features = false }
 picoalloc = { version = "5", default-features = false }
 {% endif -%}
 polkavm-derive = { version = "0.31.0" }
-
-[build-dependencies]
-{% if let Some(path) = builder_path -%}
-cargo-pvm-contract-builder = { path = "{{ path }}" }
-{% else -%}
-cargo-pvm-contract-builder = "{{ builder_version }}"
-{% endif %}
 
 [profile.release]
 codegen-units = 1

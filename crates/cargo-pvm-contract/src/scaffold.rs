@@ -23,25 +23,17 @@ struct ContractNoAllocTemplate<'a> {
     functions: Vec<NoAllocFunctionInfo>,
 }
 
-const BUILDER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
 #[derive(Template)]
 #[template(path = "scaffold/cargo_toml.txt")]
 struct CargoTomlTemplate<'a> {
     contract_name: &'a str,
     bin_source: &'a str,
     use_alloc: bool,
-    builder_version: &'a str,
-    builder_path: Option<String>,
 }
 
 #[derive(Template)]
 #[template(path = "scaffold/contract_blank.rs.txt")]
 struct ContractBlankTemplate;
-
-#[derive(Template)]
-#[template(path = "scaffold/build.rs.txt")]
-struct BuildRsTemplate;
 
 struct AllocFunctionInfo {
     name: String,
@@ -232,16 +224,13 @@ pub fn init_blank_contract(contract_name: &str) -> Result<()> {
         lib_rs_content,
     )?;
 
-    let build_rs_content = generate_build_rs()?;
-    fs::write(target_dir.join("build.rs"), build_rs_content)?;
-
     let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, false)?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
 
     println!("Successfully initialized blank contract project: {target_dir:?}");
     println!("\nNext steps:");
     println!("  cd {contract_name}");
-    println!("  cargo build");
+    println!("  cargo pvm-contract build");
     Ok(())
 }
 
@@ -359,9 +348,6 @@ fn init_from_example_files_inner(
         lib_rs_content,
     )?;
 
-    let build_rs_content = generate_build_rs()?;
-    fs::write(target_dir.join("build.rs"), build_rs_content)?;
-
     // Create Cargo.toml
     let cargo_toml_content =
         generate_cargo_toml(&contract_name, &actual_contract_kebab, use_alloc)?;
@@ -370,7 +356,7 @@ fn init_from_example_files_inner(
     println!("Successfully initialized contract project from {sol_file_name}: {target_dir:?}");
     println!("\nNext steps:");
     println!("  cd {contract_name}");
-    println!("  cargo build");
+    println!("  cargo pvm-contract build");
     Ok(())
 }
 
@@ -457,12 +443,6 @@ fn generate_blank_contract() -> Result<String> {
     ContractBlankTemplate
         .render()
         .context("Failed to render blank contract template")
-}
-
-fn generate_build_rs() -> Result<String> {
-    BuildRsTemplate
-        .render()
-        .context("Failed to render build.rs template")
 }
 
 fn generate_rust_code_alloc(
@@ -607,23 +587,10 @@ fn resolve_target_json() -> Result<(PathBuf, String)> {
 }
 
 fn generate_cargo_toml(contract_name: &str, bin_source: &str, use_alloc: bool) -> Result<String> {
-    let builder_path = std::env::var("CARGO_PVM_CONTRACT_BUILDER_PATH")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-
-    if let Some(ref path) = builder_path {
-        let path = std::path::Path::new(path);
-        if !path.exists() {
-            anyhow::bail!("Builder path does not exist: {}", path.display());
-        }
-    }
-
     let template = CargoTomlTemplate {
         contract_name,
         bin_source,
         use_alloc,
-        builder_version: BUILDER_VERSION,
-        builder_path,
     };
     template
         .render()
