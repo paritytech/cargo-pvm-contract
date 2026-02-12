@@ -235,31 +235,32 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Attributes
 ///
 /// - `rename = "name"` - Override the Solidity function name to match (default: snake_case conversion)
-/// - `dyn_len` - Use dynamic length encoding for return values (required for types without `StaticEncodedLen`)
 ///
 /// # Static vs Dynamic Return Types
 ///
-/// By default, the macro requires return types to implement `StaticEncodedLen`, which provides
-/// a compile-time known `ENCODED_SIZE` constant. This enables stack-allocated output buffers:
+/// The encoding strategy is determined by the contract-level `no_alloc` flag and the return type:
+///
+/// **Alloc mode (default)**:
+/// - Static return types (U256, Address, etc.) use compile-time sized buffers
+/// - Dynamic return types (String, Vec<T>, etc.) automatically use runtime-sized buffers
 ///
 /// ```ignore
-/// // Static return - uses compile-time buffer size
-/// #[pvm_contract::method]
-/// pub fn balance_of(account: Address) -> U256 { ... }
-/// // Generated: let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
+/// #[pvm_contract::contract] // alloc mode (default)
+/// mod MyContract {
+///     // Static return - uses compile-time buffer size
+///     #[pvm_contract::method]
+///     pub fn balance_of(account: Address) -> U256 { ... }
+/// 
+///     // Dynamic return - automatically uses runtime-computed buffer size
+///     #[pvm_contract::method]
+///     pub fn greeting() -> String { ... }
+/// }
 /// ```
 ///
-/// For types that don't implement `StaticEncodedLen` (dynamic types), use the `dyn_len` attribute:
-///
-/// ```ignore
-/// // Dynamic return - uses runtime-computed buffer size
-/// #[pvm_contract::method(dyn_len)]
-/// pub fn greeting() -> String { ... }
-/// // Generated: let len = result.encode_len(); let mut buf = vec![0u8; len];
-/// ```
-///
-/// Without `dyn_len`, returning a type that doesn't implement `StaticEncodedLen` will produce
-/// a compile error like: `the trait StaticEncodedLen is not implemented for String`.
+/// **No-alloc mode**:
+/// - Only static return types are allowed
+/// - Returning a dynamic type will produce a compile error:
+///   `Return type 'String' is dynamic and requires alloc mode. Remove 'no_alloc' from #[contract] or use static types.`
 ///
 /// # Name Matching
 ///
@@ -321,15 +322,15 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::empty(), &buf);
 /// ```
 ///
-/// ## Dynamic return (dyn_len)
+/// ## Dynamic return (alloc mode)
 ///
-/// For types without `StaticEncodedLen` (including String), use `dyn_len` to enable runtime buffer sizing:
+/// In alloc mode, dynamic types (String, Vec<T>) automatically use runtime buffer sizing:
 ///
 /// ```ignore
-/// #[pvm_contract::method(dyn_len)]
+/// #[pvm_contract::method]
 /// pub fn greeting() -> String { ... }
 ///
-/// // Generated code:
+/// // Generated code (in alloc mode):
 ///
 /// // 1) Call the method
 /// let result = my_token::greeting();
@@ -337,7 +338,7 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // 2) Encode output (runtime buffer size)
 /// let len = <String as SolEncode>::encode_len(&result);
 /// let mut buf = alloc::vec![0u8; len];
-/// <String as SolEncode>::encode_to(&result, &mut buf);
+/// <String as SolEncode::encode_to(&result, &mut buf);
 ///
 /// // 3) Return value to caller
 /// pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::empty(), &buf);
@@ -422,8 +423,8 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `SolEncode` - Base trait with `encode_len()` and `encode_to()` methods
 /// - `StaticEncodedLen` - Marker trait with compile-time `ENCODED_SIZE` constant
 ///
-/// Types deriving `SolType` can be returned from methods without the `dyn_len` attribute
-/// since they have a compile-time known size.
+/// Types with only static fields implement `StaticEncodedLen` and can be returned from methods
+/// in both alloc and no_alloc modes since they have a compile-time known size.
 ///
 /// # Generated Code
 ///
@@ -516,7 +517,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// pub struct User { pub name: String, pub age: u8 }
 /// ```
 ///
-/// Dynamic structs must be returned with `#[pvm_contract::method(dyn_len)]`.
+/// Dynamic structs can only be returned in alloc mode (compile error in no_alloc mode).
 ///
 /// ## Generated Code for Dynamic Structs
 ///

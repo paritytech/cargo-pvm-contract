@@ -224,14 +224,14 @@ out[..N].copy_from_slice(&value);
 
 ### Dynamic Types
 
-Dynamic types (String, Vec<T>) are supported for return values with the `dyn_len` attribute:
+Dynamic types (String, Vec<T>) are supported for return values in alloc mode:
 ```rust
-#[pvm_contract::method(dyn_len)]
+#[pvm_contract::method]
 pub fn get_name() -> String {
     "hello".to_string()
 }
 ```
-Without `dyn_len`, returning a dynamic type will cause a compile error.
+In no_alloc mode, returning a dynamic type will cause a compile error.
 
 ### Composite Types
 
@@ -306,8 +306,8 @@ pub fn get_point() -> Point {
 
 #### Static vs Dynamic Structs
 
-Structs with only static fields generate `StaticEncodedLen` and can be returned without `dyn_len`.
-Structs with any dynamic field (String, Vec) are dynamic and must be returned with `#[pvm_contract::method(dyn_len)]`.
+Structs with only static fields generate `StaticEncodedLen` and can be returned in both alloc and no_alloc modes.
+Structs with any dynamic field (String, Vec) are dynamic and can only be returned in alloc mode.
 
 ```rust
 #[derive(pvm_contract_macros::SolType)]
@@ -316,7 +316,7 @@ pub struct User {
     pub age: u8,
 }
 
-#[pvm_contract::method(dyn_len)]
+#[pvm_contract::method]
 pub fn get_user() -> User {
     User { name: "Alice".into(), age: 30 }
 }

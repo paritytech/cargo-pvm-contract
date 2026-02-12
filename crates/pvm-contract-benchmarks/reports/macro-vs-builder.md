@@ -192,8 +192,8 @@ Pros:
 - **SolType derive**: custom struct encode/decode generated automatically
 - **IDE support**: proc macros integrate with rust-analyzer (hover,
   go-to-definition on generated items)
-- **Dynamic return types**: `dyn_len` attribute enables runtime-sized
-  return buffers
+- **Dynamic return types**: Alloc mode automatically handles runtime-sized
+  return buffers (no per-method attribute needed)
 
 Cons:
 - **Compile-time cost**: `syn`/`quote` add ~0.3s per rebuild
@@ -224,8 +224,8 @@ Cons:
 - **Limited IDE support**: `macro_rules!` expansion is less well
   supported by rust-analyzer than proc macros
 - **Combinatorial arm explosion**: 6 dispatch arms x 8 decode-and-call
-  arms for all combinations of params/result/encode; adding new
-  patterns (e.g., `dyn_len`) requires adding more arms
+  arms for all combinations of params/result/encode; historically, adding new
+  encoding patterns required adding more arms
 
 
 ## 6. Summary Matrix
