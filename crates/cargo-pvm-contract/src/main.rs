@@ -109,7 +109,7 @@ impl ExampleContract {
                 file.path()
                     .file_name()
                     .and_then(|filename| filename.to_str())
-                    .is_some_and(|filename| filename.ends_with("_no_alloc.rs"))
+                    .is_some_and(|filename| filename.ends_with(".rs"))
             })?
             .path()
             .file_name()?
@@ -121,7 +121,7 @@ impl ExampleContract {
                 file.path()
                     .file_name()
                     .and_then(|filename| filename.to_str())
-                    .is_some_and(|filename| filename.ends_with("_with_alloc.rs"))
+                    .is_some_and(|filename| filename.ends_with(".rs"))
             })?
             .path()
             .file_name()?
