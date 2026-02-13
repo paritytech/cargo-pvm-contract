@@ -1,6 +1,11 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
-use std::path::Path;
+use std::{
+    collections::{BTreeSet, HashMap},
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone)]
@@ -21,13 +26,14 @@ pub struct MethodInfo {
 #[derive(Debug, Clone)]
 pub struct ParamInfo {
     pub name: String,
+    pub rust_type: String,
     pub sol_type: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct AbiJson(Vec<AbiItem>);
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AbiItem {
     Function {
@@ -46,7 +52,7 @@ pub enum AbiItem {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, PartialEq)]
 pub struct AbiParam {
     pub name: String,
     #[serde(rename = "type")]
@@ -93,7 +99,8 @@ impl SolType {
                     && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
                     && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
                 {
-                    return Self::from_rust_type(inner_ty).map(|inner| SolType::Array(Box::new(inner)));
+                    return Self::from_rust_type(inner_ty)
+                        .map(|inner| SolType::Array(Box::new(inner)));
                 }
 
                 if last_segment.ident == "Result"
@@ -166,7 +173,8 @@ pub fn generate_abi(manifest_dir: &Path) -> Result<Option<AbiJson>> {
                 let sol_full_path = manifest_dir.join(sol_path);
                 return generate_abi_from_sol(&sol_full_path);
             } else {
-                return Ok(Some(generate_abi_from_methods(&contract)));
+                let probe_type_map = probe_type_map_or_fallback(manifest_dir, &contract);
+                return Ok(Some(generate_abi_from_methods(&contract, &probe_type_map)));
             }
         }
     }
@@ -185,7 +193,8 @@ pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Optio
             let sol_full_path = manifest_dir.join(sol_path);
             generate_abi_from_sol(&sol_full_path)
         } else {
-            Ok(Some(generate_abi_from_methods(&contract)))
+            let probe_type_map = probe_type_map_or_fallback(manifest_dir, &contract);
+            Ok(Some(generate_abi_from_methods(&contract, &probe_type_map)))
         }
     } else {
         Ok(None)
@@ -349,9 +358,11 @@ fn parse_method_fn(func: &syn::ItemFn) -> Result<MethodInfo> {
                 } else {
                     String::new()
                 };
+                let rust_type = normalize_rust_type(&pat_type.ty);
                 let sol_type = rust_type_to_solidity(&pat_type.ty);
                 Some(ParamInfo {
                     name: param_name,
+                    rust_type,
                     sol_type,
                 })
             } else {
@@ -387,10 +398,15 @@ fn parse_return_type(output: &syn::ReturnType) -> Vec<ParamInfo> {
 
             vec![ParamInfo {
                 name: String::new(),
+                rust_type: normalize_rust_type(return_ty),
                 sol_type: rust_type_to_solidity(return_ty),
             }]
         }
     }
+}
+
+fn normalize_rust_type(ty: &syn::Type) -> String {
+    quote::quote!(#ty).to_string().replace(' ', "")
 }
 
 fn unwrap_result_ok_type(ty: &syn::Type) -> &syn::Type {
@@ -413,6 +429,156 @@ fn is_unit_type(ty: &syn::Type) -> bool {
             type_str == "()"
         }
     }
+}
+
+fn probe_type_map_or_fallback(
+    manifest_dir: &Path,
+    contract: &ContractInfo,
+) -> HashMap<String, String> {
+    match run_sol_name_probe(manifest_dir, contract) {
+        Ok(type_map) => type_map,
+        Err(err) => {
+            eprintln!("Warning: probe failed, using fallback: {err}");
+            HashMap::new()
+        }
+    }
+}
+
+fn run_sol_name_probe(
+    manifest_dir: &Path,
+    contract: &ContractInfo,
+) -> Result<HashMap<String, String>> {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").context("OUT_DIR is set")?);
+    let probe_target_dir = super::get_target_root().join("abi-probe-target");
+
+    run_sol_name_probe_with_paths(manifest_dir, contract, &out_dir, &probe_target_dir)
+}
+
+fn run_sol_name_probe_with_paths(
+    manifest_dir: &Path,
+    contract: &ContractInfo,
+    out_dir: &Path,
+    probe_target_dir: &Path,
+) -> Result<HashMap<String, String>> {
+    let type_paths = collect_probe_type_paths(contract);
+    if type_paths.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let probe_dir = out_dir.join("abi-probe");
+    let probe_src_dir = probe_dir.join("src");
+
+    fs::create_dir_all(&probe_src_dir).with_context(|| {
+        format!(
+            "Failed to create probe src dir: {}",
+            probe_src_dir.display()
+        )
+    })?;
+
+    let pvm_contract_types_path = resolve_pvm_contract_types_path()?;
+    let manifest_path = probe_dir.join("Cargo.toml");
+    let main_path = probe_src_dir.join("main.rs");
+
+    fs::write(
+        &manifest_path,
+        render_probe_manifest(&pvm_contract_types_path),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to write probe manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+
+    fs::write(&main_path, render_probe_main(&type_paths))
+        .with_context(|| format!("Failed to write probe source: {}", main_path.display()))?;
+
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+
+    let output = Command::new(&cargo)
+        .current_dir(manifest_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC")
+        .env("CARGO_TARGET_DIR", probe_target_dir)
+        .arg("run")
+        .arg("--manifest-path")
+        .arg(&manifest_path)
+        .output()
+        .context("Failed to execute ABI probe")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("ABI probe cargo run failed:\n{stderr}");
+    }
+
+    parse_probe_stdout(&output.stdout)
+}
+
+fn collect_probe_type_paths(contract: &ContractInfo) -> Vec<String> {
+    let mut unique = BTreeSet::new();
+
+    for method in &contract.methods {
+        for param in method.inputs.iter().chain(method.outputs.iter()) {
+            if !param.rust_type.is_empty() {
+                unique.insert(param.rust_type.clone());
+            }
+        }
+    }
+
+    unique.into_iter().collect()
+}
+
+fn resolve_pvm_contract_types_path() -> Result<PathBuf> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../pvm-contract-types")
+        .canonicalize()
+        .context("Failed to resolve pvm-contract-types path for ABI probe")
+}
+
+fn render_probe_manifest(pvm_contract_types_path: &Path) -> String {
+    let escaped_path = pvm_contract_types_path
+        .display()
+        .to_string()
+        .replace('\\', "\\\\");
+
+    format!(
+        "[package]\nname = \"abi-probe\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\npvm-contract-types = {{ path = \"{escaped_path}\", features = [\"abi-reflection\"] }}\nruint = {{ version = \"1.12\", default-features = false }}\n"
+    )
+}
+
+fn render_probe_main(type_paths: &[String]) -> String {
+    use std::fmt::Write;
+
+    let mut source = String::from(
+        "use pvm_contract_types::{Address, SolTypeName};\nuse ruint::aliases::U256;\n\nfn main() {\n",
+    );
+
+    for type_path in type_paths {
+        let escaped = type_path.replace('\\', "\\\\").replace('"', "\\\"");
+        writeln!(
+            source,
+            "    println!(\"{}={{}}\", <{} as SolTypeName>::sol_name());",
+            escaped, type_path
+        )
+        .expect("writing probe source to String should never fail");
+    }
+
+    source.push_str("}\n");
+    source
+}
+
+fn parse_probe_stdout(stdout: &[u8]) -> Result<HashMap<String, String>> {
+    let stdout_str =
+        String::from_utf8(stdout.to_vec()).context("Probe output is not valid UTF-8")?;
+    let mut map = HashMap::new();
+
+    for line in stdout_str.lines() {
+        if let Some((type_path, sol_name)) = line.split_once('=') {
+            map.insert(type_path.to_string(), sol_name.to_string());
+        }
+    }
+
+    Ok(map)
 }
 
 fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> {
@@ -501,7 +667,10 @@ fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
         .collect()
 }
 
-fn generate_abi_from_methods(contract: &ContractInfo) -> AbiJson {
+fn generate_abi_from_methods(
+    contract: &ContractInfo,
+    probe_type_map: &HashMap<String, String>,
+) -> AbiJson {
     let mut items = Vec::new();
 
     if contract.has_constructor {
@@ -522,7 +691,10 @@ fn generate_abi_from_methods(contract: &ContractInfo) -> AbiJson {
             .iter()
             .map(|p| AbiParam {
                 name: p.name.clone(),
-                param_type: p.sol_type.clone(),
+                param_type: probe_type_map
+                    .get(&p.rust_type)
+                    .cloned()
+                    .unwrap_or_else(|| p.sol_type.clone()),
             })
             .collect();
 
@@ -532,7 +704,10 @@ fn generate_abi_from_methods(contract: &ContractInfo) -> AbiJson {
             .filter(|p| !p.sol_type.is_empty())
             .map(|p| AbiParam {
                 name: p.name.clone(),
-                param_type: p.sol_type.clone(),
+                param_type: probe_type_map
+                    .get(&p.rust_type)
+                    .cloned()
+                    .unwrap_or_else(|| p.sol_type.clone()),
             })
             .collect();
 
@@ -570,6 +745,7 @@ fn to_camel_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_to_camel_case() {
@@ -597,5 +773,175 @@ mod tests {
 
         let ty: syn::Type = syn::parse_str("Vec<u64>").unwrap();
         assert_eq!(rust_type_to_solidity(&ty), "uint64[]");
+    }
+
+    #[test]
+    fn test_collect_probe_type_paths() {
+        let contract = ContractInfo {
+            sol_path: None,
+            methods: vec![MethodInfo {
+                name: "foo".to_string(),
+                rename: None,
+                inputs: vec![
+                    ParamInfo {
+                        name: "a".to_string(),
+                        rust_type: "Address".to_string(),
+                        sol_type: "address".to_string(),
+                    },
+                    ParamInfo {
+                        name: "b".to_string(),
+                        rust_type: "Vec<Address>".to_string(),
+                        sol_type: "address[]".to_string(),
+                    },
+                ],
+                outputs: vec![ParamInfo {
+                    name: String::new(),
+                    rust_type: "Address".to_string(),
+                    sol_type: "address".to_string(),
+                }],
+            }],
+            has_constructor: false,
+        };
+
+        assert_eq!(
+            collect_probe_type_paths(&contract),
+            vec!["Address".to_string(), "Vec<Address>".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_generate_abi_from_methods_prefers_probe_types() {
+        let contract = ContractInfo {
+            sol_path: None,
+            methods: vec![MethodInfo {
+                name: "balance_of".to_string(),
+                rename: None,
+                inputs: vec![ParamInfo {
+                    name: "account".to_string(),
+                    rust_type: "MyAddress".to_string(),
+                    sol_type: "bytes".to_string(),
+                }],
+                outputs: vec![ParamInfo {
+                    name: String::new(),
+                    rust_type: "Vec<MyAddress>".to_string(),
+                    sol_type: "bytes".to_string(),
+                }],
+            }],
+            has_constructor: false,
+        };
+
+        let probe_map = HashMap::from([
+            ("MyAddress".to_string(), "address".to_string()),
+            ("Vec<MyAddress>".to_string(), "address[]".to_string()),
+        ]);
+
+        assert_eq!(
+            generate_abi_from_methods(&contract, &probe_map),
+            AbiJson(vec![AbiItem::Function {
+                name: "balanceOf".to_string(),
+                inputs: vec![AbiParam {
+                    name: "account".to_string(),
+                    param_type: "address".to_string(),
+                }],
+                outputs: vec![AbiParam {
+                    name: String::new(),
+                    param_type: "address[]".to_string(),
+                }],
+                state_mutability: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn test_parse_probe_stdout() {
+        let output = b"Address=address\nVec<Address>=address[]\n";
+
+        assert_eq!(
+            parse_probe_stdout(output).unwrap(),
+            HashMap::from([
+                ("Address".to_string(), "address".to_string()),
+                ("Vec<Address>".to_string(), "address[]".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_run_sol_name_probe_with_paths_success() {
+        let out_dir = unique_temp_dir("probe-success-out");
+        let target_dir = unique_temp_dir("probe-success-target");
+
+        let contract = ContractInfo {
+            sol_path: None,
+            methods: vec![MethodInfo {
+                name: "foo".to_string(),
+                rename: None,
+                inputs: vec![ParamInfo {
+                    name: "a".to_string(),
+                    rust_type: "Address".to_string(),
+                    sol_type: "bytes".to_string(),
+                }],
+                outputs: vec![],
+            }],
+            has_constructor: false,
+        };
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let probe_map =
+            run_sol_name_probe_with_paths(manifest_dir, &contract, &out_dir, &target_dir).unwrap();
+
+        assert_eq!(
+            probe_map,
+            HashMap::from([("Address".to_string(), "address".to_string())])
+        );
+
+        std::fs::remove_dir_all(out_dir).ok();
+        std::fs::remove_dir_all(target_dir).ok();
+    }
+
+    #[test]
+    fn test_run_sol_name_probe_with_paths_failure() {
+        let out_dir = unique_temp_dir("probe-failure-out");
+        let target_dir = unique_temp_dir("probe-failure-target");
+
+        let contract = ContractInfo {
+            sol_path: None,
+            methods: vec![MethodInfo {
+                name: "foo".to_string(),
+                rename: None,
+                inputs: vec![ParamInfo {
+                    name: "a".to_string(),
+                    rust_type: "UnknownType".to_string(),
+                    sol_type: "bytes".to_string(),
+                }],
+                outputs: vec![],
+            }],
+            has_constructor: false,
+        };
+
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let probe_error =
+            run_sol_name_probe_with_paths(manifest_dir, &contract, &out_dir, &target_dir)
+                .expect_err("unknown probe type should fail");
+
+        let error_str = probe_error.to_string();
+        assert!(error_str.contains("ABI probe cargo run failed"));
+
+        std::fs::remove_dir_all(out_dir).ok();
+        std::fs::remove_dir_all(target_dir).ok();
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("current time should be after unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "cargo-pvm-contract-builder-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+
+        std::fs::create_dir_all(&dir)
+            .unwrap_or_else(|err| panic!("failed to create temp dir {}: {err}", dir.display()));
+        dir
     }
 }
