@@ -45,6 +45,7 @@ fn expand_static_sol_type(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> syn::Result<TokenStream> {
+    let sol_name = build_sol_signature(field_info);
     let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
     let encode_body = generate_static_encode_body(fields, field_info);
     let decode_body = generate_static_decode_body(fields, field_info);
@@ -72,6 +73,13 @@ fn expand_static_sol_type(
                 #decode_body
             }
         }
+
+        #[cfg(feature = "abi-reflection")]
+        impl ::pvm_contract_types::SolTypeName for #name {
+            fn sol_name() -> ::alloc::string::String {
+                ::alloc::string::String::from(#sol_name)
+            }
+        }
     })
 }
 
@@ -80,6 +88,7 @@ fn expand_dynamic_sol_type(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> syn::Result<TokenStream> {
+    let sol_name = build_sol_signature(field_info);
     let head_size: usize = field_info.len() * 32;
     let encode_len_body = generate_dynamic_encode_len(fields, field_info, head_size);
     let encode_body = generate_dynamic_encode_body(fields, field_info, head_size);
@@ -107,7 +116,22 @@ fn expand_dynamic_sol_type(
                 Self::decode_at(input, offset)
             }
         }
+
+        #[cfg(feature = "abi-reflection")]
+        impl ::pvm_contract_types::SolTypeName for #name {
+            fn sol_name() -> ::alloc::string::String {
+                ::alloc::string::String::from(#sol_name)
+            }
+        }
     })
+}
+
+fn build_sol_signature(field_info: &[(Option<syn::Ident>, SolType)]) -> String {
+    let field_types = field_info
+        .iter()
+        .map(|(_, sol_type)| sol_type.canonical_name())
+        .collect::<Vec<_>>();
+    format!("({})", field_types.join(","))
 }
 
 fn generate_dynamic_encode_len(

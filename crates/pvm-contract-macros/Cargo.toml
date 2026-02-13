@@ -9,6 +9,10 @@ description = "Procedural macros for PVM smart contracts"
 [lib]
 proc-macro = true
 
+[features]
+default = []
+abi-reflection = ["pvm-contract-types/abi-reflection"]
+
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
