@@ -16,4 +16,3 @@ syn = { version = "2.0", features = ["full", "parsing"] }
 quote = "1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
-tiny-keccak = { workspace = true }

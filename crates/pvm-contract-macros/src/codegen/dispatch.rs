@@ -56,7 +56,10 @@ pub fn generate_dispatch_arm(
         )
         .collect();
 
-    let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
+    let call_args: Vec<_> = param_names
+        .iter()
+        .map(|name| quote!(::core::convert::Into::into(#name)))
+        .collect();
     let has_return = !method.signature.outputs.is_empty();
     let encode_and_return = generate_encode_and_return(&method.signature.outputs, use_alloc);
 
@@ -134,7 +137,11 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStre
     }
 
     if outputs.len() == 1 {
-        let encode = generate_encode(&outputs[0], quote!(result), use_alloc);
+        let encode = generate_encode(
+            &outputs[0],
+            quote!(::core::convert::Into::into(result)),
+            use_alloc,
+        );
         return quote! {
             let encoded = #encode;
             pallet_revive_uapi::HostFnImpl::return_value(
@@ -147,7 +154,11 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStre
         .enumerate()
         .map(|(i, ty)| {
             let idx = syn::Index::from(i);
-            generate_encode(ty, quote!(result.#idx), use_alloc)
+            generate_encode(
+                ty,
+                quote!(::core::convert::Into::into(result.#idx)),
+                use_alloc,
+            )
         })
         .collect();
 

@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
-use tiny_keccak::{Hasher, Keccak};
 use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone)]
@@ -278,7 +277,11 @@ fn rust_type_to_solidity(ty: &syn::Type) -> String {
     let type_str = quote::quote!(#ty).to_string().replace(' ', "");
 
     match type_str.as_str() {
-        "Address" | "pvm_contract::Address" => "address".to_string(),
+        "Address"
+        | "pvm_contract::Address"
+        | "pvm_contract_types::Address"
+        | "::pvm_contract_types::Address"
+        | "::pvm_contract::Address" => "address".to_string(),
         "U256" | "pvm_contract::U256" => "uint256".to_string(),
         "u256" => "uint256".to_string(),
         "u128" => "uint128".to_string(),
@@ -336,7 +339,11 @@ fn extract_result_ok_type(type_str: &str) -> Option<String> {
 
 fn rust_type_str_to_solidity(type_str: &str) -> String {
     match type_str {
-        "Address" | "pvm_contract::Address" => "address".to_string(),
+        "Address"
+        | "pvm_contract::Address"
+        | "pvm_contract_types::Address"
+        | "::pvm_contract_types::Address"
+        | "::pvm_contract::Address" => "address".to_string(),
         "U256" | "pvm_contract::U256" => "uint256".to_string(),
         "u256" => "uint256".to_string(),
         "u128" => "uint128".to_string(),
@@ -502,15 +509,6 @@ fn to_camel_case(s: &str) -> String {
     result
 }
 
-#[allow(dead_code)]
-pub fn compute_selector(canonical_signature: &str) -> [u8; 4] {
-    let mut hasher = Keccak::v256();
-    hasher.update(canonical_signature.as_bytes());
-    let mut output = [0u8; 32];
-    hasher.finalize(&mut output);
-    [output[0], output[1], output[2], output[3]]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,6 +523,9 @@ mod tests {
     #[test]
     fn test_rust_type_to_solidity() {
         let ty: syn::Type = syn::parse_str("Address").unwrap();
+        assert_eq!(rust_type_to_solidity(&ty), "address");
+
+        let ty: syn::Type = syn::parse_str("pvm_contract_types::Address").unwrap();
         assert_eq!(rust_type_to_solidity(&ty), "address");
 
         let ty: syn::Type = syn::parse_str("U256").unwrap();

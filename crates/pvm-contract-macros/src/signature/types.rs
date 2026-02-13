@@ -1,4 +1,3 @@
-use proc_macro2::TokenStream;
 use quote::quote;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,65 +32,6 @@ impl SolType {
                 format!("({})", inner.join(","))
             }
             SolType::Custom(name) => name.clone(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn rust_type(&self, use_alloc: bool) -> TokenStream {
-        match self {
-            SolType::Address => quote!([u8; 20]),
-            SolType::Bool => quote!(bool),
-            SolType::Uint(8) => quote!(u8),
-            SolType::Uint(16) => quote!(u16),
-            SolType::Uint(32) => quote!(u32),
-            SolType::Uint(64) => quote!(u64),
-            SolType::Uint(128) => quote!(u128),
-            SolType::Uint(_) => quote!(pvm::U256),
-            SolType::Int(8) => quote!(i8),
-            SolType::Int(16) => quote!(i16),
-            SolType::Int(32) => quote!(i32),
-            SolType::Int(64) => quote!(i64),
-            SolType::Int(128) => quote!(i128),
-            SolType::Int(_) => quote!(pvm::I256),
-            SolType::Bytes(n) => {
-                let n = *n;
-                quote!([u8; #n])
-            }
-            SolType::DynBytes => {
-                if use_alloc {
-                    quote!(alloc::vec::Vec<u8>)
-                } else {
-                    quote!(&[u8])
-                }
-            }
-            SolType::String => {
-                if use_alloc {
-                    quote!(alloc::string::String)
-                } else {
-                    quote!(&str)
-                }
-            }
-            SolType::Array(inner) => {
-                let inner_ty = inner.rust_type(use_alloc);
-                if use_alloc {
-                    quote!(alloc::vec::Vec<#inner_ty>)
-                } else {
-                    quote!(&[#inner_ty])
-                }
-            }
-            SolType::FixedArray(inner, size) => {
-                let inner_ty = inner.rust_type(use_alloc);
-                let size = *size;
-                quote!([#inner_ty; #size])
-            }
-            SolType::Tuple(types) => {
-                let inner: Vec<_> = types.iter().map(|t| t.rust_type(use_alloc)).collect();
-                quote!((#(#inner),*))
-            }
-            SolType::Custom(name) => {
-                let ident = syn::parse_str::<syn::Path>(name).unwrap();
-                quote!(#ident)
-            }
         }
     }
 
@@ -140,6 +80,11 @@ impl SolType {
         let type_str = quote!(#ty).to_string().replace(' ', "");
 
         match type_str.as_str() {
+            "Address"
+            | "pvm_contract_types::Address"
+            | "::pvm_contract_types::Address"
+            | "pvm_contract::Address"
+            | "::pvm_contract::Address" => Some(SolType::Address),
             "[u8;20]" => Some(SolType::Address),
             "U256" | "ruint::aliases::U256" => Some(SolType::Uint(256)),
             "u256" => Some(SolType::Uint(256)),
@@ -158,5 +103,21 @@ impl SolType {
             "String" | "alloc::string::String" => Some(SolType::String),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SolType;
+
+    #[test]
+    fn maps_address_newtype_to_solidity_address() {
+        let ty: syn::Type = syn::parse_str("Address").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol.canonical_name(), "address");
+
+        let ty: syn::Type = syn::parse_str("pvm_contract_types::Address").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol.canonical_name(), "address");
     }
 }

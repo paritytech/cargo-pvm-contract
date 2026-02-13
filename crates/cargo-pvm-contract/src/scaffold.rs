@@ -76,30 +76,28 @@ enum AbiItem {
     Function {
         name: String,
         inputs: Vec<AbiInput>,
-        #[allow(dead_code)]
         outputs: Vec<AbiOutput>,
         #[serde(rename = "stateMutability")]
-        #[allow(dead_code)]
-        state_mutability: String,
+        _state_mutability: String,
     },
     #[serde(rename = "event")]
     Event {
-        #[allow(dead_code)]
-        name: String,
-        #[allow(dead_code)]
-        inputs: Vec<AbiInput>,
+        #[serde(rename = "name")]
+        _name: String,
+        #[serde(rename = "inputs")]
+        _inputs: Vec<AbiInput>,
     },
     #[serde(rename = "error")]
     Error {
-        #[allow(dead_code)]
-        name: String,
-        #[allow(dead_code)]
-        inputs: Vec<AbiInput>,
+        #[serde(rename = "name")]
+        _name: String,
+        #[serde(rename = "inputs")]
+        _inputs: Vec<AbiInput>,
     },
     #[serde(rename = "constructor")]
     Constructor {
-        #[allow(dead_code)]
-        inputs: Vec<AbiInput>,
+        #[serde(rename = "inputs")]
+        _inputs: Vec<AbiInput>,
     },
 }
 
@@ -108,14 +106,14 @@ struct AbiInput {
     name: String,
     #[serde(rename = "type")]
     type_name: String,
-    #[allow(dead_code)]
-    indexed: Option<bool>,
+    #[serde(rename = "indexed")]
+    _indexed: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 struct AbiOutput {
-    name: String,
+    #[serde(rename = "name")]
+    _name: String,
     #[serde(rename = "type")]
     type_name: String,
 }

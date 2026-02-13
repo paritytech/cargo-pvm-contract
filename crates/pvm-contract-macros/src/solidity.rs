@@ -8,8 +8,6 @@ pub struct SolFunction {
 
 #[derive(Debug, Clone)]
 pub struct SolInterface {
-    #[allow(dead_code)]
-    pub name: String,
     pub functions: Vec<SolFunction>,
 }
 
@@ -39,10 +37,7 @@ pub fn parse_solidity_interface(source: &str) -> Result<SolInterface, String> {
         return Err("No interface found in Solidity file".to_string());
     }
 
-    Ok(SolInterface {
-        name: interface_name,
-        functions,
-    })
+    Ok(SolInterface { functions })
 }
 
 fn parse_function_line(line: &str) -> Option<SolFunction> {
@@ -167,7 +162,6 @@ mod tests {
         "#;
 
         let iface = parse_solidity_interface(source).unwrap();
-        assert_eq!(iface.name, "MyToken");
         assert_eq!(iface.functions.len(), 3);
 
         assert_eq!(iface.functions[0].name, "totalSupply");

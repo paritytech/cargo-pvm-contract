@@ -5,7 +5,7 @@ extern crate alloc;
 use super::*;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloy_core::primitives::{Address, FixedBytes};
+use alloy_core::primitives::{Address as AlloyAddress, FixedBytes};
 use alloy_core::sol_types::SolValue;
 use proptest::prelude::*;
 use pvm_contract_macros::SolType;
@@ -250,11 +250,23 @@ fn encode_decode_bool_proptest() {
 #[test]
 fn encode_decode_address_proptest() {
     proptest!(|(val: [u8; 20])| {
-        let alloy = Address::from(val).abi_encode();
+        let alloy = AlloyAddress::from(val).abi_encode();
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(<[u8; 20]>::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_address_newtype_proptest() {
+    proptest!(|(val: [u8; 20])| {
+        let addr = Address::from(val);
+        let alloy = AlloyAddress::from(val).abi_encode();
+        let mut buf = vec![0u8; addr.encode_len()];
+        addr.encode_to(&mut buf);
+        prop_assert_eq!(&buf, &alloy);
+        prop_assert_eq!(Address::decode(&buf), addr);
     });
 }
 
@@ -319,7 +331,7 @@ fn encode_decode_vec_address_proptest() {
     proptest!(|(val in proptest::collection::vec(any::<[u8; 20]>(), 0..8))| {
         let alloy = val
             .iter()
-            .map(|a| Address::from(*a))
+            .map(|a| AlloyAddress::from(*a))
             .collect::<Vec<_>>()
             .abi_encode();
         let mut buf = vec![0u8; val.encode_len()];

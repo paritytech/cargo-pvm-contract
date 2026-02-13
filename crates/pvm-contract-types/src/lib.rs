@@ -10,6 +10,37 @@ mod alloc_types;
 
 use ruint::aliases::U256;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Address(pub [u8; 20]);
+
+impl Address {
+    pub const ZERO: Self = Self([0u8; 20]);
+}
+
+impl From<[u8; 20]> for Address {
+    fn from(value: [u8; 20]) -> Self {
+        Self(value)
+    }
+}
+
+impl From<Address> for [u8; 20] {
+    fn from(value: Address) -> Self {
+        value.0
+    }
+}
+
+impl AsRef<[u8; 20]> for Address {
+    fn as_ref(&self) -> &[u8; 20] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for Address {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.
 pub trait SolEncode {
     const SOL_NAME: &'static str;
@@ -39,12 +70,10 @@ pub trait SolDecode: SolEncode + Sized {
         Self::decode_at(input, 0)
     }
 
-    /// Internal offset-based decode helper used by generated code.
-    #[doc(hidden)]
+    /// Offset-based decode helper used by generated code and custom decoders.
     fn decode_at(input: &[u8], offset: usize) -> Self;
 
-    /// Internal tail decode helper used by dynamic container decoding.
-    #[doc(hidden)]
+    /// Tail decode helper used by dynamic container decoding.
     fn decode_tail(input: &[u8], offset: usize) -> Self {
         Self::decode_at(input, offset)
     }
@@ -229,6 +258,20 @@ impl_static_type!(
         let mut result = [0u8; 20];
         result.copy_from_slice(&input[offset + 12..offset + 32]);
         result
+    }
+);
+
+impl_static_type!(
+    Address,
+    "address",
+    |val: &Address, buf: &mut [u8]| {
+        buf[..12].fill(0);
+        buf[12..32].copy_from_slice(&val.0);
+    },
+    |input: &[u8], offset: usize| {
+        let mut result = [0u8; 20];
+        result.copy_from_slice(&input[offset + 12..offset + 32]);
+        Address(result)
     }
 );
 
