@@ -1,7 +1,6 @@
 use crate::{SolDecode, SolEncode};
 
 impl SolEncode for alloc::string::String {
-    const SOL_NAME: &'static str = "string";
     const IS_DYNAMIC: bool = true;
 
     fn encode_len(&self) -> usize {
@@ -66,7 +65,6 @@ impl crate::SolTypeName for alloc::string::String {
 }
 
 impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
-    const SOL_NAME: &'static str = "T[]";
     const IS_DYNAMIC: bool = true;
 
     fn encode_len(&self) -> usize {

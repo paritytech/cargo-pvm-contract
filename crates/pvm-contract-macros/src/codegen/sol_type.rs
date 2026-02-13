@@ -33,12 +33,10 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
     }
 
     let has_dynamic = field_info.iter().any(|(_, t)| t.is_dynamic());
-    let sol_name = build_sol_signature(&field_info);
-
     if has_dynamic {
-        expand_dynamic_sol_type(name, fields, &field_info, &sol_name)
+        expand_dynamic_sol_type(name, fields, &field_info)
     } else {
-        expand_static_sol_type(name, fields, &field_info, &sol_name)
+        expand_static_sol_type(name, fields, &field_info)
     }
 }
 
@@ -46,7 +44,6 @@ fn expand_static_sol_type(
     name: &syn::Ident,
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
-    sol_name: &str,
 ) -> syn::Result<TokenStream> {
     let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
     let encode_body = generate_static_encode_body(fields, field_info);
@@ -54,7 +51,6 @@ fn expand_static_sol_type(
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
-            const SOL_NAME: &'static str = #sol_name;
             const IS_DYNAMIC: bool = false;
 
             #[inline]
@@ -83,7 +79,6 @@ fn expand_dynamic_sol_type(
     name: &syn::Ident,
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
-    sol_name: &str,
 ) -> syn::Result<TokenStream> {
     let head_size: usize = field_info.len() * 32;
     let encode_len_body = generate_dynamic_encode_len(fields, field_info, head_size);
@@ -92,7 +87,6 @@ fn expand_dynamic_sol_type(
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
-            const SOL_NAME: &'static str = #sol_name;
             const IS_DYNAMIC: bool = true;
 
             fn encode_len(&self) -> usize {
@@ -225,11 +219,6 @@ fn type_to_sol_type(ty: &Type) -> syn::Result<SolType> {
                 .to_string(),
         )
     })
-}
-
-fn build_sol_signature(field_info: &[(Option<syn::Ident>, SolType)]) -> String {
-    let types: Vec<String> = field_info.iter().map(|(_, t)| t.canonical_name()).collect();
-    format!("({})", types.join(","))
 }
 
 fn generate_static_encode_body(

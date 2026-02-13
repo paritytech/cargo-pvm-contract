@@ -475,8 +475,6 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// impl ::pvm_contract_types::SolEncode for Point {
-///     const SOL_NAME: &'static str = "(uint256,uint256)";
-///
 ///     fn encode_len(&self) -> usize { 64 }
 ///
 ///     fn encode_to(&self, buf: &mut [u8]) {
@@ -557,8 +555,6 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// impl ::pvm_contract_types::SolEncode for User {
-///     const SOL_NAME: &'static str = "(string,uint8)";
-///
 ///     fn encode_len(&self) -> usize {
 ///         64 + ::pvm_contract_types::DynSolEncode::tail_len(&self.name)
 ///     }
