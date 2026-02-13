@@ -190,14 +190,14 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
         link_to_polkavm(&elf_path, &output_path)?;
 
         let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
-        generate_abi_file(manifest_dir, &abi_path)?;
+        generate_abi_file(manifest_dir, bin, &abi_path)?;
     }
 
     Ok(())
 }
 
-fn generate_abi_file(manifest_dir: &Path, output_path: &Path) -> Result<()> {
-    match abi::generate_abi(manifest_dir) {
+fn generate_abi_file(manifest_dir: &Path, bin_name: &str, output_path: &Path) -> Result<()> {
+    match abi::generate_abi_for_bin(manifest_dir, bin_name) {
         Ok(Some(abi)) => {
             let json =
                 serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
@@ -205,9 +205,17 @@ fn generate_abi_file(manifest_dir: &Path, output_path: &Path) -> Result<()> {
                 .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
             eprintln!("Created ABI: {}", output_path.display());
         }
-        Ok(None) => {
-            eprintln!("No pvm_contract found, skipping ABI generation");
-        }
+        Ok(None) => match abi::generate_abi(manifest_dir) {
+            Ok(Some(abi)) => {
+                let json = serde_json::to_string_pretty(&abi)
+                    .context("Failed to serialize ABI to JSON")?;
+                fs::write(output_path, json)
+                    .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
+                eprintln!("Created ABI: {}", output_path.display());
+            }
+            Ok(None) => eprintln!("No pvm_contract found, skipping ABI generation"),
+            Err(e) => eprintln!("Warning: Failed to generate ABI: {e}"),
+        },
         Err(e) => {
             eprintln!("Warning: Failed to generate ABI: {e}");
         }

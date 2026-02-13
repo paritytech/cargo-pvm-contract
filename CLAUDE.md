@@ -87,11 +87,12 @@ In CI (`benchmark.yml`), PR builds are compared against `origin/main` with a 5% 
 
 One scaffolded example project lives under `examples/example-mytoken`.
 
-It keeps five MyToken variants as separate binaries in one Cargo project:
+It keeps six MyToken variants as separate binaries in one Cargo project:
 
 - `example-mytoken-macro-pico-alloc` — `pvm_contract_macros` with `allocator = "pico"`
 - `example-mytoken-macro-bump-alloc` — `pvm_contract_macros` with `allocator = "bump"`
 - `example-mytoken-macro-no-alloc` — `pvm_contract_macros` default stack mode
+- `example-mytoken-macro-no-sol` — `pvm_contract_macros` without Solidity interface path
 - `example-mytoken-dsl-no-alloc` — `pvm-contract-builder-dsl` variant
 - `example-mytoken-alloy-alloc` — alloy-based alloc variant
 

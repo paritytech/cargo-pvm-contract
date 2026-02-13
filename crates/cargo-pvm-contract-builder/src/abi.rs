@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use std::path::Path;
 use tiny_keccak::{Hasher, Keccak};
+use toml_edit::DocumentMut;
 
 #[derive(Debug, Clone)]
 pub struct ContractInfo {
@@ -35,12 +36,14 @@ pub enum AbiItem {
         inputs: Vec<AbiParam>,
         outputs: Vec<AbiParam>,
         #[serde(rename = "stateMutability")]
-        state_mutability: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state_mutability: Option<String>,
     },
     Constructor {
         inputs: Vec<AbiParam>,
         #[serde(rename = "stateMutability")]
-        state_mutability: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        state_mutability: Option<String>,
     },
 }
 
@@ -73,6 +76,55 @@ pub fn generate_abi(manifest_dir: &Path) -> Result<Option<AbiJson>> {
     }
 
     Ok(None)
+}
+
+pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
+    let contract_path = resolve_bin_source_path(manifest_dir, bin_name)?;
+    if !contract_path.exists() {
+        return Ok(None);
+    }
+
+    if let Some(contract) = parse_contract_file(&contract_path)? {
+        if let Some(sol_path) = &contract.sol_path {
+            let sol_full_path = manifest_dir.join(sol_path);
+            generate_abi_from_sol(&sol_full_path)
+        } else {
+            Ok(Some(generate_abi_from_methods(&contract)))
+        }
+    } else {
+        Ok(None)
+    }
+}
+
+fn resolve_bin_source_path(manifest_dir: &Path, bin_name: &str) -> Result<std::path::PathBuf> {
+    let cargo_toml_path = manifest_dir.join("Cargo.toml");
+    let cargo_toml = std::fs::read_to_string(&cargo_toml_path)
+        .with_context(|| format!("Failed to read {}", cargo_toml_path.display()))?;
+    let doc = cargo_toml
+        .parse::<DocumentMut>()
+        .context("Failed to parse Cargo.toml")?;
+
+    if let Some(bin_array) = doc.get("bin").and_then(|b| b.as_array_of_tables()) {
+        for bin in bin_array {
+            if bin.get("name").and_then(|n| n.as_str()) == Some(bin_name) {
+                if let Some(path) = bin.get("path").and_then(|p| p.as_str()) {
+                    return Ok(manifest_dir.join(path));
+                }
+                return Ok(manifest_dir.join("src/bin").join(format!("{bin_name}.rs")));
+            }
+        }
+    }
+
+    if doc
+        .get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        == Some(bin_name)
+    {
+        return Ok(manifest_dir.join("src/main.rs"));
+    }
+
+    Ok(manifest_dir.join("src/bin").join(format!("{bin_name}.rs")))
 }
 
 fn parse_contract_file(path: &Path) -> Result<Option<ContractInfo>> {
@@ -360,7 +412,7 @@ fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
         name,
         inputs,
         outputs,
-        state_mutability,
+        state_mutability: Some(state_mutability),
     })
 }
 
@@ -390,7 +442,7 @@ fn generate_abi_from_methods(contract: &ContractInfo) -> AbiJson {
     if contract.has_constructor {
         items.push(AbiItem::Constructor {
             inputs: vec![],
-            state_mutability: "nonpayable".to_string(),
+            state_mutability: None,
         });
     }
 
@@ -419,18 +471,11 @@ fn generate_abi_from_methods(contract: &ContractInfo) -> AbiJson {
             })
             .collect();
 
-        let state_mutability = if outputs.is_empty() {
-            "nonpayable"
-        } else {
-            "view"
-        }
-        .to_string();
-
         items.push(AbiItem::Function {
             name: fn_name,
             inputs,
             outputs,
-            state_mutability,
+            state_mutability: None,
         });
     }
 
