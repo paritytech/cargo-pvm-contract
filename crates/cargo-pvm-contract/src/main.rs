@@ -239,10 +239,6 @@ fn init_command(args: InitArgs) -> Result<()> {
                         .with_help_message("Path to a Solidity interface file")
                         .prompt()
                         .context("Failed to get .sol file path")?;
-
-                    if sol_file.is_empty() {
-                        anyhow::bail!("Solidity file path cannot be empty");
-                    }
                     PathBuf::from(sol_file)
                 }
             };
