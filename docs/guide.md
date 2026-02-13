@@ -133,3 +133,53 @@ struct Contracts {
 | `#[pvm::fallback]`       | `fn`     | Called when no selector matches                              |
 | `#[pvm::storage]`        | `struct` | Generates static storage accessors                           |
 | `#[derive(pvm::SolAbi)]` | `struct` | ABI encoding/decoding for custom types                       |
+
+## Deployment (PAPI)
+
+Minimal TypeScript script to deploy a `.polkavm` contract using [polkadot-api](https://papi.how):
+
+```typescript
+import { createClient, Binary } from "polkadot-api";
+import { getWsProvider } from "polkadot-api/ws-provider/web";
+import { withPolkadotSdkCompat } from "polkadot-api/polkadot-sdk-compat";
+import { assetHub } from "@polkadot-api/descriptors";
+import { readFileSync } from "fs";
+
+const client = createClient(
+  withPolkadotSdkCompat(getWsProvider("ws://127.0.0.1:9944")),
+);
+const api = client.getTypedApi(assetHub);
+
+// Prepare signer (dev account)
+import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
+import {
+  DEV_PHRASE,
+  entropyToMiniSecret,
+  mnemonicToEntropy,
+} from "@polkadot-labs/hdkd-helpers";
+import { getPolkadotSigner } from "polkadot-api/signer";
+const derive = sr25519CreateDerive(
+  entropyToMiniSecret(mnemonicToEntropy(DEV_PHRASE)),
+);
+const keyPair = derive("//Alice");
+const signer = getPolkadotSigner(keyPair.publicKey, "Sr25519", keyPair.sign);
+
+// Map account (required once per account on Revive)
+await api.tx.Revive.map_account().signAndSubmit(signer);
+
+// Deploy
+const bytecode = readFileSync("target/counter.release.polkavm");
+const result = await api.tx.Revive.instantiate_with_code({
+  value: 0n,
+  weight_limit: { ref_time: 500_000_000_000n, proof_size: 2_000_000n },
+  storage_deposit_limit: 10_000_000_000_000n,
+  code: Binary.fromBytes(bytecode),
+  data: Binary.fromBytes(new Uint8Array(0)),
+  salt: undefined,
+}).signAndSubmit(signer);
+
+const [event] = api.event.Revive.Instantiated.filter(result.events);
+console.log("Deployed to:", event.contract.asHex());
+
+client.destroy();
+```
