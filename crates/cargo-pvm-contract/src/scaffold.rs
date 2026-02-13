@@ -234,6 +234,67 @@ pub fn init_blank_contract(contract_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Create a new contract project with pre-filled Rust source (for examples without a .sol file).
+pub fn init_blank_contract_with_source(
+    contract_name: &str,
+    rust_source: &str,
+    use_alloc: bool,
+) -> Result<()> {
+    let contract_name = contract_name.to_case(Case::Kebab);
+    let target_dir = std::env::current_dir()?.join(&contract_name);
+    if target_dir.exists() {
+        anyhow::bail!("Directory already exists: {target_dir:?}");
+    }
+
+    fs::create_dir(&target_dir)
+        .with_context(|| format!("Failed to create directory: {target_dir:?}"))?;
+
+    let (target_json_path, target_json_name) = resolve_target_json()?;
+    let target_json_dest = target_dir.join(target_json_name);
+    fs::copy(&target_json_path, &target_json_dest).with_context(|| {
+        format!(
+            "Failed to copy target JSON from {} to {}",
+            target_json_path.display(),
+            target_json_dest.display()
+        )
+    })?;
+
+    let target_json_name = target_json_dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Target JSON path is missing a file name"))?;
+
+    let cargo_config_dir = target_dir.join(".cargo");
+    fs::create_dir(&cargo_config_dir)?;
+    fs::write(
+        cargo_config_dir.join("config.toml"),
+        format!(
+            "[build]\n target = \"{}\"\n\n[unstable]\n build-std = [\"core\", \"alloc\"]\n\n[env]\n RUSTC_BOOTSTRAP = \"1\"\n",
+            target_json_name
+        ),
+    )?;
+
+    fs::write(target_dir.join(".gitignore"), "/target\n*.polkavm\n")?;
+    fs::write(
+        target_dir.join("rust-toolchain.toml"),
+        "[toolchain]\nchannel = \"nightly\"\n",
+    )?;
+    fs::create_dir(target_dir.join("src"))?;
+    fs::write(
+        target_dir.join(format!("src/{}.rs", contract_name)),
+        rust_source,
+    )?;
+
+    let cargo_toml_content = generate_cargo_toml(&contract_name, &contract_name, use_alloc)?;
+    fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
+
+    println!("Successfully initialized contract project: {target_dir:?}");
+    println!("\nNext steps:");
+    println!("  cd {contract_name}");
+    println!("  cargo pvm-contract build");
+    Ok(())
+}
+
 /// Create a new contract project from a Solidity file.
 pub fn init_from_solidity_file(sol_file: &str, contract_name: &str, use_alloc: bool) -> Result<()> {
     let sol_path = PathBuf::from(sol_file);

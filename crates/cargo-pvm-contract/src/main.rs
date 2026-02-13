@@ -90,32 +90,20 @@ impl std::fmt::Display for MemoryModel {
 struct ExampleContract {
     name: String,
     folder: String,
-    sol_filename: String,
-    rust_no_alloc: String,
-    rust_with_alloc: String,
+    sol_filename: Option<String>,
+    rust_filename: String,
 }
 
 impl ExampleContract {
     fn from_dir(dir: &Dir) -> Option<Self> {
-        let sol_file = dir
-            .files()
-            .find(|file| file.path().extension().and_then(|ext| ext.to_str()) == Some("sol"))?;
-        let sol_filename = sol_file.path().file_name()?.to_str()?.to_string();
-        let name = sol_file.path().file_stem()?.to_str()?.to_string();
+        let name = dir.path().file_name()?.to_str()?.to_string();
 
-        let rust_no_alloc = dir
+        let sol_filename = dir
             .files()
-            .find(|file| {
-                file.path()
-                    .file_name()
-                    .and_then(|filename| filename.to_str())
-                    .is_some_and(|filename| filename.ends_with(".rs"))
-            })?
-            .path()
-            .file_name()?
-            .to_str()?
-            .to_string();
-        let rust_with_alloc = dir
+            .find(|file| file.path().extension().and_then(|ext| ext.to_str()) == Some("sol"))
+            .and_then(|f| f.path().file_name()?.to_str().map(String::from));
+
+        let rust_filename = dir
             .files()
             .find(|file| {
                 file.path()
@@ -132,16 +120,22 @@ impl ExampleContract {
             name,
             folder: dir.path().to_str()?.to_string(),
             sol_filename,
-            rust_no_alloc,
-            rust_with_alloc,
+            rust_filename,
         })
     }
 
     fn matches(&self, query: &str) -> bool {
         let query = query.trim().to_ascii_lowercase();
         let name = self.name.to_ascii_lowercase();
-        let filename = self.sol_filename.to_ascii_lowercase();
-        query == name || query == filename
+        if query == name {
+            return true;
+        }
+        if let Some(ref filename) = self.sol_filename {
+            if query == filename.to_ascii_lowercase() {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -225,7 +219,7 @@ fn init_command(args: InitArgs) -> Result<()> {
             check_dir_exists(&contract_name)?;
             debug!(
                 "Initializing from example: {} with memory model: {:?}",
-                example.sol_filename, memory_model
+                example.name, memory_model
             );
 
             init_from_example(&example, &contract_name, memory_model)
@@ -309,30 +303,34 @@ fn init_from_example(
     contract_name: &str,
     memory_model: MemoryModel,
 ) -> Result<()> {
-    let sol_path = format!("{}/{}", example.folder, example.sol_filename);
-    let sol_file = TEMPLATES_DIR
-        .get_file(&sol_path)
-        .ok_or_else(|| anyhow::anyhow!("Example file not found: {sol_path}"))?;
-
-    let use_alloc = memory_model == MemoryModel::AllocWithAlloy;
-    let rust_example_name = if use_alloc {
-        example.rust_with_alloc.as_str()
-    } else {
-        example.rust_no_alloc.as_str()
-    };
-
-    let rust_path = format!("{}/{}", example.folder, rust_example_name);
+    let rust_path = format!("{}/{}", example.folder, example.rust_filename);
     let rust_file = TEMPLATES_DIR
         .get_file(&rust_path)
         .ok_or_else(|| anyhow::anyhow!("Example file not found: {rust_path}"))?;
 
-    scaffold::init_from_example_files(
-        sol_file.contents(),
-        &example.sol_filename,
-        rust_file.contents(),
-        contract_name,
-        use_alloc,
-    )
+    let use_alloc = memory_model == MemoryModel::AllocWithAlloy;
+
+    match &example.sol_filename {
+        Some(sol_filename) => {
+            let sol_path = format!("{}/{}", example.folder, sol_filename);
+            let sol_file = TEMPLATES_DIR
+                .get_file(&sol_path)
+                .ok_or_else(|| anyhow::anyhow!("Example file not found: {sol_path}"))?;
+
+            scaffold::init_from_example_files(
+                sol_file.contents(),
+                sol_filename,
+                rust_file.contents(),
+                contract_name,
+                use_alloc,
+            )
+        }
+        None => {
+            let rust_contents = String::from_utf8(rust_file.contents().to_vec())
+                .context("Example Rust file is not valid UTF-8")?;
+            scaffold::init_blank_contract_with_source(contract_name, &rust_contents, use_alloc)
+        }
+    }
 }
 
 fn check_dir_exists(contract_name: &str) -> Result<()> {
