@@ -53,6 +53,103 @@ pub struct AbiParam {
     pub param_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum SolType {
+    Address,
+    Bool,
+    Uint(usize),
+    Int(usize),
+    Bytes(usize),
+    String,
+    Array(Box<SolType>),
+    FixedArray(Box<SolType>, usize),
+    Tuple(Vec<SolType>),
+}
+
+impl SolType {
+    fn canonical_name(&self) -> String {
+        match self {
+            SolType::Address => "address".to_string(),
+            SolType::Bool => "bool".to_string(),
+            SolType::Uint(bits) => format!("uint{}", bits),
+            SolType::Int(bits) => format!("int{}", bits),
+            SolType::Bytes(size) => format!("bytes{}", size),
+            SolType::String => "string".to_string(),
+            SolType::Array(inner) => format!("{}[]", inner.canonical_name()),
+            SolType::FixedArray(inner, size) => format!("{}[{}]", inner.canonical_name(), size),
+            SolType::Tuple(types) => {
+                let inner: Vec<_> = types.iter().map(|t| t.canonical_name()).collect();
+                format!("({})", inner.join(","))
+            }
+        }
+    }
+
+    fn from_rust_type(ty: &syn::Type) -> Option<Self> {
+        match ty {
+            syn::Type::Path(type_path) => {
+                let last_segment = type_path.path.segments.last()?;
+
+                if last_segment.ident == "Vec"
+                    && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
+                    && let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first()
+                {
+                    return Self::from_rust_type(inner_ty).map(|inner| SolType::Array(Box::new(inner)));
+                }
+
+                if last_segment.ident == "Result"
+                    && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
+                    && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+                {
+                    return Self::from_rust_type(ok_ty);
+                }
+
+                let type_str = quote::quote!(#ty).to_string().replace(' ', "");
+                match type_str.as_str() {
+                    "Address"
+                    | "pvm_contract_types::Address"
+                    | "::pvm_contract_types::Address"
+                    | "pvm_contract::Address"
+                    | "::pvm_contract::Address" => Some(SolType::Address),
+                    "U256" | "pvm_contract::U256" | "u256" => Some(SolType::Uint(256)),
+                    "u128" => Some(SolType::Uint(128)),
+                    "u64" => Some(SolType::Uint(64)),
+                    "u32" => Some(SolType::Uint(32)),
+                    "u16" => Some(SolType::Uint(16)),
+                    "u8" => Some(SolType::Uint(8)),
+                    "i128" => Some(SolType::Int(128)),
+                    "i64" => Some(SolType::Int(64)),
+                    "i32" => Some(SolType::Int(32)),
+                    "i16" => Some(SolType::Int(16)),
+                    "i8" => Some(SolType::Int(8)),
+                    "bool" => Some(SolType::Bool),
+                    "[u8;32]" => Some(SolType::Bytes(32)),
+                    "[u8;20]" => Some(SolType::Bytes(20)),
+                    "String" | "alloc::string::String" => Some(SolType::String),
+                    _ => None,
+                }
+            }
+            syn::Type::Array(type_array) => {
+                if let syn::Expr::Lit(expr_lit) = &type_array.len
+                    && let syn::Lit::Int(len) = &expr_lit.lit
+                    && let Ok(size) = len.base10_parse::<usize>()
+                {
+                    return Self::from_rust_type(&type_array.elem)
+                        .map(|inner| SolType::FixedArray(Box::new(inner), size));
+                }
+                None
+            }
+            syn::Type::Tuple(type_tuple) => {
+                let mut types = Vec::new();
+                for elem in &type_tuple.elems {
+                    types.push(Self::from_rust_type(elem)?);
+                }
+                Some(SolType::Tuple(types))
+            }
+            _ => None,
+        }
+    }
+}
+
 pub fn generate_abi(manifest_dir: &Path) -> Result<Option<AbiJson>> {
     let src_dir = manifest_dir.join("src");
     if !src_dir.exists() {
@@ -274,86 +371,47 @@ fn parse_method_fn(func: &syn::ItemFn) -> Result<MethodInfo> {
 }
 
 fn rust_type_to_solidity(ty: &syn::Type) -> String {
-    let type_str = quote::quote!(#ty).to_string().replace(' ', "");
-
-    match type_str.as_str() {
-        "Address"
-        | "pvm_contract::Address"
-        | "pvm_contract_types::Address"
-        | "::pvm_contract_types::Address"
-        | "::pvm_contract::Address" => "address".to_string(),
-        "U256" | "pvm_contract::U256" => "uint256".to_string(),
-        "u256" => "uint256".to_string(),
-        "u128" => "uint128".to_string(),
-        "u64" => "uint64".to_string(),
-        "u32" => "uint32".to_string(),
-        "u16" => "uint16".to_string(),
-        "u8" => "uint8".to_string(),
-        "i128" => "int128".to_string(),
-        "i64" => "int64".to_string(),
-        "i32" => "int32".to_string(),
-        "i16" => "int16".to_string(),
-        "i8" => "int8".to_string(),
-        "bool" => "bool".to_string(),
-        "[u8;32]" => "bytes32".to_string(),
-        "[u8;20]" => "bytes20".to_string(),
-        _ => "bytes".to_string(),
-    }
+    SolType::from_rust_type(ty)
+        .map(|sol_type| sol_type.canonical_name())
+        .unwrap_or_else(|| "bytes".to_string())
 }
 
 fn parse_return_type(output: &syn::ReturnType) -> Vec<ParamInfo> {
     match output {
         syn::ReturnType::Default => vec![],
         syn::ReturnType::Type(_, ty) => {
-            let type_str = quote::quote!(#ty).to_string().replace(' ', "");
-
-            if type_str.starts_with("Result<")
-                && let Some(inner) = extract_result_ok_type(&type_str)
-            {
-                if inner == "()" {
-                    return vec![];
-                }
-                return vec![ParamInfo {
-                    name: String::new(),
-                    sol_type: rust_type_str_to_solidity(&inner),
-                }];
-            }
-
-            if type_str == "()" {
+            let return_ty = unwrap_result_ok_type(ty);
+            if is_unit_type(return_ty) {
                 return vec![];
             }
 
             vec![ParamInfo {
                 name: String::new(),
-                sol_type: rust_type_to_solidity(ty),
+                sol_type: rust_type_to_solidity(return_ty),
             }]
         }
     }
 }
 
-fn extract_result_ok_type(type_str: &str) -> Option<String> {
-    let inner = type_str.strip_prefix("Result<")?.strip_suffix('>')?;
-    let comma_pos = inner.find(',')?;
-    Some(inner[..comma_pos].trim().to_string())
+fn unwrap_result_ok_type(ty: &syn::Type) -> &syn::Type {
+    if let syn::Type::Path(type_path) = ty
+        && let Some(last_segment) = type_path.path.segments.last()
+        && last_segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments
+        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+    {
+        return ok_ty;
+    }
+    ty
 }
 
-fn rust_type_str_to_solidity(type_str: &str) -> String {
-    match type_str {
-        "Address"
-        | "pvm_contract::Address"
-        | "pvm_contract_types::Address"
-        | "::pvm_contract_types::Address"
-        | "::pvm_contract::Address" => "address".to_string(),
-        "U256" | "pvm_contract::U256" => "uint256".to_string(),
-        "u256" => "uint256".to_string(),
-        "u128" => "uint128".to_string(),
-        "u64" => "uint64".to_string(),
-        "u32" => "uint32".to_string(),
-        "u16" => "uint16".to_string(),
-        "u8" => "uint8".to_string(),
-        "bool" => "bool".to_string(),
-        "()" => "".to_string(),
-        _ => "bytes".to_string(),
+fn is_unit_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Tuple(type_tuple) => type_tuple.elems.is_empty(),
+        _ => {
+            let type_str = quote::quote!(#ty).to_string().replace(' ', "");
+            type_str == "()"
+        }
     }
 }
 
@@ -533,5 +591,11 @@ mod tests {
 
         let ty: syn::Type = syn::parse_str("u64").unwrap();
         assert_eq!(rust_type_to_solidity(&ty), "uint64");
+
+        let ty: syn::Type = syn::parse_str("Vec<Address>").unwrap();
+        assert_eq!(rust_type_to_solidity(&ty), "address[]");
+
+        let ty: syn::Type = syn::parse_str("Vec<u64>").unwrap();
+        assert_eq!(rust_type_to_solidity(&ty), "uint64[]");
     }
 }
