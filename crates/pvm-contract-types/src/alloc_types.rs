@@ -58,6 +58,13 @@ impl SolDecode for alloc::string::String {
     }
 }
 
+#[cfg(feature = "abi-reflection")]
+impl crate::SolTypeName for alloc::string::String {
+    fn sol_name() -> alloc::string::String {
+        alloc::string::String::from("string")
+    }
+}
+
 impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
     const SOL_NAME: &'static str = "T[]";
     const IS_DYNAMIC: bool = true;
@@ -141,5 +148,12 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
             }
         }
         result
+    }
+}
+
+#[cfg(feature = "abi-reflection")]
+impl<T: crate::SolTypeName> crate::SolTypeName for alloc::vec::Vec<T> {
+    fn sol_name() -> alloc::string::String {
+        alloc::format!("{}[]", T::sol_name())
     }
 }

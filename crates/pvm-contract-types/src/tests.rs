@@ -340,3 +340,31 @@ fn encode_decode_vec_address_proptest() {
         prop_assert_eq!(Vec::<[u8; 20]>::decode(&buf), val);
     });
 }
+
+#[cfg(feature = "abi-reflection")]
+#[test]
+fn sol_type_name_primitives() {
+    assert_eq!(<U256 as SolTypeName>::sol_name(), "uint256");
+    assert_eq!(<u128 as SolTypeName>::sol_name(), "uint128");
+    assert_eq!(<u64 as SolTypeName>::sol_name(), "uint64");
+    assert_eq!(<u32 as SolTypeName>::sol_name(), "uint32");
+    assert_eq!(<u16 as SolTypeName>::sol_name(), "uint16");
+    assert_eq!(<u8 as SolTypeName>::sol_name(), "uint8");
+    assert_eq!(<i128 as SolTypeName>::sol_name(), "int128");
+    assert_eq!(<i64 as SolTypeName>::sol_name(), "int64");
+    assert_eq!(<i32 as SolTypeName>::sol_name(), "int32");
+    assert_eq!(<i16 as SolTypeName>::sol_name(), "int16");
+    assert_eq!(<i8 as SolTypeName>::sol_name(), "int8");
+    assert_eq!(<bool as SolTypeName>::sol_name(), "bool");
+    assert_eq!(<[u8; 20] as SolTypeName>::sol_name(), "address");
+    assert_eq!(<Address as SolTypeName>::sol_name(), "address");
+    assert_eq!(<[u8; 32] as SolTypeName>::sol_name(), "bytes32");
+}
+
+#[cfg(feature = "abi-reflection")]
+#[test]
+fn sol_type_name_dynamic_types() {
+    assert_eq!(<&str as SolTypeName>::sol_name(), "string");
+    assert_eq!(<alloc::string::String as SolTypeName>::sol_name(), "string");
+    assert_eq!(<Vec<Address> as SolTypeName>::sol_name(), "address[]");
+}

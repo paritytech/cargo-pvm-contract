@@ -58,6 +58,11 @@ pub trait SolEncode {
     }
 }
 
+#[cfg(feature = "abi-reflection")]
+pub trait SolTypeName {
+    fn sol_name() -> alloc::string::String;
+}
+
 /// Marker trait for types with compile-time known encoded size.
 pub trait StaticEncodedLen: SolEncode {
     const ENCODED_SIZE: usize;
@@ -107,12 +112,26 @@ macro_rules! impl_static_type {
     };
 }
 
+#[cfg(feature = "abi-reflection")]
+macro_rules! impl_sol_type_name {
+    ($ty:ty, $sol_name:expr) => {
+        impl SolTypeName for $ty {
+            fn sol_name() -> alloc::string::String {
+                alloc::string::String::from($sol_name)
+            }
+        }
+    };
+}
+
 impl_static_type!(
     U256,
     "uint256",
     |val: &U256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes::<32>()),
     |input: &[u8], offset: usize| U256::from_be_slice(&input[offset..offset + 32])
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(U256, "uint256");
 
 impl_static_type!(
     u128,
@@ -127,6 +146,9 @@ impl_static_type!(
     }
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(u128, "uint128");
+
 impl_static_type!(
     u64,
     "uint64",
@@ -139,6 +161,9 @@ impl_static_type!(
         u64::from_be_bytes(bytes)
     }
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(u64, "uint64");
 
 impl_static_type!(
     u32,
@@ -153,6 +178,9 @@ impl_static_type!(
     }
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(u32, "uint32");
+
 impl_static_type!(
     u16,
     "uint16",
@@ -163,6 +191,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| u16::from_be_bytes([input[offset + 30], input[offset + 31]])
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(u16, "uint16");
+
 impl_static_type!(
     u8,
     "uint8",
@@ -172,6 +203,9 @@ impl_static_type!(
     },
     |input: &[u8], offset: usize| input[offset + 31]
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(u8, "uint8");
 
 impl_static_type!(
     i128,
@@ -187,6 +221,9 @@ impl_static_type!(
     }
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(i128, "int128");
+
 impl_static_type!(
     i64,
     "int64",
@@ -200,6 +237,9 @@ impl_static_type!(
         i64::from_be_bytes(bytes)
     }
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(i64, "int64");
 
 impl_static_type!(
     i32,
@@ -215,6 +255,9 @@ impl_static_type!(
     }
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(i32, "int32");
+
 impl_static_type!(
     i16,
     "int16",
@@ -225,6 +268,9 @@ impl_static_type!(
     },
     |input: &[u8], offset: usize| i16::from_be_bytes([input[offset + 30], input[offset + 31]])
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(i16, "int16");
 
 impl_static_type!(
     i8,
@@ -237,6 +283,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| input[offset + 31] as i8
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(i8, "int8");
+
 impl_static_type!(
     bool,
     "bool",
@@ -246,6 +295,9 @@ impl_static_type!(
     },
     |input: &[u8], offset: usize| input[offset + 31] != 0
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(bool, "bool");
 
 impl_static_type!(
     [u8; 20],
@@ -261,6 +313,9 @@ impl_static_type!(
     }
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!([u8; 20], "address");
+
 impl_static_type!(
     Address,
     "address",
@@ -275,6 +330,9 @@ impl_static_type!(
     }
 );
 
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!(Address, "address");
+
 impl_static_type!(
     [u8; 32],
     "bytes32",
@@ -285,6 +343,9 @@ impl_static_type!(
         result
     }
 );
+
+#[cfg(feature = "abi-reflection")]
+impl_sol_type_name!([u8; 32], "bytes32");
 
 impl SolEncode for &str {
     const SOL_NAME: &'static str = "string";
@@ -327,6 +388,13 @@ impl SolEncode for &str {
 
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
+    }
+}
+
+#[cfg(feature = "abi-reflection")]
+impl SolTypeName for &str {
+    fn sol_name() -> alloc::string::String {
+        alloc::string::String::from("string")
     }
 }
 
