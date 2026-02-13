@@ -136,50 +136,65 @@ struct Contracts {
 
 ## Deployment (PAPI)
 
-Minimal TypeScript script to deploy a `.polkavm` contract using [polkadot-api](https://papi.how):
+Minimal steps to create a typescript deployer to deploy a `.polkavm` contract using [polkadot-api](https://papi.how):
+
+```
+bun init .
+bun install polkadot-api @polkadot-labs/hdkd-helpers @polkadot-labs/hdkd
+npx papi add assetHub -n paseo_asset_hub
+```
+
+Create `deploy.ts`:
 
 ```typescript
 import { createClient, Binary } from "polkadot-api";
-import { getWsProvider } from "polkadot-api/ws-provider/web";
+import { getWsProvider } from "polkadot-api/ws-provider";
 import { withPolkadotSdkCompat } from "polkadot-api/polkadot-sdk-compat";
 import { assetHub } from "@polkadot-api/descriptors";
 import { readFileSync } from "fs";
-
-const client = createClient(
-  withPolkadotSdkCompat(getWsProvider("ws://127.0.0.1:9944")),
-);
-const api = client.getTypedApi(assetHub);
-
-// Prepare signer (dev account)
 import { sr25519CreateDerive } from "@polkadot-labs/hdkd";
 import {
-  DEV_PHRASE,
-  entropyToMiniSecret,
-  mnemonicToEntropy,
+    DEV_PHRASE,
+    entropyToMiniSecret,
+    mnemonicToEntropy,
 } from "@polkadot-labs/hdkd-helpers";
 import { getPolkadotSigner } from "polkadot-api/signer";
+
+// Prepare signer (dev account)
 const derive = sr25519CreateDerive(
-  entropyToMiniSecret(mnemonicToEntropy(DEV_PHRASE)),
+    entropyToMiniSecret(mnemonicToEntropy(DEV_PHRASE)),
 );
 const keyPair = derive("//Alice");
 const signer = getPolkadotSigner(keyPair.publicKey, "Sr25519", keyPair.sign);
 
-// Map account (required once per account on Revive)
-await api.tx.Revive.map_account().signAndSubmit(signer);
+// Create Paseo Assethub client
+console.log("Connecting to Paseo Asset Hub...");
+const client = createClient(
+    withPolkadotSdkCompat(
+        getWsProvider("wss://asset-hub-paseo-rpc.n.dwellir.com"),
+    ),
+);
+const api = client.getTypedApi(assetHub);
 
 // Deploy
+console.log("Deploying contract...");
 const bytecode = readFileSync("target/counter.release.polkavm");
 const result = await api.tx.Revive.instantiate_with_code({
-  value: 0n,
-  weight_limit: { ref_time: 500_000_000_000n, proof_size: 2_000_000n },
-  storage_deposit_limit: 10_000_000_000_000n,
-  code: Binary.fromBytes(bytecode),
-  data: Binary.fromBytes(new Uint8Array(0)),
-  salt: undefined,
+    value: 0n,
+    weight_limit: { ref_time: 500_000_000_000n, proof_size: 2_000_000n },
+    storage_deposit_limit: 10_000_000_000_000n,
+    code: Binary.fromBytes(bytecode),
+    data: Binary.fromBytes(new Uint8Array(0)),
+    salt: undefined,
 }).signAndSubmit(signer);
 
-const [event] = api.event.Revive.Instantiated.filter(result.events);
-console.log("Deployed to:", event.contract.asHex());
+console.log("Awaiting response...");
+const deployAddress = api.event.Revive.Instantiated.filter(
+    result.events,
+)[0]?.contract.asHex();
+console.log("Deployed to:", deployAddress);
 
 client.destroy();
 ```
+
+Finally, `bun deploy.ts`
