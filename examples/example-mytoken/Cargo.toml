@@ -1,28 +1,40 @@
 [workspace]
 
 [package]
-name = "new-blank-alloc"
+name = "example-mytoken"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 build = "build.rs"
 
 [[bin]]
-name = "new-blank-alloc"
-path = "src/new-blank-alloc.rs"
+name = "example-mytoken-macro-alloc"
+path = "src/example-mytoken-macro-alloc.rs"
+
+[[bin]]
+name = "example-mytoken-macro-no-alloc"
+path = "src/example-mytoken-macro-no-alloc.rs"
+
+[[bin]]
+name = "example-mytoken-dsl-no-alloc"
+path = "src/example-mytoken-dsl-no-alloc.rs"
+
+[[bin]]
+name = "example-mytoken-alloy-alloc"
+path = "src/example-mytoken-alloy-alloc.rs"
 
 [dependencies]
 pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
 pvm-contract-types = { path = "../../crates/pvm-contract-types" }
+pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
+alloy-core = { version = "1.5", default-features = false, features = ["sol-types"] }
 pallet-revive-uapi = { version = "0.9", default-features = false }
 polkavm-derive = { version = "0.31.0" }
 ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }
 
-
 [build-dependencies]
 cargo-pvm-contract-builder = { path = "../../crates/cargo-pvm-contract-builder" }
-
 
 [profile.release]
 codegen-units = 1

@@ -4,6 +4,15 @@
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 use ruint::aliases::U256;
 
+#[global_allocator]
+static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
+    static mut ARRAY: picoalloc::Array<1024> = picoalloc::Array([0u8; 1024]);
+
+    picoalloc::Mutex::new(picoalloc::Allocator::new(unsafe {
+        picoalloc::ArrayPointer::new(&raw mut ARRAY)
+    }))
+};
+
 #[pvm_contract_macros::contract("MyToken.sol", no_alloc(buffer = 256))]
 mod my_token {
     use super::*;
