@@ -5,8 +5,6 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXAMPLE_DIR="$REPO_ROOT/examples/example-mytoken"
 REPORT_FILE="$REPO_ROOT/examples/BINARY_SIZES.md"
 
-"$REPO_ROOT/scripts/regenerate-examples.sh"
-
 cd "$EXAMPLE_DIR"
 env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release
 
@@ -18,10 +16,11 @@ target = pathlib.Path(sys.argv[1])
 report_path = pathlib.Path(sys.argv[2])
 
 rows = [
-    ("example-mytoken-dsl-no-alloc", "dsl-no-alloc"),
-    ("example-mytoken-macro-no-alloc", "macro-no-alloc"),
-    ("example-mytoken-macro-alloc", "macro-alloc"),
     ("example-mytoken-alloy-alloc", "alloy-alloc"),
+    ("example-mytoken-dsl-no-alloc", "dsl-no-alloc"),
+    ("example-mytoken-macro-bump-alloc", "macro-bump-alloc"),
+    ("example-mytoken-macro-no-alloc", "macro-no-alloc"),
+    ("example-mytoken-macro-pico-alloc", "macro-pico-alloc"),
 ]
 
 
@@ -34,10 +33,12 @@ def format_row(binary: str, flavor: str, profile: str) -> str:
     if not file_path.exists():
         raise FileNotFoundError(f"Missing artifact: {file_path}")
     size = file_path.stat().st_size
-    return f"| {binary} | {flavor} | {size:,} | {bytes_to_kb(size)} |"
+    return size, f"| {binary} | {flavor} | {size:,} | {bytes_to_kb(size)} |"
 
 
 release_rows = [format_row(binary, flavor, "release") for binary, flavor in rows]
+release_rows.sort(key=lambda row: row[0])
+release_rows = [row for _, row in release_rows]
 
 content = "\n".join(
     [
@@ -53,7 +54,7 @@ content = "\n".join(
         "./scripts/regenerate-example-binary-sizes.sh",
         "```",
         "",
-        "This script regenerates the examples, builds release artifacts, and rewrites this file.",
+        "This script builds release artifacts and rewrites this file.",
         "",
         "## Release Profile",
         "",

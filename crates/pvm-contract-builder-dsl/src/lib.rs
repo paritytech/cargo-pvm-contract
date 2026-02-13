@@ -12,7 +12,7 @@ pub type Selector = [u8; 4];
 /// A method handler receives the calldata bytes after the 4-byte selector.
 ///
 /// The handler is responsible for decoding inputs, executing logic, and calling
-/// [`pallet_revive_uapi::HostFnImpl::return_value`] to return encoded output.
+/// [`pallet_revive_uapi::HostFn::return_value`] to return encoded output.
 /// If the handler returns normally (without diverging), the dispatcher treats
 /// it as a successful call with no return data.
 pub type MethodHandler = fn(&[u8]);
@@ -76,7 +76,7 @@ impl ContractBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if more than [`MAX_METHODS`] methods are registered.
+    /// Panics if more than 16 methods are registered.
     pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         self.methods[self.len] = (selector, handler);
         self.len += 1;

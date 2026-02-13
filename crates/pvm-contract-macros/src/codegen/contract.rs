@@ -8,17 +8,25 @@ use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
-    pub no_alloc: bool,
     pub buffer_size: usize,
     pub sol_path: Option<String>,
+    pub allocator: Option<AllocatorKind>,
+    pub allocator_size: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllocatorKind {
+    Pico,
+    Bump,
 }
 
 impl Default for ContractArgs {
     fn default() -> Self {
         ContractArgs {
-            no_alloc: false,
             buffer_size: 256,
             sol_path: None,
+            allocator: None,
+            allocator_size: 1024,
         }
     }
 }
@@ -26,6 +34,7 @@ impl Default for ContractArgs {
 impl Parse for ContractArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut args = ContractArgs::default();
+        let mut allocator_size_set = false;
 
         if input.peek(LitStr) {
             let path: LitStr = input.parse()?;
@@ -39,39 +48,38 @@ impl Parse for ContractArgs {
             let ident: Ident = input.parse()?;
             match ident.to_string().as_str() {
                 "no_alloc" => {
-                    args.no_alloc = true;
-
-                    if input.peek(syn::token::Paren) {
-                        let content;
-                        syn::parenthesized!(content in input);
-
-                        while !content.is_empty() {
-                            let option: Ident = content.parse()?;
-                            match option.to_string().as_str() {
-                                "buffer" => {
-                                    content.parse::<Token![=]>()?;
-                                    let size: LitInt = content.parse()?;
-                                    args.buffer_size = size.base10_parse()?;
-                                }
-                                other => {
-                                    return Err(syn::Error::new(
-                                        option.span(),
-                                        format!("Unknown no_alloc option: {}", other),
-                                    ));
-                                }
-                            }
-
-                            if content.peek(Token![,]) {
-                                content.parse::<Token![,]>()?;
-                            }
-                        }
-                    }
-                }
-                "buffer" => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        "`buffer` must be nested inside `no_alloc(...)`, e.g. `no_alloc(buffer = 512)`",
+                        "`no_alloc` was removed. no-alloc is now the default. Use `buffer = N` to customize stack calldata buffer size.",
                     ));
+                }
+                "buffer" => {
+                    input.parse::<Token![=]>()?;
+                    let size: LitInt = input.parse()?;
+                    args.buffer_size = size.base10_parse()?;
+                }
+                "allocator" => {
+                    input.parse::<Token![=]>()?;
+                    let allocator: LitStr = input.parse()?;
+                    args.allocator = Some(match allocator.value().as_str() {
+                        "pico" | "picoalloc" | "picoallocator" => AllocatorKind::Pico,
+                        "bump" | "ink_allocator" | "ink-bump" => AllocatorKind::Bump,
+                        other => {
+                            return Err(syn::Error::new(
+                                allocator.span(),
+                                format!(
+                                    "Unknown allocator `{}`. Expected `pico` or `bump`.",
+                                    other
+                                ),
+                            ));
+                        }
+                    });
+                }
+                "allocator_size" => {
+                    input.parse::<Token![=]>()?;
+                    let size: LitInt = input.parse()?;
+                    args.allocator_size = size.base10_parse()?;
+                    allocator_size_set = true;
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -84,6 +92,13 @@ impl Parse for ContractArgs {
             if input.peek(Token![,]) {
                 input.parse::<Token![,]>()?;
             }
+        }
+
+        if allocator_size_set && args.allocator != Some(AllocatorKind::Pico) {
+            return Err(syn::Error::new(
+                input.span(),
+                "`allocator_size` requires `allocator = \"pico\"`",
+            ));
         }
 
         Ok(args)
@@ -356,7 +371,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
-    let use_alloc = !args.no_alloc;
+    let use_alloc = args.allocator.is_some();
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -364,14 +379,78 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let mod_content = strip_pvm_attrs(&input);
 
-    let alloc_setup = if use_alloc {
-        quote! {
-            extern crate alloc;
-            use alloc::vec;
-            use alloc::vec::Vec;
+    let alloc_setup = match args.allocator {
+        Some(AllocatorKind::Pico) => {
+            let allocator_size = args.allocator_size;
+            quote! {
+                extern crate alloc;
+                use alloc::vec;
+                use alloc::vec::Vec;
+
+                #[global_allocator]
+                static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
+                    static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
+
+                    picoalloc::Mutex::new(picoalloc::Allocator::new(unsafe {
+                        picoalloc::ArrayPointer::new(&raw mut ARRAY)
+                    }))
+                };
+            }
         }
-    } else {
-        quote! {}
+        Some(AllocatorKind::Bump) => {
+            quote! {
+                extern crate alloc;
+
+                use alloc::vec;
+                use alloc::vec::Vec;
+
+                struct BumpAllocator;
+
+                const BUMP_HEAP_SIZE: usize = 1024;
+                static BUMP_OFFSET: core::sync::atomic::AtomicUsize =
+                    core::sync::atomic::AtomicUsize::new(0);
+                static mut BUMP_HEAP: [u8; BUMP_HEAP_SIZE] = [0u8; BUMP_HEAP_SIZE];
+
+                unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
+                    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+                        let align = layout.align();
+                        let size = layout.size();
+
+                        let mut current = BUMP_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+
+                        loop {
+                            let aligned = (current + align - 1) & !(align - 1);
+                            let Some(next) = aligned.checked_add(size) else {
+                                return core::ptr::null_mut();
+                            };
+
+                            if next > BUMP_HEAP_SIZE {
+                                return core::ptr::null_mut();
+                            }
+
+                            match BUMP_OFFSET.compare_exchange_weak(
+                                current,
+                                next,
+                                core::sync::atomic::Ordering::SeqCst,
+                                core::sync::atomic::Ordering::SeqCst,
+                            ) {
+                                Ok(_) => {
+                                    let heap = core::ptr::addr_of_mut!(BUMP_HEAP) as *mut u8;
+                                    return heap.wrapping_add(aligned);
+                                }
+                                Err(observed) => current = observed,
+                            }
+                        }
+                    }
+
+                    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
+                }
+
+                #[global_allocator]
+                static ALLOC: BumpAllocator = BumpAllocator;
+            }
+        }
+        None => quote! {},
     };
 
     let panic_handler = quote! {
@@ -546,43 +625,53 @@ mod tests {
 
     #[test]
     fn parses_no_alloc_with_nested_buffer() {
-        let args = syn::parse_str::<ContractArgs>("\"MyToken.sol\", no_alloc(buffer = 512)")
-            .expect("nested no_alloc(buffer = N) should parse");
+        let args = syn::parse_str::<ContractArgs>("\"MyToken.sol\", buffer = 512")
+            .expect("top-level buffer should parse");
 
         assert_eq!(
             args,
             ContractArgs {
-                no_alloc: true,
                 buffer_size: 512,
                 sol_path: Some("MyToken.sol".to_string()),
+                allocator: None,
+                allocator_size: 1024,
             }
         );
     }
 
     #[test]
-    fn parses_no_alloc_without_nested_buffer() {
-        let args = syn::parse_str::<ContractArgs>("no_alloc")
-            .expect("no_alloc without options should parse");
+    fn parses_pico_allocator_with_custom_size() {
+        let args = syn::parse_str::<ContractArgs>("allocator = \"pico\", allocator_size = 2048")
+            .expect("pico allocator with custom size should parse");
 
         assert_eq!(
             args,
             ContractArgs {
-                no_alloc: true,
                 buffer_size: 256,
                 sol_path: None,
+                allocator: Some(super::AllocatorKind::Pico),
+                allocator_size: 2048,
             }
         );
     }
 
     #[test]
-    fn rejects_top_level_buffer_argument() {
-        let error = syn::parse_str::<ContractArgs>("no_alloc, buffer = 512")
-            .expect_err("top-level buffer argument should be rejected");
+    fn rejects_removed_no_alloc_argument() {
+        let error = syn::parse_str::<ContractArgs>("no_alloc")
+            .expect_err("removed no_alloc argument should be rejected");
+
+        assert!(error.to_string().contains("`no_alloc` was removed"));
+    }
+
+    #[test]
+    fn rejects_allocator_size_without_pico_allocator() {
+        let error = syn::parse_str::<ContractArgs>("allocator = \"bump\", allocator_size = 2048")
+            .expect_err("allocator_size should require allocator = \"pico\"");
 
         assert!(
             error
                 .to_string()
-                .contains("`buffer` must be nested inside `no_alloc(...)`")
+                .contains("`allocator_size` requires `allocator = \"pico\"`")
         );
     }
 }

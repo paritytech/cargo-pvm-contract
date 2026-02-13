@@ -1,15 +1,7 @@
 #![no_main]
 #![no_std]
 
-#[global_allocator]
-static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
-    static mut ARRAY: picoalloc::Array<1024> = picoalloc::Array([0u8; 1024]);
-    picoalloc::Mutex::new(picoalloc::Allocator::new(unsafe {
-        picoalloc::ArrayPointer::new(&raw mut ARRAY)
-    }))
-};
-
-#[pvm_contract_macros::contract("Fibonacci.sol")]
+#[pvm_contract_macros::contract("Fibonacci.sol", allocator = "pico")]
 mod fibonacci {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Error {}

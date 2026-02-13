@@ -8,13 +8,49 @@ use alloy_core::primitives::U256;
 use alloy_core::sol_types::{SolType, sol_data};
 use pallet_revive_uapi::{HostFn, HostFnImpl as api, ReturnFlags, StorageFlags};
 
+struct BumpAllocator;
+
+const BUMP_HEAP_SIZE: usize = 1024;
+static BUMP_OFFSET: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static mut BUMP_HEAP: [u8; BUMP_HEAP_SIZE] = [0u8; BUMP_HEAP_SIZE];
+
+unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        let align = layout.align();
+        let size = layout.size();
+
+        let mut current = BUMP_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+
+        loop {
+            let aligned = (current + align - 1) & !(align - 1);
+            let Some(next) = aligned.checked_add(size) else {
+                return core::ptr::null_mut();
+            };
+
+            if next > BUMP_HEAP_SIZE {
+                return core::ptr::null_mut();
+            }
+
+            match BUMP_OFFSET.compare_exchange_weak(
+                current,
+                next,
+                core::sync::atomic::Ordering::SeqCst,
+                core::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => {
+                    let heap = core::ptr::addr_of_mut!(BUMP_HEAP) as *mut u8;
+                    return heap.wrapping_add(aligned);
+                }
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
+}
+
 #[global_allocator]
-static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
-    static mut ARRAY: picoalloc::Array<1024> = picoalloc::Array([0u8; 1024]);
-    picoalloc::Mutex::new(picoalloc::Allocator::new(unsafe {
-        picoalloc::ArrayPointer::new(&raw mut ARRAY)
-    }))
-};
+static ALLOC: BumpAllocator = BumpAllocator;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -49,31 +85,9 @@ fn balance_key(addr: &[u8; 20]) -> [u8; 32] {
     key
 }
 
-fn get_total_supply() -> U256 {
-    let key = total_supply_key();
-    let mut supply_bytes = vec![0u8; 32];
-    let mut supply_output = supply_bytes.as_mut_slice();
-
-    match api::get_storage(StorageFlags::empty(), &key, &mut supply_output) {
-        Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
-        Err(_) => U256::ZERO,
-    }
-}
-
 fn set_total_supply(amount: U256) {
     let key = total_supply_key();
     api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
-}
-
-fn get_balance(addr: &[u8; 20]) -> U256 {
-    let key = balance_key(addr);
-    let mut balance_bytes = vec![0u8; 32];
-    let mut balance_output = balance_bytes.as_mut_slice();
-
-    match api::get_storage(StorageFlags::empty(), &key, &mut balance_output) {
-        Ok(_) => U256::from_be_bytes::<32>(balance_output[0..32].try_into().unwrap()),
-        Err(_) => U256::ZERO,
-    }
 }
 
 fn set_balance(addr: &[u8; 20], amount: U256) {
@@ -117,13 +131,27 @@ extern "C" fn call() {
 
     match selector {
         TOTAL_SUPPLY_SELECTOR => {
-            let result = get_total_supply();
+            let key = total_supply_key();
+            let mut supply_bytes = vec![0u8; 32];
+            let mut supply_output = supply_bytes.as_mut_slice();
+
+            let result = match api::get_storage(StorageFlags::empty(), &key, &mut supply_output) {
+                Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
+                Err(_) => U256::ZERO,
+            };
             let encoded = <sol_data::Uint<256> as SolType>::abi_encode(&result);
             api::return_value(ReturnFlags::empty(), &encoded);
         }
         BALANCE_OF_SELECTOR => {
             let addr = <sol_data::Address as SolType>::abi_decode(input, true).unwrap();
-            let result = get_balance(addr.as_ref());
+            let key = balance_key(addr.as_ref());
+            let mut balance_bytes = vec![0u8; 32];
+            let mut balance_output = balance_bytes.as_mut_slice();
+
+            let result = match api::get_storage(StorageFlags::empty(), &key, &mut balance_output) {
+                Ok(_) => U256::from_be_bytes::<32>(balance_output[0..32].try_into().unwrap()),
+                Err(_) => U256::ZERO,
+            };
             let encoded = <sol_data::Uint<256> as SolType>::abi_encode(&result);
             api::return_value(ReturnFlags::empty(), &encoded);
         }
@@ -133,7 +161,17 @@ extern "C" fn call() {
             let to: [u8; 20] = *to.as_ref();
 
             let caller = get_caller();
-            let sender_balance = get_balance(&caller);
+            let sender_key = balance_key(&caller);
+            let mut sender_balance_bytes = vec![0u8; 32];
+            let mut sender_balance_output = sender_balance_bytes.as_mut_slice();
+            let sender_balance =
+                match api::get_storage(StorageFlags::empty(), &sender_key, &mut sender_balance_output)
+                {
+                    Ok(_) => {
+                        U256::from_be_bytes::<32>(sender_balance_output[0..32].try_into().unwrap())
+                    }
+                    Err(_) => U256::ZERO,
+                };
 
             if sender_balance < amount {
                 api::return_value(
@@ -143,7 +181,17 @@ extern "C" fn call() {
             }
 
             let new_sender_balance = sender_balance - amount;
-            let recipient_balance = get_balance(&to);
+            let recipient_key = balance_key(&to);
+            let mut recipient_balance_bytes = vec![0u8; 32];
+            let mut recipient_balance_output = recipient_balance_bytes.as_mut_slice();
+            let recipient_balance = match api::get_storage(
+                StorageFlags::empty(),
+                &recipient_key,
+                &mut recipient_balance_output,
+            ) {
+                Ok(_) => U256::from_be_bytes::<32>(recipient_balance_output[0..32].try_into().unwrap()),
+                Err(_) => U256::ZERO,
+            };
             let new_recipient_balance = recipient_balance + amount;
 
             set_balance(&caller, new_sender_balance);
@@ -155,10 +203,29 @@ extern "C" fn call() {
             let (to, amount) = <MintArgs as SolType>::abi_decode(input, true).unwrap();
             let to: [u8; 20] = *to.as_ref();
 
-            let new_recipient_balance = get_balance(&to).saturating_add(amount);
+            let recipient_key = balance_key(&to);
+            let mut recipient_balance_bytes = vec![0u8; 32];
+            let mut recipient_balance_output = recipient_balance_bytes.as_mut_slice();
+            let recipient_balance = match api::get_storage(
+                StorageFlags::empty(),
+                &recipient_key,
+                &mut recipient_balance_output,
+            ) {
+                Ok(_) => U256::from_be_bytes::<32>(recipient_balance_output[0..32].try_into().unwrap()),
+                Err(_) => U256::ZERO,
+            };
+            let new_recipient_balance = recipient_balance.saturating_add(amount);
             set_balance(&to, new_recipient_balance);
 
-            let new_supply = get_total_supply().saturating_add(amount);
+            let supply_key = total_supply_key();
+            let mut supply_bytes = vec![0u8; 32];
+            let mut supply_output = supply_bytes.as_mut_slice();
+            let supply = match api::get_storage(StorageFlags::empty(), &supply_key, &mut supply_output)
+            {
+                Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
+                Err(_) => U256::ZERO,
+            };
+            let new_supply = supply.saturating_add(amount);
             set_total_supply(new_supply);
 
             emit_transfer(&[0u8; 20], &to, amount);

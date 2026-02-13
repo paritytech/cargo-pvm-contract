@@ -54,10 +54,6 @@ jobs:
           -o solc
           chmod +x solc
           sudo mv solc /usr/local/bin/solc
-      - name: Build CLI
-        run: cargo build -p cargo-pvm-contract
-      - name: Regenerate examples
-        run: ./scripts/regenerate-examples.sh
-      - name: Build regenerated example project
+      - name: Build example project
         working-directory: examples/example-mytoken
         run: env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release

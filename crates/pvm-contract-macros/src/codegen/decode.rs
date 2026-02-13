@@ -125,7 +125,7 @@ pub fn generate_decode(
                     result
                 }}
             } else {
-                panic!("Dynamic arrays not supported in no_alloc mode");
+                panic!("Dynamic arrays require an explicit allocator");
             }
         }
         SolType::FixedArray(inner, size) => {

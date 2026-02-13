@@ -3,7 +3,7 @@
 
 use ruint::aliases::U256;
 
-#[pvm_contract_macros::contract("Multi.sol", no_alloc(buffer = 256))]
+#[pvm_contract_macros::contract("Multi.sol", buffer = 256)]
 mod multi {
     use super::*;
 

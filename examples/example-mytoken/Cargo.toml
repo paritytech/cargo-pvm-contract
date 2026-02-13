@@ -8,8 +8,12 @@ rust-version = "1.92"
 build = "build.rs"
 
 [[bin]]
-name = "example-mytoken-macro-alloc"
-path = "src/example-mytoken-macro-alloc.rs"
+name = "example-mytoken-macro-pico-alloc"
+path = "src/example-mytoken-macro-pico-alloc.rs"
+
+[[bin]]
+name = "example-mytoken-macro-bump-alloc"
+path = "src/example-mytoken-macro-bump-alloc.rs"
 
 [[bin]]
 name = "example-mytoken-macro-no-alloc"

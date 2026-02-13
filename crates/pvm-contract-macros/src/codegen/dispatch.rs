@@ -121,7 +121,7 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStre
             .map(|t| t.canonical_name())
             .unwrap_or_else(|| "dynamic".to_string());
         let msg = format!(
-            "Return type `{}` is dynamic and requires alloc mode. Remove `no_alloc` from `#[contract]` or use static types.",
+            "Return type `{}` is dynamic and requires an explicit allocator. Set `allocator = \"pico\"` or `allocator = \"bump\"` in `#[contract]`, or use static types.",
             type_name
         );
         return quote! {
@@ -249,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_dispatch_arm_emits_compile_error_for_string_return_in_no_alloc_mode() {
+    fn generate_dispatch_arm_emits_compile_error_for_string_return_in_stack_mode() {
         let method = MethodInfo {
             fn_name: syn::parse_str("greeting").unwrap(),
             signature: FunctionSignature {
@@ -265,6 +265,6 @@ mod tests {
         let arm = generate_dispatch_arm(&method, &mod_name, false).to_string();
 
         assert!(arm.contains("compile_error"));
-        assert!(arm.contains("requires alloc mode"));
+        assert!(arm.contains("requires an explicit allocator"));
     }
 }

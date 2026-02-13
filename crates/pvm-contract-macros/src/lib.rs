@@ -12,8 +12,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// # Attributes
 ///
 /// - `"path/to/Interface.sol"` - Optional Solidity interface file defining method signatures
-/// - `no_alloc` - Disables the allocator (uses fixed-size stack buffers, default buffer: 256)
-/// - `no_alloc(buffer = N)` - Disables the allocator and sets a custom calldata buffer size
+/// - `buffer = N` - Sets stack calldata buffer size in default no-alloc mode (default: 256)
+/// - `allocator = "pico"` - Enables allocator mode using picoalloc
+/// - `allocator = "bump"` - Enables allocator mode using a bump allocator
+/// - `allocator_size = N` - Sets picoalloc heap size (only with `allocator = "pico"`, default: 1024)
 ///
 /// # Usage with Solidity Interface
 ///
@@ -41,10 +43,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     pub fn new() -> Result<(), Error> { Ok(()) }
 ///
 ///     #[pvm_contract::method]
-///     pub fn total_supply() -> U256 { get_total_supply() }
+///     pub fn total_supply() -> U256 { U256::ZERO }
 ///
 ///     #[pvm_contract::method]
-///     pub fn balance_of(account: Address) -> U256 { get_balance(&account) }
+///     pub fn balance_of(_account: Address) -> U256 { U256::ZERO }
 ///
 ///     #[pvm_contract::method]
 ///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
@@ -141,16 +143,16 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// ## Dispatch Logic
 ///
-/// alloc and no_alloc modes use the same direct dispatch logic.
+/// stack and allocator modes use the same direct dispatch logic.
 /// The only difference is buffer allocation:
 ///
-/// - **alloc mode**: `let mut call_data = vec![0u8; call_data_len];`
-/// - **no_alloc mode**: `let mut call_data = [0u8; BUFFER_SIZE];` with overflow check
+/// - **allocator mode**: `let mut call_data = vec![0u8; call_data_len];`
+/// - **default stack mode**: `let mut call_data = [0u8; BUFFER_SIZE];` with overflow check
 ///
-/// ### no_alloc generated `call()` example
+/// ### default stack generated `call()` example
 ///
 /// ```ignore
-/// #[pvm_contract_macros::contract("MyToken.sol", no_alloc(buffer = 512))]
+/// #[pvm_contract_macros::contract("MyToken.sol", buffer = 512)]
 /// mod my_token {
 ///     // Infallible method (no Result wrapper)
 ///     #[pvm_contract::method]
@@ -216,10 +218,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// }
 /// ```
 ///
-/// ### alloc generated `call()` example
+/// ### allocator generated `call()` example
 ///
 /// ```ignore
-/// #[pvm_contract_macros::contract("MyToken.sol")]
+/// #[pvm_contract_macros::contract("MyToken.sol", allocator = "pico")]
 /// mod my_token {
 ///     // methods...
 /// }
@@ -268,14 +270,14 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Static vs Dynamic Return Types
 ///
-/// The encoding strategy is determined by the contract-level `no_alloc` flag and the return type:
+/// The encoding strategy is determined by contract allocator settings and the return type:
 ///
-/// **Alloc mode (default)**:
+/// **Allocator mode (`allocator = "pico"` or `allocator = "bump"`)**:
 /// - Static return types (U256, Address, etc.) use compile-time sized buffers
 /// - Dynamic return types (String, `Vec<T>`, etc.) automatically use runtime-sized buffers
 ///
 /// ```ignore
-/// #[pvm_contract::contract] // alloc mode (default)
+/// #[pvm_contract::contract(allocator = "pico")]
 /// mod MyContract {
 ///     // Static return - uses compile-time buffer size
 ///     #[pvm_contract::method]
@@ -287,10 +289,10 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// **No-alloc mode**:
+/// **Default stack mode**:
 /// - Only static return types are allowed
 /// - Returning a dynamic type will produce a compile error:
-///   `Return type 'String' is dynamic and requires alloc mode. Remove 'no_alloc' from #[contract] or use static types.`
+///   `Return type 'String' is dynamic and requires an explicit allocator. Set allocator = "pico" or allocator = "bump" in #[contract], or use static types.`
 ///
 /// # Name Matching
 ///
@@ -454,7 +456,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `StaticEncodedLen` - Marker trait with compile-time `ENCODED_SIZE` constant
 ///
 /// Types with only static fields implement `StaticEncodedLen` and can be returned from methods
-/// in both alloc and no_alloc modes since they have a compile-time known size.
+/// in both allocator and default stack modes since they have a compile-time known size.
 ///
 /// # Generated Code
 ///
@@ -547,7 +549,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// pub struct User { pub name: String, pub age: u8 }
 /// ```
 ///
-/// Dynamic structs can only be returned in alloc mode (compile error in no_alloc mode).
+/// Dynamic structs can only be returned in allocator mode (compile error in default stack mode).
 ///
 /// ## Generated Code for Dynamic Structs
 ///

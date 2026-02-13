@@ -4,16 +4,7 @@
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 use ruint::aliases::U256;
 
-#[global_allocator]
-static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
-    static mut ARRAY: picoalloc::Array<1024> = picoalloc::Array([0u8; 1024]);
-
-    picoalloc::Mutex::new(picoalloc::Allocator::new(unsafe {
-        picoalloc::ArrayPointer::new(&raw mut ARRAY)
-    }))
-};
-
-#[pvm_contract_macros::contract("MyToken.sol")]
+#[pvm_contract_macros::contract("MyToken.sol", allocator = "bump")]
 mod my_token {
     use super::*;
     use alloc::vec;
@@ -38,25 +29,39 @@ mod my_token {
 
     #[pvm_contract_macros::method]
     pub fn total_supply() -> U256 {
-        get_total_supply()
+        let key = total_supply_key();
+        let mut supply_bytes = vec![0u8; 32];
+        let mut supply_output = supply_bytes.as_mut_slice();
+
+        match api::get_storage(StorageFlags::empty(), &key, &mut supply_output) {
+            Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
+            Err(_) => U256::ZERO,
+        }
     }
 
     #[pvm_contract_macros::method]
     pub fn balance_of(account: [u8; 20]) -> U256 {
-        get_balance(&account)
+        let key = balance_key(&account);
+        let mut balance_bytes = vec![0u8; 32];
+        let mut balance_output = balance_bytes.as_mut_slice();
+
+        match api::get_storage(StorageFlags::empty(), &key, &mut balance_output) {
+            Ok(_) => U256::from_be_bytes::<32>(balance_output[0..32].try_into().unwrap()),
+            Err(_) => U256::ZERO,
+        }
     }
 
     #[pvm_contract_macros::method]
     pub fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
         let caller = get_caller();
-        let sender_balance = get_balance(&caller);
+        let sender_balance = balance_of(caller);
 
         if sender_balance < amount {
             return Err(Error::InsufficientBalance);
         }
 
         let new_sender_balance = sender_balance - amount;
-        let recipient_balance = get_balance(&to);
+        let recipient_balance = balance_of(to);
         let new_recipient_balance = recipient_balance + amount;
 
         set_balance(&caller, new_sender_balance);
@@ -68,10 +73,10 @@ mod my_token {
 
     #[pvm_contract_macros::method]
     pub fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
-        let new_recipient_balance = get_balance(&to).saturating_add(amount);
+        let new_recipient_balance = balance_of(to).saturating_add(amount);
         set_balance(&to, new_recipient_balance);
 
-        let new_supply = get_total_supply().saturating_add(amount);
+        let new_supply = total_supply().saturating_add(amount);
         set_total_supply(new_supply);
 
         emit_transfer(&[0u8; 20], &to, amount);
@@ -97,31 +102,9 @@ mod my_token {
         key
     }
 
-    fn get_total_supply() -> U256 {
-        let key = total_supply_key();
-        let mut supply_bytes = vec![0u8; 32];
-        let mut supply_output = supply_bytes.as_mut_slice();
-
-        match api::get_storage(StorageFlags::empty(), &key, &mut supply_output) {
-            Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
-            Err(_) => U256::ZERO,
-        }
-    }
-
     fn set_total_supply(amount: U256) {
         let key = total_supply_key();
         api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
-    }
-
-    fn get_balance(addr: &[u8; 20]) -> U256 {
-        let key = balance_key(addr);
-        let mut balance_bytes = vec![0u8; 32];
-        let mut balance_output = balance_bytes.as_mut_slice();
-
-        match api::get_storage(StorageFlags::empty(), &key, &mut balance_output) {
-            Ok(_) => U256::from_be_bytes::<32>(balance_output[0..32].try_into().unwrap()),
-            Err(_) => U256::ZERO,
-        }
     }
 
     fn set_balance(addr: &[u8; 20], amount: U256) {
