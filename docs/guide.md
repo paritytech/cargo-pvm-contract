@@ -13,7 +13,8 @@ git clone -b charles/cdm-integration https://github.com/paritytech/cargo-pvm-con
 Create a template & build it:
 
 ```bash
-cargo pvm-contract init
+# Select "alloy-core + allocator" in the selections
+cargo pvm-contract init --init-type example --example counter
 
 cd <project-name>
 cargo pvm-contract build    # produces .polkavm + .abi.json
