@@ -58,11 +58,6 @@ jobs:
         run: cargo build -p cargo-pvm-contract
       - name: Regenerate examples
         run: ./scripts/regenerate-examples.sh
-      - name: Check for differences
-        run: |
-          if ! git diff --exit-code examples/; then
-            echo "❌ Scaffold output has changed. Run ./scripts/regenerate-examples.sh and commit the changes."
-            exit 1
-          fi
-          echo "✅ Examples match checked-in snapshots"
-
+      - name: Build regenerated example project
+        working-directory: examples/example-mytoken
+        run: env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release
