@@ -13,10 +13,10 @@ path = "src/{{ bin_source }}.rs"
 alloy-core = { version = "0.8", default-features = false, features = ["sol-types"] }
 {% endif -%}
 pallet-revive-uapi = { version = "0.10", default-features = false }
-{% if use_alloc -%}
 picoalloc = { version = "5", default-features = false }
-{% endif -%}
 polkavm-derive = { version = "0.31.0" }
+parity-scale-codec = { version = "3.7", default-features = false, features = ["derive"] }
+pvm_contract = { git = "https://github.com/paritytech/cargo-pvm-contract", branch = "charles/cdm-integration" }
 
 [profile.release]
 codegen-units = 1

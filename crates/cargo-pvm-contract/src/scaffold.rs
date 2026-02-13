@@ -207,7 +207,7 @@ pub fn init_blank_contract(contract_name: &str) -> Result<()> {
     fs::write(
         cargo_config_dir.join("config.toml"),
         format!(
-            "[build]\n target = \"{}\"\n\n[unstable]\n build-std = [\"core\", \"alloc\"]\n\n[env]\n RUSTC_BOOTSTRAP = \"1\"\n",
+            "[build]\n target = \"{}\"\n\n[unstable]\n build-std = [\"core\", \"alloc\", \"test\"]\n\n[env]\n RUSTC_BOOTSTRAP = \"1\"\n",
             target_json_name
         ),
     )?;
