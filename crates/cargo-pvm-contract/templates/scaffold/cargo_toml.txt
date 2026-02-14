@@ -26,6 +26,9 @@ ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }
 {% endif %}
 
+[features]
+abi-gen = ["pvm-contract-types/abi-reflection"]
+
 [build-dependencies]
 {% if let Some(path) = local_path -%}
 cargo-pvm-contract-builder = { path = "{{ path }}/crates/cargo-pvm-contract-builder" }

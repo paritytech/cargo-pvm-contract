@@ -1,5 +1,5 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main)]
+#![cfg_attr(not(feature = "abi-gen"), no_std)]
 
 use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
 use ruint::aliases::U256;

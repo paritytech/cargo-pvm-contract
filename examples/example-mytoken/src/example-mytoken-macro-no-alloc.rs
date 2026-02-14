@@ -1,9 +1,10 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main)]
+#![cfg_attr(not(feature = "abi-gen"), no_std)]
 
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 use ruint::aliases::U256;
 
+#[cfg(not(feature = "abi-gen"))]
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
     static mut ARRAY: picoalloc::Array<1024> = picoalloc::Array([0u8; 1024]);
