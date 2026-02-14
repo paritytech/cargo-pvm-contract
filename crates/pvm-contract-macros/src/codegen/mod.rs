@@ -1,3 +1,4 @@
+mod abi_gen;
 mod contract;
 mod decode;
 mod dispatch;

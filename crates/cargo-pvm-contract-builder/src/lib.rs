@@ -17,7 +17,7 @@ use std::{
     process::Command,
 };
 
-pub use abi::{AbiJson, generate_abi};
+pub use abi::AbiJson;
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
@@ -205,17 +205,9 @@ fn generate_abi_file(manifest_dir: &Path, bin_name: &str, output_path: &Path) ->
                 .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
             eprintln!("Created ABI: {}", output_path.display());
         }
-        Ok(None) => match abi::generate_abi(manifest_dir) {
-            Ok(Some(abi)) => {
-                let json = serde_json::to_string_pretty(&abi)
-                    .context("Failed to serialize ABI to JSON")?;
-                fs::write(output_path, json)
-                    .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
-                eprintln!("Created ABI: {}", output_path.display());
-            }
-            Ok(None) => eprintln!("No pvm_contract found, skipping ABI generation"),
-            Err(e) => eprintln!("Warning: Failed to generate ABI: {e}"),
-        },
+        Ok(None) => {
+            eprintln!("No pvm_contract found, skipping ABI generation");
+        }
         Err(e) => {
             eprintln!("Warning: Failed to generate ABI: {e}");
         }

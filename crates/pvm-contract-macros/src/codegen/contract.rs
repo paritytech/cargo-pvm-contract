@@ -2,6 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
+use super::abi_gen::generate_abi_gen_main;
 use super::dispatch::{MethodInfo, generate_dispatch_arm};
 use crate::signature::{FunctionSignature, SolType};
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
@@ -114,14 +115,14 @@ fn load_sol_interface(path: &str) -> Result<SolInterface, String> {
     parse_solidity_interface(&source)
 }
 
-struct ParsedContract {
-    mod_name: Ident,
-    methods: Vec<MethodInfo>,
-    has_constructor: bool,
-    has_fallback: bool,
-    constructor_name: Option<Ident>,
-    constructor_returns_result: bool,
-    fallback_name: Option<Ident>,
+pub(super) struct ParsedContract {
+    pub(super) mod_name: Ident,
+    pub(super) methods: Vec<MethodInfo>,
+    pub(super) has_constructor: bool,
+    pub(super) has_fallback: bool,
+    pub(super) constructor_name: Option<Ident>,
+    pub(super) constructor_returns_result: bool,
+    pub(super) fallback_name: Option<Ident>,
 }
 
 fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
@@ -372,6 +373,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
+    let abi_gen_main = generate_abi_gen_main(&parsed, args.sol_path.is_some());
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -383,10 +385,16 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         Some(AllocatorKind::Pico) => {
             let allocator_size = args.allocator_size;
             quote! {
+                #[cfg(not(feature = "abi-gen"))]
                 extern crate alloc;
+
+                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec;
+
+                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec::Vec;
 
+                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
                     static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
@@ -399,18 +407,29 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
         Some(AllocatorKind::Bump) => {
             quote! {
+                #[cfg(not(feature = "abi-gen"))]
                 extern crate alloc;
 
+                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec;
+
+                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec::Vec;
 
+                #[cfg(not(feature = "abi-gen"))]
                 struct BumpAllocator;
 
+                #[cfg(not(feature = "abi-gen"))]
                 const BUMP_HEAP_SIZE: usize = 1024;
+
+                #[cfg(not(feature = "abi-gen"))]
                 static BUMP_OFFSET: core::sync::atomic::AtomicUsize =
                     core::sync::atomic::AtomicUsize::new(0);
+
+                #[cfg(not(feature = "abi-gen"))]
                 static mut BUMP_HEAP: [u8; BUMP_HEAP_SIZE] = [0u8; BUMP_HEAP_SIZE];
 
+                #[cfg(not(feature = "abi-gen"))]
                 unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
                     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
                         let align = layout.align();
@@ -446,6 +465,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
                 }
 
+                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static ALLOC: BumpAllocator = BumpAllocator;
             }
@@ -454,7 +474,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let panic_handler = quote! {
-        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+        #[cfg(all(
+            not(feature = "abi-gen"),
+            any(target_arch = "riscv32", target_arch = "riscv64")
+        ))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
             unsafe {
@@ -572,20 +595,25 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     Ok(quote! {
+        #[cfg(not(feature = "abi-gen"))]
         use pallet_revive_uapi::HostFn as _;
 
         #alloc_setup
 
         #panic_handler
 
+        #[cfg(not(feature = "abi-gen"))]
         #deploy_fn
 
+        #[cfg(not(feature = "abi-gen"))]
         #call_fn
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
             #mod_content
         }
+
+        #abi_gen_main
     })
 }
 
