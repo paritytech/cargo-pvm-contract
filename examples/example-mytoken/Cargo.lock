@@ -145,10 +145,8 @@ dependencies = [
  "anyhow",
  "log",
  "polkavm-linker",
- "quote",
  "serde",
  "serde_json",
- "syn",
  "toml_edit",
 ]
 

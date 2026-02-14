@@ -1,10 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{
-    env, fs,
-    path::Path,
-    process::Command,
-};
+use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -78,9 +74,9 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         anyhow::bail!("ABI generation via abi-gen feature failed:\n{stderr}");
     }
 
-    let stdout_str = String::from_utf8(output.stdout)
-        .context("ABI generation output is not valid UTF-8")?;
-    
+    let stdout_str =
+        String::from_utf8(output.stdout).context("ABI generation output is not valid UTF-8")?;
+
     let abi: AbiJson = serde_json::from_str(&stdout_str)
         .context("Failed to parse ABI JSON from abi-gen output")?;
 
