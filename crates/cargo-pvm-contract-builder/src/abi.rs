@@ -56,7 +56,7 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
 
     // The project's .cargo/config.toml targets RISC-V with build-std=core,alloc.
     // The abi-gen binary needs std and must run on the host, so we override both:
-    // --target forces the host triple, --config disables build-std.
+    // --target forces the host triple, build-std adds std to the sysroot rebuild.
     let host = env::var("HOST")
         .context("HOST env var not set — generate_abi_via_feature must run from build.rs")?;
 
@@ -72,7 +72,7 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         .arg("--target")
         .arg(&host)
         .arg("--config")
-        .arg("unstable.build-std=false")
+        .arg(r#"unstable.build-std=["std","core","alloc"]"#)
         .arg("--features")
         .arg("abi-gen")
         .arg("--bin")
