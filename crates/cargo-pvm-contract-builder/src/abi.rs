@@ -54,6 +54,12 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let manifest_path = manifest_dir.join("Cargo.toml");
 
+    // The project's .cargo/config.toml targets RISC-V with build-std=core,alloc.
+    // The abi-gen binary needs std and must run on the host, so we override both:
+    // --target forces the host triple, --config disables build-std.
+    let host = env::var("HOST")
+        .context("HOST env var not set — generate_abi_via_feature must run from build.rs")?;
+
     let output = Command::new(&cargo)
         .current_dir(manifest_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
@@ -63,6 +69,10 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         .arg("run")
         .arg("--manifest-path")
         .arg(&manifest_path)
+        .arg("--target")
+        .arg(&host)
+        .arg("--config")
+        .arg("unstable.build-std=false")
         .arg("--features")
         .arg("abi-gen")
         .arg("--bin")
