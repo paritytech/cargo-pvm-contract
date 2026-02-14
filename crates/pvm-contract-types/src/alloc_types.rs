@@ -41,6 +41,11 @@ impl SolEncode for alloc::string::String {
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
     }
+
+    #[cfg(feature = "abi-reflection")]
+    fn sol_name() -> alloc::string::String {
+        alloc::string::String::from("string")
+    }
 }
 
 impl SolDecode for alloc::string::String {
@@ -54,13 +59,6 @@ impl SolDecode for alloc::string::String {
         let len = u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
         let data = &input[offset + 32..offset + 32 + len];
         alloc::string::String::from_utf8(data.to_vec()).unwrap()
-    }
-}
-
-#[cfg(feature = "abi-reflection")]
-impl crate::SolTypeName for alloc::string::String {
-    fn sol_name() -> alloc::string::String {
-        alloc::string::String::from("string")
     }
 }
 
@@ -113,6 +111,11 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
             }
         }
     }
+
+    #[cfg(feature = "abi-reflection")]
+    fn sol_name() -> alloc::string::String {
+        alloc::format!("{}[]", T::sol_name())
+    }
 }
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
@@ -146,12 +149,5 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
             }
         }
         result
-    }
-}
-
-#[cfg(feature = "abi-reflection")]
-impl<T: crate::SolTypeName> crate::SolTypeName for alloc::vec::Vec<T> {
-    fn sol_name() -> alloc::string::String {
-        alloc::format!("{}[]", T::sol_name())
     }
 }

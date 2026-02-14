@@ -2,8 +2,6 @@
 extern crate alloc;
 
 use pvm_contract_macros::SolType;
-#[cfg(feature = "abi-reflection")]
-use pvm_contract_types::SolTypeName;
 use pvm_contract_types::{SolDecode, SolEncode};
 use ruint::aliases::U256;
 

@@ -55,10 +55,8 @@ pub trait SolEncode {
     fn encode_tail_to(&self, buf: &mut [u8]) {
         self.encode_to(buf);
     }
-}
 
-#[cfg(feature = "abi-reflection")]
-pub trait SolTypeName {
+    #[cfg(feature = "abi-reflection")]
     fn sol_name() -> alloc::string::String;
 }
 
@@ -84,7 +82,7 @@ pub trait SolDecode: SolEncode + Sized {
 }
 
 macro_rules! impl_static_type {
-    ($ty:ty, $encode_fn:expr, $decode_fn:expr) => {
+    ($ty:ty, $sol_name:expr, $encode_fn:expr, $decode_fn:expr) => {
         impl SolEncode for $ty {
             const IS_DYNAMIC: bool = false;
 
@@ -95,6 +93,11 @@ macro_rules! impl_static_type {
 
             fn encode_to(&self, buf: &mut [u8]) {
                 $encode_fn(self, buf)
+            }
+
+            #[cfg(feature = "abi-reflection")]
+            fn sol_name() -> alloc::string::String {
+                alloc::string::String::from($sol_name)
             }
         }
 
@@ -110,28 +113,16 @@ macro_rules! impl_static_type {
     };
 }
 
-#[cfg(feature = "abi-reflection")]
-macro_rules! impl_sol_type_name {
-    ($ty:ty, $sol_name:expr) => {
-        impl SolTypeName for $ty {
-            fn sol_name() -> alloc::string::String {
-                alloc::string::String::from($sol_name)
-            }
-        }
-    };
-}
-
 impl_static_type!(
     U256,
+    "uint256",
     |val: &U256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes::<32>()),
     |input: &[u8], offset: usize| U256::from_be_slice(&input[offset..offset + 32])
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(U256, "uint256");
-
 impl_static_type!(
     u128,
+    "uint128",
     |val: &u128, buf: &mut [u8]| {
         buf[..16].fill(0);
         buf[16..32].copy_from_slice(&val.to_be_bytes());
@@ -142,11 +133,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(u128, "uint128");
-
 impl_static_type!(
     u64,
+    "uint64",
     |val: &u64, buf: &mut [u8]| {
         buf[..24].fill(0);
         buf[24..32].copy_from_slice(&val.to_be_bytes());
@@ -157,11 +146,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(u64, "uint64");
-
 impl_static_type!(
     u32,
+    "uint32",
     |val: &u32, buf: &mut [u8]| {
         buf[..28].fill(0);
         buf[28..32].copy_from_slice(&val.to_be_bytes());
@@ -172,11 +159,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(u32, "uint32");
-
 impl_static_type!(
     u16,
+    "uint16",
     |val: &u16, buf: &mut [u8]| {
         buf[..30].fill(0);
         buf[30..32].copy_from_slice(&val.to_be_bytes());
@@ -184,11 +169,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| u16::from_be_bytes([input[offset + 30], input[offset + 31]])
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(u16, "uint16");
-
 impl_static_type!(
     u8,
+    "uint8",
     |val: &u8, buf: &mut [u8]| {
         buf[..31].fill(0);
         buf[31] = *val;
@@ -196,11 +179,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| input[offset + 31]
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(u8, "uint8");
-
 impl_static_type!(
     i128,
+    "int128",
     |val: &i128, buf: &mut [u8]| {
         let fill = if *val < 0 { 0xff } else { 0 };
         buf[..16].fill(fill);
@@ -212,11 +193,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(i128, "int128");
-
 impl_static_type!(
     i64,
+    "int64",
     |val: &i64, buf: &mut [u8]| {
         let fill = if *val < 0 { 0xff } else { 0 };
         buf[..24].fill(fill);
@@ -228,11 +207,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(i64, "int64");
-
 impl_static_type!(
     i32,
+    "int32",
     |val: &i32, buf: &mut [u8]| {
         let fill = if *val < 0 { 0xff } else { 0 };
         buf[..28].fill(fill);
@@ -244,11 +221,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(i32, "int32");
-
 impl_static_type!(
     i16,
+    "int16",
     |val: &i16, buf: &mut [u8]| {
         let fill = if *val < 0 { 0xff } else { 0 };
         buf[..30].fill(fill);
@@ -257,11 +232,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| i16::from_be_bytes([input[offset + 30], input[offset + 31]])
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(i16, "int16");
-
 impl_static_type!(
     i8,
+    "int8",
     |val: &i8, buf: &mut [u8]| {
         let fill = if *val < 0 { 0xff } else { 0 };
         buf[..31].fill(fill);
@@ -270,11 +243,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| input[offset + 31] as i8
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(i8, "int8");
-
 impl_static_type!(
     bool,
+    "bool",
     |val: &bool, buf: &mut [u8]| {
         buf[..31].fill(0);
         buf[31] = if *val { 1 } else { 0 };
@@ -282,11 +253,9 @@ impl_static_type!(
     |input: &[u8], offset: usize| input[offset + 31] != 0
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(bool, "bool");
-
 impl_static_type!(
     [u8; 20],
+    "address",
     |val: &[u8; 20], buf: &mut [u8]| {
         buf[..12].fill(0);
         buf[12..32].copy_from_slice(val);
@@ -298,11 +267,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!([u8; 20], "address");
-
 impl_static_type!(
     Address,
+    "address",
     |val: &Address, buf: &mut [u8]| {
         buf[..12].fill(0);
         buf[12..32].copy_from_slice(&val.0);
@@ -314,11 +281,9 @@ impl_static_type!(
     }
 );
 
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!(Address, "address");
-
 impl_static_type!(
     [u8; 32],
+    "bytes32",
     |val: &[u8; 32], buf: &mut [u8]| buf[..32].copy_from_slice(val),
     |input: &[u8], offset: usize| {
         let mut result = [0u8; 32];
@@ -326,9 +291,6 @@ impl_static_type!(
         result
     }
 );
-
-#[cfg(feature = "abi-reflection")]
-impl_sol_type_name!([u8; 32], "bytes32");
 
 impl SolEncode for &str {
     const IS_DYNAMIC: bool = true;
@@ -371,10 +333,8 @@ impl SolEncode for &str {
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
     }
-}
 
-#[cfg(feature = "abi-reflection")]
-impl SolTypeName for &str {
+    #[cfg(feature = "abi-reflection")]
     fn sol_name() -> alloc::string::String {
         alloc::string::String::from("string")
     }

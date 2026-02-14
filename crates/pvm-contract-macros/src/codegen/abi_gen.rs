@@ -29,9 +29,9 @@ fn generate_abi_gen_main_impl(parsed: &ParsedContract) -> syn::Result<TokenStrea
         })
         .any(SolType::has_custom_types);
 
-    let sol_type_name_import = if has_custom_types {
+    let sol_encode_import = if has_custom_types {
         quote! {
-            use ::pvm_contract_types::SolTypeName;
+            use ::pvm_contract_types::SolEncode;
         }
     } else {
         quote! {}
@@ -59,7 +59,7 @@ fn generate_abi_gen_main_impl(parsed: &ParsedContract) -> syn::Result<TokenStrea
     Ok(quote! {
         #[cfg(feature = "abi-gen")]
         fn main() {
-            #sol_type_name_import
+            #sol_encode_import
 
             let mut __abi = ::std::string::String::from("[");
             let mut __first_item = true;
@@ -182,7 +182,7 @@ fn generate_sol_type_name_expr(sol_type: &SolType) -> syn::Result<TokenStream> {
             })?;
 
             Ok(quote! {
-                <#ty as ::pvm_contract_types::SolTypeName>::sol_name()
+                <#ty as ::pvm_contract_types::SolEncode>::sol_name()
             })
         }
         SolType::Array(inner) => {
@@ -268,11 +268,11 @@ mod tests {
         assert!(output.contains("__abi . push_str (\"account\")"));
         assert!(output.contains("String :: from (\"address\")"));
         assert!(output.contains("String :: from (\"uint256\")"));
-        assert!(!output.contains("SolTypeName"));
+        assert!(!output.contains("SolEncode"));
     }
 
     #[test]
-    fn generates_sol_type_name_calls_for_custom_types() {
+    fn generates_sol_encode_calls_for_custom_types() {
         let parsed = parsed_contract(
             vec![method(
                 "touch",
@@ -288,9 +288,9 @@ mod tests {
 
         let output = generate_abi_gen_main(&parsed, false).to_string();
 
-        assert!(output.contains("use :: pvm_contract_types :: SolTypeName ;"));
+        assert!(output.contains("use :: pvm_contract_types :: SolEncode ;"));
         assert!(output.contains(
-            "< my_crate :: MyType as :: pvm_contract_types :: SolTypeName > :: sol_name ()"
+            "< my_crate :: MyType as :: pvm_contract_types :: SolEncode > :: sol_name ()"
         ));
         assert!(output.contains("push_str (\"[]\")"));
     }

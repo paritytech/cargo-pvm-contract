@@ -62,6 +62,11 @@ fn expand_static_sol_type(
             fn encode_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
+
+            #[cfg(feature = "abi-reflection")]
+            fn sol_name() -> ::alloc::string::String {
+                ::alloc::string::String::from(#sol_name)
+            }
         }
 
         impl ::pvm_contract_types::StaticEncodedLen for #name {
@@ -71,13 +76,6 @@ fn expand_static_sol_type(
         impl ::pvm_contract_types::SolDecode for #name {
             fn decode_at(input: &[u8], offset: usize) -> Self {
                 #decode_body
-            }
-        }
-
-        #[cfg(feature = "abi-reflection")]
-        impl ::pvm_contract_types::SolTypeName for #name {
-            fn sol_name() -> ::alloc::string::String {
-                ::alloc::string::String::from(#sol_name)
             }
         }
     })
@@ -105,6 +103,11 @@ fn expand_dynamic_sol_type(
             fn encode_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
+
+            #[cfg(feature = "abi-reflection")]
+            fn sol_name() -> ::alloc::string::String {
+                ::alloc::string::String::from(#sol_name)
+            }
         }
 
         impl ::pvm_contract_types::SolDecode for #name {
@@ -114,13 +117,6 @@ fn expand_dynamic_sol_type(
 
             fn decode_tail(input: &[u8], offset: usize) -> Self {
                 Self::decode_at(input, offset)
-            }
-        }
-
-        #[cfg(feature = "abi-reflection")]
-        impl ::pvm_contract_types::SolTypeName for #name {
-            fn sol_name() -> ::alloc::string::String {
-                ::alloc::string::String::from(#sol_name)
             }
         }
     })
