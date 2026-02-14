@@ -247,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn generates_constructor_and_known_types_without_sol_type_name_import() {
+    fn generates_constructor_and_known_types_without_sol_encode_import() {
         let parsed = parsed_contract(
             vec![method(
                 "balance_of",

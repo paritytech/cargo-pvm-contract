@@ -13,6 +13,7 @@ struct CargoTomlTemplate<'a> {
     contract_name: &'a str,
     bin_source: &'a str,
     use_alloc: bool,
+    use_dsl: bool,
     builder_version: &'a str,
     local_path: Option<String>,
 }
@@ -458,7 +459,7 @@ fn extract_function_info(metadata: &ContractMetadata) -> Vec<MacroFunctionInfo> 
 
 fn solidity_to_rust_type(sol_type: &str) -> String {
     match sol_type {
-        "address" => "[u8; 20]".to_string(),
+        "address" => "Address".to_string(),
         "bool" => "bool".to_string(),
         "string" => "String".to_string(),
         "bytes" => "Vec<u8>".to_string(),
@@ -529,6 +530,7 @@ fn generate_cargo_toml(contract_name: &str, bin_source: &str, use_alloc: bool) -
         contract_name,
         bin_source,
         use_alloc,
+        use_dsl: false,
         builder_version: BUILDER_VERSION,
         local_path,
     };
