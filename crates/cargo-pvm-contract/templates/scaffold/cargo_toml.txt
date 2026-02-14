@@ -28,7 +28,7 @@ pvm-contract-types = { path = "{{ path }}/crates/pvm-contract-types" }
 pvm-contract-macros = "{{ builder_version }}"
 pvm-contract-types = "{{ builder_version }}"
 {% endif -%}
-pallet-revive-uapi = { version = "0.9", default-features = false }
+pallet-revive-uapi = { version = "0.10", default-features = false }
 {% endif -%}
 polkavm-derive = { version = "0.31.0" }
 ruint = { version = "1.17", default-features = false }
