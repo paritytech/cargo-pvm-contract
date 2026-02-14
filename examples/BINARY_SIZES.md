@@ -16,8 +16,8 @@ This script builds release artifacts and rewrites this file.
 
 | Binary | Flavor | Size (bytes) | Size |
 |--------|--------|-------------:|-----:|
-| example-mytoken-macro-no-alloc | macro-no-alloc | 3,794 | 3.7 KB |
+| example-mytoken-macro-no-alloc | macro-no-alloc | 3,748 | 3.7 KB |
 | example-mytoken-dsl-no-alloc | dsl-no-alloc | 4,104 | 4.0 KB |
-| example-mytoken-macro-bump-alloc | macro-bump-alloc | 4,703 | 4.6 KB |
+| example-mytoken-macro-bump-alloc | macro-bump-alloc | 4,508 | 4.4 KB |
 | example-mytoken-alloy-alloc | alloy-alloc | 5,832 | 5.7 KB |
-| example-mytoken-macro-pico-alloc | macro-pico-alloc | 16,405 | 16.0 KB |
+| example-mytoken-macro-pico-alloc | macro-pico-alloc | 16,209 | 15.8 KB |

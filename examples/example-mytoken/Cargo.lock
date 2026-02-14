@@ -149,7 +149,6 @@ dependencies = [
  "serde",
  "serde_json",
  "syn",
- "tiny-keccak",
  "toml_edit",
 ]
 

@@ -77,6 +77,24 @@ impl SolType {
             }
         }
 
+        if let syn::Type::Array(array) = ty
+            && let syn::Expr::Lit(expr_lit) = &array.len
+            && let syn::Lit::Int(lit_int) = &expr_lit.lit
+            && let Ok(size) = lit_int.base10_parse::<usize>()
+        {
+            let inner = Self::from_rust_type(&array.elem)?;
+            return Some(SolType::FixedArray(Box::new(inner), size));
+        }
+
+        if let syn::Type::Tuple(tuple) = ty {
+            let elems = tuple
+                .elems
+                .iter()
+                .map(Self::from_rust_type)
+                .collect::<Option<Vec<_>>>()?;
+            return Some(SolType::Tuple(elems));
+        }
+
         let type_str = quote!(#ty).to_string().replace(' ', "");
 
         match type_str.as_str() {
@@ -101,7 +119,7 @@ impl SolType {
             "bool" => Some(SolType::Bool),
             "[u8;32]" => Some(SolType::Bytes(32)),
             "String" | "alloc::string::String" => Some(SolType::String),
-            _ => None,
+            _ => Some(SolType::Custom(type_str)),
         }
     }
 }
@@ -119,5 +137,23 @@ mod tests {
         let ty: syn::Type = syn::parse_str("pvm_contract_types::Address").unwrap();
         let sol = SolType::from_rust_type(&ty).unwrap();
         assert_eq!(sol.canonical_name(), "address");
+    }
+
+    #[test]
+    fn maps_fixed_arrays_and_tuples() {
+        let ty: syn::Type = syn::parse_str("[u64; 4]").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol.canonical_name(), "uint64[4]");
+
+        let ty: syn::Type = syn::parse_str("(Address, u256)").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol.canonical_name(), "(address,uint256)");
+    }
+
+    #[test]
+    fn maps_custom_paths_to_custom_type() {
+        let ty: syn::Type = syn::parse_str("my_crate::Foo").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol.canonical_name(), "my_crate::Foo");
     }
 }

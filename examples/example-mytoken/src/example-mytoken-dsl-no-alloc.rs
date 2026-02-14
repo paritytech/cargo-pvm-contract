@@ -4,7 +4,7 @@
 use pvm_contract_builder_dsl::pallet_revive_uapi::StorageFlags;
 use pvm_contract_builder_dsl::pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
-use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_types::{Address, SolDecode, SolEncode, StaticEncodedLen};
 use ruint::aliases::U256;
 
 #[global_allocator]
@@ -79,7 +79,8 @@ fn total_supply_handler(_input: &[u8]) {
 }
 
 fn balance_of_handler(input: &[u8]) {
-    let account = <[u8; 20]>::decode_at(input, 0);
+    let account = <Address>::decode_at(input, 0);
+    let account: [u8; 20] = account.into();
     let key = balance_key(&account);
     let mut balance_bytes = [0u8; 32];
     let mut balance_slice = &mut balance_bytes[..];
@@ -94,8 +95,9 @@ fn balance_of_handler(input: &[u8]) {
 }
 
 fn transfer_handler(input: &[u8]) {
-    let to = <[u8; 20]>::decode_at(input, 0);
-    let amount = U256::decode_at(input, <[u8; 20] as StaticEncodedLen>::ENCODED_SIZE);
+    let to = <Address>::decode_at(input, 0);
+    let to: [u8; 20] = to.into();
+    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
 
     let caller = get_caller();
     let sender_key = balance_key(&caller);
@@ -134,8 +136,9 @@ fn transfer_handler(input: &[u8]) {
 }
 
 fn mint_handler(input: &[u8]) {
-    let to = <[u8; 20]>::decode_at(input, 0);
-    let amount = U256::decode_at(input, <[u8; 20] as StaticEncodedLen>::ENCODED_SIZE);
+    let to = <Address>::decode_at(input, 0);
+    let to: [u8; 20] = to.into();
+    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
 
     let recipient_key = balance_key(&to);
     let mut recipient_balance_bytes = [0u8; 32];

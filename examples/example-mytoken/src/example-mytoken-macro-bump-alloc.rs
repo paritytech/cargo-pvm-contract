@@ -8,6 +8,7 @@ use ruint::aliases::U256;
 mod my_token {
     use super::*;
     use alloc::vec;
+    use pvm_contract_types::Address;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Error {
@@ -40,7 +41,8 @@ mod my_token {
     }
 
     #[pvm_contract_macros::method]
-    pub fn balance_of(account: [u8; 20]) -> U256 {
+    pub fn balance_of(account: Address) -> U256 {
+        let account: [u8; 20] = account.into();
         let key = balance_key(&account);
         let mut balance_bytes = vec![0u8; 32];
         let mut balance_output = balance_bytes.as_mut_slice();
@@ -52,9 +54,9 @@ mod my_token {
     }
 
     #[pvm_contract_macros::method]
-    pub fn transfer(to: [u8; 20], amount: U256) -> Result<(), Error> {
+    pub fn transfer(to: Address, amount: U256) -> Result<(), Error> {
         let caller = get_caller();
-        let sender_balance = balance_of(caller);
+        let sender_balance = balance_of(caller.into());
 
         if sender_balance < amount {
             return Err(Error::InsufficientBalance);
@@ -64,6 +66,7 @@ mod my_token {
         let recipient_balance = balance_of(to);
         let new_recipient_balance = recipient_balance + amount;
 
+        let to: [u8; 20] = to.into();
         set_balance(&caller, new_sender_balance);
         set_balance(&to, new_recipient_balance);
         emit_transfer(&caller, &to, amount);
@@ -72,8 +75,10 @@ mod my_token {
     }
 
     #[pvm_contract_macros::method]
-    pub fn mint(to: [u8; 20], amount: U256) -> Result<(), Error> {
+    pub fn mint(to: Address, amount: U256) -> Result<(), Error> {
         let new_recipient_balance = balance_of(to).saturating_add(amount);
+
+        let to: [u8; 20] = to.into();
         set_balance(&to, new_recipient_balance);
 
         let new_supply = total_supply().saturating_add(amount);

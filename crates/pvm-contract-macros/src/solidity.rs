@@ -1,4 +1,4 @@
-use crate::signature::{FunctionSignature, SolType};
+use crate::signature::FunctionSignature;
 
 #[derive(Debug, Clone)]
 pub struct SolFunction {
@@ -45,90 +45,126 @@ fn parse_function_line(line: &str) -> Option<SolFunction> {
 
     let paren_start = line.find('(')?;
     let name = line[..paren_start].trim().to_string();
+    let params_end = find_matching_paren(line, paren_start)?;
+    let params_str = &line[paren_start + 1..params_end];
 
-    let paren_end = line.find(')')?;
-    let params_str = &line[paren_start + 1..paren_end];
+    let params = canonicalize_params(params_str)?;
+    let mut signature_str = format!("{}({})", name, params.join(","));
 
-    let inputs = parse_params(params_str);
-
-    let outputs = if let Some(returns_idx) = line.find("returns") {
+    if let Some(returns_idx) = line.find("returns") {
         let after_returns = &line[returns_idx + 7..];
-        if let Some(start) = after_returns.find('(') {
-            if let Some(end) = after_returns.find(')') {
-                parse_params(&after_returns[start + 1..end])
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
+        let returns_start_rel = after_returns.find('(')?;
+        let returns_start = returns_idx + 7 + returns_start_rel;
+        let returns_end = find_matching_paren(line, returns_start)?;
+        let returns_str = &line[returns_start + 1..returns_end];
+        let returns = canonicalize_params(returns_str)?;
+        signature_str.push_str(" returns (");
+        signature_str.push_str(&returns.join(","));
+        signature_str.push(')');
+    }
 
-    let signature = FunctionSignature {
-        name: name.clone(),
-        inputs,
-        outputs,
-    };
+    let signature = FunctionSignature::parse(&signature_str).ok()?;
 
     Some(SolFunction { name, signature })
 }
 
-fn parse_params(params_str: &str) -> Vec<SolType> {
-    if params_str.trim().is_empty() {
-        return vec![];
-    }
-
-    params_str
-        .split(',')
-        .filter_map(|p| {
-            let p = p.trim();
-            let type_str = p.split_whitespace().next()?;
-            parse_sol_type(type_str)
-        })
+fn canonicalize_params(params_str: &str) -> Option<Vec<String>> {
+    split_top_level(params_str)
+        .into_iter()
+        .map(|param| canonicalize_param(&param))
         .collect()
 }
 
-fn parse_sol_type(s: &str) -> Option<SolType> {
-    let s = s.trim();
+fn split_top_level(params_str: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut depth_paren = 0;
+    let mut depth_bracket = 0;
+    let mut current = String::new();
 
-    if s == "address" {
-        return Some(SolType::Address);
-    }
-    if s == "bool" {
-        return Some(SolType::Bool);
-    }
-    if s == "string" {
-        return Some(SolType::String);
-    }
-    if s == "bytes" {
-        return Some(SolType::DynBytes);
-    }
-
-    if let Some(rest) = s.strip_prefix("uint") {
-        let bits: usize = if rest.is_empty() {
-            256
-        } else {
-            rest.parse().ok()?
-        };
-        return Some(SolType::Uint(bits));
-    }
-
-    if let Some(rest) = s.strip_prefix("int") {
-        let bits: usize = if rest.is_empty() {
-            256
-        } else {
-            rest.parse().ok()?
-        };
-        return Some(SolType::Int(bits));
-    }
-
-    if let Some(rest) = s.strip_prefix("bytes") {
-        let size: usize = rest.parse().ok()?;
-        return Some(SolType::Bytes(size));
+    for ch in params_str.chars() {
+        match ch {
+            '(' => {
+                depth_paren += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth_paren -= 1;
+                current.push(ch);
+            }
+            '[' => {
+                depth_bracket += 1;
+                current.push(ch);
+            }
+            ']' => {
+                depth_bracket -= 1;
+                current.push(ch);
+            }
+            ',' if depth_paren == 0 && depth_bracket == 0 => {
+                if !current.trim().is_empty() {
+                    params.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
     }
 
+    if !current.trim().is_empty() {
+        params.push(current.trim().to_string());
+    }
+
+    params
+}
+
+fn canonicalize_param(param: &str) -> Option<String> {
+    let param = param.trim();
+    if param.is_empty() {
+        return None;
+    }
+
+    if param.starts_with('(') {
+        let close = find_matching_paren(param, 0)?;
+        let tuple_inner = &param[1..close];
+        let tuple_types = canonicalize_params(tuple_inner)?;
+
+        let mut ty = format!("({})", tuple_types.join(","));
+        let suffix = param[close + 1..]
+            .chars()
+            .take_while(|c| *c == '[' || *c == ']' || c.is_ascii_digit())
+            .collect::<String>();
+        ty.push_str(&suffix);
+        return Some(ty);
+    }
+
+    let mut ty = String::new();
+    for ch in param.chars() {
+        if ch.is_whitespace() {
+            break;
+        }
+        ty.push(ch);
+    }
+
+    if ty.is_empty() {
+        return None;
+    }
+
+    Some(ty)
+}
+
+fn find_matching_paren(s: &str, start: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (i, ch) in s[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + i);
+                }
+            }
+            _ => {}
+        }
+    }
     None
 }
 
@@ -174,5 +210,16 @@ mod tests {
         assert_eq!(to_snake_case("totalSupply"), "total_supply");
         assert_eq!(to_snake_case("balanceOf"), "balance_of");
         assert_eq!(to_snake_case("transfer"), "transfer");
+    }
+
+    #[test]
+    fn test_parse_tuple_and_fixed_array_signature() {
+        let line = "function foo((address,uint256) payload, uint256[3] coords) external";
+        let function = parse_function_line(line).unwrap();
+
+        assert_eq!(
+            function.signature.canonical_signature(),
+            "foo((address,uint256),uint256[3])"
+        );
     }
 }

@@ -2,9 +2,9 @@
 extern crate alloc;
 
 use pvm_contract_macros::SolType;
-use pvm_contract_types::{SolDecode, SolEncode};
 #[cfg(feature = "abi-reflection")]
 use pvm_contract_types::SolTypeName;
+use pvm_contract_types::{SolDecode, SolEncode};
 use ruint::aliases::U256;
 
 #[derive(Debug, PartialEq, Eq, SolType)]
