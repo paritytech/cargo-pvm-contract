@@ -458,6 +458,10 @@ fn extract_function_info(metadata: &ContractMetadata) -> Vec<MacroFunctionInfo> 
 }
 
 fn solidity_to_rust_type(sol_type: &str) -> String {
+    if let Some(inner) = sol_type.strip_suffix("[]") {
+        return format!("Vec<{}>", solidity_to_rust_type(inner));
+    }
+
     match sol_type {
         "address" => "Address".to_string(),
         "bool" => "bool".to_string(),

@@ -2,7 +2,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_std)]
 
 use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
-use pvm_contract_types::Address;
 use ruint::aliases::U256;
 
 {% if let Some(sol_file_name) = sol_file_name %}
