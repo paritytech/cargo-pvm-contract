@@ -59,6 +59,7 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC")
         .env("CARGO_TARGET_DIR", &target_dir)
+        .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")
         .arg("--manifest-path")
         .arg(&manifest_path)
