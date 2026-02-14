@@ -1,0 +1,40 @@
+#![cfg_attr(not(feature = "abi-gen"), no_main)]
+#![cfg_attr(not(feature = "abi-gen"), no_std)]
+
+use pvm_contract_builder_dsl::pallet_revive_uapi::{HostFnImpl, ReturnFlags, StorageFlags};
+use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
+use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
+use ruint::aliases::U256;
+
+#[cfg(not(feature = "abi-gen"))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unsafe {
+        core::arch::asm!("unimp");
+        core::hint::unreachable_unchecked()
+    }
+}
+
+// When compiled with `--features abi-gen`, the builder runs this to produce ABI JSON.
+// Add your method signatures here as they grow.
+#[cfg(feature = "abi-gen")]
+fn main() {
+    print!("[]");
+}
+
+#[cfg(not(feature = "abi-gen"))]
+#[unsafe(no_mangle)]
+#[polkavm_derive::polkavm_export]
+pub extern "C" fn deploy() {}
+
+#[cfg(not(feature = "abi-gen"))]
+#[unsafe(no_mangle)]
+#[polkavm_derive::polkavm_export]
+pub extern "C" fn call() {
+    // Register your method handlers:
+    // const MY_METHOD: [u8; 4] = solidity_selector("myMethod(uint256)");
+    // ContractBuilder::new()
+    //     .method(MY_METHOD, my_method_handler)
+    //     .dispatch::<HostFnImpl, 256>()
+    HostFnImpl::return_value(ReturnFlags::REVERT, b"NoMethods");
+}

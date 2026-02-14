@@ -1,0 +1,20 @@
+#![cfg_attr(not(feature = "abi-gen"), no_main)]
+#![cfg_attr(not(feature = "abi-gen"), no_std)]
+
+use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
+use ruint::aliases::U256;
+
+#[pvm_contract_macros::contract]
+mod contract {
+    use super::*;
+
+    #[pvm_contract_macros::constructor]
+    pub fn new() -> Result<(), ()> {
+        Ok(())
+    }
+
+    #[pvm_contract_macros::fallback]
+    pub fn fallback() -> Result<(), ()> {
+        Ok(())
+    }
+}

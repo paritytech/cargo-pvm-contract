@@ -4,7 +4,19 @@
 use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
 use ruint::aliases::U256;
 
+{% if let Some(sol_file_name) = sol_file_name %}
+{% if use_alloc %}
+#[pvm_contract_macros::contract("{{ sol_file_name }}", allocator = "pico")]
+{% else %}
+#[pvm_contract_macros::contract("{{ sol_file_name }}", buffer = 256)]
+{% endif %}
+{% else %}
+{% if use_alloc %}
 #[pvm_contract_macros::contract(allocator = "pico")]
+{% else %}
+#[pvm_contract_macros::contract(buffer = 256)]
+{% endif %}
+{% endif %}
 mod contract {
     use super::*;
 
@@ -31,10 +43,20 @@ mod contract {
         Ok(())
     }
 
+{% if let Some(sol_file_name) = sol_file_name %}
+     // TODO: Implement the following methods from {{ sol_file_name }}:
+{% for func in functions %}
+     #[pvm_contract_macros::method]
+     pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
+         todo!()
+     }
+{% endfor %}
+{% else %}
     // Add your contract methods here
     // Example:
     // #[pvm_contract_macros::method]
     // pub fn my_method(param: U256) -> Result<U256, Error> {
     //     Ok(param)
     // }
+{% endif %}
 }

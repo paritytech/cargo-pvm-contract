@@ -19,25 +19,21 @@ struct CargoTomlTemplate<'a> {
 
 #[derive(Template)]
 #[template(path = "scaffold/contract_macro.rs.txt")]
-struct ContractMacroTemplate;
-
-#[derive(Template)]
-#[template(path = "scaffold/contract_macro_no_alloc.rs.txt")]
-struct ContractMacroNoAllocTemplate;
-
-#[derive(Template)]
-#[template(path = "scaffold/contract_macro_sol.rs.txt")]
-struct ContractMacroSolTemplate<'a> {
-    sol_file_name: &'a str,
+struct ContractMacroTemplate<'a> {
+    use_alloc: bool,
+    sol_file_name: Option<&'a str>,
     functions: Vec<MacroFunctionInfo>,
 }
 
 #[derive(Template)]
-#[template(path = "scaffold/contract_macro_sol_no_alloc.rs.txt")]
-struct ContractMacroSolNoAllocTemplate<'a> {
-    sol_file_name: &'a str,
-    functions: Vec<MacroFunctionInfo>,
-}
+#[template(path = "scaffold/contract_dsl.rs.txt")]
+#[allow(dead_code)]
+struct ContractDslTemplate;
+
+#[derive(Template)]
+#[template(path = "scaffold/contract_macro_bare.rs.txt")]
+#[allow(dead_code)]
+struct ContractMacroBareTemplate;
 
 #[derive(Template)]
 #[template(path = "scaffold/build.rs.txt")]
@@ -155,11 +151,7 @@ pub fn init_new_contract(contract_name: &str, use_alloc: bool) -> Result<()> {
     )?;
 
     fs::create_dir(target_dir.join("src"))?;
-    let lib_rs_content = if use_alloc {
-        generate_macro_contract()?
-    } else {
-        generate_macro_contract_no_alloc()?
-    };
+    let lib_rs_content = generate_macro_contract(use_alloc, None, vec![])?;
     fs::write(
         target_dir.join(format!("src/{}.rs", contract_name)),
         lib_rs_content,
@@ -283,7 +275,8 @@ fn init_from_example_files_inner(
     let lib_rs_content = if let Some(contents) = rust_contents {
         String::from_utf8(contents.to_vec()).context("Example Rust file is not valid UTF-8")?
     } else {
-        generate_macro_contract_sol(&sol_file_name, &metadata, use_alloc)?
+        let functions = extract_function_info(&metadata);
+        generate_macro_contract(use_alloc, Some(&sol_file_name), functions)?
     };
     fs::write(
         target_dir.join(format!("src/{}.rs", actual_contract_kebab)),
@@ -383,24 +376,36 @@ fn extract_solc_metadata_from_bytes(
     Ok((metadata, contract_name.clone()))
 }
 
-fn generate_macro_contract() -> Result<String> {
-    ContractMacroTemplate
-        .render()
-        .context("Failed to render macro contract template")
-}
-
-fn generate_macro_contract_no_alloc() -> Result<String> {
-    ContractMacroNoAllocTemplate
-        .render()
-        .context("Failed to render macro no-alloc contract template")
-}
-
-fn generate_macro_contract_sol(
-    sol_file_name: &str,
-    metadata: &ContractMetadata,
+fn generate_macro_contract(
     use_alloc: bool,
+    sol_file_name: Option<&str>,
+    functions: Vec<MacroFunctionInfo>,
 ) -> Result<String> {
-    let functions: Vec<MacroFunctionInfo> = metadata
+    ContractMacroTemplate {
+        use_alloc,
+        sol_file_name,
+        functions,
+    }
+    .render()
+    .context("Failed to render macro contract template")
+}
+
+#[allow(dead_code)]
+fn generate_dsl_contract() -> Result<String> {
+    ContractDslTemplate
+        .render()
+        .context("Failed to render dsl contract template")
+}
+
+#[allow(dead_code)]
+fn generate_bare_macro_contract() -> Result<String> {
+    ContractMacroBareTemplate
+        .render()
+        .context("Failed to render bare macro contract template")
+}
+
+fn extract_function_info(metadata: &ContractMetadata) -> Vec<MacroFunctionInfo> {
+    metadata
         .output
         .abi
         .iter()
@@ -448,23 +453,7 @@ fn generate_macro_contract_sol(
             }
             _ => None,
         })
-        .collect();
-
-    if use_alloc {
-        ContractMacroSolTemplate {
-            sol_file_name,
-            functions,
-        }
-        .render()
-        .context("Failed to render macro sol alloc template")
-    } else {
-        ContractMacroSolNoAllocTemplate {
-            sol_file_name,
-            functions,
-        }
-        .render()
-        .context("Failed to render macro sol no-alloc template")
-    }
+        .collect()
 }
 
 fn solidity_to_rust_type(sol_type: &str) -> String {
