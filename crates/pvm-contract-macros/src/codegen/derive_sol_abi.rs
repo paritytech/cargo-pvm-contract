@@ -48,7 +48,7 @@ fn expand_newtype(
     where_clause: Option<&syn::WhereClause>,
     inner_ty: &syn::Type,
 ) -> TokenStream {
-    quote! {
+    let base_impl = quote! {
         impl #impl_generics pvm_contract::SolAbi for #name #ty_generics #where_clause {
             const SOL_NAME: &'static str = <#inner_ty as pvm_contract::SolAbi>::SOL_NAME;
             const ABI_TYPE: &'static str = <#inner_ty as pvm_contract::SolAbi>::ABI_TYPE;
@@ -64,7 +64,9 @@ fn expand_newtype(
                 Self(<#inner_ty as pvm_contract::SolAbi>::abi_decode(data, offset))
             }
         }
-    }
+    };
+    let option_impl = expand_option_impl(name, impl_generics, ty_generics, where_clause);
+    quote! { #base_impl #option_impl }
 }
 
 fn expand_named_struct(
@@ -136,7 +138,7 @@ fn expand_named_struct(
     let field_types4 = &field_types;
     let field_types5 = &field_types;
 
-    Ok(quote! {
+    let base_impl = quote! {
         impl #impl_generics pvm_contract::SolAbi for #name #ty_generics #where_clause {
             const SOL_NAME: &'static str = pvm_contract::const_format::concatcp!(
                 "(", #(#sol_name_parts,)* ")"
@@ -188,5 +190,78 @@ fn expand_named_struct(
                 }
             }
         }
-    })
+    };
+    let option_impl = expand_option_impl(name, impl_generics, ty_generics, where_clause);
+    Ok(quote! { #base_impl #option_impl })
+}
+
+fn expand_option_impl(
+    name: &syn::Ident,
+    impl_generics: &syn::ImplGenerics,
+    ty_generics: &syn::TypeGenerics,
+    where_clause: Option<&syn::WhereClause>,
+) -> TokenStream {
+    quote! {
+        impl #impl_generics pvm_contract::SolAbi for Option<#name #ty_generics> #where_clause {
+            const SOL_NAME: &'static str = pvm_contract::const_format::concatcp!(
+                "(bool,", <#name #ty_generics as pvm_contract::SolAbi>::SOL_NAME, ")"
+            );
+            const ABI_TYPE: &'static str = "tuple";
+            const ABI_COMPONENTS: &'static str = pvm_contract::const_format::concatcp!(
+                ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
+                <#name #ty_generics as pvm_contract::SolAbi>::ABI_TYPE,
+                "\"",
+                <#name #ty_generics as pvm_contract::SolAbi>::ABI_COMPONENTS,
+                "}]"
+            );
+            const HEAD_SIZE: usize = 32 + <#name #ty_generics as pvm_contract::SolAbi>::HEAD_SIZE;
+            const IS_DYNAMIC: bool = <#name #ty_generics as pvm_contract::SolAbi>::IS_DYNAMIC;
+
+            fn abi_encode(&self, buf: &mut alloc::vec::Vec<u8>) {
+                if !<#name #ty_generics as pvm_contract::SolAbi>::IS_DYNAMIC {
+                    match self {
+                        Some(val) => {
+                            <bool as pvm_contract::SolAbi>::abi_encode(&true, buf);
+                            <#name #ty_generics as pvm_contract::SolAbi>::abi_encode(val, buf);
+                        }
+                        None => {
+                            <bool as pvm_contract::SolAbi>::abi_encode(&false, buf);
+                            buf.resize(buf.len() + <#name #ty_generics as pvm_contract::SolAbi>::HEAD_SIZE, 0);
+                        }
+                    }
+                } else {
+                    match self {
+                        Some(val) => {
+                            // Head: bool=true (32 bytes) + offset to tail (32 bytes, value=64)
+                            <bool as pvm_contract::SolAbi>::abi_encode(&true, buf);
+                            let mut offset_buf = [0u8; 32];
+                            offset_buf[24..32].copy_from_slice(&64u64.to_be_bytes());
+                            buf.extend_from_slice(&offset_buf);
+                            // Tail: encoded value
+                            <#name #ty_generics as pvm_contract::SolAbi>::abi_encode(val, buf);
+                        }
+                        None => {
+                            // Head: bool=false (32 bytes) + offset to tail (32 bytes, value=64)
+                            <bool as pvm_contract::SolAbi>::abi_encode(&false, buf);
+                            let mut offset_buf = [0u8; 32];
+                            offset_buf[24..32].copy_from_slice(&64u64.to_be_bytes());
+                            buf.extend_from_slice(&offset_buf);
+                            // Tail: 32 zero bytes (empty/default encoding)
+                            buf.resize(buf.len() + 32, 0);
+                        }
+                    }
+                }
+            }
+
+            fn abi_decode(data: &[u8], offset: usize) -> Self {
+                let sd = &data[offset..];
+                let is_some = <bool as pvm_contract::SolAbi>::abi_decode(sd, 0);
+                if is_some {
+                    Some(<#name #ty_generics as pvm_contract::SolAbi>::abi_decode(sd, 32))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
