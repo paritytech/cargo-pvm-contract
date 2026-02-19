@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use cargo_pvm_contract_builder::{build_contract, get_bin_targets, get_package_name};
-use std::{env, path::{Path, PathBuf}};
+use std::{env, path::{Path, PathBuf}, process::Command};
 
 #[derive(clap::Parser, Debug)]
 pub struct BuildArgs {
@@ -23,6 +23,10 @@ pub struct BuildArgs {
     /// Output directory for .polkavm and .abi.json files
     #[arg(short, long)]
     pub output_dir: Option<PathBuf>,
+
+    /// Forward --message-format to inner cargo build (e.g. "json")
+    #[arg(long)]
+    pub message_format: Option<String>,
 }
 
 pub fn build_contracts(args: &BuildArgs) -> Result<()> {
@@ -52,14 +56,37 @@ pub fn build_contracts(args: &BuildArgs) -> Result<()> {
         .clone()
         .unwrap_or_else(|| find_target_dir(&manifest_path));
 
+    // If --message-format is set, emit total crate count upfront via cargo metadata
+    if args.message_format.is_some() {
+        if let Ok(total) = get_crate_count(&manifest_path) {
+            println!("{{\"reason\":\"build-plan\",\"total\":{total}}}");
+        }
+    }
+
     for pkg_name in &packages {
         eprintln!("Building contract: {pkg_name}");
 
         let bins = resolve_bins_for_package(&manifest_path, pkg_name)?;
-        build_contract(&manifest_path, &output_dir, profile, pkg_name, bins)?;
+        build_contract(&manifest_path, &output_dir, profile, pkg_name, bins, args.message_format.as_deref())?;
     }
 
     Ok(())
+}
+
+/// Get total crate count from cargo metadata.
+fn get_crate_count(manifest_path: &Path) -> Result<usize> {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = Command::new(cargo)
+        .arg("metadata")
+        .arg("--format-version=1")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+        .context("Failed to run cargo metadata")?;
+    let meta: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse cargo metadata")?;
+    let count = meta["packages"].as_array().map(|a| a.len()).unwrap_or(0);
+    Ok(count)
 }
 
 fn find_target_dir(manifest_path: &Path) -> PathBuf {

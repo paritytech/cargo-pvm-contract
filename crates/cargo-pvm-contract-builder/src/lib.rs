@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 pub use abi::extract_abi_from_elf;
@@ -179,6 +179,7 @@ pub fn build_contract(
     profile_name: &str,
     pkg_name: &str,
     bin_names: Vec<String>,
+    message_format: Option<&str>,
 ) -> Result<()> {
     let profile = Profile { name: profile_name.to_string() };
     let target_dir = output_dir.join("pvmbuild");
@@ -187,7 +188,7 @@ pub fn build_contract(
         anyhow::bail!("No binary targets to build");
     }
 
-    build_elf(project_cargo_toml, &target_dir, &profile, &bin_names, pkg_name)?;
+    build_elf(project_cargo_toml, &target_dir, &profile, &bin_names, pkg_name, message_format)?;
 
     let elf_dir = target_dir
         .join("riscv64emac-unknown-none-polkavm")
@@ -229,7 +230,7 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
 
     let target_dir = build_dir;
     let pkg_name = get_package_name(project_cargo_toml)?;
-    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build, &pkg_name)?;
+    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build, &pkg_name, None)?;
 
     // Link each ELF to PolkaVM
     let elf_dir = target_dir
@@ -294,6 +295,7 @@ fn build_elf(
     profile: &Profile,
     bins: &[String],
     pkg_name: &str,
+    message_format: Option<&str>,
 ) -> Result<()> {
     // Include pkg_name in RUSTFLAGS to force cargo cache invalidation when
     // switching between contracts. Without this, cached proc macro expansions
@@ -338,13 +340,26 @@ fn build_elf(
         cmd.arg("--bin").arg(bin);
     }
 
+    if let Some(fmt) = message_format {
+        cmd.arg("--message-format").arg(fmt);
+    }
+
     eprintln!("Building PolkaVM binary with profile: {profile:?}");
 
-    let output = cmd.output().context("Failed to execute cargo build")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Cargo build failed:\n{stderr}");
+    if message_format.is_some() {
+        // Stream stdout through so callers can parse cargo's JSON output
+        cmd.stdout(Stdio::inherit());
+        let output = cmd.output().context("Failed to execute cargo build")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Cargo build failed:\n{stderr}");
+        }
+    } else {
+        let output = cmd.output().context("Failed to execute cargo build")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Cargo build failed:\n{stderr}");
+        }
     }
 
     Ok(())
