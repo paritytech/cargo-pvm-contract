@@ -396,3 +396,27 @@ pub fn derive_sol_abi(input: TokenStream) -> TokenStream {
         Err(err) => err.to_compile_error().into(),
     }
 }
+
+/// Generates a Reference type from an ABI JSON file for cross-contract calls.
+///
+/// # Usage
+///
+/// ```ignore
+/// pvm::abi_import!("reputation", "abi/reputation.abi.json");
+/// // Then use:
+/// reputation::reference(addr).get_average_rating(subject)?
+/// ```
+///
+/// With CDM support:
+/// ```ignore
+/// pvm::abi_import!("reputation", "abi/reputation.abi.json", cdm = "@polkadot/reputation");
+/// reputation::cdm_reference().get_average_rating(subject)?
+/// ```
+#[proc_macro]
+pub fn abi_import(input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(input as codegen::AbiImportArgs);
+    match codegen::expand_abi_import(args) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}

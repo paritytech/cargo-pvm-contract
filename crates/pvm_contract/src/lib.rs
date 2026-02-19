@@ -9,7 +9,7 @@ pub mod abi;
 
 pub mod call;
 
-pub use pvm_contract_macros::{constructor, contract, fallback, method, storage, SolAbi};
+pub use pvm_contract_macros::{abi_import, constructor, contract, fallback, method, storage, SolAbi};
 
 pub use ethereum_types::Address;
 pub use alloy_primitives::{FixedBytes, I256, U256};

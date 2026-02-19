@@ -343,132 +343,58 @@ impl SolAbi for Vec<u8> {
 }
 
 // -- Option<T> wrapper (encoded as tuple (bool, T)) --
+// Blanket impl covers all T: SolAbi, including user-defined #[derive(SolAbi)] types.
+// Note: SOL_NAME/ABI_TYPE/ABI_COMPONENTS use placeholder values here because
+// concatcp! cannot work with generic type parameters. The derive macro handles
+// these const strings inline when Option<T> fields appear in derived structs.
 
-macro_rules! impl_option_sol_abi {
-    ($($t:ty),* $(,)?) => {
-        $(
-            impl SolAbi for Option<$t> {
-                const SOL_NAME: &'static str =
-                    crate::const_format::concatcp!("(bool,", <$t as SolAbi>::SOL_NAME, ")");
-                const ABI_TYPE: &'static str = "tuple";
-                const ABI_COMPONENTS: &'static str = crate::const_format::concatcp!(
-                    ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
-                    <$t as SolAbi>::ABI_TYPE,
-                    "\"",
-                    <$t as SolAbi>::ABI_COMPONENTS,
-                    "}]"
-                );
-                const HEAD_SIZE: usize = 32 + <$t as SolAbi>::HEAD_SIZE;
-                const IS_DYNAMIC: bool = <$t as SolAbi>::IS_DYNAMIC;
+impl<T: SolAbi> SolAbi for Option<T> {
+    const SOL_NAME: &'static str = "(bool,?)";
+    const ABI_TYPE: &'static str = "tuple";
+    const ABI_COMPONENTS: &'static str = "";
+    const HEAD_SIZE: usize = 32 + T::HEAD_SIZE;
+    const IS_DYNAMIC: bool = T::IS_DYNAMIC;
 
-                fn abi_encode(&self, buf: &mut alloc::vec::Vec<u8>) {
-                    if <$t as SolAbi>::IS_DYNAMIC {
-                        // Head/tail encoding for dynamic inner type
-                        match self {
-                            Some(val) => {
-                                // bool = true
-                                true.abi_encode(buf);
-                                // offset word pointing to tail start (64 bytes from tuple start)
-                                let mut offset_word = [0u8; 32];
-                                offset_word[24..32].copy_from_slice(&64u64.to_be_bytes());
-                                buf.extend_from_slice(&offset_word);
-                                // tail: the encoded value
-                                val.abi_encode(buf);
-                            }
-                            None => {
-                                // bool = false
-                                false.abi_encode(buf);
-                                // offset word pointing to tail start (64 bytes from tuple start)
-                                let mut offset_word = [0u8; 32];
-                                offset_word[24..32].copy_from_slice(&64u64.to_be_bytes());
-                                buf.extend_from_slice(&offset_word);
-                                // tail: zero-length encoding (32 zero bytes for length = 0)
-                                buf.extend_from_slice(&[0u8; 32]);
-                            }
-                        }
-                    } else {
-                        // Static inner type: just concatenate bool + value
-                        match self {
-                            Some(val) => {
-                                true.abi_encode(buf);
-                                val.abi_encode(buf);
-                            }
-                            None => {
-                                false.abi_encode(buf);
-                                // zero-filled for the static value
-                                buf.extend_from_slice(&alloc::vec![0u8; <$t as SolAbi>::HEAD_SIZE]);
-                            }
-                        }
-                    }
+    fn abi_encode(&self, buf: &mut alloc::vec::Vec<u8>) {
+        if T::IS_DYNAMIC {
+            match self {
+                Some(val) => {
+                    true.abi_encode(buf);
+                    let mut offset_word = [0u8; 32];
+                    offset_word[24..32].copy_from_slice(&64u64.to_be_bytes());
+                    buf.extend_from_slice(&offset_word);
+                    val.abi_encode(buf);
                 }
-
-                fn abi_decode(data: &[u8], offset: usize) -> Self {
-                    let is_some = bool::abi_decode(data, offset);
-                    if !is_some {
-                        return None;
-                    }
-                    if <$t as SolAbi>::IS_DYNAMIC {
-                        // Dynamic: T::abi_decode reads offset word from head position
-                        Some(<$t as SolAbi>::abi_decode(data, offset + 32))
-                    } else {
-                        Some(<$t as SolAbi>::abi_decode(data, offset + 32))
-                    }
+                None => {
+                    false.abi_encode(buf);
+                    let mut offset_word = [0u8; 32];
+                    offset_word[24..32].copy_from_slice(&64u64.to_be_bytes());
+                    buf.extend_from_slice(&offset_word);
+                    buf.extend_from_slice(&[0u8; 32]);
                 }
             }
-        )*
-    };
-}
-
-impl_option_sol_abi!(
-    bool, u8, u16, u32, u64, u128,
-    i8, i16, i32, i64, i128,
-    String, alloc::vec::Vec<u8>,
-    crate::Address, crate::U256, crate::I256,
-);
-
-macro_rules! impl_option_sol_abi_fixed_bytes {
-    ($($n:literal),* $(,)?) => {
-        $(
-            impl SolAbi for Option<[u8; $n]> {
-                const SOL_NAME: &'static str =
-                    crate::const_format::concatcp!("(bool,", <[u8; $n] as SolAbi>::SOL_NAME, ")");
-                const ABI_TYPE: &'static str = "tuple";
-                const ABI_COMPONENTS: &'static str = crate::const_format::concatcp!(
-                    ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
-                    <[u8; $n] as SolAbi>::ABI_TYPE,
-                    "\"",
-                    <[u8; $n] as SolAbi>::ABI_COMPONENTS,
-                    "}]"
-                );
-                const HEAD_SIZE: usize = 32 + <[u8; $n] as SolAbi>::HEAD_SIZE;
-                const IS_DYNAMIC: bool = false;
-
-                fn abi_encode(&self, buf: &mut alloc::vec::Vec<u8>) {
-                    match self {
-                        Some(val) => {
-                            true.abi_encode(buf);
-                            val.abi_encode(buf);
-                        }
-                        None => {
-                            false.abi_encode(buf);
-                            buf.extend_from_slice(&[0u8; 32]);
-                        }
-                    }
+        } else {
+            match self {
+                Some(val) => {
+                    true.abi_encode(buf);
+                    val.abi_encode(buf);
                 }
-
-                fn abi_decode(data: &[u8], offset: usize) -> Self {
-                    let is_some = bool::abi_decode(data, offset);
-                    if !is_some {
-                        return None;
-                    }
-                    Some(<[u8; $n] as SolAbi>::abi_decode(data, offset + 32))
+                None => {
+                    false.abi_encode(buf);
+                    buf.resize(buf.len() + T::HEAD_SIZE, 0);
                 }
             }
-        )*
-    };
-}
+        }
+    }
 
-impl_option_sol_abi_fixed_bytes!(1, 2, 4, 8, 16, 20, 32);
+    fn abi_decode(data: &[u8], offset: usize) -> Self {
+        let is_some = bool::abi_decode(data, offset);
+        if !is_some {
+            return None;
+        }
+        Some(T::abi_decode(data, offset + 32))
+    }
+}
 
 // -- Selector computation --
 
