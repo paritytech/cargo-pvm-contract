@@ -535,8 +535,9 @@ fn generate_cdm_reference(cdm_name: &str) -> TokenStream {
             // String data
             calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
 
-            // Output buffer: address is returned as bytes32 (20 bytes right-aligned in 32 bytes)
-            let mut output_buf = [0u8; 32];
+            // Output buffer: registry returns Option<Address> as tuple(bool isSome, address value)
+            // ABI-encoded: 32 bytes for isSome + 32 bytes for address = 64 bytes
+            let mut output_buf = [0u8; 64];
             let mut output_ref: &mut [u8] = &mut output_buf[..];
 
             let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
@@ -552,12 +553,14 @@ fn generate_cdm_reference(cdm_name: &str) -> TokenStream {
                 Ok(()) => {
                     let written = output_ref.len();
                     let output = &output_buf[..written];
-                    // Decode address from ABI-encoded response (20 bytes at offset 12..32)
-                    let mut addr = [0u8; 20];
-                    addr.copy_from_slice(&output[12..32]);
-                    if addr == [0u8; 20] {
+                    // First word (0..32) is isSome bool, second word (32..64) is the address
+                    // Address is 20 bytes right-aligned in the second 32-byte word
+                    let is_some = output[31] != 0;
+                    if !is_some {
                         panic!("CDM: contract not found in registry");
                     }
+                    let mut addr = [0u8; 20];
+                    addr.copy_from_slice(&output[44..64]);
                     Reference::at(pvm_contract::Address::from(addr))
                 }
                 Err(_) => {
