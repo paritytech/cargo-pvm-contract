@@ -41,22 +41,7 @@ pub fn expand_derive_sol_abi(input: DeriveInput) -> Result<TokenStream, syn::Err
     }
 }
 
-/// If `ty` is `Option<Inner>`, return `Some(Inner)`. Otherwise `None`.
-fn unwrap_option_inner(ty: &syn::Type) -> Option<&syn::Type> {
-    if let syn::Type::Path(type_path) = ty {
-        let segment = type_path.path.segments.last()?;
-        if segment.ident == "Option" {
-            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                if args.args.len() == 1 {
-                    if let syn::GenericArgument::Type(inner) = &args.args[0] {
-                        return Some(inner);
-                    }
-                }
-            }
-        }
-    }
-    None
-}
+use super::unwrap_option_inner;
 
 fn expand_newtype(
     name: &syn::Ident,

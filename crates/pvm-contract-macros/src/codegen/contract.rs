@@ -5,6 +5,7 @@ use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, L
 use super::decode::{calculate_min_input_size, generate_decode, generate_decode_params};
 use super::dispatch::{generate_dispatch_arm, generate_trait_dispatch_arm, MethodInfo};
 use super::encode::generate_encode;
+use super::unwrap_option_inner;
 use crate::signature::{compute_selector, FunctionSignature, SolType};
 use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
 
@@ -821,6 +822,29 @@ fn generate_cdm_section(cdm_name: &str, is_entry_point: bool) -> TokenStream {
     }
 }
 
+/// Push ABI type and components tokens for a Rust type, with special handling
+/// for `Option<T>` (which needs inline component generation since the blanket
+/// `SolAbi for Option<T>` impl cannot produce `ABI_COMPONENTS` via `concatcp!`).
+fn push_abi_type_and_components(parts: &mut Vec<TokenStream>, ty: &syn::Type) {
+    if let Some(inner) = unwrap_option_inner(ty) {
+        parts.push(quote! { "tuple" });
+        parts.push(quote! { "\"" });
+        parts.push(quote! {
+            pvm_contract::const_format::concatcp!(
+                ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
+                <#inner as pvm_contract::SolAbi>::ABI_TYPE,
+                "\"",
+                <#inner as pvm_contract::SolAbi>::ABI_COMPONENTS,
+                "}]"
+            )
+        });
+    } else {
+        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE });
+        parts.push(quote! { "\"" });
+        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS });
+    }
+}
+
 /// Push ABI parameter expressions into the flat parts list.
 fn push_abi_params(
     parts: &mut Vec<TokenStream>,
@@ -855,9 +879,7 @@ fn push_abi_params(
             parts.push(quote! { "{\"name\":\"" });
             parts.push(quote! { #name_str });
             parts.push(quote! { "\",\"type\":\"" });
-            parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE });
-            parts.push(quote! { "\"" });
-            parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS });
+            push_abi_type_and_components(parts, ty);
             parts.push(quote! { "}" });
         }
     }
@@ -886,9 +908,7 @@ fn push_abi_outputs(
     } else if let Some(ty) = return_type {
         parts.push(quote! { "{\"name\":\"\"" });
         parts.push(quote! { ",\"type\":\"" });
-        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE });
-        parts.push(quote! { "\"" });
-        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS });
+        push_abi_type_and_components(parts, ty);
         parts.push(quote! { "}" });
     }
 }
