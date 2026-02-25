@@ -17,27 +17,27 @@ used in this report.
 
 ### Static Types (no-alloc compatible)
 
-| Type     | Operation | pvm-contract-types | alloy-core   | Ratio        |
-|----------|-----------|--------------------|--------------|--------------|
-| u8       | encode    | 14.31 ns           | 6.49 ns      | 2.20x slower |
-| u8       | decode    | 0.40 ns            | 2.37 ns      | 5.97x faster |
-| u32      | encode    | 14.23 ns           | 6.86 ns      | 2.08x slower |
-| u32      | decode    | 0.98 ns            | 2.36 ns      | 2.41x faster |
-| u128     | encode    | 14.07 ns           | 6.67 ns      | 2.11x slower |
-| u128     | decode    | 0.99 ns            | 2.79 ns      | 2.83x faster |
-| U256     | encode    | 13.74 ns           | 6.51 ns      | 2.11x slower |
-| U256     | decode    | 1.78 ns            | 3.57 ns      | 2.01x faster |
-| address  | encode    | 15.50 ns           | 11.52 ns     | 1.35x slower |
-| address  | decode    | 7.09 ns            | 9.59 ns      | 1.35x faster |
+| Type | Operation | pvm-contract-types | alloy-core | Ratio |
+|------|-----------|--------------------|------------|-------|
+| u8         | encode | 13.26 ns           | 6.38 ns      | 2.08x slower |
+| u8         | decode | 0.39 ns            | 2.35 ns      | 6.07x faster |
+| u32        | encode | 13.51 ns           | 6.85 ns      | 1.97x slower |
+| u32        | decode | 0.97 ns            | 2.40 ns      | 2.46x faster |
+| u128       | encode | 14.19 ns           | 6.63 ns      | 2.14x slower |
+| u128       | decode | 0.98 ns            | 2.77 ns      | 2.82x faster |
+| U256       | encode | 13.40 ns           | 6.40 ns      | 2.09x slower |
+| U256       | decode | 1.76 ns            | 3.53 ns      | 2.01x faster |
+| address    | encode | 14.78 ns           | 11.24 ns     | 1.31x slower |
+| address    | decode | 6.91 ns            | 9.45 ns      | 1.37x faster |
 
 ### Dynamic Types (alloc required)
 
-| Type       | Operation | pvm-contract-types | alloy-core   | Ratio        |
-|------------|-----------|--------------------|--------------|--------------|
-| String     | encode    | 11.24 ns           | 16.23 ns     | 1.44x faster |
-| String     | decode    | 11.15 ns           | 32.70 ns     | 2.93x faster |
-| Vec\<U256> | encode    | 20.78 ns           | 25.62 ns     | 1.23x faster |
-| Vec\<U256> | decode    | 25.01 ns           | 46.63 ns     | 1.87x faster |
+| Type | Operation | pvm-contract-types | alloy-core | Ratio |
+|------|-----------|--------------------|------------|-------|
+| String     | encode | 11.04 ns           | 15.85 ns     | 1.44x faster |
+| String     | decode | 10.94 ns           | 32.57 ns     | 2.98x faster |
+| Vec\<U256> | encode | 20.42 ns           | 25.02 ns     | 1.23x faster |
+| Vec\<U256> | decode | 23.86 ns           | 45.87 ns     | 1.92x faster |
 
 ### Summary
 

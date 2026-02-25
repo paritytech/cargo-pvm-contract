@@ -17,20 +17,20 @@
 #![no_std]
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::cell::{Cell, UnsafeCell};
 
 /// A bump allocator backed by a fixed-size heap.
 ///
 /// `HEAP_SIZE` is the total number of bytes available for allocation.
 /// Memory is never freed — `dealloc` is a no-op.
 pub struct BumpAllocator<const HEAP_SIZE: usize> {
-    offset: AtomicUsize,
-    heap: core::cell::UnsafeCell<[u8; HEAP_SIZE]>,
+    offset: Cell<usize>,
+    heap: UnsafeCell<[u8; HEAP_SIZE]>,
 }
 
-// SAFETY: The allocator uses atomic operations for the offset, so it is safe to share
-// across threads (though PVM contracts are single-threaded, this satisfies the
-// `GlobalAlloc` requirement).
+// SAFETY: PVM contracts are single-threaded. The `Sync` bound is required by
+// `GlobalAlloc` (the allocator must live in a `static`), but no concurrent
+// access actually occurs.
 unsafe impl<const HEAP_SIZE: usize> Sync for BumpAllocator<HEAP_SIZE> {}
 
 impl<const HEAP_SIZE: usize> Default for BumpAllocator<HEAP_SIZE> {
@@ -43,8 +43,8 @@ impl<const HEAP_SIZE: usize> BumpAllocator<HEAP_SIZE> {
     /// Creates a new bump allocator with a zeroed heap of `HEAP_SIZE` bytes.
     pub const fn new() -> Self {
         Self {
-            offset: AtomicUsize::new(0),
-            heap: core::cell::UnsafeCell::new([0u8; HEAP_SIZE]),
+            offset: Cell::new(0),
+            heap: UnsafeCell::new([0u8; HEAP_SIZE]),
         }
     }
 }
@@ -54,31 +54,25 @@ unsafe impl<const HEAP_SIZE: usize> GlobalAlloc for BumpAllocator<HEAP_SIZE> {
         let align = layout.align();
         let size = layout.size();
 
-        let mut current = self.offset.load(Ordering::Relaxed);
+        let current = self.offset.get();
+        let aligned = (current + align - 1) & !(align - 1);
+        let Some(next) = aligned.checked_add(size) else {
+            core::panic!("exhausted heap limit");
+        };
 
-        loop {
-            let aligned = (current + align - 1) & !(align - 1);
-            let Some(next) = aligned.checked_add(size) else {
-                return core::ptr::null_mut();
-            };
-
-            if next > HEAP_SIZE {
-                return core::ptr::null_mut();
-            }
-
-            match self.offset.compare_exchange_weak(
-                current,
-                next,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => {
-                    let heap_ptr = self.heap.get() as *mut u8;
-                    return unsafe { heap_ptr.add(aligned) };
-                }
-                Err(observed) => current = observed,
-            }
+        if next > HEAP_SIZE {
+            core::panic!("exhausted heap limit");
         }
+
+        self.offset.set(next);
+        let heap_ptr = self.heap.get() as *mut u8;
+        unsafe { heap_ptr.add(aligned) }
+    }
+
+    // The heap is zero-initialized and memory is never reused, so every
+    // region returned by `alloc` is already zeroed.
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        unsafe { self.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
@@ -117,25 +111,35 @@ mod tests {
         let alloc = BumpAllocator::<64>::new();
         let layout = Layout::from_size_align(64, 1).unwrap();
         assert!(!unsafe { alloc.alloc(layout) }.is_null());
-
-        // Heap is full — next alloc must fail
-        assert!(unsafe { alloc.alloc(Layout::from_size_align(1, 1).unwrap()) }.is_null());
     }
 
     #[test]
-    fn alloc_oom_returns_null() {
+    #[should_panic = "exhausted heap limit"]
+    fn alloc_panics_when_full() {
+        let alloc = BumpAllocator::<64>::new();
+        unsafe {
+            alloc.alloc(Layout::from_size_align(64, 1).unwrap());
+            alloc.alloc(Layout::from_size_align(1, 1).unwrap());
+        }
+    }
+
+    #[test]
+    #[should_panic = "exhausted heap limit"]
+    fn alloc_oom_panics() {
         let alloc = BumpAllocator::<16>::new();
-        let layout = Layout::from_size_align(17, 1).unwrap();
-        assert!(unsafe { alloc.alloc(layout) }.is_null());
+        unsafe { alloc.alloc(Layout::from_size_align(17, 1).unwrap()) };
     }
 
     #[test]
+    #[should_panic = "exhausted heap limit"]
     fn alloc_oom_due_to_alignment_padding() {
         // 9 bytes of heap: alloc 1 byte, then try 8 bytes with align 8
         // offset=1, aligned=8, 8+8=16 > 9 → OOM
         let alloc = BumpAllocator::<9>::new();
-        unsafe { alloc.alloc(Layout::from_size_align(1, 1).unwrap()) };
-        assert!(unsafe { alloc.alloc(Layout::from_size_align(8, 8).unwrap()) }.is_null());
+        unsafe {
+            alloc.alloc(Layout::from_size_align(1, 1).unwrap());
+            alloc.alloc(Layout::from_size_align(8, 8).unwrap());
+        }
     }
 
     #[test]
