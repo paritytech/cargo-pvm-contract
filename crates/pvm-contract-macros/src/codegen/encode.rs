@@ -200,6 +200,136 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
     }
 }
 
+/// Encode a sequence of named parameters into ABI calldata.
+/// Generates code that extends a pre-existing `calldata: Vec<u8>` variable.
+/// Handles both all-static sequences (simple concatenation) and mixed
+/// static/dynamic sequences (proper head/tail encoding).
+pub fn generate_encode_params(
+    names: &[syn::Ident],
+    types: &[SolType],
+) -> TokenStream {
+    let has_dynamic = types.iter().any(|t| t.is_dynamic());
+
+    if !has_dynamic {
+        let encodes: Vec<TokenStream> = names
+            .iter()
+            .zip(types.iter())
+            .map(|(name, ty)| {
+                let enc = generate_encode(ty, quote!(#name), true);
+                quote! { calldata.extend_from_slice(&#enc); }
+            })
+            .collect();
+        quote! { #(#encodes)* }
+    } else {
+        let n_params = types.len();
+        let head_size = n_params * 32;
+
+        let mut writes = Vec::new();
+        for (i, (name, ty)) in names.iter().zip(types.iter()).enumerate() {
+            let offset = i * 32;
+            let end = offset + 32;
+
+            if ty.is_dynamic() {
+                match ty {
+                    SolType::String => {
+                        writes.push(quote! {
+                            {
+                                let __dyn_offset = (#head_size + __tail.len()) as u64;
+                                let mut __off = [0u8; 32];
+                                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                                __head[#offset..#end].copy_from_slice(&__off);
+
+                                let __s: &str = #name.as_str();
+                                let __len = __s.len();
+                                let __padded_len = (__len + 31) / 32 * 32;
+                                let mut __len_bytes = [0u8; 32];
+                                __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
+                                __tail.extend_from_slice(&__len_bytes);
+                                __tail.extend_from_slice(__s.as_bytes());
+                                __tail.resize(__tail.len() + __padded_len - __len, 0);
+                            }
+                        });
+                    }
+                    SolType::DynBytes => {
+                        writes.push(quote! {
+                            {
+                                let __dyn_offset = (#head_size + __tail.len()) as u64;
+                                let mut __off = [0u8; 32];
+                                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                                __head[#offset..#end].copy_from_slice(&__off);
+
+                                let __data: &[u8] = &#name;
+                                let __len = __data.len();
+                                let __padded_len = (__len + 31) / 32 * 32;
+                                let mut __len_bytes = [0u8; 32];
+                                __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
+                                __tail.extend_from_slice(&__len_bytes);
+                                __tail.extend_from_slice(__data);
+                                __tail.resize(__tail.len() + __padded_len - __len, 0);
+                            }
+                        });
+                    }
+                    _ => panic!("Unsupported dynamic type in cross-contract call encoding"),
+                }
+            } else {
+                let enc = generate_encode(ty, quote!(#name), true);
+                writes.push(quote! {
+                    __head[#offset..#end].copy_from_slice(&#enc);
+                });
+            }
+        }
+
+        quote! {
+            {
+                let mut __head = alloc::vec![0u8; #head_size];
+                let mut __tail = alloc::vec::Vec::new();
+                #(#writes)*
+                calldata.extend_from_slice(&__head);
+                calldata.extend_from_slice(&__tail);
+            }
+        }
+    }
+}
+
+/// Encode parameters using the SolAbi trait (runtime dynamic detection).
+/// Used when types aren't fully resolved at macro expansion time.
+/// Generates code that extends a pre-existing `calldata: Vec<u8>` variable.
+pub fn generate_encode_params_trait(
+    names: &[syn::Ident],
+    types: &[syn::Type],
+) -> TokenStream {
+    let n_params = types.len();
+    let head_size = n_params * 32;
+
+    let mut writes = Vec::new();
+    for (i, (name, ty)) in names.iter().zip(types.iter()).enumerate() {
+        let offset = i * 32;
+        let end = offset + 32;
+        writes.push(quote! {
+            if <#ty as pvm_contract::SolAbi>::IS_DYNAMIC {
+                let __dyn_offset = (#head_size + __tail.len()) as u64;
+                let mut __off = [0u8; 32];
+                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                __head[#offset..#end].copy_from_slice(&__off);
+                <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut __tail);
+            } else {
+                let mut __enc = alloc::vec::Vec::new();
+                <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut __enc);
+                __head[#offset..#end].copy_from_slice(&__enc);
+            }
+        });
+    }
+    quote! {
+        {
+            let mut __head = alloc::vec![0u8; #head_size];
+            let mut __tail = alloc::vec::Vec::new();
+            #(#writes)*
+            calldata.extend_from_slice(&__head);
+            calldata.extend_from_slice(&__tail);
+        }
+    }
+}
+
 pub fn generate_encode_return(types: &[SolType], use_alloc: bool) -> TokenStream {
     if types.is_empty() {
         return quote! { &[] };

@@ -2,10 +2,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
 
-use super::decode::{calculate_min_input_size, generate_decode, generate_decode_params};
+use super::decode::{calculate_min_input_size, generate_decode_params};
 use super::dispatch::{generate_dispatch_arm, generate_trait_dispatch_arm, MethodInfo};
-use super::encode::generate_encode;
-use super::unwrap_option_inner;
+use super::encode::{generate_encode_params, generate_encode_params_trait};
+use super::{generate_cdm_reference, generate_resolved_return_parts, unwrap_option_inner};
 use crate::signature::{compute_selector, FunctionSignature, SolType};
 use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
 
@@ -970,79 +970,36 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
     };
 
     // --- Varying piece 3: encode statements ---
-    let encodes: Vec<TokenStream> = if fully_resolved {
-        method.param_names.iter().zip(sig.inputs.iter())
-            .map(|(name, ty)| {
-                let enc = generate_encode(ty, quote!(#name), true);
-                quote! { calldata.extend_from_slice(&#enc); }
-            }).collect()
+    let encode_block: TokenStream = if fully_resolved {
+        generate_encode_params(&method.param_names, &sig.inputs)
     } else {
-        method.param_names.iter().zip(method.param_types.iter())
-            .map(|(name, ty)| {
-                quote! { <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut calldata); }
-            }).collect()
+        generate_encode_params_trait(&method.param_names, &method.param_types)
     };
 
-    // --- Varying piece 4: return type ---
-    let ret_ty = if fully_resolved {
-        match sig.outputs.as_slice() {
-            [] => quote! { () },
-            [one] => one.rust_type(true),
-            many => { let tys: Vec<_> = many.iter().map(|t| t.rust_type(true)).collect(); quote! { (#(#tys),*) } }
-        }
+    // --- Varying pieces 4-6: return type, output buffer, decode ---
+    let (ret_ty, output_setup, decode_return, has_output) = if fully_resolved {
+        generate_resolved_return_parts(&sig.outputs)
     } else {
         match &method.return_type {
-            None => quote! { () },
-            Some(ty) => quote! { #ty },
-        }
-    };
-
-    // --- Varying piece 5: output buffer setup ---
-    let output_setup = if fully_resolved {
-        let output_size: usize = sig.outputs.iter().map(|t| t.head_size()).sum();
-        quote! {
-            let mut output_buf = [0u8; #output_size];
-        }
-    } else {
-        match &method.return_type {
-            None => quote! {
-                let mut output_buf = alloc::vec![0u8; 0usize];
-            },
-            Some(ty) => quote! {
-                let __out_size: usize = <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
-                let mut output_buf = alloc::vec![0u8; __out_size];
-            },
-        }
-    };
-
-    // --- Varying piece 6: decode return ---
-    let decode_return = if fully_resolved {
-        match sig.outputs.as_slice() {
-            [] => quote! { () },
-            [one] => generate_decode(one, quote!(output), 0, true),
-            many => {
-                let mut offset = 0;
-                let decs: Vec<_> = many.iter().map(|t| {
-                    let d = generate_decode(t, quote!(output), offset, true);
-                    offset += t.head_size();
-                    d
-                }).collect();
-                quote! { (#(#decs),*) }
-            }
-        }
-    } else {
-        match &method.return_type {
-            None => quote! { () },
-            Some(ty) => quote! { <#ty as pvm_contract::SolAbi>::abi_decode(output, 0) },
+            None => (
+                quote! { () },
+                quote! { let mut output_buf = alloc::vec![0u8; 0usize]; },
+                quote! { () },
+                false,
+            ),
+            Some(ty) => (
+                quote! { #ty },
+                quote! {
+                    let __out_size: usize = <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
+                    let mut output_buf = alloc::vec![0u8; __out_size];
+                },
+                quote! { <#ty as pvm_contract::SolAbi>::abi_decode(output, 0) },
+                true,
+            ),
         }
     };
 
     // --- Varying piece 7: output_arg ---
-    let has_output = if fully_resolved {
-        !sig.outputs.is_empty()
-    } else {
-        method.return_type.is_some()
-    };
     let output_arg = if has_output {
         quote! { Some(&mut output_ref) }
     } else {
@@ -1054,7 +1011,7 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
         pub fn #fn_name(&self, #(#params),*) -> pvm_contract::call::CallResult<#ret_ty> {
             extern crate alloc;
             #selector_setup
-            #(#encodes)*
+            #encode_block
             #output_setup
             let mut output_ref: &mut [u8] = &mut output_buf[..];
             let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
@@ -1099,119 +1056,6 @@ fn generate_reference_type(methods: &[MethodInfo], cdm: Option<&str>) -> TokenSt
         }
 
         #cdm_fn
-    }
-}
-
-/// Generate the `cdm_reference()` function that resolves the contract address at runtime
-/// by calling the ContractRegistry's `getAddress(string)` method.
-fn generate_cdm_reference(cdm_name: &str) -> TokenStream {
-    // Compute the selector for getAddress(string) at macro expansion time
-    let selector = compute_selector("getAddress(string)");
-    let [s0, s1, s2, s3] = selector;
-
-    quote! {
-        /// The address of the contracts registry, baked in at compile time from
-        /// the `CONTRACTS_REGISTRY_ADDR` environment variable.
-        const __CDM_REGISTRY_ADDR: [u8; 20] = {
-            const fn hex(c: u8) -> u8 {
-                match c {
-                    b'0'..=b'9' => c - b'0',
-                    b'a'..=b'f' => c - b'a' + 10,
-                    b'A'..=b'F' => c - b'A' + 10,
-                    _ => panic!("Invalid hex character in CONTRACTS_REGISTRY_ADDR"),
-                }
-            }
-
-            match option_env!("CONTRACTS_REGISTRY_ADDR") {
-                Some(s) => {
-                    let b = s.as_bytes();
-                    let off = if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
-                        2
-                    } else {
-                        0
-                    };
-                    assert!(b.len() - off == 40, "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (with optional 0x prefix)");
-                    let mut r = [0u8; 20];
-                    let mut i = 0;
-                    while i < 20 {
-                        r[i] = hex(b[off + i * 2]) << 4 | hex(b[off + i * 2 + 1]);
-                        i += 1;
-                    }
-                    r
-                }
-                None => [0u8; 20],
-            }
-        };
-
-        /// Get a runtime-resolved reference to this contract via CDM.
-        ///
-        /// Looks up the contract address from the ContractRegistry at runtime
-        /// using the CDM name registered at compile time. The registry address
-        /// is baked in from the `CONTRACTS_REGISTRY_ADDR` environment variable.
-        ///
-        /// # Panics
-        ///
-        /// Panics if the cross-contract call to the registry fails or the
-        /// contract is not registered.
-        pub fn cdm_reference() -> Reference {
-            extern crate alloc;
-
-            let cdm_name: &str = #cdm_name;
-            let name_len = cdm_name.len();
-            let padded_len = (name_len + 31) / 32 * 32;
-
-            // Build calldata: selector + ABI-encoded string
-            // String ABI encoding: offset (32 bytes) + length (32 bytes) + data (padded to 32)
-            let mut calldata = alloc::vec![0u8; 4 + 32 + 32 + padded_len];
-
-            // Selector for getAddress(string)
-            calldata[0] = #s0;
-            calldata[1] = #s1;
-            calldata[2] = #s2;
-            calldata[3] = #s3;
-
-            // Offset to string data (always 32 = 0x20)
-            calldata[4 + 24..4 + 32].copy_from_slice(&(32u64).to_be_bytes());
-
-            // String length
-            calldata[4 + 32 + 24..4 + 32 + 32].copy_from_slice(&(name_len as u64).to_be_bytes());
-
-            // String data
-            calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
-
-            // Output buffer: registry returns Option<Address> as tuple(bool isSome, address value)
-            // ABI-encoded: 32 bytes for isSome + 32 bytes for address = 64 bytes
-            let mut output_buf = [0u8; 64];
-            let mut output_ref: &mut [u8] = &mut output_buf[..];
-
-            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
-                pvm_contract::CallFlags::ALLOW_REENTRY,
-                &__CDM_REGISTRY_ADDR,
-                u64::MAX,
-                &[0u8; 32],
-                &calldata,
-                Some(&mut output_ref),
-            );
-
-            match result {
-                Ok(()) => {
-                    let written = output_ref.len();
-                    let output = &output_buf[..written];
-                    // First word (0..32) is isSome bool, second word (32..64) is the address
-                    // Address is 20 bytes right-aligned in the second 32-byte word
-                    let is_some = output[31] != 0;
-                    if !is_some {
-                        panic!("CDM: contract not found in registry");
-                    }
-                    let mut addr = [0u8; 20];
-                    addr.copy_from_slice(&output[44..64]);
-                    Reference::at(pvm_contract::Address::from(addr))
-                }
-                Err(_) => {
-                    panic!("CDM: registry call failed");
-                }
-            }
-        }
     }
 }
 
