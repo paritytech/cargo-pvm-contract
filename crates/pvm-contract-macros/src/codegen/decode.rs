@@ -255,7 +255,7 @@ fn generate_size_increment(ty: &SolType) -> TokenStream {
     match ty {
         SolType::Custom(name) => {
             let type_path: syn::Path = syn::parse_str(name).unwrap();
-            quote! { <#type_path as ::pvm_contract_types::SolDecode>::ENCODED_SIZE }
+            quote! { <#type_path as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE }
         }
         _ => {
             let size = ty.head_size();

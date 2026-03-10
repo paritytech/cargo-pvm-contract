@@ -46,9 +46,20 @@ fn expand_static_sol_type(
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> syn::Result<TokenStream> {
     let sol_name = build_sol_signature(field_info);
-    let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
+    let has_custom = field_info.iter().any(|(_, t)| t.has_custom_types());
     let encode_body = generate_static_encode_body(fields, field_info);
     let decode_body = generate_static_decode_body(fields, field_info);
+
+    let total_size_expr = if has_custom {
+        let size_parts: Vec<TokenStream> = field_info
+            .iter()
+            .map(|(_, sol_type)| field_size_expr(sol_type))
+            .collect();
+        quote! { 0 #(+ #size_parts)* }
+    } else {
+        let total_size: usize = field_info.iter().map(|(_, t)| t.head_size()).sum();
+        quote! { #total_size }
+    };
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
@@ -56,7 +67,7 @@ fn expand_static_sol_type(
 
             #[inline]
             fn encode_len(&self) -> usize {
-                #total_size
+                <Self as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE
             }
 
             fn encode_to(&self, buf: &mut [u8]) {
@@ -70,7 +81,7 @@ fn expand_static_sol_type(
         }
 
         impl ::pvm_contract_types::StaticEncodedLen for #name {
-            const ENCODED_SIZE: usize = #total_size;
+            const ENCODED_SIZE: usize = #total_size_expr;
         }
 
         impl ::pvm_contract_types::SolDecode for #name {
@@ -120,6 +131,19 @@ fn expand_dynamic_sol_type(
             }
         }
     })
+}
+
+fn field_size_expr(sol_type: &SolType) -> TokenStream {
+    match sol_type {
+        SolType::Custom(name) => {
+            let type_path: syn::Path = syn::parse_str(name).unwrap();
+            quote! { <#type_path as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE }
+        }
+        _ => {
+            let size = sol_type.head_size();
+            quote! { #size }
+        }
+    }
 }
 
 fn build_sol_signature(field_info: &[(Option<syn::Ident>, SolType)]) -> String {
@@ -245,29 +269,60 @@ fn generate_static_encode_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> TokenStream {
-    let mut offset = 0usize;
-    let mut encode_stmts = Vec::new();
+    let has_custom = field_info.iter().any(|(_, t)| t.has_custom_types());
 
-    for (i, (field_name, sol_type)) in field_info.iter().enumerate() {
-        let field_access = match fields {
-            Fields::Named(_) => {
-                let name = field_name.as_ref().unwrap();
-                quote! { self.#name }
-            }
-            Fields::Unnamed(_) => {
-                let idx = syn::Index::from(i);
-                quote! { self.#idx }
-            }
-            Fields::Unit => continue,
-        };
+    if has_custom {
+        // Use runtime offset tracking when custom types are involved
+        let mut encode_stmts = Vec::new();
+        for (i, (field_name, sol_type)) in field_info.iter().enumerate() {
+            let field_access = match fields {
+                Fields::Named(_) => {
+                    let name = field_name.as_ref().unwrap();
+                    quote! { self.#name }
+                }
+                Fields::Unnamed(_) => {
+                    let idx = syn::Index::from(i);
+                    quote! { self.#idx }
+                }
+                Fields::Unit => continue,
+            };
 
-        let encode_stmt = generate_field_encode(sol_type, &field_access, offset);
-        encode_stmts.push(encode_stmt);
-        offset += sol_type.head_size();
-    }
+            let size_expr = field_size_expr(sol_type);
+            encode_stmts.push(quote! {
+                ::pvm_contract_types::SolEncode::encode_to(&#field_access, &mut buf[__offset..]);
+                __offset += #size_expr;
+            });
+        }
 
-    quote! {
-        #(#encode_stmts)*
+        quote! {
+            let mut __offset: usize = 0;
+            #(#encode_stmts)*
+        }
+    } else {
+        let mut offset = 0usize;
+        let mut encode_stmts = Vec::new();
+
+        for (i, (field_name, sol_type)) in field_info.iter().enumerate() {
+            let field_access = match fields {
+                Fields::Named(_) => {
+                    let name = field_name.as_ref().unwrap();
+                    quote! { self.#name }
+                }
+                Fields::Unnamed(_) => {
+                    let idx = syn::Index::from(i);
+                    quote! { self.#idx }
+                }
+                Fields::Unit => continue,
+            };
+
+            let encode_stmt = generate_field_encode(sol_type, &field_access, offset);
+            encode_stmts.push(encode_stmt);
+            offset += sol_type.head_size();
+        }
+
+        quote! {
+            #(#encode_stmts)*
+        }
     }
 }
 
@@ -275,49 +330,105 @@ fn generate_static_decode_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> TokenStream {
-    match fields {
-        Fields::Named(named) => {
-            let mut offset = 0usize;
-            let field_decodes: Vec<_> = named
-                .named
-                .iter()
-                .zip(field_info.iter())
-                .map(|(field, (field_name, sol_type))| {
-                    let name = field_name.as_ref().unwrap();
-                    let ty = &field.ty;
-                    let field_offset = offset;
-                    offset += sol_type.head_size();
-                    quote! {
-                        #name: <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #field_offset)
-                    }
-                })
-                .collect();
+    let has_custom = field_info.iter().any(|(_, t)| t.has_custom_types());
 
-            quote! {
-                Self { #(#field_decodes),* }
-            }
-        }
-        Fields::Unnamed(unnamed) => {
-            let mut offset = 0usize;
-            let field_decodes: Vec<_> = unnamed
-                .unnamed
-                .iter()
-                .zip(field_info.iter())
-                .map(|(field, (_, sol_type))| {
-                    let ty = &field.ty;
-                    let field_offset = offset;
-                    offset += sol_type.head_size();
-                    quote! {
-                        <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #field_offset)
-                    }
-                })
-                .collect();
+    if has_custom {
+        // Use runtime offset tracking when custom types are involved
+        match fields {
+            Fields::Named(named) => {
+                let field_decodes: Vec<_> = named
+                    .named
+                    .iter()
+                    .zip(field_info.iter())
+                    .map(|(field, (field_name, sol_type))| {
+                        let name = field_name.as_ref().unwrap();
+                        let ty = &field.ty;
+                        let size_expr = field_size_expr(sol_type);
+                        quote! {
+                            #name: {
+                                let __val = <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + __dec_offset);
+                                __dec_offset += #size_expr;
+                                __val
+                            }
+                        }
+                    })
+                    .collect();
 
-            quote! {
-                Self(#(#field_decodes),*)
+                quote! {
+                    let mut __dec_offset: usize = 0;
+                    Self { #(#field_decodes),* }
+                }
             }
+            Fields::Unnamed(unnamed) => {
+                let field_decodes: Vec<_> = unnamed
+                    .unnamed
+                    .iter()
+                    .zip(field_info.iter())
+                    .map(|(field, (_, sol_type))| {
+                        let ty = &field.ty;
+                        let size_expr = field_size_expr(sol_type);
+                        quote! {
+                            {
+                                let __val = <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + __dec_offset);
+                                __dec_offset += #size_expr;
+                                __val
+                            }
+                        }
+                    })
+                    .collect();
+
+                quote! {
+                    let mut __dec_offset: usize = 0;
+                    Self(#(#field_decodes),*)
+                }
+            }
+            Fields::Unit => quote! { Self },
         }
-        Fields::Unit => quote! { Self },
+    } else {
+        match fields {
+            Fields::Named(named) => {
+                let mut offset = 0usize;
+                let field_decodes: Vec<_> = named
+                    .named
+                    .iter()
+                    .zip(field_info.iter())
+                    .map(|(field, (field_name, sol_type))| {
+                        let name = field_name.as_ref().unwrap();
+                        let ty = &field.ty;
+                        let field_offset = offset;
+                        offset += sol_type.head_size();
+                        quote! {
+                            #name: <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #field_offset)
+                        }
+                    })
+                    .collect();
+
+                quote! {
+                    Self { #(#field_decodes),* }
+                }
+            }
+            Fields::Unnamed(unnamed) => {
+                let mut offset = 0usize;
+                let field_decodes: Vec<_> = unnamed
+                    .unnamed
+                    .iter()
+                    .zip(field_info.iter())
+                    .map(|(field, (_, sol_type))| {
+                        let ty = &field.ty;
+                        let field_offset = offset;
+                        offset += sol_type.head_size();
+                        quote! {
+                            <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + #field_offset)
+                        }
+                    })
+                    .collect();
+
+                quote! {
+                    Self(#(#field_decodes),*)
+                }
+            }
+            Fields::Unit => quote! { Self },
+        }
     }
 }
 

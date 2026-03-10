@@ -499,6 +499,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
+                #[allow(unused_imports)]
+                use #mod_name::*;
+
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = vec![0u8; call_data_len];
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
@@ -523,6 +526,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
+                #[allow(unused_imports)]
+                use #mod_name::*;
+
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
 
                 let mut call_data = [0u8; #buffer_size];
