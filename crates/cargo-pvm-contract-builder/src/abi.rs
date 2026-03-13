@@ -32,11 +32,40 @@ pub struct AbiParam {
     pub param_type: String,
 }
 
-pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
-    generate_abi_via_feature(manifest_dir, bin_name)
+pub fn generate_abi_for_bin(
+    manifest_dir: &Path,
+    bin_name: &str,
+    target_root: Option<&Path>,
+) -> Result<Option<AbiJson>> {
+    generate_abi_via_feature(manifest_dir, bin_name, target_root)
 }
 
-fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
+fn get_host_triple() -> Result<String> {
+    if let Ok(host) = env::var("HOST") {
+        return Ok(host);
+    }
+    // Fallback: parse `rustc -vV` output
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .context("Failed to execute rustc -vV")?;
+    if !output.status.success() {
+        anyhow::bail!("rustc -vV failed");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(triple) = line.strip_prefix("host: ") {
+            return Ok(triple.trim().to_string());
+        }
+    }
+    anyhow::bail!("Could not determine host triple from rustc -vV")
+}
+
+fn generate_abi_via_feature(
+    manifest_dir: &Path,
+    bin_name: &str,
+    target_root: Option<&Path>,
+) -> Result<Option<AbiJson>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists() {
         return Ok(None);
@@ -50,20 +79,25 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         return generate_abi_from_sol(&sol_full_path);
     }
 
-    let target_dir = super::get_target_root().join("abi-gen-target");
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let target_dir = match target_root {
+        Some(root) => root.join("abi-gen-target"),
+        None => super::get_target_root().join("abi-gen-target"),
+    };
     let manifest_path = manifest_dir.join("Cargo.toml");
 
     // The project's .cargo/config.toml targets RISC-V with build-std=core,alloc.
     // The abi-gen binary needs std and must run on the host, so we override both:
     // --target forces the host triple, build-std adds std to the sysroot rebuild.
-    let host = env::var("HOST")
-        .context("HOST env var not set — generate_abi_via_feature must run from build.rs")?;
+    let host = get_host_triple()?;
 
-    let output = Command::new(&cargo)
+    // Use the rustup proxy ("cargo") so rust-toolchain.toml is respected.
+    // Remove CARGO/RUSTUP_TOOLCHAIN to avoid inheriting the parent's toolchain.
+    let output = Command::new("cargo")
         .current_dir(manifest_dir)
+        .env_remove("CARGO")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC")
+        .env_remove("RUSTUP_TOOLCHAIN")
         .env("CARGO_TARGET_DIR", &target_dir)
         .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")

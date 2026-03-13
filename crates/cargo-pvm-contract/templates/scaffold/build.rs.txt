@@ -1,7 +1,0 @@
-fn main() {
-{% if use_dsl %}
-    cargo_pvm_contract_builder::PvmBuilder::new().skip_abi().build();
-{% else %}
-    cargo_pvm_contract_builder::PvmBuilder::new().build();
-{% endif %}
-}

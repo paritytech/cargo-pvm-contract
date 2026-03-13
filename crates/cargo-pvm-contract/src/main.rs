@@ -5,6 +5,7 @@ use inquire::{Select, Text};
 use log::debug;
 use std::path::PathBuf;
 
+mod build;
 mod scaffold;
 
 // Embed the templates directory into the binary
@@ -19,12 +20,26 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Initialize contract projects for PolkaVM
+    /// Initialize and build contract projects for PolkaVM
     PvmContract(PvmContractArgs),
 }
 
-#[derive(Parser, Debug, Default)]
+#[derive(Parser, Debug)]
 struct PvmContractArgs {
+    #[command(subcommand)]
+    command: PvmSubcommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum PvmSubcommand {
+    /// Initialize a new contract project
+    Init(InitArgs),
+    /// Build the contract project
+    Build(build::BuildArgs),
+}
+
+#[derive(Parser, Debug, Default)]
+struct InitArgs {
     #[arg(long, value_enum)]
     init_type: Option<InitType>,
     #[arg(long)]
@@ -180,11 +195,14 @@ fn main() -> Result<()> {
 
     let Cli { command } = Cli::parse();
     match command {
-        Commands::PvmContract(args) => init_command(args),
+        Commands::PvmContract(args) => match args.command {
+            PvmSubcommand::Init(init_args) => init_command(init_args),
+            PvmSubcommand::Build(build_args) => build::build_contracts(build_args),
+        },
     }
 }
 
-fn init_command(args: PvmContractArgs) -> Result<()> {
+fn init_command(args: InitArgs) -> Result<()> {
     let init_type = match args.init_type {
         Some(t) => t,
         None => {

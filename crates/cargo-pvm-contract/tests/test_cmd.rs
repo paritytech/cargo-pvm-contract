@@ -12,6 +12,7 @@ fn scaffold_example(temp_dir: &TempDir, name: &str, example: &str, api_style: &s
     cmd.current_dir(temp_dir.path())
         .env("CARGO_PVM_CONTRACT_PATH", workspace_path())
         .arg("pvm-contract")
+        .arg("init")
         .arg("--init-type")
         .arg("example")
         .arg("--example")
@@ -37,6 +38,7 @@ fn scaffold_new_contract(
     cmd.current_dir(temp_dir.path())
         .env("CARGO_PVM_CONTRACT_PATH", workspace_path())
         .arg("pvm-contract")
+        .arg("init")
         .arg("--init-type")
         .arg("new")
         .arg("--api-style")
@@ -54,18 +56,20 @@ fn scaffold_new_contract(
 }
 
 fn build_project(project_dir: &Path, profile: &str) {
-    let mut cmd = std::process::Command::new("cargo");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
     cmd.current_dir(project_dir)
-        .env_remove("CARGO")
-        .env_remove("RUSTUP_TOOLCHAIN")
+        .arg("pvm-contract")
         .arg("build");
 
-    if profile == "release" {
-        cmd.arg("--release");
+    if profile == "debug" {
+        cmd.arg("--profile").arg("dev");
     }
 
-    let status = cmd.status().expect("run cargo build");
-    assert!(status.success(), "cargo build ({profile}) failed");
+    let status = cmd.status().expect("run cargo pvm-contract build");
+    assert!(
+        status.success(),
+        "cargo pvm-contract build ({profile}) failed"
+    );
 }
 
 fn verify_build_artifacts(project_dir: &Path, binary_name: &str, profile: &str) {
@@ -109,6 +113,10 @@ fn verify_cargo_toml(project_dir: &Path, use_dsl: bool) {
     assert!(cargo_toml.contains("pvm-contract-types"));
     assert!(cargo_toml.contains("polkavm-derive"));
     assert!(cargo_toml.contains("ruint"));
+    assert!(
+        !cargo_toml.contains("[build-dependencies]"),
+        "Cargo.toml should not contain [build-dependencies]"
+    );
 }
 
 #[test]

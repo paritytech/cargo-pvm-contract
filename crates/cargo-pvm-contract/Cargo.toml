@@ -28,6 +28,8 @@ inquire = { workspace = true }
 askama = { workspace = true }
 polkavm-linker = { workspace = true }
 convert_case = { workspace = true }
+cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
+toml_edit = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = "2.0"

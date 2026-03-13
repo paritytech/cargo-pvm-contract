@@ -83,19 +83,27 @@ fn get_manifest_dir() -> PathBuf {
         .into()
 }
 
-/// Detect the build profile from the environment.
+/// Build profile.
 #[derive(Clone, Debug)]
-struct Profile {
+pub struct Profile {
     name: String,
 }
 
 impl Profile {
+    /// Detect the build profile from the `PROFILE` environment variable (build.rs context).
     fn detect() -> Self {
         let name = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
         Self { name }
     }
 
-    fn cargo_arg(&self) -> &str {
+    /// Create a profile from a name. Normalizes `"dev"` to `"debug"` internally.
+    pub fn from_name(name: &str) -> Self {
+        let name = if name == "dev" { "debug" } else { name }.to_string();
+        Self { name }
+    }
+
+    /// The cargo `--profile` argument value.
+    pub fn cargo_arg(&self) -> &str {
         if self.name == "debug" {
             "dev"
         } else {
@@ -103,7 +111,8 @@ impl Profile {
         }
     }
 
-    fn directory(&self) -> &str {
+    /// The directory name under `target/` for this profile.
+    pub fn directory(&self) -> &str {
         self.name.as_str()
     }
 }
@@ -127,7 +136,7 @@ fn get_build_dir() -> PathBuf {
 }
 
 /// Get the list of binary targets from Cargo.toml.
-fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
+pub fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(cargo_toml)
         .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
 
@@ -155,7 +164,111 @@ fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     Ok(bins)
 }
 
-/// Build the project.
+/// Get the package name from Cargo.toml.
+pub fn get_package_name(cargo_toml: &Path) -> Result<String> {
+    let content = fs::read_to_string(cargo_toml)
+        .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
+
+    let doc: toml_edit::DocumentMut = content.parse().context("Failed to parse Cargo.toml")?;
+
+    doc.get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .map(String::from)
+        .context("No [package].name found in Cargo.toml")
+}
+
+/// Build a contract from the CLI (not from build.rs).
+pub fn build_contract(
+    manifest_path: &Path,
+    output_dir: &Path,
+    profile: &Profile,
+    bins: &[String],
+    message_format: Option<&str>,
+) -> Result<()> {
+    let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
+    let build_dir = output_dir.join("pvmbuild");
+
+    build_elf_cli(manifest_path, &build_dir, profile, bins, message_format)?;
+
+    let elf_dir = build_dir
+        .join("riscv64emac-unknown-none-polkavm")
+        .join(profile.directory());
+
+    for bin in bins {
+        let elf_path = elf_dir.join(bin);
+        if !elf_path.exists() {
+            anyhow::bail!("ELF binary not found at: {}", elf_path.display());
+        }
+
+        let output_path = output_dir.join(format!("{}.{}.polkavm", bin, profile.directory()));
+        link_to_polkavm(&elf_path, &output_path)?;
+
+        let abi_path = output_dir.join(format!("{}.{}.abi.json", bin, profile.directory()));
+        generate_abi_file(manifest_dir, bin, &abi_path, Some(output_dir))?;
+    }
+
+    Ok(())
+}
+
+/// Build the ELF binary using cargo (CLI context — no build.rs env vars).
+fn build_elf_cli(
+    manifest_path: &Path,
+    target_dir: &Path,
+    profile: &Profile,
+    bins: &[String],
+    message_format: Option<&str>,
+) -> Result<()> {
+    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
+
+    let mut target_args = polkavm_linker::TargetJsonArgs::default();
+    target_args.is_64_bit = true;
+    target_args.rustc_version = polkavm_linker::RustcVersion::Rustc_1_91;
+    let target_json = polkavm_linker::target_json_path(target_args)
+        .map_err(|e| anyhow::anyhow!("Failed to get target JSON: {e}"))?;
+
+    let work_dir = manifest_path.parent().context("Invalid manifest path")?;
+
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(work_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env("RUSTFLAGS", rustflags)
+        .env("CARGO_TARGET_DIR", target_dir)
+        .env("CARGO_PROFILE_RELEASE_STRIP", "false")
+        .env("RUSTC_BOOTSTRAP", "1")
+        .env(INTERNAL_BUILD_ENV, "1")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--profile")
+        .arg(profile.cargo_arg())
+        .arg("--target")
+        .arg(&target_json)
+        .arg("-Zbuild-std=core,alloc");
+
+    for bin in bins {
+        cmd.arg("--bin").arg(bin);
+    }
+
+    if let Some(fmt) = message_format {
+        cmd.arg("--message-format").arg(fmt);
+    }
+
+    eprintln!("Building PolkaVM binary with profile: {profile:?}");
+
+    let output = cmd.output().context("Failed to execute cargo build")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Cargo build failed:\n{stderr}");
+    }
+
+    Ok(())
+}
+
+/// Build the project (build.rs context).
 fn build_project(
     project_cargo_toml: &Path,
     bin_names: Option<Vec<String>>,
@@ -196,15 +309,20 @@ fn build_project(
 
         if !skip_abi {
             let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
-            generate_abi_file(manifest_dir, bin, &abi_path)?;
+            generate_abi_file(manifest_dir, bin, &abi_path, None)?;
         }
     }
 
     Ok(())
 }
 
-fn generate_abi_file(manifest_dir: &Path, bin_name: &str, output_path: &Path) -> Result<()> {
-    match abi::generate_abi_for_bin(manifest_dir, bin_name) {
+fn generate_abi_file(
+    manifest_dir: &Path,
+    bin_name: &str,
+    output_path: &Path,
+    target_root: Option<&Path>,
+) -> Result<()> {
+    match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
         Ok(Some(abi)) => {
             let json =
                 serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
