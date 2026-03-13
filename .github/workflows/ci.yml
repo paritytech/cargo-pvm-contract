@@ -42,6 +42,8 @@ jobs:
         run: cargo test -p pvm-contract-types --features alloc && cargo test -p pvm-contract-macros
       - name: Run integration tests
         run: cargo test -p cargo-pvm-contract -- --test-threads=1
+      - name: Build CLI for e2e tests
+        run: cargo build -p cargo-pvm-contract
       - name: Run e2e tests
         run: cargo test -p pvm-contract-e2e-tests -- --test-threads=1
 

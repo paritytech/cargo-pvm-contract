@@ -34,15 +34,17 @@ impl Contract {
             self.dir.display()
         );
 
-        let status = Command::new("cargo")
+        let bin_path = workspace_root().join("target/debug/cargo-pvm-contract");
+        let status = Command::new(&bin_path)
             .current_dir(&self.dir)
-            .env_remove("CARGO")
-            .env_remove("RUSTUP_TOOLCHAIN")
-            .args(["build", "--release"])
+            .args(["pvm-contract", "build"])
             .status()
-            .unwrap_or_else(|_| panic!("Failed to run cargo build on {name}"));
+            .unwrap_or_else(|_| panic!("Failed to run cargo pvm-contract build on {name}"));
 
-        assert!(status.success(), "cargo build --release failed for {name}");
+        assert!(
+            status.success(),
+            "cargo pvm-contract build failed for {name}"
+        );
 
         built.insert(self.dir.clone());
     }
