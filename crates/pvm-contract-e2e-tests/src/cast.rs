@@ -16,7 +16,36 @@ impl CastClient {
     }
 
     /// Deploy a contract and return the contract address.
-    pub fn deploy(&self, bytecode_hex: &str, private_key: &str) -> String {
+    /// If `constructor_sig` is non-empty, ABI-encodes `args` and appends them to the bytecode.
+    pub fn deploy(
+        &self,
+        bytecode_hex: &str,
+        constructor_sig: &str,
+        args: &[&str],
+        private_key: &str,
+    ) -> String {
+        let bytecode = if !constructor_sig.is_empty() {
+            let mut cmd = Command::new("cast");
+            cmd.args(["abi-encode", constructor_sig]);
+            for arg in args {
+                cmd.arg(arg);
+            }
+            let output = cmd.output().expect("cast abi-encode failed to execute");
+            assert!(
+                output.status.success(),
+                "cast abi-encode failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let encoded_args = String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .trim_start_matches("0x")
+                .to_string();
+            format!("{bytecode_hex}{encoded_args}")
+        } else {
+            bytecode_hex.to_string()
+        };
+
         let output = Command::new("cast")
             .args([
                 "send",
@@ -28,7 +57,7 @@ impl CastClient {
                 "9999999999999",
                 "--json",
                 "--create",
-                bytecode_hex,
+                &bytecode,
             ])
             .output()
             .expect("cast send --create failed to execute");

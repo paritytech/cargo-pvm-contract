@@ -43,6 +43,10 @@ path = "src/dynamic-types.rs"
 name = "composite-types"
 path = "src/composite-types.rs"
 
+[[bin]]
+name = "constructor-args"
+path = "src/constructor-args.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
 pvm-contract-types = { path = "../../crates/pvm-contract-types", features = ["alloc"] }

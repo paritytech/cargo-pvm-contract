@@ -1,11 +1,13 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use include_dir::{Dir, include_dir};
 use inquire::{Select, Text};
 use log::debug;
 use std::path::PathBuf;
 
 mod build;
+mod encode_decode;
+mod extrinsics;
 mod scaffold;
 
 // Embed the templates directory into the binary
@@ -15,30 +17,50 @@ static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 #[command(name = "cargo", bin_name = "cargo", author, version)]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: CargoSubcommand,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
-    /// Initialize and build contract projects for PolkaVM
+enum CargoSubcommand {
+    /// Tools for building and interacting with PVM smart contracts
     PvmContract(PvmContractArgs),
 }
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 struct PvmContractArgs {
     #[command(subcommand)]
-    command: PvmSubcommand,
+    command: PvmContractCommand,
 }
 
 #[derive(Subcommand, Debug)]
-enum PvmSubcommand {
+enum PvmContractCommand {
     /// Initialize a new contract project
     Init(InitArgs),
     /// Build the contract project
     Build(build::BuildArgs),
+    /// Encode a function call or constructor into ABI-encoded hex calldata
+    Encode(EncodeArgs),
+    /// Decode ABI-encoded hex calldata back to human-readable format
+    Decode(DecodeArgs),
+    /// Upload contract code to the chain
+    Upload(UploadArgs),
+    /// Instantiate a contract (upload + deploy in one step)
+    Instantiate(CliInstantiateArgs),
+    /// Call an existing contract
+    Call(CallArgs),
+    /// Remove uploaded contract code
+    Remove(RemoveArgs),
+    /// Map a Substrate account to an EVM address
+    MapAccount(MapAccountArgs),
+    /// Query on-chain contract info by address
+    Info(InfoArgs),
+    /// Execute a raw RPC call against the node
+    Rpc(RpcArgs),
+    /// Display account info for an H160 address (balance, account ID)
+    Account(AccountArgs),
 }
 
-#[derive(Parser, Debug, Default)]
+#[derive(Args, Debug)]
 struct InitArgs {
     #[arg(long, value_enum)]
     init_type: Option<InitType>,
@@ -52,6 +74,151 @@ struct InitArgs {
     name: Option<String>,
     #[arg(long)]
     sol_file: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct EncodeArgs {
+    /// Path to the ABI JSON file
+    #[arg(long)]
+    abi: PathBuf,
+    /// Function name to encode (omit for constructor)
+    #[arg(long)]
+    function: Option<String>,
+    /// Arguments to encode (space-separated)
+    #[arg(trailing_var_arg = true)]
+    args: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+struct DecodeArgs {
+    /// Path to the ABI JSON file
+    #[arg(long)]
+    abi: PathBuf,
+    /// Hex-encoded calldata to decode (0x-prefixed)
+    #[arg(long)]
+    data: String,
+    /// Decode as constructor (no 4-byte selector)
+    #[arg(long, default_value_t = false)]
+    constructor: bool,
+}
+
+/// Common options for extrinsics commands.
+#[derive(Args, Debug)]
+struct ExtrinsicArgs {
+    /// Websocket URL of the Substrate node
+    #[arg(long, default_value = "ws://localhost:9944")]
+    url: String,
+    /// Secret key URI for signing (e.g. //Alice)
+    #[arg(long, default_value = "//Alice")]
+    suri: String,
+    /// Storage deposit limit
+    #[arg(long)]
+    storage_deposit_limit: Option<u128>,
+}
+
+#[derive(Args, Debug)]
+struct UploadArgs {
+    /// Path to the .polkavm contract binary
+    #[arg(long)]
+    code: PathBuf,
+    /// Dry-run only (no on-chain submission)
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+    #[command(flatten)]
+    extrinsic: ExtrinsicArgs,
+}
+
+#[derive(Args, Debug)]
+struct CliInstantiateArgs {
+    /// Path to the .polkavm contract binary
+    #[arg(long)]
+    code: PathBuf,
+    /// Hex-encoded constructor arguments (0x-prefixed, optional)
+    #[arg(long)]
+    data: Option<String>,
+    /// Value to transfer to the contract
+    #[arg(long, default_value_t = 0)]
+    value: u128,
+    /// Salt for address derivation (hex, optional)
+    #[arg(long)]
+    salt: Option<String>,
+    /// Dry-run only (no on-chain submission)
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+    #[command(flatten)]
+    extrinsic: ExtrinsicArgs,
+}
+
+#[derive(Args, Debug)]
+struct CallArgs {
+    /// Contract address (0x-prefixed H160)
+    #[arg(long)]
+    contract: String,
+    /// Hex-encoded calldata (0x-prefixed)
+    #[arg(long)]
+    data: String,
+    /// Value to transfer with the call
+    #[arg(long, default_value_t = 0)]
+    value: u128,
+    /// Dry-run only (no on-chain submission)
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+    #[command(flatten)]
+    extrinsic: ExtrinsicArgs,
+}
+
+#[derive(Args, Debug)]
+struct RemoveArgs {
+    /// Code hash to remove (0x-prefixed H256)
+    #[arg(long)]
+    code_hash: String,
+    #[command(flatten)]
+    extrinsic: ExtrinsicArgs,
+}
+
+#[derive(Args, Debug)]
+struct MapAccountArgs {
+    /// Dry-run only (no on-chain submission)
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+    #[command(flatten)]
+    extrinsic: ExtrinsicArgs,
+}
+
+#[derive(Args, Debug)]
+struct InfoArgs {
+    /// Contract address (0x-prefixed H160)
+    #[arg(long)]
+    contract: String,
+    /// Websocket URL of the Substrate node
+    #[arg(long, default_value = "ws://localhost:9944")]
+    url: String,
+}
+
+#[derive(Args, Debug)]
+struct RpcArgs {
+    /// RPC method name (e.g. system_chain, system_version)
+    #[arg(long)]
+    method: String,
+    /// RPC parameters (JSON values, space-separated)
+    #[arg(trailing_var_arg = true)]
+    params: Vec<String>,
+    /// Websocket URL of the Substrate node
+    #[arg(long, default_value = "ws://localhost:9944")]
+    url: String,
+}
+
+#[derive(Args, Debug)]
+struct AccountArgs {
+    /// H160 address to look up (0x-prefixed)
+    #[arg(long)]
+    addr: String,
+    /// Output in JSON format
+    #[arg(long, default_value_t = false)]
+    output_json: bool,
+    /// Websocket URL of the Substrate node
+    #[arg(long, default_value = "ws://localhost:9944")]
+    url: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
@@ -195,11 +362,51 @@ fn main() -> Result<()> {
 
     let Cli { command } = Cli::parse();
     match command {
-        Commands::PvmContract(args) => match args.command {
-            PvmSubcommand::Init(init_args) => init_command(init_args),
-            PvmSubcommand::Build(build_args) => build::build_contracts(build_args),
-        },
+        CargoSubcommand::PvmContract(args) => handle_pvm_contract(args),
     }
+}
+
+fn handle_pvm_contract(args: PvmContractArgs) -> Result<()> {
+    match args.command {
+        PvmContractCommand::Init(init_args) => init_command(init_args),
+        PvmContractCommand::Build(build_args) => build::build_contracts(build_args),
+        PvmContractCommand::Encode(encode_args) => encode_command(encode_args),
+        PvmContractCommand::Decode(decode_args) => decode_command(decode_args),
+        PvmContractCommand::Upload(a) => extrinsics::upload_command(a),
+        PvmContractCommand::Instantiate(a) => extrinsics::instantiate_command(a),
+        PvmContractCommand::Call(a) => extrinsics::call_command(a),
+        PvmContractCommand::Remove(a) => extrinsics::remove_command(a),
+        PvmContractCommand::MapAccount(a) => extrinsics::map_account_command(a),
+        PvmContractCommand::Info(a) => extrinsics::info_command(a),
+        PvmContractCommand::Rpc(a) => extrinsics::rpc_command(a),
+        PvmContractCommand::Account(a) => extrinsics::account_command(a),
+    }
+}
+
+fn encode_command(args: EncodeArgs) -> Result<()> {
+    let calldata = match &args.function {
+        Some(function_name) => encode_decode::encode_call(&args.abi, function_name, &args.args)?,
+        None => encode_decode::encode_constructor(&args.abi, &args.args)?,
+    };
+    println!("0x{}", hex::encode(&calldata));
+    Ok(())
+}
+
+fn decode_command(args: DecodeArgs) -> Result<()> {
+    if args.constructor {
+        let params = encode_decode::decode_constructor(&args.abi, &args.data)?;
+        println!("Constructor parameters:");
+        for p in &params {
+            println!("  {} ({}): {}", p.name, p.sol_type, p.value);
+        }
+    } else {
+        let (function_name, params) = encode_decode::decode_call(&args.abi, &args.data)?;
+        println!("Function: {function_name}");
+        for p in &params {
+            println!("  {} ({}): {}", p.name, p.sol_type, p.value);
+        }
+    }
+    Ok(())
 }
 
 fn init_command(args: InitArgs) -> Result<()> {

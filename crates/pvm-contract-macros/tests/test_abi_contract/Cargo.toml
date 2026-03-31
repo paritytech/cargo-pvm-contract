@@ -1,0 +1,30 @@
+[workspace]
+
+[package]
+name = "test-abi-contract"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+publish = false
+
+[[bin]]
+name = "constructor-with-params"
+path = "src/constructor_with_params.rs"
+
+[[bin]]
+name = "constructor-no-params"
+path = "src/constructor_no_params.rs"
+
+[[bin]]
+name = "custom-type-method"
+path = "src/custom_type_method.rs"
+
+[dependencies]
+pvm-contract-macros = { path = "../../../pvm-contract-macros" }
+pvm-contract-types = { path = "../../../pvm-contract-types" }
+pallet-revive-uapi = { version = "0.10", default-features = false }
+ruint = { version = "1.17", default-features = false }
+
+[features]
+abi-gen = ["abi-reflection", "pvm-contract-macros/abi-reflection", "pvm-contract-types/abi-reflection"]
+abi-reflection = []

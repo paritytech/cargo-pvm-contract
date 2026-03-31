@@ -22,4 +22,5 @@ pvm-contract-types = { path = "../pvm-contract-types" }
 
 [dev-dependencies]
 ruint = { version = "1.17", default-features = false }
+serde_json = { workspace = true }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc"] }

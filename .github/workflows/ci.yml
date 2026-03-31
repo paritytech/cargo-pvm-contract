@@ -6,10 +6,14 @@ on:
     pull_request:
         branches: [main]
 
+env:
+  REVIVE_DEV_NODE_VERSION: 20311a9465b9ea0e28edd480cbfce8c3daa6b903
+  CI_UNIFIED_IMAGE: "docker.io/paritytech/ci-unified:bullseye-1.93.0-2026-01-27-v202602020922"
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,7 +46,26 @@ jobs:
         run: cargo test -p pvm-contract-types --features alloc && cargo test -p pvm-contract-macros
       - name: Run integration tests
         run: cargo test -p cargo-pvm-contract -- --test-threads=1
-      - name: Build CLI for e2e tests
+      - name: Cache revive-dev-node
+        id: cache-dev-node
+        uses: actions/cache@v4
+        with:
+          path: revive-dev-node
+          key: revive-dev-node-${{ env.REVIVE_DEV_NODE_VERSION }}
+      - name: Build revive-dev-node
+        if: steps.cache-dev-node.outputs.cache-hit != 'true'
+        run: |
+          docker run --rm -v $GITHUB_WORKSPACE:/output -w /build $CI_UNIFIED_IMAGE bash -c "
+            git init . &&
+            git remote add origin https://github.com/paritytech/polkadot-sdk.git &&
+            git fetch --depth 1 origin $REVIVE_DEV_NODE_VERSION &&
+            git checkout FETCH_HEAD &&
+            cargo build -p revive-dev-node --release &&
+            cp target/release/revive-dev-node /output/
+          "
+      - name: Install revive-dev-node
+        run: sudo install revive-dev-node /usr/local/bin/
+      - name: Build cargo-pvm-contract binary
         run: cargo build -p cargo-pvm-contract
       - name: Run e2e tests
         run: cargo test -p pvm-contract-e2e-tests -- --test-threads=1

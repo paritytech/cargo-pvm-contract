@@ -1,0 +1,32 @@
+[package]
+name = "cargo-pvm-contract-extrinsics"
+description = "Library defining extrinsics for PVM smart contracts on pallet-revive."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex = "0.4"
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+tracing = "0.1"
+url = { version = "2.5", features = ["serde"] }
+rust_decimal = "1.37"
+
+scale = { package = "parity-scale-codec", version = "3.6", features = ["derive"] }
+scale-info = { version = "2.11", default-features = false }
+subxt = "0.44"
+
+sp-core = { version = "38.0", default-features = false }
+sp-runtime = "43.0"
+sp-weights = { version = "33.0", default-features = false }
+pallet-revive-uapi = { version = "0.8.0", default-features = false, features = ["unstable-hostfn", "scale"] }
+
+tiny-keccak.workspace = true
+
+[dev-dependencies]
+subxt-signer = { version = "0.44", features = ["subxt", "sr25519"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

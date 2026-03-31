@@ -8,4 +8,12 @@ description = "End-to-end tests for cargo-pvm-contract"
 publish = false
 
 [dependencies]
+anyhow = { workspace = true }
 serde_json = { workspace = true }
+cargo-pvm-contract-extrinsics = { path = "../cargo-pvm-contract-extrinsics" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+subxt = "0.44"
+subxt-signer = { version = "0.44", features = ["subxt", "sr25519"] }
+url = { version = "2.5" }
+sp-core = { version = "38.0", default-features = false }
+

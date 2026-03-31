@@ -12,24 +12,23 @@ pub struct MethodInfo {
     pub returns_result: bool,
 }
 
-pub fn generate_dispatch_arm(
-    method: &MethodInfo,
-    mod_name: &syn::Ident,
+pub(super) struct ParamDecoding {
+    pub size_check: TokenStream,
+    pub decode_statements: Vec<TokenStream>,
+    pub call_args: Vec<TokenStream>,
+}
+
+pub(super) fn generate_param_decoding(
+    param_names: &[syn::Ident],
+    sol_types: &[SolType],
     use_alloc: bool,
-) -> TokenStream {
-    let selector = compute_selector(&method.signature.canonical_signature());
-    let [s0, s1, s2, s3] = selector;
-
-    let fn_name = &method.fn_name;
-    let param_names = &method.param_names;
-    let decodes = generate_decode_params(&method.signature.inputs, use_alloc);
-
-    let min_size = calculate_min_input_size(&method.signature.inputs);
+) -> ParamDecoding {
+    let decodes = generate_decode_params(sol_types, use_alloc);
+    let min_size = calculate_min_input_size(sol_types);
 
     let size_check = if min_size > 0 {
-        let min_size_lit = min_size;
         quote! {
-            if input.len() < #min_size_lit {
+            if input.len() < #min_size {
                 pallet_revive_uapi::HostFnImpl::return_value(
                     pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
             }
@@ -38,14 +37,14 @@ pub fn generate_dispatch_arm(
         quote! {}
     };
 
-    let needs_runtime_offset = has_custom_types(&method.signature.inputs);
+    let needs_runtime_offset = has_custom_types(sol_types);
     let offset_init = if needs_runtime_offset {
         quote! { let mut __decode_offset: usize = 0; }
     } else {
         quote! {}
     };
 
-    let decode_statements: Vec<_> = std::iter::once(offset_init)
+    let decode_statements = std::iter::once(offset_init)
         .chain(
             param_names
                 .iter()
@@ -56,10 +55,34 @@ pub fn generate_dispatch_arm(
         )
         .collect();
 
-    let call_args: Vec<_> = param_names
+    let call_args = param_names
         .iter()
         .map(|name| quote!(::core::convert::Into::into(#name)))
         .collect();
+
+    ParamDecoding {
+        size_check,
+        decode_statements,
+        call_args,
+    }
+}
+
+pub fn generate_dispatch_arm(
+    method: &MethodInfo,
+    mod_name: &syn::Ident,
+    use_alloc: bool,
+) -> TokenStream {
+    let selector = compute_selector(&method.signature.canonical_signature());
+    let [s0, s1, s2, s3] = selector;
+
+    let fn_name = &method.fn_name;
+    let decoding =
+        generate_param_decoding(&method.param_names, &method.signature.inputs, use_alloc);
+    let ParamDecoding {
+        size_check,
+        decode_statements,
+        call_args,
+    } = decoding;
     let has_return = !method.signature.outputs.is_empty();
     let encode_and_return = generate_encode_and_return(&method.signature.outputs, use_alloc);
 

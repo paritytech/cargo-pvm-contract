@@ -7,9 +7,19 @@ target/my_contract.release.polkavm    — deployable bytecode
 target/my_contract.release.abi.json   — Ethereum-compatible ABI JSON
 ```
 
-Since contracts use the Ethereum ABI, you can deploy and interact with them using standard Ethereum tooling.
+You can deploy and interact with contracts using **two paths**.
 
-## Install foundry-polkadot
+## Substrate Path (recommended)
+
+Use `cargo pvm-contract` subcommands for native Substrate RPC. Contracts still use Ethereum ABI, but you do not need Ethereum RPC tooling.
+
+See [cli.md](cli.md) for the full `cargo pvm-contract` CLI reference.
+
+## Ethereum Compatibility Path
+
+Use this when you specifically want Ethereum-style RPC workflows via Foundry tooling.
+
+### Install foundry-polkadot
 
 [foundry-polkadot](https://github.com/paritytech/foundry-polkadot) is a Polkadot-adapted fork of Foundry that provides `cast`, and `anvil-polkadot`:
 
@@ -23,7 +33,7 @@ This gives you:
 - **`cast`** — deploy contracts and send transactions
 - **`anvil-polkadot`** — local Substrate node with Ethereum-compatible RPC
 
-## Local Testing with anvil-polkadot
+### Local Testing with anvil-polkadot
 
 `anvil-polkadot` is a Substrate-based local node with an Ethereum-compatible RPC API. It runs pallet-revive locally so you can test contracts without a remote testnet:
 
@@ -44,7 +54,7 @@ cast send \
   --create $BYTECODE
 ```
 
-## Deploy a Contract
+### Deploy a Contract
 
 Convert the `.polkavm` bytecode to hex and deploy with `cast`:
 
@@ -84,7 +94,7 @@ cast send \
   --create ${BYTECODE}${CONSTRUCTOR_ARGS}
 ```
 
-## Read Contract State (call)
+### Read Contract State (call)
 
 Use `cast call` for read-only queries (no gas cost). Use `--from` to set the caller address (needed if the contract reads `caller()`):
 
@@ -100,7 +110,7 @@ cast call $CONTRACT "totalSupply()(uint256)" --rpc-url $RPC --from $FROM
 cast call $CONTRACT "balanceOf(address)(uint256)" 0xYourAddress --rpc-url $RPC --from $FROM
 ```
 
-## Write to Contract (send)
+### Write to Contract (send)
 
 Use `cast send` for state-changing transactions:
 
@@ -116,7 +126,7 @@ cast send $CONTRACT "mint(address,uint256)" 0xRecipient 1000000 \
   --private-key $PRIVATE_KEY
 ```
 
-## Check Events
+### Check Events
 
 ```bash
 # Get Transfer events from recent blocks
@@ -125,11 +135,11 @@ cast logs --from-block latest --address $CONTRACT \
   --rpc-url $RPC
 ```
 
-## Deploying on Polkadot Testnet
+### Deploying on Polkadot Testnet
 
 Paseo is the Polkadot testnet with `pallet-revive` support for smart contracts.
 
-### 1. Generate an Ethereum-compatible account
+#### 1. Generate an Ethereum-compatible account
 
 Use any Ethereum wallet (e.g. MetaMask) to generate an account, or use `cast`:
 
@@ -139,11 +149,11 @@ cast wallet new
 
 Save the private key and address.
 
-### 2. Get testnet tokens
+#### 2. Get testnet tokens
 
 Request free PAS tokens from the [Polkadot Faucet](https://faucet.polkadot.io/). Enter your address, complete the captcha, and submit.
 
-### 3. Deploy
+#### 3. Deploy
 
 ```bash
 RPC=https://eth-rpc-testnet.polkadot.io/
@@ -158,7 +168,7 @@ cast send \
 
 The transaction receipt contains the deployed contract address.
 
-### 4. Interact
+#### 4. Interact
 
 ```bash
 CONTRACT=0x<deployed-address>

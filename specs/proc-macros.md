@@ -113,7 +113,14 @@ deploy()  — called once during contract instantiation (constructor)
 call()    — called on every subsequent interaction
 ```
 
-The `#[contract]` macro generates both. Inside `call()`, it:
+The `#[contract]` macro generates both. Inside `deploy()`, it:
+
+1. Reads constructor calldata from the host
+2. Decodes parameters using `SolDecode` (if the constructor has parameters)
+3. Calls the `#[constructor]` function
+4. Returns to the caller
+
+Inside `call()`, it:
 
 1. Reads calldata from the host via `HostFnImpl::call_data_copy`
 2. Extracts the 4-byte selector from calldata[0..4]

@@ -8,7 +8,7 @@ fn deploy(binary_name: &str) -> (AnvilPolkadot, CastClient, String) {
     let anvil = AnvilPolkadot::start();
     let cast = CastClient::new(&anvil.rpc_url);
     let hex = c.bytecode_hex(binary_name, "release");
-    let address = cast.deploy(&hex, DEFAULT_PRIVATE_KEY);
+    let address = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
     (anvil, cast, address)
 }
 
@@ -383,4 +383,66 @@ fn composite_tuple_false() {
         &["(42,false)"],
     );
     assert_eq!(val, "0");
+}
+
+// --- Constructor Arguments ---
+
+fn deploy_constructor_args(owner: &str, supply: &str) -> (AnvilPolkadot, CastClient, String) {
+    let c = contract("test-contracts");
+    c.build();
+    let anvil = AnvilPolkadot::start();
+    let cast = CastClient::new(&anvil.rpc_url);
+    let hex = c.bytecode_hex("constructor-args", "release");
+    let address = cast.deploy(
+        &hex,
+        "constructor(address,uint256)",
+        &[owner, supply],
+        DEFAULT_PRIVATE_KEY,
+    );
+    (anvil, cast, address)
+}
+
+#[test]
+fn constructor_args_sets_owner_and_supply() {
+    let owner = DEFAULT_ADDRESS;
+    let supply = "1000000";
+    let (_anvil, cast, addr) = deploy_constructor_args(owner, supply);
+
+    let got_owner = cast.call(&addr, "getOwner()(address)", &[]);
+    assert_eq!(
+        got_owner.to_lowercase(),
+        owner.to_lowercase(),
+        "Constructor should set owner"
+    );
+
+    let got_supply = cast.call(&addr, "getInitialSupply()(uint256)", &[]);
+    assert_eq!(got_supply, supply, "Constructor should set initial supply");
+}
+
+#[test]
+fn constructor_args_different_values() {
+    let owner = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+    let supply = "999";
+    let (_anvil, cast, addr) = deploy_constructor_args(owner, supply);
+
+    let got_owner = cast.call(&addr, "getOwner()(address)", &[]);
+    assert_eq!(
+        got_owner.to_lowercase(),
+        owner.to_lowercase(),
+        "Constructor should set different owner"
+    );
+
+    let got_supply = cast.call(&addr, "getInitialSupply()(uint256)", &[]);
+    assert_eq!(
+        got_supply, supply,
+        "Constructor should set different supply"
+    );
+}
+
+#[test]
+fn constructor_args_zero_supply() {
+    let (_anvil, cast, addr) = deploy_constructor_args(DEFAULT_ADDRESS, "0");
+
+    let got_supply = cast.call(&addr, "getInitialSupply()(uint256)", &[]);
+    assert_eq!(got_supply, "0", "Constructor should handle zero supply");
 }

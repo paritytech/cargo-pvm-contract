@@ -30,6 +30,15 @@ polkavm-linker = { workspace = true }
 convert_case = { workspace = true }
 cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
 toml_edit = { workspace = true }
+tiny-keccak = { workspace = true }
+hex = "0.4"
+alloy-core = { version = "1.5", features = ["dyn-abi"] }
+cargo-pvm-contract-extrinsics = { path = "../cargo-pvm-contract-extrinsics" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+subxt = "0.44"
+subxt-signer = { version = "0.44", features = ["subxt", "sr25519"] }
+sp-core = { version = "38.0", default-features = false }
+url = { version = "2.5" }
 
 [dev-dependencies]
 assert_cmd = "2.0"

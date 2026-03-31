@@ -30,7 +30,7 @@ fn deploy_variant(variant: &str) -> (AnvilPolkadot, CastClient, String) {
     let anvil = AnvilPolkadot::start();
     let cast = CastClient::new(&anvil.rpc_url);
     let hex = c.bytecode_hex(variant, "release");
-    let address = cast.deploy(&hex, DEFAULT_PRIVATE_KEY);
+    let address = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
     (anvil, cast, address)
 }
 
@@ -88,7 +88,7 @@ fn dispatch_fallback_handles_unknown_selector() {
     let anvil = AnvilPolkadot::start();
     let cast = CastClient::new(&anvil.rpc_url);
     let hex = c.bytecode_hex(DEFAULT_VARIANT, "release");
-    let address = cast.deploy(&hex, DEFAULT_PRIVATE_KEY);
+    let address = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
 
     // 0xdeadbeef is not a known selector — fallback should handle it
     let mut cmd = std::process::Command::new("cast");

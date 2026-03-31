@@ -3,7 +3,7 @@ use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
 use super::abi_gen::generate_abi_gen_main;
-use super::dispatch::{MethodInfo, generate_dispatch_arm};
+use super::dispatch::{MethodInfo, generate_dispatch_arm, generate_param_decoding};
 use crate::signature::{FunctionSignature, SolType};
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
@@ -124,6 +124,7 @@ pub(super) struct ParsedContract {
     pub(super) has_fallback: bool,
     pub(super) constructor_name: Option<Ident>,
     pub(super) constructor_returns_result: bool,
+    pub(super) constructor_inputs: Vec<(Ident, SolType)>,
     pub(super) fallback_name: Option<Ident>,
 }
 
@@ -255,6 +256,35 @@ fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
     None
 }
 
+fn extract_typed_params(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
+) -> syn::Result<Vec<(Ident, SolType)>> {
+    inputs
+        .iter()
+        .map(|arg| {
+            if let syn::FnArg::Typed(pat_type) = arg {
+                let ident = if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                    pat_ident.ident.clone()
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.pat,
+                        "Parameters must be simple identifiers",
+                    ));
+                };
+                let sol_type = SolType::from_rust_type(&pat_type.ty).ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        &pat_type.ty,
+                        "Cannot map parameter type to a Solidity type",
+                    )
+                })?;
+                Ok((ident, sol_type))
+            } else {
+                Err(syn::Error::new_spanned(arg, "Unexpected `self` parameter"))
+            }
+        })
+        .collect()
+}
+
 fn parse_contract(
     input: &ItemMod,
     sol_interface: Option<&SolInterface>,
@@ -270,6 +300,7 @@ fn parse_contract(
     let mut has_fallback = false;
     let mut constructor_name = None;
     let mut constructor_returns_result = false;
+    let mut constructor_inputs = Vec::new();
     let mut fallback_name = None;
     let mut implemented_sol_methods = Vec::new();
 
@@ -279,22 +310,14 @@ fn parse_contract(
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
+                constructor_inputs = extract_typed_params(&func.sig.inputs)?;
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
                 fallback_name = Some(func.sig.ident.clone());
             } else if has_pvm_attr(&func.attrs, "method") {
-                let param_names: Vec<Ident> = func
-                    .sig
-                    .inputs
-                    .iter()
-                    .filter_map(|arg| {
-                        if let syn::FnArg::Typed(pat_type) = arg
-                            && let syn::Pat::Ident(pat_ident) = &*pat_type.pat
-                        {
-                            return Some(pat_ident.ident.clone());
-                        }
-                        None
-                    })
+                let param_names: Vec<Ident> = extract_typed_params(&func.sig.inputs)?
+                    .into_iter()
+                    .map(|(name, _)| name)
                     .collect();
 
                 let returns_result = is_result_return_type(&func.sig.output);
@@ -362,6 +385,7 @@ fn parse_contract(
         has_fallback,
         constructor_name,
         constructor_returns_result,
+        constructor_inputs,
         fallback_name,
     })
 }
@@ -444,24 +468,76 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
-        if parsed.constructor_returns_result {
+
+        let sol_types: Vec<_> = parsed
+            .constructor_inputs
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect();
+        let param_names: Vec<_> = parsed
+            .constructor_inputs
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let decoding = generate_param_decoding(&param_names, &sol_types, use_alloc);
+        let super::dispatch::ParamDecoding {
+            size_check,
+            decode_statements,
+            call_args,
+        } = decoding;
+
+        // Constructor calldata has no 4-byte selector prefix (unlike `call()`),
+        // so the entire calldata is ABI-encoded args.
+        let read_calldata = if param_names.is_empty() {
+            quote! {}
+        } else if use_alloc {
             quote! {
-                #[polkavm_derive::polkavm_export]
-                pub extern "C" fn deploy() {
-                    match #mod_name::#constructor_name() {
-                        Ok(()) => {}
-                        Err(e) => {
-                            pallet_revive_uapi::HostFnImpl::return_value(pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
-                        }
+                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let mut call_data = vec![0u8; call_data_len];
+                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
+                let input = &call_data[..];
+                #size_check
+            }
+        } else {
+            let buffer_size = args.buffer_size;
+            quote! {
+                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let mut call_data = [0u8; #buffer_size];
+                if call_data_len > #buffer_size {
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
+                }
+                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+                let input = &call_data[..call_data_len];
+                #size_check
+            }
+        };
+
+        let call_expr = quote! { #mod_name::#constructor_name(#(#call_args),*) };
+        let decode_and_call = if parsed.constructor_returns_result {
+            quote! {
+                #(#decode_statements)*
+                match #call_expr {
+                    Ok(()) => {}
+                    Err(e) => {
+                        pallet_revive_uapi::HostFnImpl::return_value(
+                            pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
                     }
                 }
             }
         } else {
             quote! {
-                #[polkavm_derive::polkavm_export]
-                pub extern "C" fn deploy() {
-                    #mod_name::#constructor_name();
-                }
+                #(#decode_statements)*
+                #call_expr;
+            }
+        };
+
+        quote! {
+            #[polkavm_derive::polkavm_export]
+            pub extern "C" fn deploy() {
+                #read_calldata
+                #decode_and_call
             }
         }
     } else {
@@ -524,7 +600,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
                     pallet_revive_uapi::HostFnImpl::return_value(
@@ -604,7 +679,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
-    use super::ContractArgs;
+    use super::{ContractArgs, expand_contract};
 
     #[test]
     fn parses_no_alloc_with_nested_buffer() {
@@ -659,5 +734,58 @@ mod tests {
             .expect_err("allocator_size should require an allocator");
 
         assert!(error.to_string().contains("`allocator_size` requires"));
+    }
+
+    #[test]
+    fn constructor_inputs_appear_in_abi_gen_output() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new(owner: Address, supply: U256) {}
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // abi-gen main is generated (no sol_path)
+        assert!(output.contains("feature = \"abi-gen\""));
+        // constructor entry is present with its inputs array
+        assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":["));
+        // param names are emitted
+        assert!(output.contains("\"owner\""));
+        assert!(output.contains("\"supply\""));
+        // param types are emitted
+        assert!(output.contains("\"address\""));
+        assert!(output.contains("\"uint256\""));
+    }
+
+    #[test]
+    fn constructor_with_result_and_inputs_generates_match_and_decode() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new(owner: Address) -> Result<(), Error> {
+                    Ok(())
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Should have decode logic for the input
+        assert!(output.contains("\"owner\""));
+        // Should have match for Result error handling
+        assert!(output.contains("Err (e)"));
+        assert!(output.contains("REVERT"));
     }
 }

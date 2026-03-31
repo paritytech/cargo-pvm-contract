@@ -1,0 +1,8 @@
+[
+  {"type":"constructor","inputs":[]},
+  {"type":"function","name":"touch","inputs":[
+    {"name":"value","type":"(uint256,uint256)"}
+  ],"outputs":[
+    {"name":"","type":"(uint256,uint256)"}
+  ]}
+]

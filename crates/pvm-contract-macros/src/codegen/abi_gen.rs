@@ -38,13 +38,37 @@ fn generate_abi_gen_main_impl(parsed: &ParsedContract) -> syn::Result<TokenStrea
     };
 
     let constructor_entry = if parsed.has_constructor {
+        let constructor_input_entries: Vec<TokenStream> = parsed
+            .constructor_inputs
+            .iter()
+            .map(|(name, sol_type)| {
+                let name_str = name.to_string();
+                let type_name_expr = generate_sol_type_name_expr(sol_type)?;
+                Ok(quote! {
+                    if !__first_ctor_input {
+                        __abi.push(',');
+                    } else {
+                        __first_ctor_input = false;
+                    }
+                    __abi.push_str("{\"name\":\"");
+                    __abi.push_str(#name_str);
+                    __abi.push_str("\",\"type\":\"");
+                    __abi.push_str(&#type_name_expr);
+                    __abi.push_str("\"}");
+                })
+            })
+            .collect::<syn::Result<Vec<_>>>()?;
+
         quote! {
             if !__first_item {
                 __abi.push(',');
             } else {
                 __first_item = false;
             }
-            __abi.push_str("{\"type\":\"constructor\",\"inputs\":[]}");
+            __abi.push_str("{\"type\":\"constructor\",\"inputs\":[");
+            let mut __first_ctor_input = true;
+            #(#constructor_input_entries)*
+            __abi.push_str("]}");
         }
     } else {
         quote! {}
@@ -237,95 +261,20 @@ fn generate_sol_type_name_expr(sol_type: &SolType) -> syn::Result<TokenStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signature::FunctionSignature;
 
     #[test]
     fn returns_empty_stream_for_sol_path_contract() {
-        let parsed = parsed_contract(vec![], false);
-
-        assert!(generate_abi_gen_main(&parsed, true).is_empty());
-    }
-
-    #[test]
-    fn generates_constructor_and_known_types_without_sol_encode_import() {
-        let parsed = parsed_contract(
-            vec![method(
-                "balance_of",
-                "balanceOf",
-                vec![SolType::Address],
-                vec![SolType::Uint(256)],
-                &["account"],
-            )],
-            true,
-        );
-
-        let output = generate_abi_gen_main(&parsed, false).to_string();
-
-        assert!(output.contains("cfg (feature = \"abi-gen\")"));
-        assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":[]}"));
-        assert!(output.contains("{\\\"type\\\":\\\"function\\\",\\\"name\\\":\\\""));
-        assert!(output.contains("__abi . push_str (\"balanceOf\")"));
-        assert!(output.contains("__abi . push_str (\"account\")"));
-        assert!(output.contains("String :: from (\"address\")"));
-        assert!(output.contains("String :: from (\"uint256\")"));
-        assert!(!output.contains("SolEncode"));
-    }
-
-    #[test]
-    fn generates_sol_encode_calls_for_custom_types() {
-        let parsed = parsed_contract(
-            vec![method(
-                "touch",
-                "touch",
-                vec![SolType::Custom("my_crate::MyType".to_string())],
-                vec![SolType::Array(Box::new(SolType::Custom(
-                    "my_crate::MyType".to_string(),
-                )))],
-                &["value"],
-            )],
-            false,
-        );
-
-        let output = generate_abi_gen_main(&parsed, false).to_string();
-
-        assert!(output.contains("use :: pvm_contract_types :: SolEncode ;"));
-        assert!(output.contains(
-            "< my_crate :: MyType as :: pvm_contract_types :: SolEncode > :: sol_name ()"
-        ));
-        assert!(output.contains("push_str (\"[]\")"));
-    }
-
-    fn parsed_contract(methods: Vec<MethodInfo>, has_constructor: bool) -> ParsedContract {
-        ParsedContract {
+        let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
-            methods,
-            has_constructor,
+            methods: vec![],
+            has_constructor: false,
             has_fallback: false,
             constructor_name: None,
             constructor_returns_result: false,
+            constructor_inputs: vec![],
             fallback_name: None,
-        }
-    }
+        };
 
-    fn method(
-        fn_name: &str,
-        signature_name: &str,
-        inputs: Vec<SolType>,
-        outputs: Vec<SolType>,
-        param_names: &[&str],
-    ) -> MethodInfo {
-        MethodInfo {
-            fn_name: syn::parse_str(fn_name).unwrap(),
-            signature: FunctionSignature {
-                name: signature_name.to_string(),
-                inputs,
-                outputs,
-            },
-            param_names: param_names
-                .iter()
-                .map(|name| syn::parse_str(name).unwrap())
-                .collect(),
-            returns_result: false,
-        }
+        assert!(generate_abi_gen_main(&parsed, true).is_empty());
     }
 }
