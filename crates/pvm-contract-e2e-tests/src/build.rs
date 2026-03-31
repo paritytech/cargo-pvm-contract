@@ -9,6 +9,19 @@ pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+fn find_cli_binary() -> PathBuf {
+    let root = workspace_root();
+    for profile in ["debug", "release"] {
+        let path = root.join(format!("target/{profile}/cargo-pvm-contract"));
+        if path.exists() {
+            return path;
+        }
+    }
+    panic!(
+        "cargo-pvm-contract binary not found in target/debug or target/release. Build it first with: cargo build -p cargo-pvm-contract"
+    );
+}
+
 pub fn contract(name: &str) -> Contract {
     Contract {
         dir: workspace_root().join(format!("examples/{name}")),
@@ -34,7 +47,7 @@ impl Contract {
             self.dir.display()
         );
 
-        let bin_path = workspace_root().join("target/debug/cargo-pvm-contract");
+        let bin_path = find_cli_binary();
         let status = Command::new(&bin_path)
             .current_dir(&self.dir)
             .args(["pvm-contract", "build"])

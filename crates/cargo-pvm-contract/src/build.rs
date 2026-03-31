@@ -9,10 +9,6 @@ pub struct BuildArgs {
     #[arg(long)]
     manifest_path: Option<PathBuf>,
 
-    /// Packages to build
-    #[arg(short = 'p', long = "package")]
-    packages: Vec<String>,
-
     /// Build profile (default: release)
     #[arg(long)]
     profile: Option<String>,
@@ -27,9 +23,12 @@ pub struct BuildArgs {
 }
 
 pub fn build_contracts(args: BuildArgs) -> Result<()> {
-    let manifest_path = args
-        .manifest_path
-        .unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml"));
+    let manifest_path = match args.manifest_path {
+        Some(path) => path,
+        None => std::env::current_dir()
+            .context("Failed to determine current working directory")?
+            .join("Cargo.toml"),
+    };
 
     let manifest_path = manifest_path
         .canonicalize()
@@ -38,11 +37,7 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
     let profile_name = args.profile.as_deref().unwrap_or("release");
     let profile = builder::Profile::from_name(profile_name);
 
-    let packages = if args.packages.is_empty() {
-        vec![builder::get_package_name(&manifest_path)?]
-    } else {
-        args.packages
-    };
+    let bins = builder::get_bin_targets(&manifest_path)?;
 
     let output_dir = args
         .output_dir
@@ -55,16 +50,13 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
         )
     })?;
 
-    for _pkg in &packages {
-        let bins = resolve_bins_for_package(&manifest_path)?;
-        builder::build_contract(
-            &manifest_path,
-            &output_dir,
-            &profile,
-            &bins,
-            args.message_format.as_deref(),
-        )?;
-    }
+    builder::build_contract(
+        &manifest_path,
+        &output_dir,
+        &profile,
+        &bins,
+        args.message_format.as_deref(),
+    )?;
 
     Ok(())
 }
@@ -77,8 +69,4 @@ fn find_target_dir(manifest_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or(Path::new("."))
         .join("target")
-}
-
-fn resolve_bins_for_package(manifest_path: &Path) -> Result<Vec<String>> {
-    builder::get_bin_targets(manifest_path)
 }

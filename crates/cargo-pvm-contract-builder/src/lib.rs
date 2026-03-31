@@ -84,9 +84,15 @@ fn get_manifest_dir() -> PathBuf {
 }
 
 /// Build profile.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Profile {
     name: String,
+}
+
+impl std::fmt::Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
 }
 
 impl Profile {
@@ -256,7 +262,7 @@ fn build_elf_cli(
         cmd.arg("--message-format").arg(fmt);
     }
 
-    eprintln!("Building PolkaVM binary with profile: {profile:?}");
+    eprintln!("Building PolkaVM binary with profile: {profile}");
 
     let output = cmd.output().context("Failed to execute cargo build")?;
 
@@ -382,7 +388,7 @@ fn build_elf(
         cmd.arg("--bin").arg(bin);
     }
 
-    eprintln!("Building PolkaVM binary with profile: {profile:?}");
+    eprintln!("Building PolkaVM binary with profile: {profile}");
 
     let output = cmd.output().context("Failed to execute cargo build")?;
 
