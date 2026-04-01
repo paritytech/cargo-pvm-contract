@@ -474,7 +474,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         } else if use_alloc {
             quote! {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-                let mut call_data = vec![0u8; call_data_len];
+                let mut call_data = alloc::vec![0u8; call_data_len];
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
@@ -557,7 +557,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-                let mut call_data = vec![0u8; call_data_len];
+                let mut call_data = alloc::vec![0u8; call_data_len];
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
