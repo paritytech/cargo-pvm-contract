@@ -271,7 +271,6 @@ fn sol_type_head_size_expr(ty: &SolType) -> TokenStream {
     }
 }
 
-
 fn get_field_types(fields: &Fields) -> Vec<&Type> {
     match fields {
         Fields::Named(named) => named.named.iter().map(|f| &f.ty).collect(),
