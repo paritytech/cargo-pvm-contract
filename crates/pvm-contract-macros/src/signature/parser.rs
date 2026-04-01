@@ -4,6 +4,7 @@ use super::types::SolType;
 pub struct FunctionSignature {
     pub name: String,
     pub inputs: Vec<SolType>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub outputs: Vec<SolType>,
 }
 

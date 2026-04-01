@@ -1,7 +1,87 @@
 use crate::{SolDecode, SolEncode};
 
+/// Wrapper for raw byte data that encodes as Solidity `bytes` (packed encoding).
+///
+/// Use `Bytes` instead of `Vec<u8>` when the Solidity signature uses `bytes`.
+/// `Vec<u8>` encodes as `uint8[]` (array of 32-byte-padded elements), while
+/// `Bytes` encodes as `bytes` (length-prefixed packed data), matching alloy's
+/// distinction between `Bytes` and `Vec<u8>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bytes(pub alloc::vec::Vec<u8>);
+
+impl SolEncode for Bytes {
+    const IS_DYNAMIC: bool = true;
+    const SOL_NAME: &'static str = "bytes";
+
+    fn encode_len(&self) -> usize {
+        let data_len = self.0.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + 32 + data_len + padding
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) {
+        let data_len = self.0.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+
+        buf[32..64].fill(0);
+        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        buf[64..64 + data_len].copy_from_slice(&self.0);
+        buf[64 + data_len..64 + data_len + padding].fill(0);
+    }
+
+    fn tail_len(&self) -> usize {
+        let data_len = self.0.len();
+        let padding = (32 - (data_len % 32)) % 32;
+        32 + data_len + padding
+    }
+
+    fn encode_tail_to(&self, buf: &mut [u8]) {
+        let data_len = self.0.len();
+        let padding = (32 - (data_len % 32)) % 32;
+
+        buf[..32].fill(0);
+        buf[24..32].copy_from_slice(&(data_len as u64).to_be_bytes());
+
+        buf[32..32 + data_len].copy_from_slice(&self.0);
+        buf[32 + data_len..32 + data_len + padding].fill(0);
+    }
+}
+
+impl crate::SolArrayElement for Bytes {}
+
+impl SolDecode for Bytes {
+    fn decode_at(input: &[u8], offset: usize) -> Self {
+        let data_offset =
+            u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        Self::decode_tail(input, data_offset)
+    }
+
+    fn decode_tail(input: &[u8], offset: usize) -> Self {
+        let len = u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
+        let data = &input[offset + 32..offset + 32 + len];
+        Bytes(data.to_vec())
+    }
+}
+
+impl From<alloc::vec::Vec<u8>> for Bytes {
+    fn from(v: alloc::vec::Vec<u8>) -> Self {
+        Self(v)
+    }
+}
+
+impl From<Bytes> for alloc::vec::Vec<u8> {
+    fn from(b: Bytes) -> Self {
+        b.0
+    }
+}
+
 impl SolEncode for alloc::string::String {
     const IS_DYNAMIC: bool = true;
+    const SOL_NAME: &'static str = "string";
 
     fn encode_len(&self) -> usize {
         let data_len = self.len();
@@ -41,18 +121,15 @@ impl SolEncode for alloc::string::String {
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
     }
-
-    #[cfg(feature = "abi-reflection")]
-    fn sol_name() -> alloc::string::String {
-        alloc::string::String::from("string")
-    }
 }
+
+impl crate::SolArrayElement for alloc::string::String {}
 
 impl SolDecode for alloc::string::String {
     fn decode_at(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
-        Self::decode_tail(input, offset + data_offset)
+        Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Self {
@@ -64,6 +141,13 @@ impl SolDecode for alloc::string::String {
 
 impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
     const IS_DYNAMIC: bool = true;
+    const SOL_NAME: &'static str = {
+        struct H<T>(core::marker::PhantomData<T>);
+        impl<T: SolEncode> H<T> {
+            const V: crate::ConstStr = crate::ConstStr::new(T::SOL_NAME, "[]");
+        }
+        H::<T>::V.as_str()
+    };
 
     fn encode_len(&self) -> usize {
         32 + self.tail_len()
@@ -111,18 +195,15 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
             }
         }
     }
-
-    #[cfg(feature = "abi-reflection")]
-    fn sol_name() -> alloc::string::String {
-        alloc::format!("{}[]", T::sol_name())
-    }
 }
+
+impl<T: SolEncode> crate::SolArrayElement for alloc::vec::Vec<T> {}
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     fn decode_at(input: &[u8], offset: usize) -> Self {
         let data_offset =
             u64::from_be_bytes(input[offset + 24..offset + 32].try_into().unwrap()) as usize;
-        Self::decode_tail(input, offset + data_offset)
+        Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Self {

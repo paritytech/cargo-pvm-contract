@@ -609,6 +609,7 @@ fn solidity_to_rust_type(sol_type: &str) -> String {
                 _ => "I256".to_string(),
             }
         }
+        "bytes32" => "[u8; 32]".to_string(),
         s if s.starts_with("bytes") && s.len() > 5 => {
             let size: usize = s[5..].parse().unwrap_or(32);
             format!("[u8; {size}]")
@@ -618,12 +619,8 @@ fn solidity_to_rust_type(sol_type: &str) -> String {
 }
 
 /// Map Solidity types to the Rust type used for `SolDecode::decode_at` in DSL contracts.
-/// For `address`, DSL uses `[u8; 20]` directly instead of the `Address` wrapper.
 fn solidity_to_dsl_decode_type(sol_type: &str) -> String {
-    match sol_type {
-        "address" => "[u8; 20]".to_string(),
-        _ => solidity_to_rust_type(sol_type),
-    }
+    solidity_to_rust_type(sol_type)
 }
 
 fn generate_build_rs(use_dsl: bool) -> Result<String> {

@@ -29,6 +29,8 @@ polkavm-linker = "0.31.0"
 polkavm-derive = "0.31.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+const_format = { version = "0.2", default-features = false }
+keccak-const = "0.2"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 convert_case = "0.6"
 toml_edit = "0.22"

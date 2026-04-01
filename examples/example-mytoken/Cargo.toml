@@ -43,7 +43,7 @@ picoalloc = { version = "5", default-features = false }
 pvm-bump-allocator = { path = "../../crates/pvm-bump-allocator" }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-reflection"]
+abi-gen = []
 
 [build-dependencies]
 cargo-pvm-contract-builder = { path = "../../crates/cargo-pvm-contract-builder" }

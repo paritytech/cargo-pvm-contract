@@ -16,7 +16,7 @@ All values are encoded as 32-byte words, big-endian, right-aligned (for integers
 
 | Solidity Type | Rust Type | Notes |
 |---------------|-----------|-------|
-| `address` | `[u8; 20]` | 20 bytes, right-aligned in 32-byte word |
+| `address` | `Address` | Wrapper around `[u8; 20]`, right-aligned in 32-byte word |
 | `bool` | `bool` | 0 or 1 in last byte |
 | `uint8` | `u8` | |
 | `uint16` | `u16` | |
@@ -327,8 +327,9 @@ pub fn get_user() -> User {
 - `U256`, `u128`, `u64`, `u32`, `u16`, `u8`
 - `i128`, `i64`, `i32`, `i16`, `i8`
 - `bool`
-- `[u8; 20]` (address)
-- `[u8; 32]` (bytes32)
+- `Address` (address)
+- `[u8; N]` (bytesN)
+- `[T; N]` (fixed array, T must implement `SolArrayElement`)
 - `String` (dynamic, requires alloc)
 - `Vec<T>` (dynamic, requires alloc)
 - Other `SolType` structs (nested)

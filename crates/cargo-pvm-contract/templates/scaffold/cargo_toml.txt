@@ -43,7 +43,7 @@ ruint = { version = "1.17", default-features = false }
 
 {% if !use_dsl -%}
 [features]
-abi-gen = ["pvm-contract-types/abi-reflection"]
+abi-gen = []
 
 {% endif -%}
 [build-dependencies]
