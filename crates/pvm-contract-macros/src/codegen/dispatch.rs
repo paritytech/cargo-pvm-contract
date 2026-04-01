@@ -175,7 +175,7 @@ fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenSt
     }
 
     if use_alloc {
-        generate_dynamic_encode_and_return(outputs)
+        generate_alloc_encode_and_return(outputs)
     } else {
         generate_static_encode_and_return(outputs)
     }
@@ -184,7 +184,7 @@ fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenSt
 fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        let encode = generate_encode(ty, quote!(result), false);
+        let encode = generate_encode(ty, quote!(result));
         return quote! {
             let encoded = #encode;
             pallet_revive_uapi::HostFnImpl::return_value(
@@ -197,7 +197,7 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         .enumerate()
         .map(|(i, ty)| {
             let idx = syn::Index::from(i);
-            generate_encode(ty, quote!(result.#idx), false)
+            generate_encode(ty, quote!(result.#idx))
         })
         .collect();
 
@@ -217,15 +217,25 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     }}
 }
 
-fn generate_dynamic_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
+fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
+        // Use IS_DYNAMIC const to let the compiler eliminate the dead branch.
+        // Static types (u64, U256, …) get a stack buffer; dynamic types (String, …) get a heap
+        // buffer. This avoids pulling allocator code into contracts that only return static types.
         return quote! {{
-            let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
-            let mut __buf = alloc::vec![0u8; __len];
-            <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-            pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+            if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+                let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+                let mut __buf = alloc::vec![0u8; __len];
+                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+            } else {
+                let mut __buf = [0u8; <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
+                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+            }
         }};
     }
 
