@@ -143,7 +143,7 @@ pub const fn const_selector(sig: &str) -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
-/// Selector-based dispatch trait for composable contract routing.
+/// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
 /// A `Router` implementation inspects the 4-byte selector and either handles
 /// the call (returning `Some(())`) or declines it (returning `None`).
@@ -151,15 +151,20 @@ pub const fn const_selector(sig: &str) -> [u8; 4] {
 /// `return_value()` which diverges — `Some(())` is only reached for
 /// void-success methods that use a bare `return` statement.
 ///
+/// The `#[contract]` macro automatically implements this trait for each
+/// contract module via a generated `Contract` unit struct. DSL contracts
+/// (`ContractBuilder`) use [`ContractBuilder::try_route`] directly instead —
+/// the static method signature here is designed for compile-time dispatch tables.
+///
 /// # Composition
 ///
-/// Multiple routers can be chained in a `call()` entrypoint:
+/// Multiple `#[contract]` modules can be chained in a single entrypoint:
 ///
 /// ```ignore
 /// pub extern "C" fn call() {
 ///     let (selector, input) = read_calldata();
-///     if Erc20Base::route(selector, input).is_some() { return; }
-///     if MyExtension::route(selector, input).is_some() { return; }
+///     if erc20::route(selector, input).is_some() { return; }
+///     if my_extension::route(selector, input).is_some() { return; }
 ///     // fallback or revert
 /// }
 /// ```

@@ -460,27 +460,34 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     pallet_revive_uapi::ReturnFlags::empty(), &encoded);
 /// ```
 ///
-/// ## Dynamic return (alloc mode)
+/// ## Return encoding (alloc mode)
 ///
-/// In alloc mode, dynamic types (String, `Vec<T>`) automatically use runtime buffer sizing:
+/// In alloc mode, the generated code uses a compile-time `IS_DYNAMIC` branch so that
+/// static return types (U256, u32, ...) use a stack buffer and avoid pulling in
+/// allocator code, while dynamic types (String, `Vec<T>`) use heap allocation:
 ///
 /// ```ignore
 /// #[pvm_contract::method]
 /// pub fn greeting() -> String { ... }
 ///
-/// // Generated dispatch arm (in alloc mode, inside the module):
+/// // Generated dispatch arm (in alloc mode, inside route()):
 ///
-/// // 1) Call the method (no module prefix)
 /// let result = greeting();
 ///
-/// // 2) Encode output (runtime buffer size)
-/// let len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
-/// let mut buf = alloc::vec![0u8; len];
-/// <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut buf);
-///
-/// // 3) Return value to caller
-/// pallet_revive_uapi::HostFnImpl::return_value(
-///     pallet_revive_uapi::ReturnFlags::empty(), &buf);
+/// if <String as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+///     // Dynamic: heap-allocated buffer
+///     let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
+///     let mut __buf = alloc::vec![0u8; __len];
+///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// } else {
+///     // Static: fixed-size stack buffer (dead branch for String, eliminated by compiler)
+///     let mut __buf = [0u8; <String as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
+///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// }
 /// ```
 #[proc_macro_attribute]
 pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {

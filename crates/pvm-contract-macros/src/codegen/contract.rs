@@ -528,7 +528,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let (route_items, router_impl) = generate_router(&parsed.methods, mod_name, use_alloc);
-    let RouteItems { contract_struct, route_fn } = route_items;
+    let RouteItems {
+        contract_struct,
+        route_fn,
+    } = route_items;
     let router_impl = router_impl.tokens;
 
     let fallback_handler = if parsed.has_fallback {
@@ -741,6 +744,41 @@ mod tests {
         assert!(output.contains("\"supply\""));
         // param types are resolved via trait SOL_NAME
         assert!(output.contains("SOL_NAME"));
+    }
+
+    #[test]
+    fn generates_router_impl_and_route_fn() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn balance_of(account: Address) -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Router struct is generated inside the module
+        assert!(output.contains("pub struct Contract"));
+        // route() function is generated
+        assert!(
+            output.contains("fn route (selector : [u8 ; 4] , input : & [u8]) -> Option < () >")
+        );
+        // Router trait impl references the module
+        assert!(
+            output.contains("impl :: pvm_contract_types :: Router for my_contract :: Contract")
+        );
+        // call() delegates to route()
+        assert!(output.contains("route (selector , input)"));
     }
 
     #[test]

@@ -64,10 +64,7 @@ fn custom_type_method_produces_valid_abi() {
 
 #[test]
 fn multi_method_produces_valid_abi() {
-    assert_eq!(
-        cargo_run_abi("multi-method"),
-        expected_abi("multi_method"),
-    );
+    assert_eq!(cargo_run_abi("multi-method"), expected_abi("multi_method"),);
 }
 
 #[test]
