@@ -1372,3 +1372,245 @@ fn vec_decode_at_nonzero_offset() {
     let decoded_vec = Vec::<U256>::decode_at(&buf, 32);
     assert_eq!(decoded_vec, vec![U256::from(10), U256::from(20)]);
 }
+
+// --- Signed integer array tests ---
+
+#[test]
+fn encode_decode_fixed_array_of_signed_integers() {
+    use alloy_core::sol_types::SolValue;
+    let val: [i32; 3] = [-1, 0, 42];
+    let alloy = val.abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(<[i32; 3]>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_fixed_array_of_i64() {
+    use alloy_core::sol_types::SolValue;
+    let val: [i64; 2] = [i64::MIN, i64::MAX];
+    let alloy = val.abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(<[i64; 2]>::decode(&buf), val);
+}
+
+// --- Small bytesN tests ---
+
+#[test]
+fn encode_decode_bytes1_left_aligned() {
+    let val: [u8; 1] = [0xAB];
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    // bytesN is left-aligned: 0xAB followed by 31 zero bytes
+    assert_eq!(buf[0], 0xAB);
+    assert!(buf[1..32].iter().all(|&b| b == 0));
+    assert_eq!(<[u8; 1]>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_bytes4() {
+    use alloy_core::primitives::FixedBytes;
+    use alloy_core::sol_types::SolValue;
+    let val: [u8; 4] = [0xDE, 0xAD, 0xBE, 0xEF];
+    let alloy = FixedBytes::<4>::from(val).abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(<[u8; 4]>::decode(&buf), val);
+}
+
+// --- Nested Vec<Vec<T>> tests ---
+
+#[test]
+fn encode_decode_vec_of_vec_u64() {
+    let val: Vec<Vec<u64>> = vec![vec![1, 2, 3], vec![4, 5], vec![]];
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(Vec::<Vec<u64>>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_vec_of_vec_empty() {
+    let val: Vec<Vec<u64>> = vec![];
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(Vec::<Vec<u64>>::decode(&buf), val);
+}
+
+// --- Large tuple tests ---
+
+#[test]
+fn encode_decode_tuple_8_static_fields() {
+    let val: (u8, u16, u32, u64, u128, bool, u8, u32) = (1, 2, 3, 4, 5, true, 7, 8);
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(
+        <(u8, u16, u32, u64, u128, bool, u8, u32)>::decode(&buf),
+        val
+    );
+}
+
+#[test]
+fn encode_decode_tuple_mixed_static_dynamic_large() {
+    use alloc::string::String;
+    let val: (u64, String, bool, String, u32, Address, String, u8) = (
+        42,
+        "hello".to_string(),
+        true,
+        "world".to_string(),
+        99,
+        Address([0xAA; 20]),
+        "!".to_string(),
+        255,
+    );
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(
+        <(u64, String, bool, String, u32, Address, String, u8)>::decode(&buf),
+        val
+    );
+}
+
+// --- Bytes in struct ---
+
+#[test]
+fn encode_decode_struct_with_bytes_field() {
+    use super::alloc_types::Bytes;
+
+    #[derive(Debug, PartialEq, SolType)]
+    struct WithBytes {
+        id: u64,
+        data: Bytes,
+    }
+
+    let val = WithBytes {
+        id: 42,
+        data: Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]),
+    };
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(WithBytes::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_struct_with_empty_bytes() {
+    use super::alloc_types::Bytes;
+
+    #[derive(Debug, PartialEq, SolType)]
+    struct WithEmptyBytes {
+        id: u64,
+        data: Bytes,
+    }
+
+    let val = WithEmptyBytes {
+        id: 0,
+        data: Bytes(vec![]),
+    };
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(WithEmptyBytes::decode(&buf), val);
+}
+
+// --- SOL_NAME tests for tuples and signed arrays ---
+
+#[test]
+fn sol_type_name_tuple_with_dynamic() {
+    assert_eq!(<(u64, alloc::string::String)>::SOL_NAME, "(uint64,string)");
+}
+
+#[test]
+fn sol_type_name_tuple_all_static() {
+    assert_eq!(<(u64, bool, Address)>::SOL_NAME, "(uint64,bool,address)");
+}
+
+#[test]
+fn sol_type_name_fixed_array_of_signed() {
+    assert_eq!(<[i32; 3]>::SOL_NAME, "int32[3]");
+}
+
+#[test]
+fn sol_type_name_fixed_array_of_i128() {
+    assert_eq!(<[i128; 2]>::SOL_NAME, "int128[2]");
+}
+
+// --- Bytes decode_at test ---
+
+#[test]
+fn bytes_in_tuple_decode_at_nonzero_offset() {
+    use super::alloc_types::Bytes;
+    let val = (7u64, Bytes(vec![0x01, 0x02, 0x03]));
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+
+    let decoded_u64 = u64::decode_at(&buf, 0);
+    assert_eq!(decoded_u64, 7u64);
+
+    let decoded_bytes = Bytes::decode_at(&buf, 32);
+    assert_eq!(decoded_bytes, Bytes(vec![0x01, 0x02, 0x03]));
+}
+
+// --- ConstStr tests ---
+
+#[test]
+fn const_str_new_concatenates() {
+    const S: ConstStr = ConstStr::new("hello", " world");
+    assert_eq!(S.as_str(), "hello world");
+}
+
+#[test]
+fn const_str_new_empty_strings() {
+    const S: ConstStr = ConstStr::new("", "");
+    assert_eq!(S.as_str(), "");
+}
+
+#[test]
+fn const_str_append() {
+    const S: ConstStr = ConstStr::new("(uint64", ",bool)");
+    assert_eq!(S.as_str(), "(uint64,bool)");
+
+    const S2: ConstStr = ConstStr::new("foo", "").append("bar");
+    assert_eq!(S2.as_str(), "foobar");
+}
+
+#[test]
+fn const_str_append_usize() {
+    const S: ConstStr = ConstStr::new("uint", "").append_usize(256);
+    assert_eq!(S.as_str(), "uint256");
+}
+
+#[test]
+fn const_str_append_usize_zero() {
+    const S: ConstStr = ConstStr::new("val", "").append_usize(0);
+    assert_eq!(S.as_str(), "val0");
+}
+
+#[test]
+fn const_str_append_usize_large() {
+    const S: ConstStr = ConstStr::new("[", "").append_usize(12345).append("]");
+    assert_eq!(S.as_str(), "[12345]");
+}
+
+// --- Additional tuple arity tests ---
+
+#[test]
+fn encode_decode_tuple_4_fields() {
+    let val: (u64, bool, u32, Address) = (1, true, 42, Address([0xBB; 20]));
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(<(u64, bool, u32, Address)>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_tuple_12_fields() {
+    let val: (u8, u16, u32, u64, u128, bool, u8, u16, u32, u64, u128, bool) =
+        (1, 2, 3, 4, 5, true, 7, 8, 9, 10, 11, false);
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(
+        <(u8, u16, u32, u64, u128, bool, u8, u16, u32, u64, u128, bool)>::decode(&buf),
+        val
+    );
+}

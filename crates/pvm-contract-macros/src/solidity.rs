@@ -222,4 +222,43 @@ mod tests {
             "foo((address,uint256),uint256[3])"
         );
     }
+
+    #[test]
+    fn test_no_interface_keyword_errors() {
+        let source = r#"
+            contract MyToken {
+                function totalSupply() external view returns (uint256);
+            }
+        "#;
+        let result = parse_solidity_interface(source);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "No interface found in Solidity file");
+    }
+
+    #[test]
+    fn test_empty_interface() {
+        let source = r#"
+            interface IEmpty {
+            }
+        "#;
+        let iface = parse_solidity_interface(source).unwrap();
+        assert!(iface.functions.is_empty());
+    }
+
+    #[test]
+    fn test_comment_lines_skipped() {
+        let source = r#"
+            // SPDX-License-Identifier: MIT
+            interface IToken {
+                // This is a comment
+                function totalSupply() external view returns (uint256);
+                /* block comment */
+                function transfer(address to, uint256 amount) external;
+            }
+        "#;
+        let iface = parse_solidity_interface(source).unwrap();
+        assert_eq!(iface.functions.len(), 2);
+        assert_eq!(iface.functions[0].name, "totalSupply");
+        assert_eq!(iface.functions[1].name, "transfer");
+    }
 }
