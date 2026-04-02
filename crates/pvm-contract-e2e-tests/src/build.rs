@@ -69,7 +69,8 @@ impl Contract {
     pub fn polkavm_binary(&self, binary_name: &str, profile: &str) -> PathBuf {
         let path = self
             .target()
-            .join(format!("{binary_name}.{profile}.polkavm"));
+            .join(profile)
+            .join(format!("{binary_name}.polkavm"));
         assert!(
             path.exists(),
             "PolkaVM binary not found: {}",
@@ -81,7 +82,8 @@ impl Contract {
     pub fn abi_json_path(&self, binary_name: &str, profile: &str) -> PathBuf {
         let path = self
             .target()
-            .join(format!("{binary_name}.{profile}.abi.json"));
+            .join(profile)
+            .join(format!("{binary_name}.abi.json"));
         assert!(path.exists(), "ABI JSON not found: {}", path.display());
         path
     }

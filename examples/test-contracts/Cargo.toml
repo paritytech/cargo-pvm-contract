@@ -5,7 +5,6 @@ name = "test-contracts"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "flipper"
@@ -57,9 +56,6 @@ picoalloc = { version = "5", default-features = false }
 
 [features]
 abi-gen = ["pvm-contract-types/abi-reflection"]
-
-[build-dependencies]
-cargo-pvm-contract-builder = { path = "../../crates/cargo-pvm-contract-builder" }
 
 [profile.release]
 codegen-units = 1
