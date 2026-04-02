@@ -140,6 +140,7 @@ fn build_elf(
 
     let mut target_args = polkavm_linker::TargetJsonArgs::default();
     target_args.is_64_bit = true;
+    target_args.rustc_version = polkavm_linker::RustcVersion::Rustc_1_91;
     let target_json = polkavm_linker::target_json_path(target_args)
         .map_err(|e| anyhow::anyhow!("Failed to get target JSON: {e}"))?;
 
