@@ -302,8 +302,9 @@ fn generate_static_encode_body(fields: &Fields) -> TokenStream {
         };
 
         stmts.push(quote! {
-            ::pvm_contract_types::SolEncode::encode_to(&#field_access, &mut buf[__offset..]);
-            __offset += <#field_ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+            let __hs = <#field_ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+            ::pvm_contract_types::SolEncode::encode_to(&#field_access, &mut buf[__offset..__offset + __hs]);
+            __offset += __hs;
         });
     }
 

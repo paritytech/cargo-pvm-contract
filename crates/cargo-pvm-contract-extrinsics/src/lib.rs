@@ -136,6 +136,11 @@ where
 }
 
 /// Return the account nonce at the *best* block for an account ID.
+///
+/// NOTE: This reads the nonce at a point in time and is not protected against
+/// concurrent submissions with the same signer. If two extrinsics are submitted
+/// concurrently using the same account, they may read the same nonce and one
+/// will be rejected as stale. Callers must ensure sequential submission per signer.
 async fn get_account_nonce<C>(
     client: &OnlineClient<C>,
     rpc: &LegacyRpcMethods<C>,

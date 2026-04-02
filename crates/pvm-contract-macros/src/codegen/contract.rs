@@ -135,17 +135,16 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
             && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
             && segments[1].ident == "method"
             && let syn::Meta::List(meta_list) = &attr.meta
+            && let Ok(nv) = syn::parse2::<syn::MetaNameValue>(meta_list.tokens.clone())
+            && nv.path.is_ident("rename")
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &nv.value
         {
-            let tokens_str = meta_list.tokens.to_string();
-            if let Some(start) = tokens_str.find("rename") {
-                let after_rename = &tokens_str[start..];
-                if let Some(eq_pos) = after_rename.find('=') {
-                    let after_eq = after_rename[eq_pos + 1..].trim();
-                    let name = after_eq.trim_matches(|c| c == '"' || c == ' ');
-                    if !name.is_empty() {
-                        return Some(name.to_string());
-                    }
-                }
+            let name = s.value();
+            if !name.is_empty() {
+                return Some(name);
             }
         }
     }

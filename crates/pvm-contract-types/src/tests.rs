@@ -1333,6 +1333,34 @@ fn bytes_decode_at_nonzero_offset() {
 }
 
 #[test]
+fn encode_decode_bytes_proptest() {
+    use super::alloc_types::Bytes;
+    use alloy_core::primitives::Bytes as AlloyBytes;
+
+    proptest!(|(data: alloc::vec::Vec<u8>)| {
+        let val = Bytes(data.clone());
+        let alloy = AlloyBytes::from(data).abi_encode();
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(&buf, &alloy);
+        prop_assert_eq!(Bytes::decode(&buf), val);
+    });
+}
+
+#[test]
+fn encode_decode_bytes_empty() {
+    use super::alloc_types::Bytes;
+    use alloy_core::primitives::Bytes as AlloyBytes;
+
+    let val = Bytes(vec![]);
+    let alloy = AlloyBytes::from(vec![]).abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(Bytes::decode(&buf), val);
+}
+
+#[test]
 fn vec_decode_at_nonzero_offset() {
     let val = (7u64, vec![U256::from(10), U256::from(20)]);
     let mut buf = vec![0u8; val.encode_len()];

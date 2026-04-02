@@ -72,6 +72,16 @@ fn canonical_type(input: &Value) -> Result<String> {
             .map(canonical_type)
             .collect::<Result<Vec<_>>>()?;
         Ok(format!("({})[]", inner.join(",")))
+    } else if let Some(suffix) = sol_type.strip_prefix("tuple[") {
+        // Fixed-size tuple arrays: "tuple[N]" → "(T1,T2,...)[N]"
+        let components = input["components"]
+            .as_array()
+            .ok_or_else(|| anyhow!("Tuple array type missing 'components'"))?;
+        let inner: Vec<String> = components
+            .iter()
+            .map(canonical_type)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(format!("({})[{}", inner.join(","), suffix))
     } else {
         Ok(sol_type.to_string())
     }

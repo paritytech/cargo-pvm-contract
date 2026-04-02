@@ -481,6 +481,7 @@ impl<const N: usize> SolEncode for [u8; N] {
     }
 
     fn encode_to(&self, buf: &mut [u8]) {
+        const { assert!(N <= 32, "bytesN only valid for N in 1..=32") };
         buf[..N].copy_from_slice(self);
         buf[N..32].fill(0);
     }
@@ -492,6 +493,7 @@ impl<const N: usize> StaticEncodedLen for [u8; N] {
 
 impl<const N: usize> SolDecode for [u8; N] {
     fn decode_at(input: &[u8], offset: usize) -> Self {
+        const { assert!(N <= 32, "bytesN only valid for N in 1..=32") };
         let mut result = [0u8; N];
         result.copy_from_slice(&input[offset..offset + N]);
         result
