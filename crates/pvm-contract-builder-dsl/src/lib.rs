@@ -84,6 +84,24 @@ impl ContractBuilder {
         self
     }
 
+    /// Try to route a call by selector without reading calldata.
+    ///
+    /// Returns `Some(())` if a handler matched (the handler may diverge via
+    /// `return_value`). Returns `None` if no selector matched, allowing the
+    /// caller to try another router or fall back.
+    pub fn try_route(&self, selector: [u8; 4], input: &[u8]) -> Option<()> {
+        let mut i = 0;
+        while i < self.len {
+            let (sel, handler) = self.methods[i];
+            if sel == selector {
+                handler(input);
+                return Some(());
+            }
+            i += 1;
+        }
+        None
+    }
+
     /// Read calldata from the host, match the selector, and dispatch.
     ///
     /// `BUF_SIZE` is the fixed stack buffer size for calldata (e.g. 256).
@@ -107,14 +125,8 @@ impl ContractBuilder {
         let selector: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
         let input = &buf[4..call_data_len];
 
-        let mut i = 0;
-        while i < self.len {
-            let (sel, handler) = self.methods[i];
-            if sel == selector {
-                handler(input);
-                H::return_value(ReturnFlags::empty(), &[]);
-            }
-            i += 1;
+        if self.try_route(selector, input).is_some() {
+            H::return_value(ReturnFlags::empty(), &[]);
         }
 
         H::return_value(ReturnFlags::REVERT, b"UnknownSelector")

@@ -143,6 +143,30 @@ pub const fn const_selector(sig: &str) -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
+/// Selector-based dispatch trait for composable contract routing.
+///
+/// A `Router` implementation inspects the 4-byte selector and either handles
+/// the call (returning `Some(())`) or declines it (returning `None`).
+/// When a method returns data or reverts, the handler calls
+/// `return_value()` which diverges — `Some(())` is only reached for
+/// void-success methods that use a bare `return` statement.
+///
+/// # Composition
+///
+/// Multiple routers can be chained in a `call()` entrypoint:
+///
+/// ```ignore
+/// pub extern "C" fn call() {
+///     let (selector, input) = read_calldata();
+///     if Erc20Base::route(selector, input).is_some() { return; }
+///     if MyExtension::route(selector, input).is_some() { return; }
+///     // fallback or revert
+/// }
+/// ```
+pub trait Router {
+    fn route(selector: [u8; 4], input: &[u8]) -> Option<()>;
+}
+
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.
 pub trait SolEncode {
     const IS_DYNAMIC: bool;

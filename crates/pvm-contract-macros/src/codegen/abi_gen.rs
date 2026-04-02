@@ -9,6 +9,9 @@ use super::dispatch::MethodInfo;
 /// The helper lives inside the user's module so all type imports are in scope.
 /// The `main()` just calls the helper and prints the result.
 pub fn generate_abi_gen(parsed: &ParsedContract, has_sol_path: bool) -> (TokenStream, TokenStream) {
+    // When a .sol file is provided, the builder derives ABI from the Solidity
+    // interface at build time (see cargo-pvm-contract-builder/src/abi.rs).
+    // No macro-side ABI generation is needed.
     if has_sol_path {
         return (quote! {}, quote! {});
     }

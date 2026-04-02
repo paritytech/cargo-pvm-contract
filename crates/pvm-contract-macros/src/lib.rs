@@ -103,22 +103,40 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// # Generated Code
 ///
-/// ## Entry Points
+/// ## Entry Points and Router
 ///
-/// The macro generates two PolkaVM entry points **inside** the contract module
+/// The macro generates the following **inside** the contract module
 /// (so that user type imports are in scope for trait-based dispatch):
 ///
+/// - `pub struct Contract;` — unit struct used as `Router` trait target
+/// - `pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()>` — selector dispatch
+/// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point
+/// - `pub extern "C" fn call()` — PolkaVM call entry point (delegates to `route()`)
+///
+/// Outside the module, a `Router` trait impl is generated:
+///
 /// ```ignore
-/// mod my_token {
-///     // ... user code ...
+/// impl ::pvm_contract_types::Router for my_token::Contract {
+///     fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         my_token::route(selector, input)
+///     }
+/// }
+/// ```
 ///
-///     #[no_mangle]
-///     #[polkavm_derive::polkavm_export]
-///     pub extern "C" fn deploy() { /* constructor logic */ }
+/// All generated items are gated behind `#[cfg(not(feature = "abi-gen"))]`.
 ///
-///     #[no_mangle]
-///     #[polkavm_derive::polkavm_export]
-///     pub extern "C" fn call() { /* dispatch logic */ }
+/// ### Composition
+///
+/// The `route()` function returns `Option<()>`: `Some(())` means "handled",
+/// `None` means "not my selector". This enables composing multiple contract
+/// modules in a single entrypoint:
+///
+/// ```ignore
+/// pub extern "C" fn call() {
+///     let (selector, input) = read_calldata();
+///     if erc20_base::route(selector, input).is_some() { return; }
+///     if my_extension::route(selector, input).is_some() { return; }
+///     // fallback or revert
 /// }
 /// ```
 ///
@@ -159,7 +177,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// All types are decoded and encoded uniformly via trait dispatch (`SolDecode`, `SolEncode`).
 /// The macro never inspects types — it emits trait calls and lets the compiler resolve them.
 ///
-/// ### Default stack generated `call()` example
+/// ### Default stack generated code example
 ///
 /// ```ignore
 /// #[pvm_contract_macros::contract("MyToken.sol", buffer = 512)]
@@ -174,11 +192,58 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     // --- Generated inside the module: ---
 ///
+///     pub struct Contract;
+///
+///     pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         // Selector consts — precomputed from .sol, or derived via SOL_NAME
+///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+///         const __SEL_transfer: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+///
+///         match selector {
+///             // balanceOf(address) -> uint256
+///             __SEL_balance_of => {
+///                 if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
+///                     pallet_revive_uapi::HostFnImpl::return_value(
+///                         pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
+///                 }
+///                 let mut __decode_offset: usize = 0;
+///                 let account = {
+///                     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
+///                         &input, __decode_offset);
+///                     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///                     __value
+///                 };
+///                 let result = balance_of(::core::convert::Into::into(account));
+///                 let mut __buf = [0u8;
+///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+///                 <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+///                 pallet_revive_uapi::HostFnImpl::return_value(
+///                     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+///             }
+///
+///             // transfer(address,uint256) — fallible, no return data
+///             __SEL_transfer => {
+///                 // ... size check + decode ...
+///                 match transfer(
+///                     ::core::convert::Into::into(to),
+///                     ::core::convert::Into::into(amount),
+///                 ) {
+///                     Ok(()) => return Some(()),
+///                     Err(e) => {
+///                         pallet_revive_uapi::HostFnImpl::return_value(
+///                             pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+///                     }
+///                 }
+///             }
+///
+///             _ => None,
+///         }
+///     }
+///
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn call() {
 ///         let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
 ///         let mut call_data = [0u8; 512];
-///
 ///         if call_data_len > 512 {
 ///             pallet_revive_uapi::HostFnImpl::return_value(
 ///                 pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
@@ -190,88 +255,28 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///         let input = &call_data[4..call_data_len];
 ///
-///         // Selector consts — precomputed from .sol, or derived via SOL_NAME
-///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
-///         const __SEL_transfer: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+///         if route(selector, input).is_some() { return; }
+///         // fallback or revert
+///     }
+/// }
 ///
-///         match selector {
-///             // balanceOf(address) -> uint256
-///             __SEL_balance_of => {
-///                 if input.len() < (0 + <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE) {
-///                     pallet_revive_uapi::HostFnImpl::return_value(
-///                         pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
-///                 }
-///                 let mut __decode_offset: usize = 0;
-///                 let account = {
-///                     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
-///                         &input, __decode_offset);
-///                     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
-///                     __value
-///                 };
-///
-///                 // No module prefix — call() is inside the module
-///                 let result = balance_of(::core::convert::Into::into(account));
-///
-///                 let encoded = {
-///                     let mut __buf = [0u8;
-///                         <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///                     <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-///                     __buf
-///                 };
-///                 pallet_revive_uapi::HostFnImpl::return_value(
-///                     pallet_revive_uapi::ReturnFlags::empty(), &encoded);
-///             }
-///
-///             // transfer(address,uint256) — fallible
-///             __SEL_transfer => {
-///                 // ... size check + decode with __decode_offset ...
-///                 match transfer(
-///                     ::core::convert::Into::into(to),
-///                     ::core::convert::Into::into(amount),
-///                 ) {
-///                     Ok(()) => return,
-///                     Err(e) => {
-///                         pallet_revive_uapi::HostFnImpl::return_value(
-///                             pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
-///                     }
-///                 }
-///             }
-///
-///             _ => { /* fallback */ }
-///         }
+/// // Generated outside the module:
+/// impl ::pvm_contract_types::Router for my_token::Contract {
+///     fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         my_token::route(selector, input)
 ///     }
 /// }
 /// ```
 ///
-/// ### Allocator generated `call()` example
+/// ### Allocator mode
+///
+/// The only difference is buffer allocation in `call()`:
 ///
 /// ```ignore
-/// #[pvm_contract_macros::contract("MyToken.sol", allocator = "pico")]
-/// mod my_token {
-///     // methods...
-///
-///     // --- Generated inside the module: ---
-///
-///     #[polkavm_derive::polkavm_export]
-///     pub extern "C" fn call() {
-///         let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-///         let mut call_data = alloc::vec![0u8; call_data_len];
-///         pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..], 0);
-///
-///         if call_data_len < 4 { /* fallback handling */ }
-///
-///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
-///         let input = &call_data[4..];
-///
-///         // Same dispatch structure — selectors, decode, encode all via traits
-///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
-///         match selector {
-///             __SEL_balance_of => { /* dispatch arm */ }
-///             _ => { /* fallback */ }
-///         }
-///     }
-/// }
+/// let mut call_data = alloc::vec![0u8; call_data_len];
 /// ```
+///
+/// The `route()` function and dispatch logic are identical.
 ///
 /// ## Allocator Setup
 ///

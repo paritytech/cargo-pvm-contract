@@ -3,7 +3,7 @@ use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
 use super::abi_gen::generate_abi_gen;
-use super::dispatch::{MethodInfo, generate_dispatch_arm, generate_param_decoding};
+use super::dispatch::{MethodInfo, RouteItems, generate_param_decoding, generate_router};
 use crate::signature::compute_selector;
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
@@ -527,11 +527,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = parsed
-        .methods
-        .iter()
-        .map(|m| generate_dispatch_arm(m, use_alloc))
-        .unzip();
+    let (route_items, router_impl) = generate_router(&parsed.methods, mod_name, use_alloc);
+    let RouteItems { contract_struct, route_fn } = route_items;
+    let router_impl = router_impl.tokens;
 
     let fallback_handler = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
@@ -553,7 +551,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let call_fn = if use_alloc {
         quote! {
-            #[allow(non_upper_case_globals)]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
@@ -567,20 +564,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                #(#selector_consts)*
+                if route(selector, input).is_some() { return; }
 
-                match selector {
-                    #(#dispatch_arms)*
-                    _ => {
-                        #fallback_handler
-                    }
-                }
+                #fallback_handler
             }
         }
     } else {
         let buffer_size = args.buffer_size;
         quote! {
-            #[allow(non_upper_case_globals)]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
@@ -598,14 +589,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                #(#selector_consts)*
+                if route(selector, input).is_some() { return; }
 
-                match selector {
-                    #(#dispatch_arms)*
-                    _ => {
-                        #fallback_handler
-                    }
-                }
+                #fallback_handler
             }
         }
     };
@@ -620,13 +606,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             #[cfg(not(feature = "abi-gen"))]
-            #deploy_fn
+            #contract_struct
+
+            #[cfg(not(feature = "abi-gen"))]
+            #route_fn
 
             #[cfg(not(feature = "abi-gen"))]
             #call_fn
 
+            #[cfg(not(feature = "abi-gen"))]
+            #deploy_fn
+
             #abi_gen_helper
         }
+
+        #[cfg(not(feature = "abi-gen"))]
+        #router_impl
 
         #abi_gen_main
     })

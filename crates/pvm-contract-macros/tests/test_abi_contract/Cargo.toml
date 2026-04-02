@@ -19,6 +19,14 @@ path = "src/constructor_no_params.rs"
 name = "custom-type-method"
 path = "src/custom_type_method.rs"
 
+[[bin]]
+name = "multi-method"
+path = "src/multi_method.rs"
+
+[[bin]]
+name = "nested-custom-type"
+path = "src/nested_custom_type.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-types = { path = "../../../pvm-contract-types" }

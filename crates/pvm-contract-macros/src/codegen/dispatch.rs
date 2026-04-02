@@ -138,7 +138,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
         } else {
             quote! {
                 match #fn_name(#(#call_args),*) {
-                    Ok(()) => return,
+                    Ok(()) => return Some(()),
                     Err(e) => {
                         pallet_revive_uapi::HostFnImpl::return_value(
                             pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
@@ -154,7 +154,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     } else {
         quote! {
             #fn_name(#(#call_args),*);
-            return;
+            return Some(());
         }
     };
 
@@ -169,9 +169,64 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     (const_def, match_arm)
 }
 
+/// Items generated inside the contract module for routing.
+pub struct RouteItems {
+    /// Unit struct used as the `Router` trait target.
+    pub contract_struct: TokenStream,
+    /// The `route(selector, input) -> Option<()>` function.
+    pub route_fn: TokenStream,
+}
+
+/// `impl Router for mod_name::Contract` block, placed outside the module.
+pub struct RouterImpl {
+    pub tokens: TokenStream,
+}
+
+/// Generate the `route` function and `Router` trait impl for a contract module.
+pub fn generate_router(
+    methods: &[MethodInfo],
+    mod_name: &syn::Ident,
+    use_alloc: bool,
+) -> (RouteItems, RouterImpl) {
+    let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = methods
+        .iter()
+        .map(|m| generate_dispatch_arm(m, use_alloc))
+        .unzip();
+
+    let route_items = RouteItems {
+        contract_struct: quote! {
+            /// Unit struct that implements [`::pvm_contract_types::Router`] for this contract.
+            pub struct Contract;
+        },
+        route_fn: quote! {
+            #[allow(non_upper_case_globals)]
+            pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+                #(#selector_consts)*
+
+                match selector {
+                    #(#dispatch_arms)*
+                    _ => None,
+                }
+            }
+        },
+    };
+
+    let router_impl = RouterImpl {
+        tokens: quote! {
+            impl ::pvm_contract_types::Router for #mod_name::Contract {
+                fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+                    #mod_name::route(selector, input)
+                }
+            }
+        },
+    };
+
+    (route_items, router_impl)
+}
+
 fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenStream {
     if outputs.is_empty() {
-        return quote! { return; };
+        return quote! { return Some(()); };
     }
 
     if use_alloc {
