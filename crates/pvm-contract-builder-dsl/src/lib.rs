@@ -89,6 +89,7 @@ impl ContractBuilder {
     /// Returns `Some(())` if a handler matched (the handler may diverge via
     /// `return_value`). Returns `None` if no selector matched, allowing the
     /// caller to try another router or fall back.
+    #[inline(always)]
     pub fn try_route(&self, selector: [u8; 4], input: &[u8]) -> Option<()> {
         let mut i = 0;
         while i < self.len {
