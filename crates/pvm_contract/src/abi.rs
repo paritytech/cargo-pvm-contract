@@ -25,11 +25,7 @@ pub trait SolAbi: Sized {
     ///
     /// Static types are inlined into the tuple head, while dynamic types occupy
     /// a single 32-byte offset word.
-    const SLOT_SIZE: usize = if Self::IS_DYNAMIC {
-        32
-    } else {
-        Self::HEAD_SIZE
-    };
+    const SLOT_SIZE: usize = if Self::IS_DYNAMIC { 32 } else { Self::HEAD_SIZE };
 
     /// Whether this is a dynamic type (string, bytes, dynamic arrays).
     const IS_DYNAMIC: bool = false;

@@ -7,9 +7,9 @@ use crate::codegen::decode::generate_decode;
 use crate::codegen::encode::generate_encode_params;
 use crate::codegen::generate_cdm_reference;
 use crate::codegen::generate_resolved_return_parts;
+use crate::signature::compute_selector;
 use crate::signature::FunctionSignature;
 use crate::signature::SolType;
-use crate::signature::compute_selector;
 use crate::solidity::to_snake_case;
 
 // ---------------------------------------------------------------------------
@@ -92,7 +92,9 @@ fn parse_abi_param(val: &serde_json::Value) -> Result<AbiParam, String> {
 fn parse_abi_json(json_str: &str) -> Result<Vec<AbiFunction>, String> {
     let value: serde_json::Value =
         serde_json::from_str(json_str).map_err(|e| format!("Invalid ABI JSON: {}", e))?;
-    let arr = value.as_array().ok_or("ABI JSON must be an array")?;
+    let arr = value
+        .as_array()
+        .ok_or("ABI JSON must be an array")?;
 
     let mut functions = Vec::new();
     for entry in arr {
@@ -108,20 +110,12 @@ fn parse_abi_json(json_str: &str) -> Result<Vec<AbiFunction>, String> {
         let inputs = entry
             .get("inputs")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .map(parse_abi_param)
-                    .collect::<Result<Vec<_>, _>>()
-            })
+            .map(|arr| arr.iter().map(parse_abi_param).collect::<Result<Vec<_>, _>>())
             .unwrap_or(Ok(vec![]))?;
         let outputs = entry
             .get("outputs")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .map(parse_abi_param)
-                    .collect::<Result<Vec<_>, _>>()
-            })
+            .map(|arr| arr.iter().map(parse_abi_param).collect::<Result<Vec<_>, _>>())
             .unwrap_or(Ok(vec![]))?;
         functions.push(AbiFunction {
             name,
@@ -259,9 +253,7 @@ fn has_named_components(outputs: &[AbiParam]) -> bool {
         _ => return false,
     };
     // Check that at least one component has a non-empty, non-positional name
-    comps
-        .iter()
-        .any(|c| !c.name.is_empty() && !c.name.starts_with("_field"))
+    comps.iter().any(|c| !c.name.is_empty() && !c.name.starts_with("_field"))
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +313,8 @@ fn generate_abi_reference_method(func: &AbiFunction) -> Result<TokenStream, Stri
     let encode_block = generate_encode_params(&param_names, &input_types);
 
     // --- Return type and decode ---
-    let (ret_ty, decode_return, has_output) = generate_return_handling(func, &output_types)?;
+    let (ret_ty, decode_return, has_output) =
+        generate_return_handling(func, &output_types)?;
     let success_body = if has_output {
         quote! { Ok(#decode_return) }
     } else {
@@ -361,8 +354,7 @@ fn generate_return_handling(
             .map(|c: &AbiParam| format_ident!("{}", to_snake_case(&c.name)))
             .collect();
 
-        let tuple_decode =
-            generate_decode(&SolType::Tuple(comp_types.clone()), quote!(output), 0, true);
+        let tuple_decode = generate_decode(&SolType::Tuple(comp_types.clone()), quote!(output), 0, true);
         let tuple_bindings: Vec<TokenStream> = field_names
             .iter()
             .enumerate()
@@ -405,10 +397,7 @@ fn generate_return_struct(func: &AbiFunction) -> Result<Option<TokenStream>, Str
         .map(|c| format_ident!("{}", to_snake_case(&c.name)))
         .collect();
 
-    let field_types: Vec<TokenStream> = comp_types
-        .iter()
-        .map(|t: &SolType| t.rust_type(true))
-        .collect();
+    let field_types: Vec<TokenStream> = comp_types.iter().map(|t: &SolType| t.rust_type(true)).collect();
 
     let result: TokenStream = quote! {
         pub struct #struct_name {
@@ -434,8 +423,9 @@ pub fn expand_abi_import(args: AbiImportArgs) -> syn::Result<TokenStream> {
         )
     })?;
 
-    let functions = parse_abi_json(&json_str)
-        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+    let functions = parse_abi_json(&json_str).map_err(|e| {
+        syn::Error::new(proc_macro2::Span::call_site(), e)
+    })?;
 
     // Generate return structs for functions with named tuple outputs
     let mut return_structs = Vec::new();
@@ -452,8 +442,9 @@ pub fn expand_abi_import(args: AbiImportArgs) -> syn::Result<TokenStream> {
     // Generate methods
     let mut methods = Vec::new();
     for func in &functions {
-        let method = generate_abi_reference_method(func)
-            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
+        let method = generate_abi_reference_method(func).map_err(|e| {
+            syn::Error::new(proc_macro2::Span::call_site(), e)
+        })?;
         methods.push(method);
     }
 
@@ -520,21 +511,9 @@ mod tests {
     #[test]
     fn test_parse_tuple_type() {
         let comps = vec![
-            AbiParam {
-                name: "id".into(),
-                type_str: "bytes32".into(),
-                components: None,
-            },
-            AbiParam {
-                name: "status".into(),
-                type_str: "uint8".into(),
-                components: None,
-            },
-            AbiParam {
-                name: "proposer".into(),
-                type_str: "address".into(),
-                components: None,
-            },
+            AbiParam { name: "id".into(), type_str: "bytes32".into(), components: None },
+            AbiParam { name: "status".into(), type_str: "uint8".into(), components: None },
+            AbiParam { name: "proposer".into(), type_str: "address".into(), components: None },
         ];
         let result = parse_abi_type("tuple", Some(&comps)).unwrap();
         assert_eq!(
@@ -572,16 +551,8 @@ mod tests {
             name: "".into(),
             type_str: "tuple".into(),
             components: Some(vec![
-                AbiParam {
-                    name: "id".into(),
-                    type_str: "bytes32".into(),
-                    components: None,
-                },
-                AbiParam {
-                    name: "status".into(),
-                    type_str: "uint8".into(),
-                    components: None,
-                },
+                AbiParam { name: "id".into(), type_str: "bytes32".into(), components: None },
+                AbiParam { name: "status".into(), type_str: "uint8".into(), components: None },
             ]),
         }];
         assert!(has_named_components(&outputs));
@@ -596,16 +567,8 @@ mod tests {
 
         // Multiple outputs (not a named struct case)
         let outputs = vec![
-            AbiParam {
-                name: "".into(),
-                type_str: "uint64".into(),
-                components: None,
-            },
-            AbiParam {
-                name: "".into(),
-                type_str: "address".into(),
-                components: None,
-            },
+            AbiParam { name: "".into(), type_str: "uint64".into(), components: None },
+            AbiParam { name: "".into(), type_str: "address".into(), components: None },
         ];
         assert!(!has_named_components(&outputs));
     }

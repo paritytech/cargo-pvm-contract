@@ -8,16 +8,16 @@ mod encode;
 mod method;
 mod storage;
 
-pub use abi_import::{AbiImportArgs, expand_abi_import};
-pub use contract::{ContractArgs, expand_contract};
+pub use abi_import::{expand_abi_import, AbiImportArgs};
+pub use contract::{expand_contract, ContractArgs};
 pub use derive_sol_abi::expand_derive_sol_abi;
-pub use method::{MethodArgs, expand_constructor, expand_fallback, expand_method};
+pub use method::{expand_constructor, expand_fallback, expand_method, MethodArgs};
 pub use storage::expand_storage;
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::signature::{SolType, compute_selector};
+use crate::signature::{compute_selector, SolType};
 use decode::generate_decode;
 
 /// Generate the `cdm_reference()` function that resolves the contract address at runtime

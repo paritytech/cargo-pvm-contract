@@ -3,7 +3,7 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 use super::encode::generate_encode_return;
-use crate::signature::{FunctionSignature, compute_selector};
+use crate::signature::{compute_selector, FunctionSignature};
 
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
@@ -130,38 +130,31 @@ pub fn generate_dispatch_arm(
 
 /// Generate an if-else dispatch block for a method where input types are not all resolvable.
 /// This produces a block (not a match arm) that uses `return` to exit early when matched.
-pub fn generate_trait_dispatch_arm(method: &MethodInfo, mod_name: &syn::Ident) -> TokenStream {
+pub fn generate_trait_dispatch_arm(
+    method: &MethodInfo,
+    mod_name: &syn::Ident,
+) -> TokenStream {
     let param_names = &method.param_names;
     let param_types = &method.param_types;
     let sol_name = &method.signature.name;
 
     // Build the selector computation using SolAbi::SOL_NAME for each param type
-    let sol_name_exprs: Vec<TokenStream> = param_types
-        .iter()
-        .map(|ty| {
-            quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-        })
-        .collect();
+    let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
+        quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
+    }).collect();
 
     // Build min size computation using the tuple slot size for each parameter.
-    let head_size_exprs: Vec<TokenStream> = param_types
-        .iter()
-        .map(|ty| {
-            quote! { <#ty as pvm_contract::SolAbi>::SLOT_SIZE }
-        })
-        .collect();
+    let head_size_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
+        quote! { <#ty as pvm_contract::SolAbi>::SLOT_SIZE }
+    }).collect();
 
     // Build decode statements using SolAbi::abi_decode
-    let decode_statements: Vec<TokenStream> = param_names
-        .iter()
-        .zip(param_types.iter())
-        .map(|(name, ty)| {
-            quote! {
-                let #name = <#ty as pvm_contract::SolAbi>::abi_decode(input, __offset);
-                __offset += <#ty as pvm_contract::SolAbi>::SLOT_SIZE;
-            }
-        })
-        .collect();
+    let decode_statements: Vec<TokenStream> = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
+        quote! {
+            let #name = <#ty as pvm_contract::SolAbi>::abi_decode(input, __offset);
+            __offset += <#ty as pvm_contract::SolAbi>::SLOT_SIZE;
+        }
+    }).collect();
 
     let call_args: Vec<_> = param_names.iter().map(|name| quote!(#name)).collect();
 

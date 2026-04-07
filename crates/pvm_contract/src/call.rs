@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::CallFlags;
 #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
-use crate::{HostFn, api};
+use crate::{api, HostFn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallError {
