@@ -86,7 +86,11 @@ pub fn get_with_buffer<T: Decode, const N: usize>(key: &StorageKey) -> Option<T>
     let mut output = buffer.as_mut_slice();
 
     match api::get_storage(StorageFlags::empty(), key, &mut output) {
-        Ok(_) => T::decode(&mut &buffer[..output.len()]).ok(),
+        Ok(_) => {
+            let bytes_read = output.len();
+            let _ = output;
+            T::decode(&mut &buffer[..bytes_read]).ok()
+        }
         Err(_) => None,
     }
 }
