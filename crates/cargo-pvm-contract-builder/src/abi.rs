@@ -273,7 +273,11 @@ pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
                 return None;
             }
             let param_type = parts[0].to_string();
-            let name = parts.get(1).map(|s| s.to_string()).unwrap_or_default();
+            let name = parts[1..]
+                .iter()
+                .find(|s| !matches!(**s, "memory" | "calldata" | "storage"))
+                .map(|s| s.to_string())
+                .unwrap_or_default();
             Some(AbiParam { name, param_type })
         })
         .collect()
@@ -590,6 +594,24 @@ version = "0.1.0"
 
         let path = resolve_bin_source_path(dir.path(), "mybin").unwrap();
         assert_eq!(path, dir.path().join("src/bin/mybin.rs"));
+    }
+
+    #[test]
+    fn parse_params_strips_data_location_qualifiers() {
+        let params = parse_sol_params("string calldata s, uint256[] memory arr");
+        assert_eq!(params.len(), 2);
+        assert_eq!(params[0].param_type, "string");
+        assert_eq!(params[0].name, "s");
+        assert_eq!(params[1].param_type, "uint256[]");
+        assert_eq!(params[1].name, "arr");
+    }
+
+    #[test]
+    fn parse_params_strips_qualifier_without_name() {
+        let params = parse_sol_params("string memory");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].param_type, "string");
+        assert_eq!(params[0].name, "");
     }
 
     #[test]
