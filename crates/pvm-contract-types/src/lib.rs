@@ -183,13 +183,18 @@ pub trait SolEncode {
     /// Overridden by structs to the sum of their field HEAD_SIZEs.
     const HEAD_SIZE: usize = 32;
 
+    /// Total encoded byte length of this value.
     fn encode_len(&self) -> usize;
+
+    /// Encode this value into `buf` (must be at least `encode_len()` bytes).
     fn encode_to(&self, buf: &mut [u8]);
 
+    /// Byte length of the tail portion for dynamic types. Defaults to `encode_len()`.
     fn tail_len(&self) -> usize {
         self.encode_len()
     }
 
+    /// Encode the tail portion into `buf`. Defaults to `encode_to()`.
     fn encode_tail_to(&self, buf: &mut [u8]) {
         self.encode_to(buf);
     }

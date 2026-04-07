@@ -275,22 +275,12 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
 fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        // Use IS_DYNAMIC const to let the compiler eliminate the dead branch.
-        // Static types (u64, U256, …) get a stack buffer; dynamic types (String, …) get a heap
-        // buffer. This avoids pulling allocator code into contracts that only return static types.
         return quote! {{
-            if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
-                let mut __buf = alloc::vec![0u8; __len];
-                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::empty(), &__buf);
-            } else {
-                let mut __buf = [0u8; <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
-                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::empty(), &__buf);
-            }
+            let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+            let mut __buf = alloc::vec![0u8; __len];
+            <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+            pallet_revive_uapi::HostFnImpl::return_value(
+                pallet_revive_uapi::ReturnFlags::empty(), &__buf);
         }};
     }
 
