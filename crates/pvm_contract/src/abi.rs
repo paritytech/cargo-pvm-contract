@@ -21,6 +21,16 @@ pub trait SolAbi: Sized {
     /// Size of the head portion in the ABI encoding (always 32 for non-tuple types).
     const HEAD_SIZE: usize = 32;
 
+    /// Size of this value's slot when it appears in an enclosing tuple.
+    ///
+    /// Static types are inlined into the tuple head, while dynamic types occupy
+    /// a single 32-byte offset word.
+    const SLOT_SIZE: usize = if Self::IS_DYNAMIC {
+        32
+    } else {
+        Self::HEAD_SIZE
+    };
+
     /// Whether this is a dynamic type (string, bytes, dynamic arrays).
     const IS_DYNAMIC: bool = false;
 
@@ -29,6 +39,22 @@ pub trait SolAbi: Sized {
 
     /// ABI-decode a value from `data` starting at byte `offset`.
     fn abi_decode(data: &[u8], offset: usize) -> Self;
+}
+
+/// ABI-encode a single function return value.
+///
+/// Solidity return data is encoded as the ABI tuple of all outputs. For a
+/// single dynamic output, that means emitting a top-level offset word before
+/// the value body.
+pub fn encode_return_value<T: SolAbi>(value: &T) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if T::IS_DYNAMIC {
+        let mut offset = [0u8; 32];
+        offset[24..32].copy_from_slice(&(T::SLOT_SIZE as u64).to_be_bytes());
+        buf.extend_from_slice(&offset);
+    }
+    value.abi_encode(&mut buf);
+    buf
 }
 
 // -- bool --
@@ -388,6 +414,17 @@ impl<T: SolAbi> SolAbi for Option<T> {
     }
 
     fn abi_decode(data: &[u8], offset: usize) -> Self {
+        if T::IS_DYNAMIC {
+            let dyn_offset =
+                crate::U256::from_be_slice(&data[offset..offset + 32]).as_limbs()[0] as usize;
+            let body = &data[dyn_offset..];
+            let is_some = bool::abi_decode(body, 0);
+            if !is_some {
+                return None;
+            }
+            return Some(T::abi_decode(body, 32));
+        }
+
         let is_some = bool::abi_decode(data, offset);
         if !is_some {
             return None;
@@ -417,4 +454,62 @@ pub fn compute_selector(name: &str, param_type_names: &[&str]) -> [u8; 4] {
     let mut output = [0u8; 32];
     hasher.finalize(&mut output);
     [output[0], output[1], output[2], output[3]]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SolAbi, encode_return_value};
+    use crate as pvm_contract;
+
+    #[derive(pvm_contract_macros::SolAbi, Debug, PartialEq, Eq)]
+    struct StaticPair {
+        left: u64,
+        right: u64,
+    }
+
+    #[derive(pvm_contract_macros::SolAbi, Debug, PartialEq, Eq)]
+    struct DynamicPair {
+        id: u64,
+        label: alloc::string::String,
+    }
+
+    #[test]
+    fn encode_single_dynamic_return_prefixes_top_level_offset() {
+        let encoded = encode_return_value(&alloc::string::String::from("hi"));
+        let mut expected_offset = [0u8; 32];
+        expected_offset[24..32].copy_from_slice(&32u64.to_be_bytes());
+        assert_eq!(&encoded[..32], &expected_offset);
+        assert_eq!(
+            alloc::string::String::abi_decode(&encoded, 0),
+            alloc::string::String::from("hi")
+        );
+    }
+
+    #[test]
+    fn dynamic_struct_decode_uses_top_level_offset() {
+        let value = DynamicPair {
+            id: 7,
+            label: alloc::string::String::from("arena"),
+        };
+        let encoded = encode_return_value(&value);
+        assert_eq!(DynamicPair::abi_decode(&encoded, 0), value);
+    }
+
+    #[test]
+    fn dynamic_option_decode_uses_top_level_offset() {
+        let value = Some(alloc::string::String::from("ghost"));
+        let encoded = encode_return_value(&value);
+        assert_eq!(
+            Option::<alloc::string::String>::abi_decode(&encoded, 0),
+            value
+        );
+    }
+
+    #[test]
+    fn static_types_keep_in_place_encoding() {
+        let value = StaticPair { left: 1, right: 2 };
+        let encoded = encode_return_value(&value);
+        assert_eq!(encoded.len(), StaticPair::HEAD_SIZE);
+        assert_eq!(StaticPair::abi_decode(&encoded, 0), value);
+    }
 }

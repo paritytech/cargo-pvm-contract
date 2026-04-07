@@ -3,6 +3,88 @@ use quote::quote;
 
 use crate::signature::SolType;
 
+fn generate_encode_sequence(
+    value_exprs: &[TokenStream],
+    types: &[SolType],
+    use_alloc: bool,
+) -> TokenStream {
+    let has_dynamic = types.iter().any(|t| t.is_dynamic());
+    let head_size = types.iter().map(|t| t.head_size()).sum::<usize>();
+
+    if !has_dynamic {
+        let encodes: Vec<_> = value_exprs
+            .iter()
+            .zip(types.iter())
+            .map(|(value_expr, ty)| generate_encode(ty, value_expr.clone(), use_alloc))
+            .collect();
+        let slot_sizes: Vec<_> = types.iter().map(|ty| ty.head_size()).collect();
+
+        if use_alloc {
+            quote! {{
+                let mut out = alloc::vec::Vec::with_capacity(#head_size);
+                #(out.extend_from_slice(&#encodes);)*
+                out
+            }}
+        } else {
+            quote! {{
+                let mut out = [0u8; #head_size];
+                let mut offset = 0usize;
+                #(
+                    let encoded = #encodes;
+                    out[offset..offset + #slot_sizes].copy_from_slice(&encoded);
+                    offset += #slot_sizes;
+                )*
+                out
+            }}
+        }
+    } else {
+        if !use_alloc {
+            panic!("Dynamic ABI encoding requires alloc");
+        }
+
+        let mut writes = Vec::new();
+        let mut offset = 0usize;
+        for (value_expr, ty) in value_exprs.iter().zip(types.iter()) {
+            let slot_size = ty.head_size();
+            let end = offset + slot_size;
+            let encoded = generate_encode(ty, value_expr.clone(), true);
+
+            if ty.is_dynamic() {
+                writes.push(quote! {
+                    {
+                        let __dyn_offset = (#head_size + __tail.len()) as u64;
+                        let mut __off = [0u8; 32];
+                        __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                        __head[#offset..#offset + 32].copy_from_slice(&__off);
+
+                        let __enc = #encoded;
+                        __tail.extend_from_slice(&__enc);
+                    }
+                });
+            } else {
+                writes.push(quote! {
+                    {
+                        let __enc = #encoded;
+                        __head[#offset..#end].copy_from_slice(&__enc);
+                    }
+                });
+            }
+
+            offset = end;
+        }
+
+        quote! {{
+            let mut __head = alloc::vec![0u8; #head_size];
+            let mut __tail = alloc::vec::Vec::new();
+            #(#writes)*
+            let mut out = alloc::vec::Vec::with_capacity(#head_size + __tail.len());
+            out.extend_from_slice(&__head);
+            out.extend_from_slice(&__tail);
+            out
+        }}
+    }
+}
+
 pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -> TokenStream {
     match ty {
         SolType::Address => {
@@ -113,216 +195,168 @@ pub fn generate_encode(ty: &SolType, value_expr: TokenStream, use_alloc: bool) -
         SolType::String => {
             if use_alloc {
                 quote! {{
-                    // Solidity string encoding: offset (32) + length (32) + data (padded to 32)
-                    let s: &str = #value_expr.as_str();
-                    let len = s.len();
-                    let padded_len = (len + 31) / 32 * 32;
-                    let mut out = alloc::vec::Vec::with_capacity(64 + padded_len);
-                    
-                    // Encode offset
-                    out.extend_from_slice(&[0u8; 31]);
-                    out.push(32);
-                    let mut len_bytes = [0u8; 32];
-                    len_bytes[24..32].copy_from_slice(&(len as u64).to_be_bytes());
-                    // Encode length
-                    out.extend_from_slice(&len_bytes);
-                    // Encode data + padding
-                    out.extend_from_slice(s.as_bytes());
-                    out.resize(64 + padded_len, 0);
+                    let __string: &str = #value_expr.as_str();
+                    let __len = __string.len();
+                    let __padded_len = (__len + 31) / 32 * 32;
+                    let mut out = alloc::vec::Vec::with_capacity(32 + __padded_len);
+
+                    let mut __len_bytes = [0u8; 32];
+                    __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
+                    out.extend_from_slice(&__len_bytes);
+                    out.extend_from_slice(__string.as_bytes());
+                    out.resize(32 + __padded_len, 0);
                     out
                 }}
             } else {
                 panic!("String encoding requires alloc");
             }
         }
-        SolType::DynBytes | SolType::Array(_) => {
-            panic!("`DynBytes` & `Array` types require special handling in tuple encoding");
-        }
-        SolType::FixedArray(inner, size) => {
-            let size_lit = *size;
-            let inner_encodes: Vec<_> = (0..*size)
-                .map(|i| {
-                    let idx = i;
-                    generate_encode(inner, quote!(#value_expr[#idx]), use_alloc)
-                })
-                .collect();
+        SolType::DynBytes => {
             if use_alloc {
                 quote! {{
-                    let mut out = alloc::vec::Vec::with_capacity(#size_lit * 32);
-                    #(out.extend_from_slice(&#inner_encodes);)*
+                    let __bytes: &[u8] = &#value_expr;
+                    let __len = __bytes.len();
+                    let __padded_len = (__len + 31) / 32 * 32;
+                    let mut out = alloc::vec::Vec::with_capacity(32 + __padded_len);
+
+                    let mut __len_bytes = [0u8; 32];
+                    __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
+                    out.extend_from_slice(&__len_bytes);
+                    out.extend_from_slice(__bytes);
+                    out.resize(32 + __padded_len, 0);
                     out
                 }}
             } else {
+                panic!("Dynamic bytes encoding requires alloc");
+            }
+        }
+        SolType::Array(inner) => {
+            if !use_alloc {
+                panic!("Dynamic arrays require alloc");
+            }
+
+            let inner_slot_size = inner.head_size();
+            if inner.is_dynamic() {
+                let inner_encode = generate_encode(inner, quote!(__item), true);
                 quote! {{
-                    let mut out = [0u8; #size_lit * 32];
-                    let mut offset = 0;
-                    #(
-                        out[offset..offset + 32].copy_from_slice(&#inner_encodes);
-                        offset += 32;
-                    )*
+                    let __array = &#value_expr;
+                    let __len = __array.len();
+                    let __array_head_size = __len * #inner_slot_size;
+                    let mut out = alloc::vec::Vec::new();
+
+                    let mut __len_bytes = [0u8; 32];
+                    __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
+                    out.extend_from_slice(&__len_bytes);
+
+                    let mut __head = alloc::vec![0u8; __array_head_size];
+                    let mut __tail = alloc::vec::Vec::new();
+                    for (i, __item) in __array.iter().enumerate() {
+                        let __offset = i * #inner_slot_size;
+                        let __dyn_offset = (__array_head_size + __tail.len()) as u64;
+                        let mut __off = [0u8; 32];
+                        __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                        __head[__offset..__offset + 32].copy_from_slice(&__off);
+
+                        let __enc = #inner_encode;
+                        __tail.extend_from_slice(&__enc);
+                    }
+
+                    out.extend_from_slice(&__head);
+                    out.extend_from_slice(&__tail);
+                    out
+                }}
+            } else {
+                let inner_encode = generate_encode(inner, quote!(__item), true);
+                quote! {{
+                    let __array = &#value_expr;
+                    let __len = __array.len();
+                    let mut out = alloc::vec::Vec::new();
+
+                    let mut __len_bytes = [0u8; 32];
+                    __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
+                    out.extend_from_slice(&__len_bytes);
+
+                    for __item in __array.iter() {
+                        let __enc = #inner_encode;
+                        out.extend_from_slice(&__enc);
+                    }
                     out
                 }}
             }
         }
+        SolType::FixedArray(inner, size) => {
+            let element_types = vec![(**inner).clone(); *size];
+            let element_exprs: Vec<_> = (0..*size)
+                .map(|i| {
+                    let idx = syn::Index::from(i);
+                    quote!(#value_expr[#idx])
+                })
+                .collect();
+            generate_encode_sequence(&element_exprs, &element_types, use_alloc)
+        }
         SolType::Tuple(types) => {
-            if types.iter().all(|t| !t.is_dynamic()) {
-                let encodes: Vec<_> = types
-                    .iter()
-                    .enumerate()
-                    .map(|(i, t)| {
-                        let idx = syn::Index::from(i);
-                        generate_encode(t, quote!(#value_expr.#idx), use_alloc)
-                    })
-                    .collect();
-                let total_size = types.iter().map(|t| t.head_size()).sum::<usize>();
-                if use_alloc {
-                    quote! {{
-                        let mut out = alloc::vec::Vec::with_capacity(#total_size);
-                        #(out.extend_from_slice(&#encodes);)*
-                        out
-                    }}
-                } else {
-                    quote! {{
-                        let mut out = [0u8; #total_size];
-                        let mut offset = 0;
-                        #(
-                            let encoded = #encodes;
-                            out[offset..offset + 32].copy_from_slice(&encoded);
-                            offset += 32;
-                        )*
-                        out
-                    }}
-                }
-            } else {
-                panic!("Dynamic tuple encoding not yet implemented");
-            }
+            let element_exprs: Vec<_> = types
+                .iter()
+                .enumerate()
+                .map(|(i, _)| {
+                    let idx = syn::Index::from(i);
+                    quote!(#value_expr.#idx)
+                })
+                .collect();
+            generate_encode_sequence(&element_exprs, types, use_alloc)
         }
     }
 }
 
 /// Encode a sequence of named parameters into ABI calldata.
 /// Generates code that extends a pre-existing `calldata: Vec<u8>` variable.
-/// Handles both all-static sequences (simple concatenation) and mixed
-/// static/dynamic sequences (proper head/tail encoding).
-pub fn generate_encode_params(
-    names: &[syn::Ident],
-    types: &[SolType],
-) -> TokenStream {
-    let has_dynamic = types.iter().any(|t| t.is_dynamic());
-
-    if !has_dynamic {
-        let encodes: Vec<TokenStream> = names
-            .iter()
-            .zip(types.iter())
-            .map(|(name, ty)| {
-                let enc = generate_encode(ty, quote!(#name), true);
-                quote! { calldata.extend_from_slice(&#enc); }
-            })
-            .collect();
-        quote! { #(#encodes)* }
-    } else {
-        let n_params = types.len();
-        let head_size = n_params * 32;
-
-        let mut writes = Vec::new();
-        for (i, (name, ty)) in names.iter().zip(types.iter()).enumerate() {
-            let offset = i * 32;
-            let end = offset + 32;
-
-            if ty.is_dynamic() {
-                match ty {
-                    SolType::String => {
-                        writes.push(quote! {
-                            {
-                                let __dyn_offset = (#head_size + __tail.len()) as u64;
-                                let mut __off = [0u8; 32];
-                                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
-                                __head[#offset..#end].copy_from_slice(&__off);
-
-                                let __s: &str = #name.as_str();
-                                let __len = __s.len();
-                                let __padded_len = (__len + 31) / 32 * 32;
-                                let mut __len_bytes = [0u8; 32];
-                                __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
-                                __tail.extend_from_slice(&__len_bytes);
-                                __tail.extend_from_slice(__s.as_bytes());
-                                __tail.resize(__tail.len() + __padded_len - __len, 0);
-                            }
-                        });
-                    }
-                    SolType::DynBytes => {
-                        writes.push(quote! {
-                            {
-                                let __dyn_offset = (#head_size + __tail.len()) as u64;
-                                let mut __off = [0u8; 32];
-                                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
-                                __head[#offset..#end].copy_from_slice(&__off);
-
-                                let __data: &[u8] = &#name;
-                                let __len = __data.len();
-                                let __padded_len = (__len + 31) / 32 * 32;
-                                let mut __len_bytes = [0u8; 32];
-                                __len_bytes[24..32].copy_from_slice(&(__len as u64).to_be_bytes());
-                                __tail.extend_from_slice(&__len_bytes);
-                                __tail.extend_from_slice(__data);
-                                __tail.resize(__tail.len() + __padded_len - __len, 0);
-                            }
-                        });
-                    }
-                    _ => panic!("Unsupported dynamic type in cross-contract call encoding"),
-                }
-            } else {
-                let enc = generate_encode(ty, quote!(#name), true);
-                writes.push(quote! {
-                    __head[#offset..#end].copy_from_slice(&#enc);
-                });
-            }
-        }
-
-        quote! {
-            {
-                let mut __head = alloc::vec![0u8; #head_size];
-                let mut __tail = alloc::vec::Vec::new();
-                #(#writes)*
-                calldata.extend_from_slice(&__head);
-                calldata.extend_from_slice(&__tail);
-            }
-        }
+pub fn generate_encode_params(names: &[syn::Ident], types: &[SolType]) -> TokenStream {
+    let value_exprs: Vec<_> = names.iter().map(|name| quote!(#name)).collect();
+    let encoded = generate_encode_sequence(&value_exprs, types, true);
+    quote! {
+        calldata.extend_from_slice(&#encoded);
     }
 }
 
 /// Encode parameters using the SolAbi trait (runtime dynamic detection).
 /// Used when types aren't fully resolved at macro expansion time.
 /// Generates code that extends a pre-existing `calldata: Vec<u8>` variable.
-pub fn generate_encode_params_trait(
-    names: &[syn::Ident],
-    types: &[syn::Type],
-) -> TokenStream {
-    let n_params = types.len();
-    let head_size = n_params * 32;
+pub fn generate_encode_params_trait(names: &[syn::Ident], types: &[syn::Type]) -> TokenStream {
+    let head_size_exprs: Vec<_> = types
+        .iter()
+        .map(|ty| quote! { <#ty as pvm_contract::SolAbi>::SLOT_SIZE })
+        .collect();
 
-    let mut writes = Vec::new();
-    for (i, (name, ty)) in names.iter().zip(types.iter()).enumerate() {
-        let offset = i * 32;
-        let end = offset + 32;
-        writes.push(quote! {
-            if <#ty as pvm_contract::SolAbi>::IS_DYNAMIC {
-                let __dyn_offset = (#head_size + __tail.len()) as u64;
-                let mut __off = [0u8; 32];
-                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
-                __head[#offset..#end].copy_from_slice(&__off);
-                <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut __tail);
-            } else {
-                let mut __enc = alloc::vec::Vec::new();
-                <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut __enc);
-                __head[#offset..#end].copy_from_slice(&__enc);
+    let writes: Vec<_> = names
+        .iter()
+        .zip(types.iter())
+        .map(|(name, ty)| {
+            quote! {
+                {
+                    let __slot_size: usize = <#ty as pvm_contract::SolAbi>::SLOT_SIZE;
+                    if <#ty as pvm_contract::SolAbi>::IS_DYNAMIC {
+                        let __dyn_offset = (__head_size + __tail.len()) as u64;
+                        let mut __off = [0u8; 32];
+                        __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                        __head[__offset..__offset + 32].copy_from_slice(&__off);
+                        <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut __tail);
+                    } else {
+                        let mut __enc = alloc::vec::Vec::new();
+                        <#ty as pvm_contract::SolAbi>::abi_encode(&#name, &mut __enc);
+                        __head[__offset..__offset + __slot_size].copy_from_slice(&__enc);
+                    }
+                    __offset += __slot_size;
+                }
             }
-        });
-    }
+        })
+        .collect();
+
     quote! {
         {
-            let mut __head = alloc::vec![0u8; #head_size];
+            let __head_size: usize = 0usize #(+ #head_size_exprs)*;
+            let mut __head = alloc::vec![0u8; __head_size];
             let mut __tail = alloc::vec::Vec::new();
+            let mut __offset = 0usize;
             #(#writes)*
             calldata.extend_from_slice(&__head);
             calldata.extend_from_slice(&__tail);
@@ -335,42 +369,53 @@ pub fn generate_encode_return(types: &[SolType], use_alloc: bool) -> TokenStream
         return quote! { &[] };
     }
 
-    if types.len() == 1 {
-        let encode = generate_encode(&types[0], quote!(result), use_alloc);
-        if use_alloc {
-            return quote! { #encode.to_vec() };
-        } else {
-            return quote! { &#encode };
-        }
+    let value_exprs: Vec<_> = if types.len() == 1 {
+        vec![quote!(result)]
+    } else {
+        types
+            .iter()
+            .enumerate()
+            .map(|(i, _)| {
+                let idx = syn::Index::from(i);
+                quote!(result.#idx)
+            })
+            .collect()
+    };
+
+    let encoded = generate_encode_sequence(&value_exprs, types, use_alloc);
+    if use_alloc {
+        quote! { #encoded }
+    } else {
+        quote! { &#encoded }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quote::format_ident;
+
+    #[test]
+    fn encode_return_uses_head_tail_for_mixed_outputs() {
+        let tokens =
+            generate_encode_return(&[SolType::Uint(64), SolType::String], true).to_string();
+        assert!(tokens.contains("__head"));
+        assert!(tokens.contains("__tail"));
     }
 
-    let encodes: Vec<_> = types
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let idx = syn::Index::from(i);
-            generate_encode(ty, quote!(result.#idx), use_alloc)
-        })
-        .collect();
+    #[test]
+    fn encode_params_supports_tuple_and_dynamic_array_inputs() {
+        let params = vec![format_ident!("player"), format_ident!("ghosts")];
+        let types = vec![
+            SolType::Tuple(vec![SolType::String, SolType::Uint(64)]),
+            SolType::Array(Box::new(SolType::Tuple(vec![
+                SolType::String,
+                SolType::Uint(64),
+            ]))),
+        ];
 
-    let total_size: usize = types.iter().map(|t| t.head_size()).sum();
-
-    if use_alloc {
-        quote! {{
-            let mut out = alloc::vec::Vec::with_capacity(#total_size);
-            #(out.extend_from_slice(&#encodes);)*
-            out
-        }}
-    } else {
-        quote! {{
-            let mut out = [0u8; #total_size];
-            let mut offset = 0;
-            #(
-                let encoded = #encodes;
-                out[offset..offset + 32].copy_from_slice(&encoded);
-                offset += 32;
-            )*
-            &out
-        }}
+        let tokens = generate_encode_params(&params, &types).to_string();
+        assert!(tokens.contains("__array"));
+        assert!(tokens.contains("__tail"));
     }
 }

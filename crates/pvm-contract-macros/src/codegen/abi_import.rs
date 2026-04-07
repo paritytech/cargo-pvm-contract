@@ -7,9 +7,9 @@ use crate::codegen::decode::generate_decode;
 use crate::codegen::encode::generate_encode_params;
 use crate::codegen::generate_cdm_reference;
 use crate::codegen::generate_resolved_return_parts;
-use crate::signature::compute_selector;
 use crate::signature::FunctionSignature;
 use crate::signature::SolType;
+use crate::signature::compute_selector;
 use crate::solidity::to_snake_case;
 
 // ---------------------------------------------------------------------------
@@ -92,9 +92,7 @@ fn parse_abi_param(val: &serde_json::Value) -> Result<AbiParam, String> {
 fn parse_abi_json(json_str: &str) -> Result<Vec<AbiFunction>, String> {
     let value: serde_json::Value =
         serde_json::from_str(json_str).map_err(|e| format!("Invalid ABI JSON: {}", e))?;
-    let arr = value
-        .as_array()
-        .ok_or("ABI JSON must be an array")?;
+    let arr = value.as_array().ok_or("ABI JSON must be an array")?;
 
     let mut functions = Vec::new();
     for entry in arr {
@@ -110,12 +108,20 @@ fn parse_abi_json(json_str: &str) -> Result<Vec<AbiFunction>, String> {
         let inputs = entry
             .get("inputs")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(parse_abi_param).collect::<Result<Vec<_>, _>>())
+            .map(|arr| {
+                arr.iter()
+                    .map(parse_abi_param)
+                    .collect::<Result<Vec<_>, _>>()
+            })
             .unwrap_or(Ok(vec![]))?;
         let outputs = entry
             .get("outputs")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(parse_abi_param).collect::<Result<Vec<_>, _>>())
+            .map(|arr| {
+                arr.iter()
+                    .map(parse_abi_param)
+                    .collect::<Result<Vec<_>, _>>()
+            })
             .unwrap_or(Ok(vec![]))?;
         functions.push(AbiFunction {
             name,
@@ -253,7 +259,9 @@ fn has_named_components(outputs: &[AbiParam]) -> bool {
         _ => return false,
     };
     // Check that at least one component has a non-empty, non-positional name
-    comps.iter().any(|c| !c.name.is_empty() && !c.name.starts_with("_field"))
+    comps
+        .iter()
+        .any(|c| !c.name.is_empty() && !c.name.starts_with("_field"))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,9 +293,10 @@ fn generate_abi_reference_method(func: &AbiFunction) -> Result<TokenStream, Stri
     let param_names: Vec<Ident> = func
         .inputs
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             let name = if p.name.is_empty() {
-                format!("arg{}", 0)
+                format!("arg{}", i)
             } else {
                 to_snake_case(&p.name)
             };
@@ -312,13 +321,11 @@ fn generate_abi_reference_method(func: &AbiFunction) -> Result<TokenStream, Stri
     let encode_block = generate_encode_params(&param_names, &input_types);
 
     // --- Return type and decode ---
-    let (ret_ty, output_setup, decode_return, has_output) =
-        generate_return_handling(func, &output_types)?;
-
-    let output_arg = if has_output {
-        quote! { Some(&mut output_ref) }
+    let (ret_ty, decode_return, has_output) = generate_return_handling(func, &output_types)?;
+    let success_body = if has_output {
+        quote! { Ok(#decode_return) }
     } else {
-        quote! { None }
+        quote! { Ok(()) }
     };
 
     Ok(quote! {
@@ -326,20 +333,11 @@ fn generate_abi_reference_method(func: &AbiFunction) -> Result<TokenStream, Stri
             extern crate alloc;
             #selector_setup
             #encode_block
-            #output_setup
-            let mut output_ref: &mut [u8] = &mut output_buf[..];
-            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
+            let output = pvm_contract::call::call_evm_collect(
                 pvm_contract::CallFlags::ALLOW_REENTRY,
-                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata, #output_arg,
-            );
-            match result {
-                Ok(()) => {
-                    let written = output_ref.len();
-                    let output = &output_buf[..written];
-                    Ok(#decode_return)
-                }
-                Err(e) => Err(pvm_contract::call::CallError::from(e)),
-            }
+                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata,
+            )?;
+            #success_body
         }
     })
 }
@@ -347,7 +345,7 @@ fn generate_abi_reference_method(func: &AbiFunction) -> Result<TokenStream, Stri
 fn generate_return_handling(
     func: &AbiFunction,
     output_types: &[SolType],
-) -> Result<(TokenStream, TokenStream, TokenStream, bool), String> {
+) -> Result<(TokenStream, TokenStream, bool), String> {
     // Check if we should generate a named return struct
     if has_named_components(&func.outputs) {
         let comps = func.outputs[0].components.as_ref().unwrap();
@@ -363,33 +361,27 @@ fn generate_return_handling(
             .map(|c: &AbiParam| format_ident!("{}", to_snake_case(&c.name)))
             .collect();
 
-        let output_size: usize = comp_types.iter().map(|t: &SolType| t.head_size()).sum();
-
-        let mut offset = 0usize;
-        let field_decodes: Vec<TokenStream> = comp_types
+        let tuple_decode =
+            generate_decode(&SolType::Tuple(comp_types.clone()), quote!(output), 0, true);
+        let tuple_bindings: Vec<TokenStream> = field_names
             .iter()
-            .map(|t: &SolType| {
-                let d = generate_decode(t, quote!(output), offset, true);
-                offset += t.head_size();
-                d
+            .enumerate()
+            .map(|(i, name)| {
+                let idx = syn::Index::from(i);
+                quote! { #name: __tuple.#idx }
             })
             .collect();
 
-        let field_assignments: Vec<TokenStream> = field_names
-            .iter()
-            .zip(field_decodes.iter())
-            .map(|(name, decode): (&Ident, &TokenStream)| quote! { #name: #decode })
-            .collect();
-
-        let ret_ty: TokenStream = quote! { #struct_name };
-        let output_setup: TokenStream = quote! { let mut output_buf = [0u8; #output_size]; };
-        let decode_return: TokenStream = quote! {
-            #struct_name {
-                #(#field_assignments),*
-            }
-        };
-
-        Ok((ret_ty, output_setup, decode_return, true))
+        Ok((
+            quote! { #struct_name },
+            quote! {{
+                let __tuple = #tuple_decode;
+                #struct_name {
+                    #(#tuple_bindings),*
+                }
+            }},
+            true,
+        ))
     } else {
         Ok(generate_resolved_return_parts(output_types))
     }
@@ -413,7 +405,10 @@ fn generate_return_struct(func: &AbiFunction) -> Result<Option<TokenStream>, Str
         .map(|c| format_ident!("{}", to_snake_case(&c.name)))
         .collect();
 
-    let field_types: Vec<TokenStream> = comp_types.iter().map(|t: &SolType| t.rust_type(true)).collect();
+    let field_types: Vec<TokenStream> = comp_types
+        .iter()
+        .map(|t: &SolType| t.rust_type(true))
+        .collect();
 
     let result: TokenStream = quote! {
         pub struct #struct_name {
@@ -439,9 +434,8 @@ pub fn expand_abi_import(args: AbiImportArgs) -> syn::Result<TokenStream> {
         )
     })?;
 
-    let functions = parse_abi_json(&json_str).map_err(|e| {
-        syn::Error::new(proc_macro2::Span::call_site(), e)
-    })?;
+    let functions = parse_abi_json(&json_str)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
 
     // Generate return structs for functions with named tuple outputs
     let mut return_structs = Vec::new();
@@ -458,9 +452,8 @@ pub fn expand_abi_import(args: AbiImportArgs) -> syn::Result<TokenStream> {
     // Generate methods
     let mut methods = Vec::new();
     for func in &functions {
-        let method = generate_abi_reference_method(func).map_err(|e| {
-            syn::Error::new(proc_macro2::Span::call_site(), e)
-        })?;
+        let method = generate_abi_reference_method(func)
+            .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
         methods.push(method);
     }
 
@@ -527,9 +520,21 @@ mod tests {
     #[test]
     fn test_parse_tuple_type() {
         let comps = vec![
-            AbiParam { name: "id".into(), type_str: "bytes32".into(), components: None },
-            AbiParam { name: "status".into(), type_str: "uint8".into(), components: None },
-            AbiParam { name: "proposer".into(), type_str: "address".into(), components: None },
+            AbiParam {
+                name: "id".into(),
+                type_str: "bytes32".into(),
+                components: None,
+            },
+            AbiParam {
+                name: "status".into(),
+                type_str: "uint8".into(),
+                components: None,
+            },
+            AbiParam {
+                name: "proposer".into(),
+                type_str: "address".into(),
+                components: None,
+            },
         ];
         let result = parse_abi_type("tuple", Some(&comps)).unwrap();
         assert_eq!(
@@ -567,8 +572,16 @@ mod tests {
             name: "".into(),
             type_str: "tuple".into(),
             components: Some(vec![
-                AbiParam { name: "id".into(), type_str: "bytes32".into(), components: None },
-                AbiParam { name: "status".into(), type_str: "uint8".into(), components: None },
+                AbiParam {
+                    name: "id".into(),
+                    type_str: "bytes32".into(),
+                    components: None,
+                },
+                AbiParam {
+                    name: "status".into(),
+                    type_str: "uint8".into(),
+                    components: None,
+                },
             ]),
         }];
         assert!(has_named_components(&outputs));
@@ -583,9 +596,91 @@ mod tests {
 
         // Multiple outputs (not a named struct case)
         let outputs = vec![
-            AbiParam { name: "".into(), type_str: "uint64".into(), components: None },
-            AbiParam { name: "".into(), type_str: "address".into(), components: None },
+            AbiParam {
+                name: "".into(),
+                type_str: "uint64".into(),
+                components: None,
+            },
+            AbiParam {
+                name: "".into(),
+                type_str: "address".into(),
+                components: None,
+            },
         ];
         assert!(!has_named_components(&outputs));
+    }
+
+    #[test]
+    fn test_generate_reference_method_supports_nested_dynamic_inputs() {
+        let func = AbiFunction {
+            name: "submitArena".into(),
+            inputs: vec![
+                AbiParam {
+                    name: "player".into(),
+                    type_str: "tuple".into(),
+                    components: Some(vec![
+                        AbiParam {
+                            name: "name".into(),
+                            type_str: "string".into(),
+                            components: None,
+                        },
+                        AbiParam {
+                            name: "rating".into(),
+                            type_str: "uint64".into(),
+                            components: None,
+                        },
+                    ]),
+                },
+                AbiParam {
+                    name: "ghosts".into(),
+                    type_str: "tuple[]".into(),
+                    components: Some(vec![
+                        AbiParam {
+                            name: "alias".into(),
+                            type_str: "string".into(),
+                            components: None,
+                        },
+                        AbiParam {
+                            name: "wins".into(),
+                            type_str: "uint64".into(),
+                            components: None,
+                        },
+                    ]),
+                },
+            ],
+            outputs: vec![AbiParam {
+                name: "".into(),
+                type_str: "string".into(),
+                components: None,
+            }],
+        };
+
+        let generated = generate_abi_reference_method(&func).unwrap().to_string();
+        assert!(generated.contains("call_evm_collect"));
+        assert!(generated.contains("submit_arena"));
+    }
+
+    #[test]
+    fn test_generate_reference_method_uses_unique_names_for_unnamed_inputs() {
+        let func = AbiFunction {
+            name: "pair".into(),
+            inputs: vec![
+                AbiParam {
+                    name: "".into(),
+                    type_str: "uint64".into(),
+                    components: None,
+                },
+                AbiParam {
+                    name: "".into(),
+                    type_str: "address".into(),
+                    components: None,
+                },
+            ],
+            outputs: vec![],
+        };
+
+        let generated = generate_abi_reference_method(&func).unwrap().to_string();
+        assert!(generated.contains("arg0 : u64"));
+        assert!(generated.contains("arg1 : pvm_contract :: Address"));
     }
 }

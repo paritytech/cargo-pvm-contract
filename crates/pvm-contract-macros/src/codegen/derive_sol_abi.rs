@@ -11,24 +11,26 @@ pub fn expand_derive_sol_abi(input: DeriveInput) -> Result<TokenStream, syn::Err
             // Newtype: struct Foo(pub InnerType)
             Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
                 let inner_ty = &fields.unnamed[0].ty;
-                Ok(expand_newtype(name, &impl_generics, &ty_generics, where_clause, inner_ty))
+                Ok(expand_newtype(
+                    name,
+                    &impl_generics,
+                    &ty_generics,
+                    where_clause,
+                    inner_ty,
+                ))
             }
             // Named struct: struct Foo { x: u64, y: u64 }
             Fields::Named(fields) => {
                 expand_named_struct(name, &impl_generics, &ty_generics, where_clause, fields)
             }
-            Fields::Unnamed(fields) => {
-                Err(syn::Error::new_spanned(
-                    fields,
-                    "SolAbi can only be derived for newtypes (single-field tuple structs) or named structs",
-                ))
-            }
-            Fields::Unit => {
-                Err(syn::Error::new_spanned(
-                    name,
-                    "SolAbi cannot be derived for unit structs",
-                ))
-            }
+            Fields::Unnamed(fields) => Err(syn::Error::new_spanned(
+                fields,
+                "SolAbi can only be derived for newtypes (single-field tuple structs) or named structs",
+            )),
+            Fields::Unit => Err(syn::Error::new_spanned(
+                name,
+                "SolAbi cannot be derived for unit structs",
+            )),
         },
         Data::Enum(_) => Err(syn::Error::new_spanned(
             name,
@@ -51,32 +53,33 @@ fn expand_newtype(
     inner_ty: &syn::Type,
 ) -> TokenStream {
     // If the newtype wraps Option<T>, resolve the const strings through the inner type
-    let (sol_name_expr, abi_type_expr, abi_components_expr) =
-        if let Some(inner) = unwrap_option_inner(inner_ty) {
-            (
-                quote! {
-                    pvm_contract::const_format::concatcp!(
-                        "(bool,", <#inner as pvm_contract::SolAbi>::SOL_NAME, ")"
-                    )
-                },
-                quote! { "tuple" },
-                quote! {
-                    pvm_contract::const_format::concatcp!(
-                        ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
-                        <#inner as pvm_contract::SolAbi>::ABI_TYPE,
-                        "\"",
-                        <#inner as pvm_contract::SolAbi>::ABI_COMPONENTS,
-                        "}]"
-                    )
-                },
-            )
-        } else {
-            (
-                quote! { <#inner_ty as pvm_contract::SolAbi>::SOL_NAME },
-                quote! { <#inner_ty as pvm_contract::SolAbi>::ABI_TYPE },
-                quote! { <#inner_ty as pvm_contract::SolAbi>::ABI_COMPONENTS },
-            )
-        };
+    let (sol_name_expr, abi_type_expr, abi_components_expr) = if let Some(inner) =
+        unwrap_option_inner(inner_ty)
+    {
+        (
+            quote! {
+                pvm_contract::const_format::concatcp!(
+                    "(bool,", <#inner as pvm_contract::SolAbi>::SOL_NAME, ")"
+                )
+            },
+            quote! { "tuple" },
+            quote! {
+                pvm_contract::const_format::concatcp!(
+                    ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
+                    <#inner as pvm_contract::SolAbi>::ABI_TYPE,
+                    "\"",
+                    <#inner as pvm_contract::SolAbi>::ABI_COMPONENTS,
+                    "}]"
+                )
+            },
+        )
+    } else {
+        (
+            quote! { <#inner_ty as pvm_contract::SolAbi>::SOL_NAME },
+            quote! { <#inner_ty as pvm_contract::SolAbi>::ABI_TYPE },
+            quote! { <#inner_ty as pvm_contract::SolAbi>::ABI_COMPONENTS },
+        )
+    };
 
     quote! {
         impl #impl_generics pvm_contract::SolAbi for #name #ty_generics #where_clause {
@@ -115,19 +118,27 @@ fn expand_named_struct(
 
     // Build SOL_NAME using concatcp! so it works with trait-delegated names (nested structs)
     // For Option<T> fields, resolve through the inner type to avoid placeholder const strings
-    let sol_name_parts: Vec<TokenStream> = field_types.iter().enumerate().map(|(i, ty)| {
-        let comma = if i > 0 { quote! { "," } } else { quote! {} };
-        let type_name = if let Some(inner) = unwrap_option_inner(ty) {
-            quote! { "(bool,", <#inner as pvm_contract::SolAbi>::SOL_NAME, ")" }
-        } else {
-            quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-        };
-        if i > 0 {
-            quote! { #comma, #type_name }
-        } else {
-            quote! { #type_name }
-        }
-    }).collect();
+    let sol_name_parts: Vec<TokenStream> = field_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let comma = if i > 0 {
+                quote! { "," }
+            } else {
+                quote! {}
+            };
+            let type_name = if let Some(inner) = unwrap_option_inner(ty) {
+                quote! { "(bool,", <#inner as pvm_contract::SolAbi>::SOL_NAME, ")" }
+            } else {
+                quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
+            };
+            if i > 0 {
+                quote! { #comma, #type_name }
+            } else {
+                quote! { #type_name }
+            }
+        })
+        .collect();
 
     // Build ABI_COMPONENTS: ,"components":[{field entries}]
     // For Option<T> fields, inline the tuple component structure
@@ -226,7 +237,14 @@ fn expand_named_struct(
             }
 
             fn abi_decode(data: &[u8], offset: usize) -> Self {
-                let sd = &data[offset..];
+                let sd = if <Self as pvm_contract::SolAbi>::IS_DYNAMIC {
+                    let dyn_offset =
+                        pvm_contract::U256::from_be_slice(&data[offset..offset + 32]).as_limbs()[0]
+                            as usize;
+                    &data[dyn_offset..]
+                } else {
+                    &data[offset..]
+                };
                 let mut hp = 0usize;
                 Self {
                     #( #field_idents4: {

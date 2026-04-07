@@ -8,16 +8,16 @@ mod encode;
 mod method;
 mod storage;
 
-pub use abi_import::{expand_abi_import, AbiImportArgs};
-pub use contract::{expand_contract, ContractArgs};
+pub use abi_import::{AbiImportArgs, expand_abi_import};
+pub use contract::{ContractArgs, expand_contract};
 pub use derive_sol_abi::expand_derive_sol_abi;
-pub use method::{expand_constructor, expand_fallback, expand_method, MethodArgs};
+pub use method::{MethodArgs, expand_constructor, expand_fallback, expand_method};
 pub use storage::expand_storage;
 
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use crate::signature::{compute_selector, SolType};
+use crate::signature::{SolType, compute_selector};
 use decode::generate_decode;
 
 /// Generate the `cdm_reference()` function that resolves the contract address at runtime
@@ -96,24 +96,13 @@ pub(super) fn generate_cdm_reference(cdm_name: &str) -> TokenStream {
             // String data
             calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
 
-            // Output buffer: registry returns Option<Address> as tuple(bool isSome, address value)
-            // ABI-encoded: 32 bytes for isSome + 32 bytes for address = 64 bytes
-            let mut output_buf = [0u8; 64];
-            let mut output_ref: &mut [u8] = &mut output_buf[..];
-
-            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
+            let result = pvm_contract::call::call_evm_collect(
                 pvm_contract::CallFlags::ALLOW_REENTRY,
-                &__CDM_REGISTRY_ADDR,
-                u64::MAX,
-                &[0u8; 32],
-                &calldata,
-                Some(&mut output_ref),
+                &__CDM_REGISTRY_ADDR, u64::MAX, &[0u8; 32], &calldata,
             );
 
             match result {
-                Ok(()) => {
-                    let written = output_ref.len();
-                    let output = &output_buf[..written];
+                Ok(output) => {
                     // First word (0..32) is isSome bool, second word (32..64) is the address
                     // Address is 20 bytes right-aligned in the second 32-byte word
                     let is_some = output[31] != 0;
@@ -136,28 +125,16 @@ pub(super) fn generate_cdm_reference(cdm_name: &str) -> TokenStream {
 /// decode expression, and whether there is output — for cross-contract call methods.
 pub(super) fn generate_resolved_return_parts(
     outputs: &[SolType],
-) -> (TokenStream, TokenStream, TokenStream, bool) {
+) -> (TokenStream, TokenStream, bool) {
     match outputs {
-        [] => (
-            quote! { () },
-            quote! { let mut output_buf = [0u8; 0]; },
-            quote! { () },
-            false,
-        ),
+        [] => (quote! { () }, quote! { () }, false),
         [one] => {
             let rt = one.rust_type(true);
-            let output_size = one.head_size();
             let decode = generate_decode(one, quote!(output), 0, true);
-            (
-                quote! { #rt },
-                quote! { let mut output_buf = [0u8; #output_size]; },
-                decode,
-                true,
-            )
+            (quote! { #rt }, decode, true)
         }
         many => {
             let tys: Vec<TokenStream> = many.iter().map(|t| t.rust_type(true)).collect();
-            let output_size: usize = many.iter().map(|t| t.head_size()).sum();
             let mut offset = 0usize;
             let decs: Vec<TokenStream> = many
                 .iter()
@@ -167,12 +144,7 @@ pub(super) fn generate_resolved_return_parts(
                     d
                 })
                 .collect();
-            (
-                quote! { (#(#tys),*) },
-                quote! { let mut output_buf = [0u8; #output_size]; },
-                quote! { (#(#decs),*) },
-                true,
-            )
+            (quote! { (#(#tys),*) }, quote! { (#(#decs),*) }, true)
         }
     }
 }

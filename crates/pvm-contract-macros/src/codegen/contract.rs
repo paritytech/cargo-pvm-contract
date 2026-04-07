@@ -1,13 +1,13 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, LitStr, Token};
+use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
-use super::dispatch::{generate_dispatch_arm, generate_trait_dispatch_arm, MethodInfo};
+use super::dispatch::{MethodInfo, generate_dispatch_arm, generate_trait_dispatch_arm};
 use super::encode::{generate_encode_params, generate_encode_params_trait};
 use super::{generate_cdm_reference, generate_resolved_return_parts, unwrap_option_inner};
-use crate::signature::{compute_selector, FunctionSignature, SolType};
-use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
+use crate::signature::{FunctionSignature, SolType, compute_selector};
+use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
 pub struct ContractArgs {
     pub no_alloc: bool,
@@ -243,29 +243,46 @@ fn parse_contract(
     for item in &content.1 {
         if let syn::Item::Fn(func) = item {
             if has_pvm_attr(&func.attrs, "constructor") {
-                let param_names: Vec<Ident> = func.sig.inputs.iter().filter_map(|arg| {
-                    if let syn::FnArg::Typed(pat_type) = arg {
-                        if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                            return Some(pat_ident.ident.clone());
+                let param_names: Vec<Ident> = func
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter_map(|arg| {
+                        if let syn::FnArg::Typed(pat_type) = arg {
+                            if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                                return Some(pat_ident.ident.clone());
+                            }
                         }
-                    }
-                    None
-                }).collect();
-                let raw_param_types: Vec<syn::Type> = func.sig.inputs.iter().filter_map(|arg| {
-                    if let syn::FnArg::Typed(pat_type) = arg {
-                        Some((*pat_type.ty).clone())
-                    } else {
                         None
-                    }
-                }).collect();
-                let param_types: Vec<SolType> = func.sig.inputs.iter().filter_map(|arg| {
-                    if let syn::FnArg::Typed(pat_type) = arg {
-                        SolType::from_rust_type(&pat_type.ty)
-                    } else {
-                        None
-                    }
-                }).collect();
-                let all_resolved = raw_param_types.iter().all(|ty| SolType::from_rust_type(ty).is_some());
+                    })
+                    .collect();
+                let raw_param_types: Vec<syn::Type> = func
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter_map(|arg| {
+                        if let syn::FnArg::Typed(pat_type) = arg {
+                            Some((*pat_type.ty).clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let param_types: Vec<SolType> = func
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter_map(|arg| {
+                        if let syn::FnArg::Typed(pat_type) = arg {
+                            SolType::from_rust_type(&pat_type.ty)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                let all_resolved = raw_param_types
+                    .iter()
+                    .all(|ty| SolType::from_rust_type(ty).is_some());
                 constructor = Some(ConstructorInfo {
                     fn_name: func.sig.ident.clone(),
                     param_names,
@@ -352,7 +369,9 @@ fn parse_contract(
                 let (all_inputs_resolved, return_resolved) = if is_sol_interface {
                     (true, true)
                 } else {
-                    let inputs_ok = param_types.iter().all(|ty| SolType::from_rust_type(ty).is_some());
+                    let inputs_ok = param_types
+                        .iter()
+                        .all(|ty| SolType::from_rust_type(ty).is_some());
                     let return_ok = match &return_type {
                         None => true,
                         Some(ty) => SolType::from_rust_type(ty).is_some(),
@@ -463,8 +482,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         } else if ctor.all_resolved {
             let decodes = generate_decode_params(&ctor.param_types, use_alloc);
             let min_size = calculate_min_input_size(&ctor.param_types);
-            let decode_stmts: Vec<_> = param_names.iter().zip(decodes.iter())
-                .map(|(name, decode)| quote! { let #name = #decode; }).collect();
+            let decode_stmts: Vec<_> = param_names
+                .iter()
+                .zip(decodes.iter())
+                .map(|(name, decode)| quote! { let #name = #decode; })
+                .collect();
             let call_args: Vec<_> = param_names.iter().map(|n| quote!(#n)).collect();
 
             quote! {
@@ -491,15 +513,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         } else {
             // Trait-based constructor decode for unresolved types
             let raw_types = &ctor.raw_param_types;
-            let head_size_exprs: Vec<TokenStream> = raw_types.iter().map(|ty| {
-                quote! { <#ty as pvm_contract::SolAbi>::HEAD_SIZE }
-            }).collect();
-            let decode_stmts: Vec<TokenStream> = param_names.iter().zip(raw_types.iter()).map(|(name, ty)| {
-                quote! {
-                    let #name = <#ty as pvm_contract::SolAbi>::abi_decode(input, __offset);
-                    __offset += <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
-                }
-            }).collect();
+            let head_size_exprs: Vec<TokenStream> = raw_types
+                .iter()
+                .map(|ty| {
+                    quote! { <#ty as pvm_contract::SolAbi>::SLOT_SIZE }
+                })
+                .collect();
+            let decode_stmts: Vec<TokenStream> = param_names
+                .iter()
+                .zip(raw_types.iter())
+                .map(|(name, ty)| {
+                    quote! {
+                        let #name = <#ty as pvm_contract::SolAbi>::abi_decode(input, __offset);
+                        __offset += <#ty as pvm_contract::SolAbi>::SLOT_SIZE;
+                    }
+                })
+                .collect();
             let call_args: Vec<_> = param_names.iter().map(|n| quote!(#n)).collect();
 
             quote! {
@@ -535,7 +564,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     // Partition methods: static (all resolved) use match arms, trait methods use if-else blocks
-    let (static_methods, trait_methods): (Vec<_>, Vec<_>) = parsed.methods.iter()
+    let (static_methods, trait_methods): (Vec<_>, Vec<_>) = parsed
+        .methods
+        .iter()
         .partition(|m| m.all_inputs_resolved && m.return_resolved);
 
     let static_dispatch_arms: Vec<_> = static_methods
@@ -544,7 +575,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         .collect();
 
     // Methods with resolved inputs but unresolved return also go through match arms
-    let mixed_methods: Vec<_> = parsed.methods.iter()
+    let mixed_methods: Vec<_> = parsed
+        .methods
+        .iter()
         .filter(|m| m.all_inputs_resolved && !m.return_resolved)
         .collect();
     let mixed_dispatch_arms: Vec<_> = mixed_methods
@@ -553,7 +586,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         .collect();
 
     // Methods with unresolved inputs go through if-else blocks in the _ arm
-    let trait_dispatch_blocks: Vec<_> = trait_methods.iter()
+    let trait_dispatch_blocks: Vec<_> = trait_methods
+        .iter()
         .filter(|m| !m.all_inputs_resolved)
         .map(|m| generate_trait_dispatch_arm(m, mod_name))
         .collect();
@@ -676,7 +710,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let reference_type = generate_reference_type(&parsed.methods, args.cdm.as_deref());
     let abi_section = generate_abi_section(&parsed, sol_interface.as_ref());
 
-    let cdm_section = args.cdm.as_deref().map(|name| generate_cdm_section(name, is_entry_point));
+    let cdm_section = args
+        .cdm
+        .as_deref()
+        .map(|name| generate_cdm_section(name, is_entry_point));
 
     if is_entry_point {
         Ok(quote! {
@@ -721,7 +758,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     }
 }
 
-fn generate_abi_section(parsed: &ParsedContract, sol_interface: Option<&SolInterface>) -> TokenStream {
+fn generate_abi_section(
+    parsed: &ParsedContract,
+    sol_interface: Option<&SolInterface>,
+) -> TokenStream {
     let is_sol = sol_interface.is_some();
 
     // Build a flat list of concatcp expressions. Each element is a single expr
@@ -735,9 +775,18 @@ fn generate_abi_section(parsed: &ParsedContract, sol_interface: Option<&SolInter
     if let Some(ref ctor) = parsed.constructor {
         first_entry = false;
         parts.push(quote! { "{\"type\":\"constructor\",\"inputs\":[" });
-        push_abi_params(&mut parts, &ctor.param_names, &ctor.raw_param_types,
-            if ctor.all_resolved { Some(&ctor.param_types) } else { None },
-            ctor.all_resolved, &ctor.param_types);
+        push_abi_params(
+            &mut parts,
+            &ctor.param_names,
+            &ctor.raw_param_types,
+            if ctor.all_resolved {
+                Some(&ctor.param_types)
+            } else {
+                None
+            },
+            ctor.all_resolved,
+            &ctor.param_types,
+        );
         parts.push(quote! { "],\"stateMutability\":\"nonpayable\"}" });
     }
 
@@ -749,20 +798,41 @@ fn generate_abi_section(parsed: &ParsedContract, sol_interface: Option<&SolInter
         first_entry = false;
 
         let method_name = &method.signature.name;
-        let mutability = if method.return_type.is_some() { "view" } else { "nonpayable" };
+        let mutability = if method.return_type.is_some() {
+            "view"
+        } else {
+            "nonpayable"
+        };
 
         parts.push(quote! { "{\"type\":\"function\",\"name\":\"" });
         parts.push(quote! { #method_name });
         parts.push(quote! { "\",\"inputs\":[" });
 
-        push_abi_params(&mut parts, &method.param_names, &method.param_types,
-            if is_sol { Some(&method.signature.inputs) } else { None },
-            is_sol, &method.signature.inputs);
+        push_abi_params(
+            &mut parts,
+            &method.param_names,
+            &method.param_types,
+            if is_sol {
+                Some(&method.signature.inputs)
+            } else {
+                None
+            },
+            is_sol,
+            &method.signature.inputs,
+        );
 
         parts.push(quote! { "],\"outputs\":[" });
 
-        push_abi_outputs(&mut parts, &method.return_type,
-            if is_sol { &method.signature.outputs } else { &[] }, is_sol);
+        push_abi_outputs(
+            &mut parts,
+            &method.return_type,
+            if is_sol {
+                &method.signature.outputs
+            } else {
+                &[]
+            },
+            is_sol,
+        );
 
         parts.push(quote! { "],\"stateMutability\":\"" });
         parts.push(quote! { #mutability });
@@ -944,11 +1014,22 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
 
     // --- Varying piece 1: function params ---
     let params: Vec<TokenStream> = if fully_resolved {
-        method.param_names.iter().zip(sig.inputs.iter())
-            .map(|(name, ty)| { let rt = ty.rust_type(true); quote! { #name: #rt } }).collect()
+        method
+            .param_names
+            .iter()
+            .zip(sig.inputs.iter())
+            .map(|(name, ty)| {
+                let rt = ty.rust_type(true);
+                quote! { #name: #rt }
+            })
+            .collect()
     } else {
-        method.param_names.iter().zip(method.param_types.iter())
-            .map(|(name, ty)| quote! { #name: #ty }).collect()
+        method
+            .param_names
+            .iter()
+            .zip(method.param_types.iter())
+            .map(|(name, ty)| quote! { #name: #ty })
+            .collect()
     };
 
     // --- Varying piece 2: selector + calldata init ---
@@ -958,9 +1039,12 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
     } else {
         let sol_name = &sig.name;
         let param_types = &method.param_types;
-        let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
-            quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-        }).collect();
+        let sol_name_exprs: Vec<TokenStream> = param_types
+            .iter()
+            .map(|ty| {
+                quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
+            })
+            .collect();
         quote! {
             let __sel = pvm_contract::compute_selector(#sol_name, &[
                 #(#sol_name_exprs),*
@@ -977,33 +1061,23 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
     };
 
     // --- Varying pieces 4-6: return type, output buffer, decode ---
-    let (ret_ty, output_setup, decode_return, has_output) = if fully_resolved {
+    let (ret_ty, decode_return, has_output) = if fully_resolved {
         generate_resolved_return_parts(&sig.outputs)
     } else {
         match &method.return_type {
-            None => (
-                quote! { () },
-                quote! { let mut output_buf = alloc::vec![0u8; 0usize]; },
-                quote! { () },
-                false,
-            ),
+            None => (quote! { () }, quote! { () }, false),
             Some(ty) => (
                 quote! { #ty },
-                quote! {
-                    let __out_size: usize = <#ty as pvm_contract::SolAbi>::HEAD_SIZE;
-                    let mut output_buf = alloc::vec![0u8; __out_size];
-                },
                 quote! { <#ty as pvm_contract::SolAbi>::abi_decode(output, 0) },
                 true,
             ),
         }
     };
 
-    // --- Varying piece 7: output_arg ---
-    let output_arg = if has_output {
-        quote! { Some(&mut output_ref) }
+    let success_body = if has_output {
+        quote! { Ok(#decode_return) }
     } else {
-        quote! { None }
+        quote! { Ok(()) }
     };
 
     // --- Single function body template ---
@@ -1012,20 +1086,11 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
             extern crate alloc;
             #selector_setup
             #encode_block
-            #output_setup
-            let mut output_ref: &mut [u8] = &mut output_buf[..];
-            let result = <pvm_contract::api as pvm_contract::HostFn>::call_evm(
+            let output = pvm_contract::call::call_evm_collect(
                 pvm_contract::CallFlags::ALLOW_REENTRY,
-                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata, #output_arg,
-            );
-            match result {
-                Ok(()) => {
-                    let written = output_ref.len();
-                    let output = &output_buf[..written];
-                    Ok(#decode_return)
-                }
-                Err(e) => Err(pvm_contract::call::CallError::from(e)),
-            }
+                self.addr.as_fixed_bytes(), u64::MAX, &[0u8; 32], &calldata,
+            )?;
+            #success_body
         }
     }
 }
