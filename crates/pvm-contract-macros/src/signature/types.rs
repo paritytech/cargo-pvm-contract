@@ -147,6 +147,9 @@ impl SolType {
             "i8" => Some(SolType::Int(8)),
             "bool" => Some(SolType::Bool),
             "String" | "alloc::string::String" => Some(SolType::String),
+            "Bytes" | "pvm_contract_types::Bytes" | "::pvm_contract_types::Bytes" => {
+                Some(SolType::DynBytes)
+            }
             _ => Some(SolType::Custom(type_str)),
         }
     }
@@ -322,5 +325,12 @@ mod tests {
         let ty: syn::Type = syn::parse_str("String").unwrap();
         let sol = SolType::from_rust_type(&ty).unwrap();
         assert_eq!(sol, SolType::String);
+    }
+
+    #[test]
+    fn maps_bytes_to_dyn_bytes() {
+        let ty: syn::Type = syn::parse_str("Bytes").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::DynBytes);
     }
 }

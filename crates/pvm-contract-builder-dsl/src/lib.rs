@@ -79,6 +79,11 @@ impl ContractBuilder {
     ///
     /// Panics if more than 16 methods are registered.
     pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
+        assert!(
+            self.len < MAX_METHODS,
+            "ContractBuilder: exceeded MAX_METHODS ({})",
+            MAX_METHODS
+        );
         self.methods[self.len] = (selector, handler);
         self.len += 1;
         self
@@ -131,5 +136,21 @@ impl ContractBuilder {
         }
 
         H::return_value(ReturnFlags::REVERT, b"UnknownSelector")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_handler(_: &[u8]) {}
+
+    #[test]
+    #[should_panic(expected = "MAX_METHODS")]
+    fn method_panics_on_overflow() {
+        let mut builder = ContractBuilder::new();
+        for i in 0..=MAX_METHODS {
+            builder = builder.method([i as u8, 0, 0, 0], dummy_handler);
+        }
     }
 }

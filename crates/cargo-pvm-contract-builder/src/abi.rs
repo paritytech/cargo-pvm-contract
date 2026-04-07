@@ -163,21 +163,73 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     Ok(Some(AbiJson(items)))
 }
 
+/// Find the index of the closing `)` that matches the `(` at `start`.
+fn find_matching_paren(s: &str, start: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (i, ch) in s[start..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(start + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split parameters at top-level commas, respecting nested parens and brackets.
+fn split_top_level(params_str: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut depth = 0;
+    let mut current = String::new();
+
+    for ch in params_str.chars() {
+        match ch {
+            '(' | '[' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' | ']' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                if !current.trim().is_empty() {
+                    params.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    if !current.trim().is_empty() {
+        params.push(current.trim().to_string());
+    }
+
+    params
+}
+
 pub(crate) fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
     let line = line.strip_prefix("function ")?.trim();
 
     let paren_start = line.find('(')?;
     let name = line[..paren_start].trim().to_string();
 
-    let paren_end = line.find(')')?;
+    let paren_end = find_matching_paren(line, paren_start)?;
     let params_str = &line[paren_start + 1..paren_end];
     let inputs = parse_sol_params(params_str);
 
     let outputs = if let Some(returns_idx) = line.find("returns") {
         let after_returns = &line[returns_idx + 7..];
         if let Some(start) = after_returns.find('(') {
-            if let Some(end) = after_returns.find(')') {
-                parse_sol_params(&after_returns[start + 1..end])
+            let abs_start = returns_idx + 7 + start;
+            if let Some(end) = find_matching_paren(line, abs_start) {
+                parse_sol_params(&line[abs_start + 1..end])
             } else {
                 vec![]
             }
@@ -212,10 +264,10 @@ pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
         return vec![];
     }
 
-    params_str
-        .split(',')
+    split_top_level(params_str)
+        .into_iter()
         .filter_map(|p| {
-            let p = p.trim();
+            let p = p.trim().to_string();
             let parts: Vec<&str> = p.split_whitespace().collect();
             if parts.is_empty() {
                 return None;
@@ -538,5 +590,28 @@ version = "0.1.0"
 
         let path = resolve_bin_source_path(dir.path(), "mybin").unwrap();
         assert_eq!(path, dir.path().join("src/bin/mybin.rs"));
+    }
+
+    #[test]
+    fn parse_function_with_tuple_param() {
+        let item = parse_sol_function_line(
+            "function foo((address,uint256) param) external returns (bool)",
+        )
+        .unwrap();
+        if let AbiItem::Function {
+            name,
+            inputs,
+            outputs,
+            ..
+        } = &item
+        {
+            assert_eq!(name, "foo");
+            assert_eq!(inputs.len(), 1);
+            assert_eq!(inputs[0].param_type, "(address,uint256)");
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].param_type, "bool");
+        } else {
+            panic!("expected Function");
+        }
     }
 }

@@ -255,7 +255,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///         let input = &call_data[4..call_data_len];
 ///
-///         if route(selector, input).is_some() { return; }
+///         if route(selector, input).is_some() {
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::empty(), &[]);
+///         }
 ///         // fallback or revert
 ///     }
 /// }
