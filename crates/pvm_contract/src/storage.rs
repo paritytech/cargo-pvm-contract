@@ -87,7 +87,8 @@ pub fn get_with_buffer<T: Decode, const N: usize>(key: &StorageKey) -> Option<T>
 
     match api::get_storage(StorageFlags::empty(), key, &mut output) {
         Ok(_) => {
-            let bytes_read = N - output.len();
+            let bytes_read = output.len();
+            let _ = output;
             T::decode(&mut &buffer[..bytes_read]).ok()
         }
         Err(_) => None,
@@ -102,7 +103,8 @@ pub fn set<T: Encode>(key: &StorageKey, value: &T) {
 
 /// Remove a value from storage.
 pub fn remove(key: &StorageKey) {
-    api::set_storage(StorageFlags::empty(), key, &[]);
+    let zero = [0u8; 32];
+    api::set_storage_or_clear(StorageFlags::empty(), key, &zero);
 }
 
 /// Check if a key exists in storage.
