@@ -60,7 +60,12 @@ fn has_balanced_parens(s: &str) -> bool {
     for ch in s.chars() {
         match ch {
             '(' => depth += 1,
-            ')' => depth -= 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
             _ => {}
         }
     }

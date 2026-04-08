@@ -71,7 +71,14 @@ For advanced use cases (e.g. hand-written `call()` with custom fallback logic),
 pub extern "C" fn call() {
     let call_data_len = HostFnImpl::call_data_size() as usize;
     let mut buf = [0u8; 256];
+    if call_data_len > 256 {
+        HostFnImpl::return_value(ReturnFlags::REVERT, b"CalldataTooLarge");
+    }
     HostFnImpl::call_data_copy(&mut buf[..call_data_len], 0);
+
+    if call_data_len < 4 {
+        HostFnImpl::return_value(ReturnFlags::REVERT, b"NoSelector");
+    }
 
     let selector: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
     let input = &buf[4..call_data_len];

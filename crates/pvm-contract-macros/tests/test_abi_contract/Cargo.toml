@@ -27,6 +27,10 @@ path = "src/multi_method.rs"
 name = "nested-custom-type"
 path = "src/nested_custom_type.rs"
 
+[[bin]]
+name = "dynamic-custom-return"
+path = "src/dynamic_custom_return.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-types = { path = "../../../pvm-contract-types" }

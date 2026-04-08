@@ -465,9 +465,9 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ## Return encoding (alloc mode)
 ///
-/// In alloc mode, the macro inspects the return type at expansion time. Static types
-/// use a stack buffer (via `StaticEncodedLen`), while dynamic types (String, `Vec<T>`,
-/// `Bytes`) use heap allocation:
+/// In alloc mode, the generated code uses a compile-time `IS_DYNAMIC` branch.
+/// Static types use a stack buffer; dynamic types (String, `Vec<T>`, `Bytes`)
+/// use heap allocation. The compiler eliminates the dead branch at compile time:
 ///
 /// ```ignore
 /// #[pvm_contract::method]
@@ -477,11 +477,21 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// let result = greeting();
 ///
-/// let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
-/// let mut __buf = alloc::vec![0u8; __len];
-/// <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-/// pallet_revive_uapi::HostFnImpl::return_value(
-///     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// if <String as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+///     let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
+///     let mut __buf = alloc::vec![0u8; __len];
+///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// } else {
+///     let mut __buf = [0u8; <String as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
+///     let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
+///     if __len <= __buf.len() {
+///         <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
+///         pallet_revive_uapi::HostFnImpl::return_value(
+///             pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
+///     }
+/// }
 /// ```
 #[proc_macro_attribute]
 pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
