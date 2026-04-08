@@ -74,3 +74,11 @@ fn nested_custom_type_produces_valid_abi() {
         expected_abi("nested_custom_type"),
     );
 }
+
+#[test]
+fn dynamic_custom_return_produces_valid_abi() {
+    assert_eq!(
+        cargo_run_abi("dynamic-custom-return"),
+        expected_abi("dynamic_custom_return"),
+    );
+}

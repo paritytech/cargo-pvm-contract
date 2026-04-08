@@ -33,7 +33,7 @@ path = "src/dynamic_custom_return.rs"
 
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
-pvm-contract-types = { path = "../../../pvm-contract-types" }
+pvm-contract-types = { path = "../../../pvm-contract-types", features = ["alloc"] }
 pallet-revive-uapi = { version = "0.10", default-features = false }
 ruint = { version = "1.17", default-features = false }
 

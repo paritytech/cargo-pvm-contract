@@ -25,4 +25,13 @@ mod my_contract {
             name: String::from("hello"),
         }
     }
+
+    #[pvm_contract_macros::method]
+    pub fn process(data: Named, flag: bool) -> u64 {
+        if flag {
+            data.id
+        } else {
+            0
+        }
+    }
 }

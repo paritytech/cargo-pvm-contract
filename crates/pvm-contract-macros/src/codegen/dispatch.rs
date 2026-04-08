@@ -105,7 +105,15 @@ fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
 fn build_output_size_expr(outputs: &[syn::Type]) -> TokenStream {
     let size_exprs: Vec<TokenStream> = outputs
         .iter()
-        .map(|ty| quote! { <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE })
+        .map(|ty| {
+            quote! {
+                if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+                    32usize
+                } else {
+                    <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE
+                }
+            }
+        })
         .collect();
     quote! { 0 #(+ #size_exprs)* }
 }
