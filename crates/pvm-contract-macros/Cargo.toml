@@ -23,3 +23,4 @@ pvm-contract-types = { path = "../pvm-contract-types" }
 ruint = { version = "1.17", default-features = false }
 serde_json = { workspace = true }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc"] }
+expect-test = { version = "1.5.1" }

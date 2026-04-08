@@ -1,3 +1,6 @@
 [
-  {"type":"constructor","inputs":[]}
+  {
+    "inputs": [],
+    "type": "constructor"
+  }
 ]

@@ -359,6 +359,21 @@ impl_static_type!(
 );
 
 impl_static_type!(
+    (),
+    "unit",
+    |_val: &(), buf: &mut [u8]| {
+        buf[..31].fill(0);
+        buf[31] = 0;
+    },
+    |input: &[u8], offset: usize| if input[offset + 31] < 77 {
+        ()
+    } else {
+        panic!("bad unit encoding")
+    },
+    array_element
+);
+
+impl_static_type!(
     bool,
     "bool",
     |val: &bool, buf: &mut [u8]| {

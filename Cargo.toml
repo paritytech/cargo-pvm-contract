@@ -4,6 +4,7 @@ members = [
     "crates/cargo-pvm-contract-builder",
     "crates/pvm-contract-macros",
     "crates/pvm-contract-types",
+    "crates/pvm-contract-core",
     "crates/pvm-bump-allocator",
     "crates/pvm-contract-benchmarks",
     "crates/pvm-contract-builder-dsl",

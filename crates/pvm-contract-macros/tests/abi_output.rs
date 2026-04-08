@@ -7,7 +7,7 @@ fn test_abi_contract_dir() -> PathBuf {
         .join("test_abi_contract")
 }
 
-fn cargo_run_abi(bin_name: &str) -> serde_json::Value {
+fn cargo_run_abi(bin_name: &str) -> String {
     let dir = test_abi_contract_dir();
 
     let output = Command::new(env!("CARGO"))
@@ -27,37 +27,26 @@ fn cargo_run_abi(bin_name: &str) -> serde_json::Value {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("invalid utf8 in stdout");
-    serde_json::from_str(&stdout).expect("failed to parse ABI JSON")
-}
-
-fn expected_abi(name: &str) -> serde_json::Value {
-    let path = test_abi_contract_dir().join(format!("abi_{name}.json"));
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    serde_json::from_str(&content)
-        .unwrap_or_else(|e| panic!("failed to parse {}: {e}", path.display()))
+    serde_json::to_string_pretty(
+        &serde_json::from_str::<serde_json::Value>(&stdout).expect("failed to parse ABI JSON"),
+    )
+    .expect("failed to serialzie json abi")
 }
 
 #[test]
 fn constructor_with_params_produces_valid_abi() {
-    assert_eq!(
-        cargo_run_abi("constructor-with-params"),
-        expected_abi("constructor_with_params"),
-    );
+    expect_test::expect_file!("./test_abi_contract/abi_constructor_with_params.json")
+        .assert_eq(&cargo_run_abi("constructor-with-params"));
 }
 
 #[test]
 fn constructor_no_params_produces_valid_abi() {
-    assert_eq!(
-        cargo_run_abi("constructor-no-params"),
-        expected_abi("constructor_no_params"),
-    );
+    expect_test::expect_file!("./test_abi_contract/abi_constructor_no_params.json")
+        .assert_eq(&cargo_run_abi("constructor-no-params"));
 }
 
 #[test]
 fn custom_type_method_produces_valid_abi() {
-    assert_eq!(
-        cargo_run_abi("custom-type-method"),
-        expected_abi("custom_type_method"),
-    );
+    expect_test::expect_file!("./test_abi_contract/abi_custom_type_method.json")
+        .assert_eq(&cargo_run_abi("custom-type-method"));
 }

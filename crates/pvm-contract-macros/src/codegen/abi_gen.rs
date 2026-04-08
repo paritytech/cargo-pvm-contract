@@ -135,7 +135,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         let mut __first_output = true;
         #(#output_entries)*
 
-        __abi.push_str("]}");
+        __abi.push_str("],\"stateMutability\":\"payable\"}");
     })
 }
 
