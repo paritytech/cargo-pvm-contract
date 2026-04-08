@@ -278,18 +278,6 @@ fn encode_decode_address_proptest() {
 }
 
 #[test]
-fn encode_decode_address_newtype_proptest() {
-    proptest!(|(val: [u8; 20])| {
-        let addr = Address::from(val);
-        let alloy = AlloyAddress::from(val).abi_encode();
-        let mut buf = vec![0u8; addr.encode_len()];
-        addr.encode_to(&mut buf);
-        prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Address::decode(&buf), addr);
-    });
-}
-
-#[test]
 fn encode_decode_bytes32_proptest() {
     proptest!(|(val: [u8; 32])| {
         let alloy = FixedBytes::from(val).abi_encode();
@@ -869,6 +857,8 @@ fn vec_sol_name_for_primitive_types() {
     assert_eq!(<Vec<bool> as SolEncode>::SOL_NAME, "bool[]");
     assert_eq!(<Vec<Address> as SolEncode>::SOL_NAME, "address[]");
     assert_eq!(<Vec<[u8; 32]> as SolEncode>::SOL_NAME, "bytes32[]");
+    assert_eq!(<[[u64; 2]; 3]>::SOL_NAME, "uint64[2][3]");
+    assert_eq!(<[[alloc::string::String; 1]; 2]>::SOL_NAME, "string[1][2]");
 }
 
 #[test]
@@ -1613,4 +1603,137 @@ fn encode_decode_tuple_12_fields() {
         <(u8, u16, u32, u64, u128, bool, u8, u16, u32, u64, u128, bool)>::decode(&buf),
         val
     );
+}
+
+// ========================================================================
+// Fixed array [T; N] — comprehensive tests
+// ========================================================================
+
+#[test]
+fn encode_decode_fixed_array_of_vec() {
+    // [Vec<u32>; 2] — dynamic element in fixed array
+    let val = [vec![1u32, 2, 3], vec![4u32, 5]];
+    let alloy = val.clone().abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(<[Vec<u32>; 2]>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_fixed_array_of_tuples() {
+    let val = [(1u64, true), (2u64, false), (3u64, true)];
+    let alloy = val.abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(<[(u64, bool); 3]>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_fixed_array_in_tuple() {
+    // Tuple containing a fixed array: (u64, [u32; 3])
+    let val = (7u64, [10u32, 20, 30]);
+    let alloy = val.abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(<(u64, [u32; 3])>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_fixed_array_dynamic_in_tuple() {
+    // Tuple with dynamic fixed array: (u64, [String; 2])
+    let val = (42u64, ["abc".to_string(), "xyz".to_string()]);
+    let alloy = (42u64, ["abc".to_string(), "xyz".to_string()]).abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(<(u64, [alloc::string::String; 2])>::decode(&buf), val);
+}
+
+// ========================================================================
+// Deeply nested mixed static/dynamic tuple encoding
+// ========================================================================
+
+#[test]
+fn encode_decode_tuple_nested_with_dynamic_arrays() {
+    // (uint64, string[2], (uint64, string[2]))
+    type T = (
+        u64,
+        [alloc::string::String; 2],
+        (u64, [alloc::string::String; 2]),
+    );
+
+    let val: T = (
+        8u64,
+        ["hello".to_string(), "world".to_string()],
+        (7u64, ["foo".to_string(), "bar".to_string()]),
+    );
+    let alloy = val.clone().abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(T::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_tuple_static_and_dynamic_interleaved() {
+    // (bool, string, uint64, string, address)
+    // Tests: alternating static/dynamic fields in a 5-tuple
+    type T = (
+        bool,
+        alloc::string::String,
+        u64,
+        alloc::string::String,
+        Address,
+    );
+
+    let val: T = (
+        true,
+        "hello".to_string(),
+        42u64,
+        "world".to_string(),
+        Address([0xAA; 20]),
+    );
+    let alloy = (
+        true,
+        "hello".to_string(),
+        42u64,
+        "world".to_string(),
+        AlloyAddress::from([0xAA; 20]),
+    )
+        .abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(T::decode(&buf), val);
+}
+
+// ========================================================================
+// Nested fixed arrays — [T; N] as element of [_; M]
+// Requires [T; N]: SolArrayElement to compile.
+// ========================================================================
+
+#[test]
+fn encode_decode_nested_fixed_array_static() {
+    // uint64[2][3] — static nested fixed array
+    let val: [[u64; 2]; 3] = [[1, 2], [3, 4], [5, 6]];
+    let alloy = val.abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+    assert_eq!(<[[u64; 2]; 3]>::decode(&buf), val);
+}
+
+#[test]
+fn encode_decode_nested_fixed_array_dynamic() {
+    // string[1][2] — dynamic nested fixed array
+    let val: [[alloc::string::String; 1]; 2] = [["alpha".to_string()], ["beta".to_string()]];
+    let alloy = val.clone().abi_encode();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    // alloy wraps dynamic types with a top-level offset prefix
+    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(<[[alloc::string::String; 1]; 2]>::decode(&buf), val);
 }

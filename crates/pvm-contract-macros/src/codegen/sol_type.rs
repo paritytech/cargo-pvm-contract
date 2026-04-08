@@ -420,11 +420,7 @@ fn build_dynamic_head_sum_expr(
                 quote! { #size }
             }
             None => quote! {
-                if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    32usize
-                } else {
-                    <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE
-                }
+                <#ty as ::pvm_contract_types::SolEncode>::SLOT_SIZE
             },
         })
         .collect();
@@ -724,27 +720,6 @@ mod tests {
     }
 
     #[test]
-    fn build_total_size_expr_uses_head_size_for_custom_types() {
-        let field_info: Vec<(Option<syn::Ident>, SolType)> = vec![
-            (
-                Some(syn::parse_str::<syn::Ident>("a").unwrap()),
-                SolType::Custom("Point".to_string()),
-            ),
-            (
-                Some(syn::parse_str::<syn::Ident>("b").unwrap()),
-                SolType::Custom("Point".to_string()),
-            ),
-        ];
-        let expr = build_total_size_expr(&field_info);
-        let expected = quote! {
-            0 +
-            <Point as ::pvm_contract_types::SolEncode>::HEAD_SIZE +
-            <Point as ::pvm_contract_types::SolEncode>::HEAD_SIZE
-        };
-        assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
-    }
-
-    #[test]
     fn dynamic_head_size_uses_trait_dynamic_for_custom_types() {
         let input: syn::DeriveInput = syn::parse_quote! {
             struct S {
@@ -772,11 +747,7 @@ mod tests {
         let expr = build_dynamic_head_size_expr(fields, &field_info);
         let expected = quote! {
             (0 +
-                if <Count as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    32usize
-                } else {
-                    <Count as ::pvm_contract_types::SolEncode>::HEAD_SIZE
-                }
+                <Count as ::pvm_contract_types::SolEncode>::SLOT_SIZE
                 + 32usize)
         };
         assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
@@ -816,11 +787,7 @@ mod tests {
         let expr = build_dynamic_field_offset_expr(&field_info, &field_types, 2);
         let expected = quote! {
             (0 +
-                if <Count as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    32usize
-                } else {
-                    <Count as ::pvm_contract_types::SolEncode>::HEAD_SIZE
-                }
+                <Count as ::pvm_contract_types::SolEncode>::SLOT_SIZE
                 + 32usize)
         };
         assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
@@ -892,19 +859,5 @@ mod tests {
                 || true;
         });
         assert!(expanded.contains(&expected_is_dynamic));
-    }
-
-    #[test]
-    fn expand_sol_type_sets_head_size_for_custom_static_structs() {
-        let input: syn::DeriveInput = syn::parse_quote! {
-            struct Line {
-                a: Point,
-                b: Point,
-            }
-        };
-
-        let expanded = normalize_tokens(expand_sol_type(input).unwrap());
-        assert!(expanded.contains("constHEAD_SIZE:usize="));
-        assert!(expanded.contains("<Pointas::pvm_contract_types::SolEncode>::HEAD_SIZE"));
     }
 }

@@ -183,6 +183,15 @@ pub trait SolEncode {
     /// Overridden by structs to the sum of their field HEAD_SIZEs.
     const HEAD_SIZE: usize = 32;
 
+    /// Size of the slot this type occupies in a parent tuple/struct head.
+    /// Dynamic types always use 32 bytes (an offset pointer); static types
+    /// use their full `HEAD_SIZE`.
+    const SLOT_SIZE: usize = if Self::IS_DYNAMIC {
+        32
+    } else {
+        Self::HEAD_SIZE
+    };
+
     /// Total encoded byte length of this value.
     fn encode_len(&self) -> usize;
 
@@ -506,6 +515,7 @@ impl<const N: usize> SolDecode for [u8; N] {
 }
 
 impl<const N: usize> SolArrayElement for [u8; N] {}
+impl<T: SolArrayElement, const N: usize> SolArrayElement for [T; N] {}
 
 // ---------------------------------------------------------------------------
 // Blanket impl for fixed-size arrays [T; N] where T: SolArrayElement
@@ -521,11 +531,7 @@ impl<T: SolArrayElement, const N: usize> SolEncode for [T; N] {
         }
         H::<T, N>::V.as_str()
     };
-    const HEAD_SIZE: usize = if T::IS_DYNAMIC {
-        32 * N
-    } else {
-        T::HEAD_SIZE * N
-    };
+    const HEAD_SIZE: usize = T::SLOT_SIZE * N;
 
     fn encode_len(&self) -> usize {
         if T::IS_DYNAMIC {
@@ -537,9 +543,9 @@ impl<T: SolArrayElement, const N: usize> SolEncode for [T; N] {
 
     fn encode_to(&self, buf: &mut [u8]) {
         if T::IS_DYNAMIC {
-            let mut tail_offset = N * 32;
+            let mut tail_offset = N * T::SLOT_SIZE;
             for (i, elem) in self.iter().enumerate() {
-                let ho = i * 32;
+                let ho = i * T::SLOT_SIZE;
                 buf[ho..ho + 24].fill(0);
                 buf[ho + 24..ho + 32].copy_from_slice(&(tail_offset as u64).to_be_bytes());
                 let tl = elem.tail_len();
@@ -550,7 +556,7 @@ impl<T: SolArrayElement, const N: usize> SolEncode for [T; N] {
             let mut offset = 0;
             for elem in self.iter() {
                 elem.encode_to(&mut buf[offset..]);
-                offset += T::HEAD_SIZE;
+                offset += T::SLOT_SIZE;
             }
         }
     }
@@ -564,12 +570,12 @@ impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
     fn decode_at(input: &[u8], offset: usize) -> Self {
         core::array::from_fn(|i| {
             if T::IS_DYNAMIC {
-                let ho = offset + i * 32;
+                let ho = offset + i * T::SLOT_SIZE;
                 let field_offset =
                     u64::from_be_bytes(input[ho + 24..ho + 32].try_into().unwrap()) as usize;
                 T::decode_tail(input, offset + field_offset)
             } else {
-                T::decode_at(input, offset + i * T::HEAD_SIZE)
+                T::decode_at(input, offset + i * T::SLOT_SIZE)
             }
         })
     }
@@ -597,7 +603,7 @@ macro_rules! impl_tuple_sol {
         impl<$($T: SolEncode),+> SolEncode for ($($T,)+) {
             const IS_DYNAMIC: bool = false $(|| $T::IS_DYNAMIC)+;
             const SOL_NAME: &'static str = impl_tuple_sol!(@sol_name $($T),+);
-            const HEAD_SIZE: usize = 0 $(+ if $T::IS_DYNAMIC { 32 } else { $T::HEAD_SIZE })+;
+            const HEAD_SIZE: usize = 0 $(+ $T::SLOT_SIZE)+;
 
             fn encode_len(&self) -> usize {
                 Self::HEAD_SIZE
@@ -612,14 +618,13 @@ macro_rules! impl_tuple_sol {
                         buf[__ho..__ho + 24].fill(0);
                         buf[__ho + 24..__ho + 32]
                             .copy_from_slice(&(__to as u64).to_be_bytes());
-                        __ho += 32;
                         let __tl = self.$idx.tail_len();
                         self.$idx.encode_tail_to(&mut buf[__to..__to + __tl]);
                         __to += __tl;
                     } else {
                         self.$idx.encode_to(&mut buf[__ho..]);
-                        __ho += $T::HEAD_SIZE;
                     }
+                    __ho += $T::SLOT_SIZE;
                 )+
             }
         }
@@ -635,13 +640,11 @@ macro_rules! impl_tuple_sol {
                             let __fo = u64::from_be_bytes(
                                 input[__ho + 24..__ho + 32].try_into().unwrap(),
                             ) as usize;
-                            __ho += 32;
                             $T::decode_tail(input, offset + __fo)
                         } else {
-                            let __val = $T::decode_at(input, __ho);
-                            __ho += $T::HEAD_SIZE;
-                            __val
+                            $T::decode_at(input, __ho)
                         };
+                        __ho += $T::SLOT_SIZE;
                         __val
                     },
                 )+)
