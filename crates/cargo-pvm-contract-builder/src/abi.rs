@@ -35,8 +35,7 @@ pub fn extract_abi_from_elf(elf_bytes: &[u8]) -> Result<Option<String>> {
         .get(offset..offset + size)
         .context("__PVM_ABI symbol data out of section bounds")?;
 
-    let json =
-        std::str::from_utf8(abi_data).context("__PVM_ABI symbol contains invalid UTF-8")?;
+    let json = std::str::from_utf8(abi_data).context("__PVM_ABI symbol contains invalid UTF-8")?;
 
     Ok(Some(json.to_string()))
 }

@@ -159,10 +159,7 @@ fn get_package_name(cargo_toml: &Path) -> Result<String> {
 }
 
 /// Build the project.
-fn build_project(
-    project_cargo_toml: &Path,
-    bin_names: Option<Vec<String>>,
-) -> Result<()> {
+fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> Result<()> {
     let profile = Profile::detect();
     let build_dir = get_build_dir();
     let target_root = get_target_root();
@@ -178,7 +175,13 @@ fn build_project(
 
     let target_dir = build_dir;
     let pkg_name = get_package_name(project_cargo_toml)?;
-    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build, &pkg_name)?;
+    build_elf(
+        project_cargo_toml,
+        &target_dir,
+        &profile,
+        &bins_to_build,
+        &pkg_name,
+    )?;
 
     // Link each ELF to PolkaVM and extract ABI
     let elf_dir = target_dir

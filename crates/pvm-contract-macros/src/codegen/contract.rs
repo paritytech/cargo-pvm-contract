@@ -633,8 +633,16 @@ fn generate_abi_section(parsed: &ParsedContract) -> TokenStream {
         parts.push(quote! { "{\"type\":\"constructor\",\"inputs\":[" });
         push_abi_params(
             &mut parts,
-            &parsed.constructor_inputs.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-            &parsed.constructor_inputs.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+            &parsed
+                .constructor_inputs
+                .iter()
+                .map(|(n, _)| n.clone())
+                .collect::<Vec<_>>(),
+            &parsed
+                .constructor_inputs
+                .iter()
+                .map(|(_, t)| t.clone())
+                .collect::<Vec<_>>(),
         );
         parts.push(quote! { "],\"stateMutability\":\"nonpayable\"}" });
     }
@@ -692,11 +700,7 @@ fn generate_abi_section(parsed: &ParsedContract) -> TokenStream {
 }
 
 /// Push ABI parameter entries into the flat concatcp parts list.
-fn push_abi_params(
-    parts: &mut Vec<TokenStream>,
-    param_names: &[Ident],
-    param_types: &[syn::Type],
-) {
+fn push_abi_params(parts: &mut Vec<TokenStream>, param_names: &[Ident], param_types: &[syn::Type]) {
     for (i, name) in param_names.iter().enumerate() {
         if i > 0 {
             parts.push(quote! { "," });
@@ -718,10 +722,7 @@ fn push_abi_params(
 }
 
 /// Push ABI output entries into the flat concatcp parts list.
-fn push_abi_outputs(
-    parts: &mut Vec<TokenStream>,
-    return_types: &[syn::Type],
-) {
+fn push_abi_outputs(parts: &mut Vec<TokenStream>, return_types: &[syn::Type]) {
     for (i, ty) in return_types.iter().enumerate() {
         if i > 0 {
             parts.push(quote! { "," });

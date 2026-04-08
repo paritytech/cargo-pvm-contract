@@ -13,8 +13,8 @@ fn build_and_extract_abi(bin_name: &str) -> serde_json::Value {
 
     let mut args = polkavm_linker::TargetJsonArgs::default();
     args.is_64_bit = true;
-    let target_json = polkavm_linker::target_json_path(args)
-        .expect("failed to get target JSON path");
+    let target_json =
+        polkavm_linker::target_json_path(args).expect("failed to get target JSON path");
 
     let rustflags = "-Zunstable-options -Cpanic=immediate-abort -Clink-arg=--undefined=__PVM_ABI";
 

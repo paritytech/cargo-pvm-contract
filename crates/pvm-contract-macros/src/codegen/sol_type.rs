@@ -256,9 +256,12 @@ fn build_abi_components_expr(
         match sol_type {
             SolType::Custom(type_name) => {
                 if let Ok(type_path) = syn::parse_str::<syn::Path>(type_name) {
-                    parts.push(quote! { <#type_path as ::pvm_contract_types::SolEncode>::ABI_TYPE });
+                    parts
+                        .push(quote! { <#type_path as ::pvm_contract_types::SolEncode>::ABI_TYPE });
                     parts.push(quote! { "\"" });
-                    parts.push(quote! { <#type_path as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
+                    parts.push(
+                        quote! { <#type_path as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS },
+                    );
                 } else {
                     let canonical = sol_type.canonical_name();
                     parts.push(quote! { #canonical });
