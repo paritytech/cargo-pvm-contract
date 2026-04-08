@@ -293,6 +293,9 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
                     <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
                     pallet_revive_uapi::HostFnImpl::return_value(
                         pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
+                } else {
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::REVERT, b"EncodingOverflow");
                 }
             }
         }};

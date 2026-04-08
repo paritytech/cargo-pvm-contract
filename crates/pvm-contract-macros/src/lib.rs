@@ -484,12 +484,17 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     pallet_revive_uapi::HostFnImpl::return_value(
 ///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 /// } else {
+///     // Static path — compiler eliminates this for dynamic types.
+///     // Guard prevents buffer overflow if this branch is ever reached.
 ///     let mut __buf = [0u8; <String as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
 ///     let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
 ///     if __len <= __buf.len() {
 ///         <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
 ///         pallet_revive_uapi::HostFnImpl::return_value(
 ///             pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
+///     } else {
+///         pallet_revive_uapi::HostFnImpl::return_value(
+///             pallet_revive_uapi::ReturnFlags::REVERT, b"EncodingOverflow");
 ///     }
 /// }
 /// ```
