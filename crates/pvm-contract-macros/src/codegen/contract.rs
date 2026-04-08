@@ -2,7 +2,6 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
-use super::abi_gen::generate_abi_gen;
 use super::dispatch::{MethodInfo, RouteItems, generate_param_decoding, generate_router};
 use crate::signature::compute_selector;
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
@@ -378,7 +377,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(&parsed, args.sol_path.is_some());
+    let abi_section = generate_abi_section(&parsed);
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -390,16 +389,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         Some(AllocatorKind::Pico) => {
             let allocator_size = args.allocator_size;
             quote! {
-                #[cfg(not(feature = "abi-gen"))]
-                extern crate alloc;
+                                extern crate alloc;
 
-                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec;
 
-                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec::Vec;
 
-                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
                     static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
@@ -413,16 +408,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         Some(AllocatorKind::Bump) => {
             let allocator_size = args.allocator_size;
             quote! {
-                #[cfg(not(feature = "abi-gen"))]
-                extern crate alloc;
+                                extern crate alloc;
 
-                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec;
 
-                #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec::Vec;
 
-                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static ALLOC: pvm_bump_allocator::BumpAllocator<#allocator_size> =
                     pvm_bump_allocator::BumpAllocator::new();
@@ -432,10 +423,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let panic_handler = quote! {
-        #[cfg(all(
-            not(feature = "abi-gen"),
-            any(target_arch = "riscv32", target_arch = "riscv64")
-        ))]
+        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
             unsafe {
@@ -613,26 +601,141 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #mod_vis mod #mod_name {
             #mod_content
 
-            #[cfg(not(feature = "abi-gen"))]
             #contract_struct
 
-            #[cfg(not(feature = "abi-gen"))]
             #route_fn
 
-            #[cfg(not(feature = "abi-gen"))]
             #call_fn
 
-            #[cfg(not(feature = "abi-gen"))]
             #deploy_fn
 
-            #abi_gen_helper
+            #abi_section
         }
 
-        #[cfg(not(feature = "abi-gen"))]
         #router_impl
-
-        #abi_gen_main
     })
+}
+
+/// Generate compile-time ABI JSON embedded in a `.rodata.pvm_abi` ELF section.
+///
+/// Uses `concatcp!` to build the JSON string from trait constants (`ABI_TYPE`,
+/// `ABI_COMPONENTS`, `SOL_NAME`), then embeds the result as a `#[link_section]`
+/// static so the builder can extract it from the ELF after compilation.
+fn generate_abi_section(parsed: &ParsedContract) -> TokenStream {
+    let mut parts: Vec<TokenStream> = Vec::new();
+    parts.push(quote! { "[" });
+
+    let mut first_entry = true;
+
+    // Constructor ABI entry
+    if parsed.has_constructor {
+        first_entry = false;
+        parts.push(quote! { "{\"type\":\"constructor\",\"inputs\":[" });
+        push_abi_params(
+            &mut parts,
+            &parsed.constructor_inputs.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+            &parsed.constructor_inputs.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>(),
+        );
+        parts.push(quote! { "],\"stateMutability\":\"nonpayable\"}" });
+    }
+
+    // Method ABI entries
+    for method in &parsed.methods {
+        if !first_entry {
+            parts.push(quote! { "," });
+        }
+        first_entry = false;
+
+        let method_name = &method.sol_name;
+        let mutability = if method.return_types.is_empty() {
+            "nonpayable"
+        } else {
+            "view"
+        };
+
+        parts.push(quote! { "{\"type\":\"function\",\"name\":\"" });
+        parts.push(quote! { #method_name });
+        parts.push(quote! { "\",\"inputs\":[" });
+
+        push_abi_params(&mut parts, &method.param_names, &method.param_types);
+
+        parts.push(quote! { "],\"outputs\":[" });
+
+        push_abi_outputs(&mut parts, &method.return_types);
+
+        parts.push(quote! { "],\"stateMutability\":\"" });
+        parts.push(quote! { #mutability });
+        parts.push(quote! { "\"}" });
+    }
+
+    parts.push(quote! { "]" });
+
+    quote! {
+        const __PVM_ABI_JSON: &str = ::pvm_contract_types::const_format::concatcp!(
+            #(#parts),*
+        );
+
+        #[unsafe(link_section = ".rodata.pvm_abi")]
+        #[unsafe(no_mangle)]
+        #[used]
+        static __PVM_ABI: [u8; __PVM_ABI_JSON.len()] = {
+            let b = __PVM_ABI_JSON.as_bytes();
+            let mut a = [0u8; __PVM_ABI_JSON.len()];
+            let mut i = 0;
+            while i < b.len() {
+                a[i] = b[i];
+                i += 1;
+            }
+            a
+        };
+    }
+}
+
+/// Push ABI parameter entries into the flat concatcp parts list.
+fn push_abi_params(
+    parts: &mut Vec<TokenStream>,
+    param_names: &[Ident],
+    param_types: &[syn::Type],
+) {
+    for (i, name) in param_names.iter().enumerate() {
+        if i > 0 {
+            parts.push(quote! { "," });
+        }
+        let name_str = name.to_string();
+        let ty = &param_types[i];
+
+        parts.push(quote! { "{\"name\":\"" });
+        parts.push(quote! { #name_str });
+        parts.push(quote! { "\",\"type\":\"" });
+
+        // Use trait constants for type and components
+        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_TYPE });
+        parts.push(quote! { "\"" });
+        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
+
+        parts.push(quote! { "}" });
+    }
+}
+
+/// Push ABI output entries into the flat concatcp parts list.
+fn push_abi_outputs(
+    parts: &mut Vec<TokenStream>,
+    return_types: &[syn::Type],
+) {
+    for (i, ty) in return_types.iter().enumerate() {
+        if i > 0 {
+            parts.push(quote! { "," });
+        }
+
+        parts.push(quote! { "{\"name\":\"\"" });
+        parts.push(quote! { ",\"type\":\"" });
+
+        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_TYPE });
+        parts.push(quote! { "\"" });
+        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
+
+        parts.push(quote! { "}" });
+    }
 }
 
 fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
@@ -725,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn constructor_inputs_appear_in_abi_gen_output() {
+    fn constructor_inputs_appear_in_abi_section() {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
@@ -740,15 +843,16 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // abi-gen main is generated (no sol_path)
-        assert!(output.contains("feature = \"abi-gen\""));
+        // ABI is embedded in ELF section
+        assert!(output.contains("__PVM_ABI_JSON"));
+        assert!(output.contains("link_section"));
         // constructor entry is present with its inputs array
         assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":["));
         // param names are emitted
         assert!(output.contains("\"owner\""));
         assert!(output.contains("\"supply\""));
-        // param types are resolved via trait SOL_NAME
-        assert!(output.contains("SOL_NAME"));
+        // param types are resolved via trait ABI_TYPE
+        assert!(output.contains("ABI_TYPE"));
     }
 
     #[test]

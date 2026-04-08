@@ -1,6 +1,5 @@
-#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
-
-extern crate alloc;
+#![no_main]
+#![no_std]
 
 use ruint::aliases::U256;
 
@@ -10,7 +9,7 @@ pub struct MyPoint {
     pub y: U256,
 }
 
-#[pvm_contract_macros::contract]
+#[pvm_contract_macros::contract(allocator = "pico")]
 mod my_contract {
     use super::MyPoint;
 

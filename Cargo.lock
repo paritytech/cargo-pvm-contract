@@ -1239,9 +1239,8 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "log",
+ "object 0.36.7",
  "polkavm-linker",
- "serde",
- "serde_json",
  "tempfile",
  "toml_edit 0.22.27",
 ]
@@ -4357,7 +4356,9 @@ dependencies = [
 name = "pvm-contract-macros"
 version = "0.3.0"
 dependencies = [
+ "cargo-pvm-contract-builder",
  "keccak-const",
+ "polkavm-linker",
  "proc-macro2",
  "pvm-contract-types",
  "quote",

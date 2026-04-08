@@ -23,3 +23,5 @@ pvm-contract-types = { path = "../pvm-contract-types" }
 ruint = { version = "1.17", default-features = false }
 serde_json = { workspace = true }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc"] }
+cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
+polkavm-linker = { workspace = true }

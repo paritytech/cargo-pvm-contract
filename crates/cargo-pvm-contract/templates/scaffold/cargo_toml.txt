@@ -41,11 +41,6 @@ polkavm-derive = { version = "0.31.0" }
 ruint = { version = "1.17", default-features = false }
 
 
-{% if !use_dsl -%}
-[features]
-abi-gen = []
-
-{% endif -%}
 [build-dependencies]
 {% if let Some(path) = local_path -%}
 cargo-pvm-contract-builder = { path = "{{ path }}/crates/cargo-pvm-contract-builder" }

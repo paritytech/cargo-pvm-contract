@@ -35,7 +35,6 @@ path = "src/dynamic_custom_return.rs"
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-types = { path = "../../../pvm-contract-types" }
 pallet-revive-uapi = { version = "0.10", default-features = false }
+polkavm-derive = { version = "0.31.0" }
+picoalloc = "5"
 ruint = { version = "1.17", default-features = false }
-
-[features]
-abi-gen = []

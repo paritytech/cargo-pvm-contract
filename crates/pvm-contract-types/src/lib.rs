@@ -179,6 +179,14 @@ pub trait SolEncode {
     /// The canonical Solidity type name (e.g. "uint256", "address", "(uint64,uint64)").
     const SOL_NAME: &'static str;
 
+    /// The ABI JSON type name. Defaults to `SOL_NAME`.
+    /// Overridden to `"tuple"` for structs.
+    const ABI_TYPE: &'static str = Self::SOL_NAME;
+
+    /// JSON fragment for struct components. Empty for non-struct types.
+    /// For structs, contains `,"components":[...]` (with leading comma).
+    const ABI_COMPONENTS: &'static str = "";
+
     /// Size of the head portion in ABI encoding. Defaults to 32 (one ABI word).
     /// Overridden by structs to the sum of their field HEAD_SIZEs.
     const HEAD_SIZE: usize = 32;

@@ -54,10 +54,14 @@ fn expand_static_sol_type(
     let encode_body = generate_static_encode_body(fields);
     let decode_body = generate_static_decode_body(fields);
 
+    let abi_components_expr = build_abi_components_expr(fields, field_info);
+
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const IS_DYNAMIC: bool = false;
             const SOL_NAME: &'static str = #sol_name_expr;
+            const ABI_TYPE: &'static str = "tuple";
+            const ABI_COMPONENTS: &'static str = #abi_components_expr;
             const HEAD_SIZE: usize = #total_size_expr;
 
             #[inline]
@@ -96,10 +100,14 @@ fn expand_dynamic_sol_type(
     let encode_body = generate_dynamic_encode_body(fields, field_info, &head_size_expr);
     let decode_body = generate_dynamic_decode_body(fields, field_info);
 
+    let abi_components_expr = build_abi_components_expr(fields, field_info);
+
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const IS_DYNAMIC: bool = #is_dynamic_expr;
             const SOL_NAME: &'static str = #sol_name_expr;
+            const ABI_TYPE: &'static str = "tuple";
+            const ABI_COMPONENTS: &'static str = #abi_components_expr;
             const HEAD_SIZE: usize = #head_size_expr;
 
             fn encode_len(&self) -> usize {
@@ -213,6 +221,62 @@ fn build_sol_name_expr(field_info: &[(Option<syn::Ident>, SolType)]) -> TokenStr
     }
 
     parts.push(quote! { ")" });
+    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+}
+
+/// Build the `ABI_COMPONENTS` const expression for a struct.
+///
+/// Produces a `concatcp!` expression like:
+/// `,"components":[{"name":"x","type":"uint64""},{"name":"y","type":"uint64"}]`
+///
+/// For fields with custom types, delegates to `<T as SolEncode>::ABI_TYPE` and
+/// `<T as SolEncode>::ABI_COMPONENTS` so nested structs work recursively.
+fn build_abi_components_expr(
+    _fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+) -> TokenStream {
+    let mut parts: Vec<TokenStream> = Vec::new();
+    parts.push(quote! { ",\"components\":[" });
+
+    for (i, (field_name, sol_type)) in field_info.iter().enumerate() {
+        if i > 0 {
+            parts.push(quote! { "," });
+        }
+
+        let name_str = match field_name {
+            Some(ident) => ident.to_string(),
+            None => format!("{}", i),
+        };
+
+        parts.push(quote! { "{\"name\":\"" });
+        parts.push(quote! { #name_str });
+        parts.push(quote! { "\",\"type\":\"" });
+
+        // For custom types, use trait constants; for known types, use the canonical name
+        match sol_type {
+            SolType::Custom(type_name) => {
+                if let Ok(type_path) = syn::parse_str::<syn::Path>(type_name) {
+                    parts.push(quote! { <#type_path as ::pvm_contract_types::SolEncode>::ABI_TYPE });
+                    parts.push(quote! { "\"" });
+                    parts.push(quote! { <#type_path as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
+                } else {
+                    let canonical = sol_type.canonical_name();
+                    parts.push(quote! { #canonical });
+                    parts.push(quote! { "\"" });
+                }
+            }
+            _ => {
+                let canonical = sol_type.canonical_name();
+                parts.push(quote! { #canonical });
+                parts.push(quote! { "\"" });
+            }
+        }
+
+        parts.push(quote! { "}" });
+    }
+
+    parts.push(quote! { "]" });
+
     quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
 }
 
