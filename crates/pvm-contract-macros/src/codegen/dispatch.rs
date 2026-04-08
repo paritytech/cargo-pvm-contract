@@ -3,6 +3,7 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 use super::encode::generate_encode;
+use crate::signature::SolType;
 
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
@@ -275,13 +276,26 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
 fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        return quote! {{
-            let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
-            let mut __buf = alloc::vec![0u8; __len];
-            <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-            pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::empty(), &__buf);
-        }};
+        let is_dynamic = SolType::from_rust_type(ty)
+            .map(|t| t.is_dynamic() == Some(true))
+            .unwrap_or(true); // unknown types assumed dynamic
+
+        return if is_dynamic {
+            quote! {{
+                let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+                let mut __buf = alloc::vec![0u8; __len];
+                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+            }}
+        } else {
+            let encode = generate_encode(ty, quote!(result));
+            quote! {
+                let encoded = #encode;
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::empty(), &encoded);
+            }
+        };
     }
 
     let head_size_expr = build_output_size_expr(outputs);
@@ -293,8 +307,12 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
             let idx = syn::Index::from(i);
             let value_expr = quote!(result.#idx);
 
-            quote! {
-                if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+            let is_dynamic = SolType::from_rust_type(ty)
+                .map(|t| t.is_dynamic() == Some(true))
+                .unwrap_or(true);
+
+            if is_dynamic {
+                quote! {
                     let __off = __head_size + tail.len();
                     let mut __off_buf = [0u8; 32];
                     __off_buf[24..32].copy_from_slice(&(__off as u64).to_be_bytes());
@@ -303,7 +321,9 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
                     let mut __tbuf = alloc::vec![0u8; __tl];
                     <#ty as ::pvm_contract_types::SolEncode>::encode_tail_to(&#value_expr, &mut __tbuf);
                     tail.extend_from_slice(&__tbuf);
-                } else {
+                }
+            } else {
+                quote! {
                     let __hs: usize = <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
                     let __start = head.len();
                     head.resize(__start + __hs, 0);

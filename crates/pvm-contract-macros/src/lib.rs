@@ -465,8 +465,9 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ## Return encoding (alloc mode)
 ///
-/// In alloc mode, the generated code heap-allocates a buffer sized by `encode_len()`,
-/// which works for both static and dynamic return types:
+/// In alloc mode, the macro inspects the return type at expansion time. Static types
+/// use a stack buffer (via `StaticEncodedLen`), while dynamic types (String, `Vec<T>`,
+/// `Bytes`) use heap allocation:
 ///
 /// ```ignore
 /// #[pvm_contract::method]
