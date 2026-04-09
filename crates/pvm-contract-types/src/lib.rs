@@ -173,6 +173,14 @@ pub trait Router {
 }
 
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.
+///
+/// Two encoding surfaces:
+/// - [`encode_body_to`](SolEncode::encode_body_to) — field body encoding without offset wrapper.
+///   Used internally by parent types (tuples, arrays, structs) when composing fields.
+/// - [`encode_to`](SolEncode::encode_to) — smart top-level encoding suitable for ABI return data.
+///   Checks [`IS_TUPLE`](SolEncode::IS_TUPLE) and [`IS_DYNAMIC`](SolEncode::IS_DYNAMIC) to
+///   produce correct output: tuples encode as flat body (multi-return), dynamic non-tuples
+///   get a 32-byte offset wrapper, static non-tuples pass through.
 pub trait SolEncode {
     const IS_DYNAMIC: bool;
 
@@ -192,20 +200,41 @@ pub trait SolEncode {
         Self::HEAD_SIZE
     };
 
-    /// Total encoded byte length of this value.
-    fn encode_len(&self) -> usize;
+    /// Whether this type is a Rust tuple `(T1, T2, ...)`.
+    /// Tuples represent multiple return values and skip the `enc((T))` wrapping
+    /// in [`encode_to`](SolEncode::encode_to). Only set to `true` by tuple impls.
+    const IS_TUPLE: bool = false;
 
-    /// Encode this value into `buf` (must be at least `encode_len()` bytes).
-    fn encode_to(&self, buf: &mut [u8]);
+    /// Byte length of the field body encoding.
+    fn encode_body_len(&self) -> usize;
 
-    /// Byte length of the tail portion for dynamic types. Defaults to `encode_len()`.
-    fn tail_len(&self) -> usize {
-        self.encode_len()
+    /// Encode the field body into `buf` (must be at least `encode_body_len()` bytes).
+    /// No offset wrapping — this is what parent types call when composing fields.
+    fn encode_body_to(&self, buf: &mut [u8]);
+
+    /// Byte length of the smart top-level encoding.
+    fn encode_len(&self) -> usize {
+        if Self::IS_TUPLE || !Self::IS_DYNAMIC {
+            self.encode_body_len()
+        } else {
+            32 + self.encode_body_len()
+        }
     }
 
-    /// Encode the tail portion into `buf`. Defaults to `encode_to()`.
-    fn encode_tail_to(&self, buf: &mut [u8]) {
-        self.encode_to(buf);
+    /// Smart top-level encoding suitable for ABI return data and calldata.
+    /// - Tuples: flat body (multi-return, no wrapping)
+    /// - Dynamic non-tuples: `[offset=32]` + body
+    /// - Static non-tuples: body directly
+    fn encode_to(&self, buf: &mut [u8]) {
+        if Self::IS_TUPLE {
+            self.encode_body_to(buf);
+        } else if Self::IS_DYNAMIC {
+            buf[..24].fill(0);
+            buf[24..32].copy_from_slice(&32u64.to_be_bytes());
+            self.encode_body_to(&mut buf[32..]);
+        } else {
+            self.encode_body_to(buf);
+        }
     }
 }
 
@@ -216,9 +245,20 @@ pub trait StaticEncodedLen: SolEncode {
 
 /// Trait for decoding Solidity ABI-encoded bytes into Rust types.
 pub trait SolDecode: SolEncode + Sized {
-    /// Decode a value from ABI-encoded input.
+    /// Decode from top-level ABI encoding produced by [`SolEncode::encode_to`].
+    /// Symmetric with `encode_to`:
+    /// - Tuples (IS_TUPLE=true): decode body directly
+    /// - Dynamic non-tuples: read offset pointer at position 0, decode body at offset
+    /// - Static non-tuples: decode body directly
     fn decode(input: &[u8]) -> Self {
-        Self::decode_at(input, 0)
+        if Self::IS_TUPLE || !Self::IS_DYNAMIC {
+            Self::decode_at(input, 0)
+        } else {
+            // Dynamic non-tuple: encode_to wrote [offset=32][body]
+            // Read offset, then decode the body at that position
+            let offset = u64::from_be_bytes(input[24..32].try_into().unwrap()) as usize;
+            Self::decode_tail(input, offset)
+        }
     }
 
     /// Offset-based decode helper used by generated code and custom decoders.
@@ -237,11 +277,11 @@ macro_rules! impl_static_type {
             const SOL_NAME: &'static str = $sol_name;
 
             #[inline]
-            fn encode_len(&self) -> usize {
+            fn encode_body_len(&self) -> usize {
                 32
             }
 
-            fn encode_to(&self, buf: &mut [u8]) {
+            fn encode_body_to(&self, buf: &mut [u8]) {
                 $encode_fn(self, buf)
             }
         }
@@ -433,34 +473,13 @@ impl SolEncode for &str {
     const IS_DYNAMIC: bool = true;
     const SOL_NAME: &'static str = "string";
 
-    fn encode_len(&self) -> usize {
-        let data_len = self.len();
-        let padding = (32 - (data_len % 32)) % 32;
-        32 + 32 + data_len + padding
-    }
-
-    fn encode_to(&self, buf: &mut [u8]) {
-        let bytes = self.as_bytes();
-        let data_len = bytes.len();
-        let padding = (32 - (data_len % 32)) % 32;
-
-        buf[..32].fill(0);
-        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-
-        buf[32..64].fill(0);
-        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
-
-        buf[64..64 + data_len].copy_from_slice(bytes);
-        buf[64 + data_len..64 + data_len + padding].fill(0);
-    }
-
-    fn tail_len(&self) -> usize {
+    fn encode_body_len(&self) -> usize {
         let data_len = self.len();
         let padding = (32 - (data_len % 32)) % 32;
         32 + data_len + padding
     }
 
-    fn encode_tail_to(&self, buf: &mut [u8]) {
+    fn encode_body_to(&self, buf: &mut [u8]) {
         let bytes = self.as_bytes();
         let data_len = bytes.len();
         let padding = (32 - (data_len % 32)) % 32;
@@ -490,11 +509,11 @@ impl<const N: usize> SolEncode for [u8; N] {
     };
 
     #[inline]
-    fn encode_len(&self) -> usize {
+    fn encode_body_len(&self) -> usize {
         32
     }
 
-    fn encode_to(&self, buf: &mut [u8]) {
+    fn encode_body_to(&self, buf: &mut [u8]) {
         const { assert!(N >= 1 && N <= 32, "bytesN only valid for N in 1..=32") };
         buf[..N].copy_from_slice(self);
         buf[N..32].fill(0);
@@ -533,29 +552,29 @@ impl<T: SolArrayElement, const N: usize> SolEncode for [T; N] {
     };
     const HEAD_SIZE: usize = T::SLOT_SIZE * N;
 
-    fn encode_len(&self) -> usize {
+    fn encode_body_len(&self) -> usize {
         if T::IS_DYNAMIC {
-            N * 32 + self.iter().map(|e| e.tail_len()).sum::<usize>()
+            N * 32 + self.iter().map(|e| e.encode_body_len()).sum::<usize>()
         } else {
             T::HEAD_SIZE * N
         }
     }
 
-    fn encode_to(&self, buf: &mut [u8]) {
+    fn encode_body_to(&self, buf: &mut [u8]) {
         if T::IS_DYNAMIC {
             let mut tail_offset = N * T::SLOT_SIZE;
             for (i, elem) in self.iter().enumerate() {
                 let ho = i * T::SLOT_SIZE;
                 buf[ho..ho + 24].fill(0);
                 buf[ho + 24..ho + 32].copy_from_slice(&(tail_offset as u64).to_be_bytes());
-                let tl = elem.tail_len();
-                elem.encode_tail_to(&mut buf[tail_offset..tail_offset + tl]);
+                let tl = elem.encode_body_len();
+                elem.encode_body_to(&mut buf[tail_offset..tail_offset + tl]);
                 tail_offset += tl;
             }
         } else {
             let mut offset = 0;
             for elem in self.iter() {
-                elem.encode_to(&mut buf[offset..]);
+                elem.encode_body_to(&mut buf[offset..]);
                 offset += T::SLOT_SIZE;
             }
         }
@@ -604,13 +623,14 @@ macro_rules! impl_tuple_sol {
             const IS_DYNAMIC: bool = false $(|| $T::IS_DYNAMIC)+;
             const SOL_NAME: &'static str = impl_tuple_sol!(@sol_name $($T),+);
             const HEAD_SIZE: usize = 0 $(+ $T::SLOT_SIZE)+;
+            const IS_TUPLE: bool = true;
 
-            fn encode_len(&self) -> usize {
+            fn encode_body_len(&self) -> usize {
                 Self::HEAD_SIZE
-                    $(+ if $T::IS_DYNAMIC { self.$idx.tail_len() } else { 0 })+
+                    $(+ if $T::IS_DYNAMIC { self.$idx.encode_body_len() } else { 0 })+
             }
 
-            fn encode_to(&self, buf: &mut [u8]) {
+            fn encode_body_to(&self, buf: &mut [u8]) {
                 let mut __ho = 0usize;
                 let mut __to = Self::HEAD_SIZE;
                 $(
@@ -618,11 +638,11 @@ macro_rules! impl_tuple_sol {
                         buf[__ho..__ho + 24].fill(0);
                         buf[__ho + 24..__ho + 32]
                             .copy_from_slice(&(__to as u64).to_be_bytes());
-                        let __tl = self.$idx.tail_len();
-                        self.$idx.encode_tail_to(&mut buf[__to..__to + __tl]);
+                        let __tl = self.$idx.encode_body_len();
+                        self.$idx.encode_body_to(&mut buf[__to..__to + __tl]);
                         __to += __tl;
                     } else {
-                        self.$idx.encode_to(&mut buf[__ho..]);
+                        self.$idx.encode_body_to(&mut buf[__ho..]);
                     }
                     __ho += $T::SLOT_SIZE;
                 )+

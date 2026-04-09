@@ -111,10 +111,12 @@ pub trait SolEncode {
     const IS_DYNAMIC: bool;        // true for String, Vec, bytes
     const SOL_NAME: &'static str;  // "uint256", "address", "(uint64,uint64)", etc.
     const HEAD_SIZE: usize;        // 32 for primitives, sum of fields for structs
-    fn encode_len(&self) -> usize;
-    fn encode_to(&self, buf: &mut [u8]);
-    fn tail_len(&self) -> usize;
-    fn encode_tail_to(&self, buf: &mut [u8]);
+    const SLOT_SIZE: usize;        // HEAD_SIZE for static, 32 for dynamic (default)
+    const IS_TUPLE: bool;          // true only for Rust tuples (T1, T2, ...)
+    fn encode_body_len(&self) -> usize;  // field body size
+    fn encode_body_to(&self, buf: &mut [u8]);  // field body encoding
+    fn encode_len(&self) -> usize;   // top-level size (default, IS_TUPLE/IS_DYNAMIC aware)
+    fn encode_to(&self, buf: &mut [u8]);  // top-level encoding (default, smart wrapping)
 }
 
 pub trait SolDecode: SolEncode + Sized {
@@ -319,7 +321,7 @@ crates/
   pvm-contract-macros/          Proc macros
     src/codegen/contract.rs     #[contract] attribute parsing + module generation
     src/codegen/dispatch.rs     Selector computation + dispatch match arms
-    src/codegen/encode.rs       Return value encoding codegen
+    src/codegen/encode.rs       (removed — encoding now handled directly in dispatch.rs)
     src/codegen/decode.rs       Parameter decoding codegen
     src/codegen/sol_type.rs     #[derive(SolType)] expansion
     src/signature/types.rs      Rust-to-Solidity type mapping

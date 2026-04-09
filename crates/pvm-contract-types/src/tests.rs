@@ -200,10 +200,11 @@ fn encode_decode_user_type_dynamic_proptest() {
 
     proptest!(|(id: u64, name: alloc::string::String)| {
         let val = UserDynamic { id, name };
+        // Struct encode_to wraps as enc((struct)) — same as alloy's abi_encode on equivalent tuple
         let alloy = (val.id, val.name.clone()).abi_encode();
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
-        prop_assert_eq!(&buf, &alloy[32..]);
+        prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(UserDynamic::decode(&buf), val);
     });
 }
@@ -444,7 +445,7 @@ fn encode_decode_dynamic_struct_with_custom_field_proptest() {
         val.encode_to(&mut buf);
         // Our encoding omits the top-level tuple offset (32 bytes) that alloy prepends
         // for dynamic tuples, so compare against alloy[32..]
-        prop_assert_eq!(&buf, &alloy[32..]);
+        prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(NamedPoint::decode(&buf), val);
     });
 }
@@ -463,7 +464,7 @@ fn encode_decode_dynamic_struct_multiple_dynamic_fields() {
         let alloy = (id, name, bio).abi_encode();
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
-        prop_assert_eq!(&buf, &alloy[32..]);
+        prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(Profile::decode(&buf), val);
     });
 }
@@ -482,7 +483,7 @@ fn encode_decode_dynamic_struct_string_then_static() {
         let alloy = (label, value).abi_encode();
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
-        prop_assert_eq!(&buf, &alloy[32..]);
+        prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(Record::decode(&buf), val);
     });
 }
@@ -590,11 +591,10 @@ fn encode_decode_tuple_struct_and_string() {
     }
 
     let val = (Point { x: 7, y: 13 }, "hello world".to_string());
-    let alloy = ((7u64, 13u64), "hello world".to_string()).abi_encode();
+    let alloy = ((7u64, 13u64), "hello world".to_string()).abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    // alloy wraps dynamic tuples with a top-level offset prefix
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<(Point, alloc::string::String)>::decode(&buf), val);
 }
 
@@ -605,31 +605,30 @@ fn encode_decode_tuple_struct_and_string() {
 #[test]
 fn encode_decode_tuple_u64_string() {
     let val = (42u64, "hello".to_string());
-    let alloy = (42u64, "hello".to_string()).abi_encode();
+    let alloy = (42u64, "hello".to_string()).abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    // alloy wraps dynamic tuples with a top-level offset prefix
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<(u64, alloc::string::String)>::decode(&buf), val);
 }
 
 #[test]
 fn encode_decode_tuple_string_u64() {
     let val = ("world".to_string(), 99u64);
-    let alloy = ("world".to_string(), 99u64).abi_encode();
+    let alloy = ("world".to_string(), 99u64).abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<(alloc::string::String, u64)>::decode(&buf), val);
 }
 
 #[test]
 fn encode_decode_tuple_string_string() {
     let val = ("foo".to_string(), "bar".to_string());
-    let alloy = ("foo".to_string(), "bar".to_string()).abi_encode();
+    let alloy = ("foo".to_string(), "bar".to_string()).abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(
         <(alloc::string::String, alloc::string::String)>::decode(&buf),
         val
@@ -639,10 +638,10 @@ fn encode_decode_tuple_string_string() {
 #[test]
 fn encode_decode_tuple_u64_string_bool() {
     let val = (42u64, "hello".to_string(), true);
-    let alloy = (42u64, "hello".to_string(), true).abi_encode();
+    let alloy = (42u64, "hello".to_string(), true).abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<(u64, alloc::string::String, bool)>::decode(&buf), val);
 }
 
@@ -650,10 +649,10 @@ fn encode_decode_tuple_u64_string_bool() {
 fn encode_decode_tuple_u64_string_proptest() {
     proptest!(|(id: u64, name: alloc::string::String)| {
         let val = (id, name.clone());
-        let alloy = (id, name).abi_encode();
+        let alloy = (id, name).abi_encode_params();
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
-        prop_assert_eq!(&buf, &alloy[32..]);
+        prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(<(u64, alloc::string::String)>::decode(&buf), val);
     });
 }
@@ -675,7 +674,7 @@ fn encode_decode_fixed_array_of_strings() {
     let alloy = (["alpha".to_string(), "beta".to_string()],).abi_encode();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(TwoNames::decode(&buf), val);
 }
 
@@ -691,7 +690,7 @@ fn encode_decode_fixed_array_of_strings_proptest() {
         let alloy = ([a, b],).abi_encode();
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
-        prop_assert_eq!(&buf, &alloy[32..]);
+        prop_assert_eq!(&buf, &alloy);
         prop_assert_eq!(TwoNames::decode(&buf), val);
     });
 }
@@ -729,7 +728,7 @@ fn encode_decode_dynamic_struct_with_fixed_array_of_structs() {
         .abi_encode();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(Polygon::decode(&buf), val);
 }
 
@@ -1149,7 +1148,7 @@ fn encode_decode_struct_with_vec_field() {
         .abi_encode();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(TokenList::decode(&buf), val);
 }
 
@@ -1175,7 +1174,7 @@ fn encode_decode_struct_with_vec_and_string() {
         .abi_encode();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(Record::decode(&buf), val);
 }
 
@@ -1616,7 +1615,7 @@ fn encode_decode_fixed_array_of_vec() {
     let alloy = val.clone().abi_encode();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<[Vec<u32>; 2]>::decode(&buf), val);
 }
 
@@ -1645,10 +1644,10 @@ fn encode_decode_fixed_array_in_tuple() {
 fn encode_decode_fixed_array_dynamic_in_tuple() {
     // Tuple with dynamic fixed array: (u64, [String; 2])
     let val = (42u64, ["abc".to_string(), "xyz".to_string()]);
-    let alloy = (42u64, ["abc".to_string(), "xyz".to_string()]).abi_encode();
+    let alloy = (42u64, ["abc".to_string(), "xyz".to_string()]).abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<(u64, [alloc::string::String; 2])>::decode(&buf), val);
 }
 
@@ -1670,10 +1669,10 @@ fn encode_decode_tuple_nested_with_dynamic_arrays() {
         ["hello".to_string(), "world".to_string()],
         (7u64, ["foo".to_string(), "bar".to_string()]),
     );
-    let alloy = val.clone().abi_encode();
+    let alloy = val.clone().abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(T::decode(&buf), val);
 }
 
@@ -1703,10 +1702,10 @@ fn encode_decode_tuple_static_and_dynamic_interleaved() {
         "world".to_string(),
         AlloyAddress::from([0xAA; 20]),
     )
-        .abi_encode();
+        .abi_encode_params();
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(T::decode(&buf), val);
 }
 
@@ -1734,6 +1733,476 @@ fn encode_decode_nested_fixed_array_dynamic() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     // alloy wraps dynamic types with a top-level offset prefix
-    assert_eq!(&buf, &alloy[32..]);
+    assert_eq!(&buf, &alloy);
     assert_eq!(<[[alloc::string::String; 1]; 2]>::decode(&buf), val);
+}
+
+// ========================================================================
+// encode_to — smart top-level ABI encoding
+//
+// For non-tuples: enc((T)) — matches alloy's (val,).abi_encode_params().
+// Dynamic non-tuples get a 32-byte offset prefix, static pass through.
+// For tuples (IS_TUPLE=true): flat body — matches alloy's tuple.abi_encode_params().
+// ========================================================================
+
+#[test]
+fn encode_to_string() {
+    let val = "hello".to_string();
+    let alloy = (val.clone(),).abi_encode_params();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+}
+
+#[test]
+fn encode_to_vec() {
+    let val = vec![1u64, 2, 3];
+    let alloy = (val.clone(),).abi_encode_params();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+}
+
+#[test]
+fn encode_to_dynamic_struct() {
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Profile {
+        id: u64,
+        name: alloc::string::String,
+    }
+
+    let val = Profile {
+        id: 42,
+        name: "alice".to_string(),
+    };
+    let alloy = ((42u64, "alice".to_string()),).abi_encode_params();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+}
+
+#[test]
+fn encode_to_dynamic_tuple() {
+    // IS_TUPLE=true: encode_to produces flat tuple body (multi-return)
+    let val = (7u64, "test".to_string());
+    let alloy = (7u64, "test".to_string()).abi_encode_params();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+}
+
+#[test]
+fn encode_to_dynamic_fixed_array() {
+    let val = ["foo".to_string(), "bar".to_string()];
+    let alloy = (val.clone(),).abi_encode_params();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+}
+
+#[test]
+fn encode_to_static_struct() {
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Point {
+        x: u64,
+        y: u64,
+    }
+
+    let val = Point { x: 1, y: 2 };
+    let alloy = ((1u64, 2u64),).abi_encode_params();
+    let mut buf = vec![0u8; val.encode_len()];
+    val.encode_to(&mut buf);
+    assert_eq!(&buf, &alloy);
+}
+
+// ========================================================================
+// Return value encoding — verified against alloy sol! function signatures
+//
+// These tests define actual Solidity function signatures using alloy's
+// sol! macro and compare our encode_to output with alloy's abi_encode_returns.
+// This tests the full ABI return encoding pipeline, not just generic encoding.
+// ========================================================================
+
+use alloy_core::sol_types::SolCall;
+
+alloy_core::sol! {
+    function getStaticValue() external view returns (uint64);
+    function getString() external view returns (string);
+    function getMultiReturn() external view returns (uint64, string);
+    function getStaticStruct() external view returns (uint64, uint64);
+    function getDynamicStruct() external view returns (uint64, string);
+    function getArray() external view returns (string[2]);
+    function getVec() external view returns (uint64[]);
+}
+
+#[test]
+fn return_encoding_static_value() {
+    // function getStaticValue() returns (uint64)
+    let our = {
+        let val = 42u64;
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getStaticValueCall::abi_encode_returns(&42u64);
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_string() {
+    // function getString() returns (string)
+    let our = {
+        let val = "hello".to_string();
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getStringCall::abi_encode_returns(&"hello".to_string());
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_multi_return() {
+    // function getMultiReturn() returns (uint64, string)
+    // Macro flattens this into a tuple — our encode_to with IS_TUPLE=true
+    let our = {
+        let val = (42u64, "hello".to_string());
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getMultiReturnCall::abi_encode_returns(&getMultiReturnReturn {
+        _0: 42u64,
+        _1: "hello".to_string(),
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_static_struct() {
+    // function getStaticStruct() returns (uint64, uint64)
+    // This is multi-return with 2 static values — same as a static struct
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Point {
+        x: u64,
+        y: u64,
+    }
+
+    // As multi-return (tuple)
+    let our_tuple = {
+        let val = (1u64, 2u64);
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    // As single struct return
+    let our_struct = {
+        let val = Point { x: 1, y: 2 };
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getStaticStructCall::abi_encode_returns(&getStaticStructReturn { _0: 1, _1: 2 });
+    // Multi-return tuple matches alloy
+    assert_eq!(our_tuple, alloy);
+    // Static struct also matches (no offset for static types)
+    assert_eq!(our_struct, alloy);
+}
+
+#[test]
+fn return_encoding_dynamic_struct() {
+    // function getDynamicStruct() returns (uint64, string)
+    // As multi-return: tuple with IS_TUPLE=true → flat body
+    // As single struct return: IS_TUPLE=false → offset-wrapped
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Profile {
+        id: u64,
+        name: alloc::string::String,
+    }
+
+    let our_tuple = {
+        let val = (42u64, "alice".to_string());
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getDynamicStructCall::abi_encode_returns(&getDynamicStructReturn {
+        _0: 42,
+        _1: "alice".to_string(),
+    });
+    // Multi-return tuple matches alloy's return encoding
+    assert_eq!(our_tuple, alloy);
+
+    // Single struct return is DIFFERENT — has outer offset wrapper
+    let our_struct = {
+        let val = Profile {
+            id: 42,
+            name: "alice".to_string(),
+        };
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    // Struct wraps: [offset=32][body], which is 32 bytes longer
+    assert_eq!(our_struct.len(), alloy.len() + 32);
+    // The body after the offset matches the multi-return encoding
+    assert_eq!(&our_struct[32..], &alloy);
+}
+
+#[test]
+fn return_encoding_vec() {
+    // function getVec() returns (uint64[])
+    let our = {
+        let val = vec![1u64, 2, 3];
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getVecCall::abi_encode_returns(&vec![1u64, 2, 3]);
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_roundtrip() {
+    // Verify decode(encode_to(val)) == val for all return types
+    let s = "hello".to_string();
+    let mut buf = vec![0u8; s.encode_len()];
+    s.encode_to(&mut buf);
+    assert_eq!(alloc::string::String::decode(&buf), s);
+
+    let v = vec![1u64, 2, 3];
+    let mut buf = vec![0u8; v.encode_len()];
+    v.encode_to(&mut buf);
+    assert_eq!(Vec::<u64>::decode(&buf), v);
+
+    let t = (42u64, "world".to_string());
+    let mut buf = vec![0u8; t.encode_len()];
+    t.encode_to(&mut buf);
+    assert_eq!(<(u64, alloc::string::String)>::decode(&buf), t);
+}
+
+// ========================================================================
+// Advanced return encoding — corner cases with nested types
+// ========================================================================
+
+alloy_core::sol! {
+    // Struct as single return — wraps with offset
+    struct SolProfile {
+        uint64 id;
+        string name;
+    }
+    function getProfile() external view returns (SolProfile);
+
+    // Multiple returns with mixed types
+    function getMixed() external view returns (bool, string, uint64);
+
+    // Nested struct in multi-return
+    struct SolPoint {
+        uint64 x;
+        uint64 y;
+    }
+    function getPointAndName() external view returns (SolPoint, string);
+
+    // Array return
+    function getFixedArray() external view returns (uint64[3]);
+
+    // Dynamic array in multi-return
+    function getIdAndTags() external view returns (uint64, string[]);
+
+    // Static struct in multi-return
+    function getPointAndFlag() external view returns (SolPoint, bool);
+
+    // Multiple dynamic returns
+    function getTwoStrings() external view returns (string, string);
+
+    // Nested: struct containing dynamic field as single return
+    struct SolRecord {
+        uint64 id;
+        string name;
+        bool active;
+    }
+    function getRecord() external view returns (SolRecord);
+}
+
+#[test]
+fn return_encoding_single_dynamic_struct() {
+    // returns (SolProfile) — single struct return, gets offset wrapper
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Profile {
+        id: u64,
+        name: alloc::string::String,
+    }
+
+    let val = Profile {
+        id: 42,
+        name: "alice".to_string(),
+    };
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getProfileCall::abi_encode_returns(&SolProfile {
+        id: 42,
+        name: "alice".to_string(),
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_mixed_multi_return() {
+    // returns (bool, string, uint64) — 3 returns with mixed static/dynamic
+    let val = (true, "hello".to_string(), 99u64);
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getMixedCall::abi_encode_returns(&getMixedReturn {
+        _0: true,
+        _1: "hello".to_string(),
+        _2: 99,
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_struct_in_multi_return() {
+    // returns (SolPoint, string) — static struct + dynamic string as multi-return
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Point {
+        x: u64,
+        y: u64,
+    }
+
+    // The macro flattens multi-return — but here the struct is one field
+    // In Solidity, SolPoint is a tuple (uint64, uint64) inlined in the return
+    let val = ((1u64, 2u64), "label".to_string());
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getPointAndNameCall::abi_encode_returns(&getPointAndNameReturn {
+        _0: SolPoint { x: 1, y: 2 },
+        _1: "label".to_string(),
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_static_fixed_array() {
+    // returns (uint64[3]) — single static fixed array
+    let val = [10u64, 20, 30];
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getFixedArrayCall::abi_encode_returns(&[10u64, 20, 30]);
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_dynamic_vec_in_multi_return() {
+    // returns (uint64, string[]) — static + dynamic vec as multi-return
+    let val = (42u64, vec!["a".to_string(), "b".to_string()]);
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getIdAndTagsCall::abi_encode_returns(&getIdAndTagsReturn {
+        _0: 42,
+        _1: vec!["a".to_string(), "b".to_string()],
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_static_struct_in_multi_return() {
+    // returns (SolPoint, bool) — static struct + bool as multi-return
+    let val = ((5u64, 10u64), true);
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getPointAndFlagCall::abi_encode_returns(&getPointAndFlagReturn {
+        _0: SolPoint { x: 5, y: 10 },
+        _1: true,
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_two_strings() {
+    // returns (string, string) — multiple dynamic returns
+    let val = ("foo".to_string(), "bar".to_string());
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getTwoStringsCall::abi_encode_returns(&getTwoStringsReturn {
+        _0: "foo".to_string(),
+        _1: "bar".to_string(),
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_complex_struct() {
+    // returns (SolRecord) — struct with 3 fields (static, dynamic, static) as single return
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Record {
+        id: u64,
+        name: alloc::string::String,
+        active: bool,
+    }
+
+    let val = Record {
+        id: 1,
+        name: "test".to_string(),
+        active: true,
+    };
+    let our = {
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        buf
+    };
+    let alloy = getRecordCall::abi_encode_returns(&SolRecord {
+        id: 1,
+        name: "test".to_string(),
+        active: true,
+    });
+    assert_eq!(our, alloy);
+}
+
+#[test]
+fn return_encoding_roundtrip_advanced() {
+    // decode(encode_to(val)) == val for all advanced types
+    #[derive(Clone, Debug, PartialEq, Eq, SolType)]
+    struct Profile {
+        id: u64,
+        name: alloc::string::String,
+    }
+
+    let p = Profile {
+        id: 7,
+        name: "bob".to_string(),
+    };
+    let mut buf = vec![0u8; p.encode_len()];
+    p.encode_to(&mut buf);
+    assert_eq!(Profile::decode(&buf), p);
+
+    let t = (true, "x".to_string(), 9u64);
+    let mut buf = vec![0u8; t.encode_len()];
+    t.encode_to(&mut buf);
+    assert_eq!(<(bool, alloc::string::String, u64)>::decode(&buf), t);
+
+    let nested = ((1u64, 2u64), "z".to_string());
+    let mut buf = vec![0u8; nested.encode_len()];
+    nested.encode_to(&mut buf);
+    assert_eq!(<((u64, u64), alloc::string::String)>::decode(&buf), nested);
 }

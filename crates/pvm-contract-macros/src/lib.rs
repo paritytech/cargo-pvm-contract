@@ -216,7 +216,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 let result = balance_of(::core::convert::Into::into(account));
 ///                 let mut __buf = [0u8;
 ///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///                 <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+///                 <U256 as ::pvm_contract_types::SolEncode>::encode_body_to(&result, &mut __buf);
 ///                 pallet_revive_uapi::HostFnImpl::return_value(
 ///                     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 ///             }
@@ -444,23 +444,18 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// let account = {
 ///     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
 ///         &input, __decode_offset);
-///     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::SLOT_SIZE;
 ///     __value
 /// };
 ///
 /// // 2) Call the method (no module prefix — generated inside the module)
 /// let result = balance_of(::core::convert::Into::into(account));
 ///
-/// // 3) Encode output (compile-time buffer via StaticEncodedLen)
-/// let encoded = {
-///     let mut __buf = [0u8; <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///     <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-///     __buf
-/// };
-///
-/// // 4) Return value to caller
+/// // 3) Encode and return via encode_to (smart top-level encoding)
+/// let mut __buf = [0u8; <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+/// <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
 /// pallet_revive_uapi::HostFnImpl::return_value(
-///     pallet_revive_uapi::ReturnFlags::empty(), &encoded);
+///     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 /// ```
 ///
 /// ## Return encoding (alloc mode)
@@ -477,25 +472,17 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// let result = greeting();
 ///
+/// let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
 /// if <String as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-///     let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
 ///     let mut __buf = alloc::vec![0u8; __len];
 ///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
 ///     pallet_revive_uapi::HostFnImpl::return_value(
 ///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 /// } else {
-///     // Static path — compiler eliminates this for dynamic types.
-///     // Guard prevents buffer overflow if this branch is ever reached.
 ///     let mut __buf = [0u8; <String as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
-///     let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
-///     if __len <= __buf.len() {
-///         <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-///         pallet_revive_uapi::HostFnImpl::return_value(
-///             pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
-///     } else {
-///         pallet_revive_uapi::HostFnImpl::return_value(
-///             pallet_revive_uapi::ReturnFlags::REVERT, b"EncodingOverflow");
-///     }
+///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -575,7 +562,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Generated Traits
 ///
 /// This derive macro generates implementations for both:
-/// - `SolEncode` - Base trait with `encode_len()` and `encode_to()` methods
+/// - `SolEncode` - Base trait with `encode_body_len()` and `encode_body_to()` methods
 /// - `StaticEncodedLen` - Marker trait with compile-time `ENCODED_SIZE` constant
 ///
 /// Types with only static fields implement `StaticEncodedLen` and can be returned from methods
@@ -602,13 +589,13 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     const SOL_NAME: &'static str = "(uint256,uint256)";
 ///     const HEAD_SIZE: usize = 64;
 ///
-///     fn encode_len(&self) -> usize { 64 }
+///     fn encode_body_len(&self) -> usize { 64 }
 ///
-///     fn encode_to(&self, buf: &mut [u8]) {
+///     fn encode_body_to(&self, buf: &mut [u8]) {
 ///         let mut __offset: usize = 0;
-///         ::pvm_contract_types::SolEncode::encode_to(&self.x, &mut buf[__offset..]);
+///         ::pvm_contract_types::SolEncode::encode_body_to(&self.x, &mut buf[__offset..]);
 ///         __offset += <U256 as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
-///         ::pvm_contract_types::SolEncode::encode_to(&self.y, &mut buf[__offset..]);
+///         ::pvm_contract_types::SolEncode::encode_body_to(&self.y, &mut buf[__offset..]);
 ///         __offset += <U256 as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
 ///     }
 /// }
@@ -702,26 +689,26 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     const SOL_NAME: &'static str = "(string,uint8)";
 ///     const HEAD_SIZE: usize = 64;  // 32 (offset pointer for String) + 32 (u8 slot)
 ///
-///     fn encode_len(&self) -> usize {
-///         64 + ::pvm_contract_types::SolEncode::tail_len(&self.name)
+///     fn encode_body_len(&self) -> usize {
+///         64 + ::pvm_contract_types::SolEncode::encode_body_len(&self.name)
 ///     }
 ///
-///     fn encode_to(&self, buf: &mut [u8]) {
+///     fn encode_body_to(&self, buf: &mut [u8]) {
 ///         let __head_size: usize = 64;
 ///         let mut __tail_offset: usize = __head_size;
 ///
 ///         // Field 0 (name: String) — dynamic, write offset pointer
 ///         buf[0..24].fill(0);
 ///         buf[24..32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-///         let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&self.name);
-///         ::pvm_contract_types::SolEncode::encode_tail_to(
+///         let __tail_len = ::pvm_contract_types::SolEncode::encode_body_len(&self.name);
+///         ::pvm_contract_types::SolEncode::encode_body_to(
 ///             &self.name,
 ///             &mut buf[__tail_offset..__tail_offset + __tail_len]
 ///         );
 ///         __tail_offset += __tail_len;
 ///
 ///         // Field 1 (age: u8) — static, write inline
-///         <u8 as ::pvm_contract_types::SolEncode>::encode_to(
+///         <u8 as ::pvm_contract_types::SolEncode>::encode_body_to(
 ///             &self.age, &mut buf[32..64]);
 ///     }
 /// }
