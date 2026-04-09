@@ -2,10 +2,10 @@
   {"type":"constructor","inputs":[
     {"name":"owner","type":"address"},
     {"name":"supply","type":"uint256"}
-  ]},
+  ],"stateMutability":"nonpayable"},
   {"type":"function","name":"balanceOf","inputs":[
     {"name":"account","type":"address"}
   ],"outputs":[
     {"name":"","type":"uint256"}
-  ]}
+  ],"stateMutability":"nonpayable"}
 ]
