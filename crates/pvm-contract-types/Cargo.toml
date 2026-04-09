@@ -10,6 +10,8 @@ description = "ABI encoding/decoding traits for PVM smart contracts"
 ruint = { version = "1.17", default-features = false }
 const_format = { workspace = true, default-features = false }
 keccak-const.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 alloy-core = { version = "1.5", features = ["sol-types"] }
@@ -20,6 +22,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [features]
 default = []
 alloc = []
+abi-gen = ["alloc", "dep:serde", "dep:serde_json"]
 
 [[bench]]
 name = "encoding"

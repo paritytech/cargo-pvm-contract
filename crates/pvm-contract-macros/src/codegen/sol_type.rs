@@ -54,6 +54,8 @@ fn expand_static_sol_type(
     let encode_body = generate_static_encode_body(fields);
     let decode_body = generate_static_decode_body(fields);
 
+    let abi_param_fn = generate_abi_param_fn(fields, field_info);
+
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const IS_DYNAMIC: bool = false;
@@ -68,6 +70,8 @@ fn expand_static_sol_type(
             fn encode_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
+
+            #abi_param_fn
         }
 
         impl ::pvm_contract_types::StaticEncodedLen for #name {
@@ -96,6 +100,8 @@ fn expand_dynamic_sol_type(
     let encode_body = generate_dynamic_encode_body(fields, field_info, &head_size_expr);
     let decode_body = generate_dynamic_decode_body(fields, field_info);
 
+    let abi_param_fn = generate_abi_param_fn(fields, field_info);
+
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
             const IS_DYNAMIC: bool = #is_dynamic_expr;
@@ -109,6 +115,8 @@ fn expand_dynamic_sol_type(
             fn encode_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
+
+            #abi_param_fn
         }
 
         impl ::pvm_contract_types::SolDecode for #name {
@@ -123,6 +131,41 @@ fn expand_dynamic_sol_type(
 
         impl ::pvm_contract_types::SolArrayElement for #name {}
     })
+}
+
+/// Generate the `abi_param()` method override for a struct.
+/// Returns `"type": "tuple"` with `components` listing each field.
+fn generate_abi_param_fn(
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+) -> TokenStream {
+    let field_types = get_field_types(fields);
+
+    let component_exprs: Vec<TokenStream> = field_info
+        .iter()
+        .zip(field_types.iter())
+        .map(|((field_name, _), field_ty)| {
+            let name_str = match field_name {
+                Some(ident) => ident.to_string(),
+                None => String::new(),
+            };
+            quote! {
+                <#field_ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+            }
+        })
+        .collect();
+
+    quote! {
+        #[cfg(feature = "abi-gen")]
+        fn abi_param(name: &str) -> ::pvm_contract_types::AbiParam {
+            extern crate alloc;
+            ::pvm_contract_types::AbiParam {
+                name: alloc::string::String::from(name),
+                param_type: alloc::string::String::from("tuple"),
+                components: alloc::vec![#(#component_exprs),*],
+            }
+        }
+    }
 }
 
 fn build_is_dynamic_expr(

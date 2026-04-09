@@ -742,13 +742,13 @@ mod tests {
 
         // abi-gen main is generated (no sol_path)
         assert!(output.contains("feature = \"abi-gen\""));
-        // constructor entry is present with its inputs array
-        assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":["));
+        // constructor entry uses AbiItem struct
+        assert!(output.contains("AbiItem"));
         // param names are emitted
         assert!(output.contains("\"owner\""));
         assert!(output.contains("\"supply\""));
-        // param types are resolved via trait SOL_NAME
-        assert!(output.contains("SOL_NAME"));
+        // param types are resolved via trait abi_param
+        assert!(output.contains("abi_param"));
     }
 
     #[test]

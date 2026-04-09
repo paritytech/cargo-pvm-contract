@@ -27,36 +27,22 @@ pub fn generate_abi_gen(parsed: &ParsedContract, has_sol_path: bool) -> (TokenSt
 
 fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, TokenStream)> {
     let constructor_entry = if parsed.has_constructor {
-        let constructor_input_entries: Vec<TokenStream> = parsed
+        let ctor_params: Vec<TokenStream> = parsed
             .constructor_inputs
             .iter()
             .map(|(name, ty)| {
                 let name_str = name.to_string();
-                Ok(quote! {
-                    if !__first_ctor_input {
-                        __abi.push(',');
-                    } else {
-                        __first_ctor_input = false;
-                    }
-                    __abi.push_str("{\"name\":\"");
-                    __abi.push_str(#name_str);
-                    __abi.push_str("\",\"type\":\"");
-                    __abi.push_str(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME);
-                    __abi.push_str("\"}");
-                })
+                quote! {
+                    <#ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+                }
             })
-            .collect::<syn::Result<Vec<_>>>()?;
+            .collect();
 
         quote! {
-            if !__first_item {
-                __abi.push(',');
-            } else {
-                __first_item = false;
-            }
-            __abi.push_str("{\"type\":\"constructor\",\"inputs\":[");
-            let mut __first_ctor_input = true;
-            #(#constructor_input_entries)*
-            __abi.push_str("]}");
+            __items.push(::pvm_contract_types::AbiItem::Constructor {
+                inputs: vec![#(#ctor_params),*],
+                state_mutability: "nonpayable".into(),
+            });
         }
     } else {
         quote! {}
@@ -72,15 +58,13 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
         pub fn __abi_json() -> ::std::string::String {
-            let mut __abi = ::std::string::String::from("[");
-            let mut __first_item = true;
+            let mut __items: ::std::vec::Vec<::pvm_contract_types::AbiItem> = ::std::vec::Vec::new();
 
             #constructor_entry
 
             #(#method_entries)*
 
-            __abi.push(']');
-            __abi
+            ::pvm_contract_types::abi_to_json(&__items)
         }
     };
 
@@ -98,64 +82,38 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
 fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
     let method_name = &method.sol_name;
 
-    let input_entries: Vec<TokenStream> = method
+    let input_params: Vec<TokenStream> = method
         .param_types
         .iter()
         .zip(method.param_names.iter())
         .map(|(ty, name)| {
             let name_str = name.to_string();
-            Ok(quote! {
-                if !__first_input {
-                    __abi.push(',');
-                } else {
-                    __first_input = false;
-                }
-                __abi.push_str("{\"name\":\"");
-                __abi.push_str(#name_str);
-                __abi.push_str("\",\"type\":\"");
-                __abi.push_str(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME);
-                __abi.push_str("\"}");
-            })
+            quote! {
+                <#ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+            }
         })
-        .collect::<syn::Result<Vec<_>>>()?;
+        .collect();
 
-    let output_entries: Vec<TokenStream> = method
+    let output_params: Vec<TokenStream> = method
         .return_types
         .iter()
         .map(|ty| {
-            Ok(quote! {
-                if !__first_output {
-                    __abi.push(',');
-                } else {
-                    __first_output = false;
-                }
-                __abi.push_str("{\"name\":\"\",\"type\":\"");
-                __abi.push_str(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME);
-                __abi.push_str("\"}");
-            })
+            quote! {
+                <#ty as ::pvm_contract_types::SolEncode>::abi_param("")
+            }
         })
-        .collect::<syn::Result<Vec<_>>>()?;
+        .collect();
+
+    let has_return = !method.return_types.is_empty();
+    let mutability = if has_return { "view" } else { "nonpayable" };
 
     Ok(quote! {
-        if !__first_item {
-            __abi.push(',');
-        } else {
-            __first_item = false;
-        }
-
-        __abi.push_str("{\"type\":\"function\",\"name\":\"");
-        __abi.push_str(#method_name);
-        __abi.push_str("\",\"inputs\":[");
-
-        let mut __first_input = true;
-        #(#input_entries)*
-
-        __abi.push_str("],\"outputs\":[");
-
-        let mut __first_output = true;
-        #(#output_entries)*
-
-        __abi.push_str("]}");
+        __items.push(::pvm_contract_types::AbiItem::Function {
+            name: #method_name.into(),
+            inputs: vec![#(#input_params),*],
+            outputs: vec![#(#output_params),*],
+            state_mutability: #mutability.into(),
+        });
     })
 }
 

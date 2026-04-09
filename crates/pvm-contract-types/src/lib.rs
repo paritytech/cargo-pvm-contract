@@ -11,6 +11,15 @@ mod alloc_types;
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
 
+#[cfg(feature = "abi-gen")]
+mod abi_gen;
+#[cfg(feature = "abi-gen")]
+pub use abi_gen::{AbiItem, AbiParam, abi_to_json};
+
+#[cfg(feature = "abi-gen")]
+#[doc(hidden)]
+pub use serde_json;
+
 #[doc(hidden)]
 pub use const_format;
 use ruint::aliases::U256;
@@ -191,6 +200,18 @@ pub trait SolEncode {
     } else {
         Self::HEAD_SIZE
     };
+
+    /// Build an ABI parameter description for this type.
+    /// Only available when the `abi-gen` feature is enabled.
+    /// Structs override this to return `"type": "tuple"` with `components`.
+    #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> AbiParam {
+        AbiParam {
+            name: name.into(),
+            param_type: Self::SOL_NAME.into(),
+            components: alloc::vec![],
+        }
+    }
 
     /// Total encoded byte length of this value.
     fn encode_len(&self) -> usize;

@@ -30,6 +30,9 @@ pub struct AbiParam {
     pub name: String,
     #[serde(rename = "type")]
     pub param_type: String,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<AbiParam>,
 }
 
 pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {

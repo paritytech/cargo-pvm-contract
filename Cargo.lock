@@ -4377,6 +4377,8 @@ dependencies = [
  "proptest",
  "pvm-contract-macros",
  "ruint",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
