@@ -2077,7 +2077,7 @@ fn return_encoding_struct_in_multi_return() {
 
     // The macro flattens multi-return — but here the struct is one field
     // In Solidity, SolPoint is a tuple (uint64, uint64) inlined in the return
-    let val = ((1u64, 2u64), "label".to_string());
+    let val = (Point { x: 1, y: 2 }, "label".to_string());
     let our = {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
