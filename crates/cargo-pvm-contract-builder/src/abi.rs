@@ -281,7 +281,11 @@ pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
                 .find(|s| !matches!(**s, "memory" | "calldata" | "storage"))
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            Some(AbiParam { name, param_type })
+            Some(AbiParam {
+                name,
+                param_type,
+                components: vec![],
+            })
         })
         .collect()
 }
@@ -384,11 +388,13 @@ mod tests {
                 inputs: vec![
                     AbiParam {
                         name: "to".to_string(),
-                        param_type: "address".to_string()
+                        param_type: "address".to_string(),
+                        components: vec![],
                     },
                     AbiParam {
                         name: "amount".to_string(),
-                        param_type: "uint256".to_string()
+                        param_type: "uint256".to_string(),
+                        components: vec![],
                     },
                 ],
                 outputs: vec![],
@@ -409,11 +415,13 @@ mod tests {
                 name: "balanceOf".to_string(),
                 inputs: vec![AbiParam {
                     name: "account".to_string(),
-                    param_type: "address".to_string()
+                    param_type: "address".to_string(),
+                    components: vec![],
                 }],
                 outputs: vec![AbiParam {
                     name: "".to_string(),
-                    param_type: "uint256".to_string()
+                    param_type: "uint256".to_string(),
+                    components: vec![],
                 }],
                 state_mutability: Some("view".to_string()),
             }
@@ -432,7 +440,8 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![AbiParam {
                     name: "".to_string(),
-                    param_type: "uint256".to_string()
+                    param_type: "uint256".to_string(),
+                    components: vec![],
                 }],
                 state_mutability: Some("view".to_string()),
             }
