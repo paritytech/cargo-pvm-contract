@@ -308,8 +308,11 @@ fn build_elf(
         .arg(profile.cargo_arg())
         .arg("--target")
         .arg(&target_json)
-        .arg("-Zbuild-std=core,alloc")
-        .arg("-Zjson-target-spec");
+        .arg("-Zbuild-std=core,alloc");
+
+    if cargo_supports_json_target_spec() {
+        cmd.arg("-Zjson-target-spec");
+    }
 
     for bin in bins {
         cmd.arg("--bin").arg(bin);
@@ -328,6 +331,18 @@ fn build_elf(
     }
 
     Ok(())
+}
+
+/// Check if the current cargo still requires `-Zjson-target-spec`.
+/// The flag was stabilized in newer toolchains; passing it there causes an error.
+fn cargo_supports_json_target_spec() -> bool {
+    Command::new("cargo")
+        .arg("-Zjson-target-spec")
+        .arg("version")
+        .env("RUSTC_BOOTSTRAP", "1")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn generate_abi_file(
