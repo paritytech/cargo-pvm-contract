@@ -95,6 +95,10 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
     Ok((helper, main_fn))
 }
 
+// NOTE: All methods and constructors are emitted with `"stateMutability":"payable"`
+// because we don't yet support `payable`/`nonpayable`/`view`/`pure` attributes.
+// Once state mutability attributes are added, this should be derived from the method
+// annotation instead of hardcoded.
 fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
     let method_name = &method.sol_name;
 

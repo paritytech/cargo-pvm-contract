@@ -222,13 +222,26 @@ pub trait SolEncode {
     }
 
     /// Smart top-level encoding suitable for ABI return data and calldata.
-    /// - Tuples: flat body (multi-return, no wrapping)
-    /// - Dynamic non-tuples: `[offset=32]` + body
-    /// - Static non-tuples: body directly
+    ///
+    /// Per the Solidity ABI spec, function return values are encoded as
+    /// `enc((v_1, ..., v_k))`. For a single dynamic return value this means
+    /// a 32-byte offset pointer is prepended before the body data, telling
+    /// the decoder where the actual content starts. This wrapping is what
+    /// makes `abi.decode` work on the caller side.
+    ///
+    /// The three cases:
+    /// - **Tuples** (`IS_TUPLE=true`): flat body directly — represents
+    ///   multiple return values, the wrapping is the tuple itself.
+    /// - **Dynamic non-tuples** (`IS_DYNAMIC=true`): `[offset=32]` prefix
+    ///   followed by the body from [`encode_body_to`](SolEncode::encode_body_to).
+    /// - **Static non-tuples**: body directly — no offset needed since the
+    ///   size is known at compile time.
     fn encode_to(&self, buf: &mut [u8]) {
         if Self::IS_TUPLE {
             self.encode_body_to(buf);
         } else if Self::IS_DYNAMIC {
+            // Dynamic non-tuple: prepend a 32-byte offset pointer.
+            // The offset value is always 32 (0x20) — "data starts at byte 32".
             buf[..24].fill(0);
             buf[24..32].copy_from_slice(&32u64.to_be_bytes());
             self.encode_body_to(&mut buf[32..]);
