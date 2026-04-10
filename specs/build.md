@@ -68,7 +68,7 @@ target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style o
 
 Projects can also use `cargo-pvm-contract-builder` as a build dependency with a `build.rs` file:
 
-```rust
+```rust,ignore
 // build.rs
 fn main() {
     cargo_pvm_contract_builder::PvmBuilder::new().build();
@@ -83,8 +83,8 @@ cargo build --release
 Output:
 
 ```text
-target/my_contract.release.polkavm    — deployable bytecode
-target/my_contract.release.abi.json   — Ethereum-compatible ABI (macro style only)
+target/release/my_contract.polkavm    — deployable bytecode
+target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style only)
 ```
 
 ## What Happens Under the Hood

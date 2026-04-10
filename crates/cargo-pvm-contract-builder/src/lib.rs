@@ -211,7 +211,7 @@ pub fn build_contract(
     Ok(())
 }
 
-/// Build the project (build.rs context). Outputs to `target/<bin>.<profile>.polkavm`.
+/// Build the project (build.rs context). Outputs to `target/<profile>/<bin>.polkavm`.
 fn build_project(
     project_cargo_toml: &Path,
     bin_names: Option<Vec<String>>,
@@ -245,17 +245,25 @@ fn build_project(
         .join("riscv64emac-unknown-none-polkavm")
         .join(profile.directory());
 
+    let profile_dir = target_root.join(profile.directory());
+    fs::create_dir_all(&profile_dir).with_context(|| {
+        format!(
+            "Failed to create profile directory: {}",
+            profile_dir.display()
+        )
+    })?;
+
     for bin in &bins_to_build {
         let elf_path = elf_dir.join(bin);
         if !elf_path.exists() {
             anyhow::bail!("ELF binary not found at: {}", elf_path.display());
         }
 
-        let output_path = target_root.join(format!("{}.{}.polkavm", bin, profile.directory()));
+        let output_path = profile_dir.join(format!("{bin}.polkavm"));
         link_to_polkavm(&elf_path, &output_path)?;
 
         if !skip_abi {
-            let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
+            let abi_path = profile_dir.join(format!("{bin}.abi.json"));
             generate_abi_file(manifest_dir, bin, &abi_path, None)?;
         }
     }
