@@ -13,33 +13,13 @@ impl SolEncode for Bytes {
     const IS_DYNAMIC: bool = true;
     const SOL_NAME: &'static str = "bytes";
 
-    fn encode_len(&self) -> usize {
-        let data_len = self.0.len();
-        let padding = (32 - (data_len % 32)) % 32;
-        32 + 32 + data_len + padding
-    }
-
-    fn encode_to(&self, buf: &mut [u8]) {
-        let data_len = self.0.len();
-        let padding = (32 - (data_len % 32)) % 32;
-
-        buf[..32].fill(0);
-        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-
-        buf[32..64].fill(0);
-        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
-
-        buf[64..64 + data_len].copy_from_slice(&self.0);
-        buf[64 + data_len..64 + data_len + padding].fill(0);
-    }
-
-    fn tail_len(&self) -> usize {
+    fn encode_body_len(&self) -> usize {
         let data_len = self.0.len();
         let padding = (32 - (data_len % 32)) % 32;
         32 + data_len + padding
     }
 
-    fn encode_tail_to(&self, buf: &mut [u8]) {
+    fn encode_body_to(&self, buf: &mut [u8]) {
         let data_len = self.0.len();
         let padding = (32 - (data_len % 32)) % 32;
 
@@ -83,34 +63,13 @@ impl SolEncode for alloc::string::String {
     const IS_DYNAMIC: bool = true;
     const SOL_NAME: &'static str = "string";
 
-    fn encode_len(&self) -> usize {
-        let data_len = self.len();
-        let padding = (32 - (data_len % 32)) % 32;
-        32 + 32 + data_len + padding
-    }
-
-    fn encode_to(&self, buf: &mut [u8]) {
-        let bytes = self.as_bytes();
-        let data_len = bytes.len();
-        let padding = (32 - (data_len % 32)) % 32;
-
-        buf[..32].fill(0);
-        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-
-        buf[32..64].fill(0);
-        buf[56..64].copy_from_slice(&(data_len as u64).to_be_bytes());
-
-        buf[64..64 + data_len].copy_from_slice(bytes);
-        buf[64 + data_len..64 + data_len + padding].fill(0);
-    }
-
-    fn tail_len(&self) -> usize {
+    fn encode_body_len(&self) -> usize {
         let data_len = self.len();
         let padding = (32 - (data_len % 32)) % 32;
         32 + data_len + padding
     }
 
-    fn encode_tail_to(&self, buf: &mut [u8]) {
+    fn encode_body_to(&self, buf: &mut [u8]) {
         let bytes = self.as_bytes();
         let data_len = bytes.len();
         let padding = (32 - (data_len % 32)) % 32;
@@ -149,26 +108,16 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
         H::<T>::V.as_str()
     };
 
-    fn encode_len(&self) -> usize {
-        32 + self.tail_len()
-    }
-
-    fn encode_to(&self, buf: &mut [u8]) {
-        buf[..32].fill(0);
-        buf[24..32].copy_from_slice(&32u64.to_be_bytes());
-        self.encode_tail_to(&mut buf[32..]);
-    }
-
-    fn tail_len(&self) -> usize {
+    fn encode_body_len(&self) -> usize {
         if T::IS_DYNAMIC {
-            let tails_len: usize = self.iter().map(|e| e.tail_len()).sum();
+            let tails_len: usize = self.iter().map(|e| e.encode_body_len()).sum();
             32 + self.len() * 32 + tails_len
         } else {
-            32 + self.iter().map(|e| e.tail_len()).sum::<usize>()
+            32 + self.iter().map(|e| e.encode_body_len()).sum::<usize>()
         }
     }
 
-    fn encode_tail_to(&self, buf: &mut [u8]) {
+    fn encode_body_to(&self, buf: &mut [u8]) {
         buf[..32].fill(0);
         buf[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
 
@@ -182,15 +131,15 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
                     .copy_from_slice(&(rel_offset as u64).to_be_bytes());
                 offset_pos += 32;
 
-                let tail_len = elem.tail_len();
-                elem.encode_tail_to(&mut buf[tail_pos..tail_pos + tail_len]);
+                let tail_len = elem.encode_body_len();
+                elem.encode_body_to(&mut buf[tail_pos..tail_pos + tail_len]);
                 tail_pos += tail_len;
             }
         } else {
             let mut pos = 32;
             for elem in self.iter() {
-                let len = elem.tail_len();
-                elem.encode_tail_to(&mut buf[pos..pos + len]);
+                let len = elem.encode_body_len();
+                elem.encode_body_to(&mut buf[pos..pos + len]);
                 pos += len;
             }
         }
@@ -225,7 +174,7 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
             let mut elem_offset = array_data_start;
             for _ in 0..len {
                 let elem = T::decode_at(input, elem_offset);
-                elem_offset += elem.tail_len();
+                elem_offset += T::HEAD_SIZE;
                 result.push(elem);
             }
         }

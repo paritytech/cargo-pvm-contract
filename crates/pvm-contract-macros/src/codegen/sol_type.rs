@@ -63,11 +63,11 @@ fn expand_static_sol_type(
             const HEAD_SIZE: usize = #total_size_expr;
 
             #[inline]
-            fn encode_len(&self) -> usize {
+            fn encode_body_len(&self) -> usize {
                 #total_size_expr
             }
 
-            fn encode_to(&self, buf: &mut [u8]) {
+            fn encode_body_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
 
@@ -108,11 +108,11 @@ fn expand_dynamic_sol_type(
             const SOL_NAME: &'static str = #sol_name_expr;
             const HEAD_SIZE: usize = #head_size_expr;
 
-            fn encode_len(&self) -> usize {
+            fn encode_body_len(&self) -> usize {
                 #encode_len_body
             }
 
-            fn encode_to(&self, buf: &mut [u8]) {
+            fn encode_body_to(&self, buf: &mut [u8]) {
                 #encode_body
             }
 
@@ -346,7 +346,7 @@ fn generate_static_encode_body(fields: &Fields) -> TokenStream {
 
         stmts.push(quote! {
             let __hs = <#field_ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
-            ::pvm_contract_types::SolEncode::encode_to(&#field_access, &mut buf[__offset..__offset + __hs]);
+            ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__offset..__offset + __hs]);
             __offset += __hs;
         });
     }
@@ -496,12 +496,12 @@ fn generate_dynamic_encode_len(
 
             match sol_type.is_dynamic() {
                 Some(true) => Some(quote! {
-                    ::pvm_contract_types::SolEncode::tail_len(&#field_access)
+                    ::pvm_contract_types::SolEncode::encode_body_len(&#field_access)
                 }),
                 Some(false) => None,
                 None => Some(quote! {
                     if <#field_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                        ::pvm_contract_types::SolEncode::tail_len(&#field_access)
+                        ::pvm_contract_types::SolEncode::encode_body_len(&#field_access)
                     } else {
                         0usize
                     }
@@ -546,8 +546,8 @@ fn generate_dynamic_encode_body(
                         let __ho = #head_offset_expr;
                         buf[__ho..__ho + 24].fill(0);
                         buf[__ho + 24..__ho + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-                        let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&#field_access);
-                        ::pvm_contract_types::SolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                        let __tail_len = ::pvm_contract_types::SolEncode::encode_body_len(&#field_access);
+                        ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
                         __tail_offset += __tail_len;
                     }
                 });
@@ -556,7 +556,7 @@ fn generate_dynamic_encode_body(
                 stmts.push(quote! {
                     {
                         let __ho = #head_offset_expr;
-                        ::pvm_contract_types::SolEncode::encode_to(&#field_access, &mut buf[__ho..]);
+                        ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__ho..]);
                     }
                 });
             }
@@ -567,11 +567,11 @@ fn generate_dynamic_encode_body(
                         if <#field_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
                             buf[__ho..__ho + 24].fill(0);
                             buf[__ho + 24..__ho + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-                            let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&#field_access);
-                            ::pvm_contract_types::SolEncode::encode_tail_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                            let __tail_len = ::pvm_contract_types::SolEncode::encode_body_len(&#field_access);
+                            ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
                             __tail_offset += __tail_len;
                         } else {
-                            ::pvm_contract_types::SolEncode::encode_to(&#field_access, &mut buf[__ho..]);
+                            ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__ho..]);
                         }
                     }
                 });

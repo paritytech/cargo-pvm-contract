@@ -287,7 +287,7 @@ pub struct Point {
 ```
 
 This generates:
-- `SolEncode` impl with `SOL_NAME = "(uint256,uint256)"`, `encode_len`, `encode_to`
+- `SolEncode` impl with `SOL_NAME = "(uint256,uint256)"`, `encode_body_len`, `encode_body_to`
 - `StaticEncodedLen` impl with `ENCODED_SIZE = 64` (static structs only)
 - `SolDecode` impl with `decode`, `decode_at`
 
