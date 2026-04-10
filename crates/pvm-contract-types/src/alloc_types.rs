@@ -2,6 +2,7 @@ use crate::{SolDecode, SolEncode};
 
 impl SolEncode for alloc::string::String {
     const IS_DYNAMIC: bool = true;
+    const SOL_NAME: &'static str = "string";
 
     fn encode_len(&self) -> usize {
         let data_len = self.len();
@@ -41,12 +42,9 @@ impl SolEncode for alloc::string::String {
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
     }
-
-    #[cfg(feature = "abi-reflection")]
-    fn sol_name() -> alloc::string::String {
-        alloc::string::String::from("string")
-    }
 }
+
+impl crate::SolArrayElement for alloc::string::String {}
 
 impl SolDecode for alloc::string::String {
     fn decode_at(input: &[u8], offset: usize) -> Self {
@@ -64,6 +62,13 @@ impl SolDecode for alloc::string::String {
 
 impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
     const IS_DYNAMIC: bool = true;
+    const SOL_NAME: &'static str = {
+        struct H<T>(core::marker::PhantomData<T>);
+        impl<T: SolEncode> H<T> {
+            const V: crate::ConstStr = crate::ConstStr::new(T::SOL_NAME, "[]");
+        }
+        H::<T>::V.as_str()
+    };
 
     fn encode_len(&self) -> usize {
         32 + self.tail_len()
@@ -111,12 +116,9 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
             }
         }
     }
-
-    #[cfg(feature = "abi-reflection")]
-    fn sol_name() -> alloc::string::String {
-        alloc::format!("{}[]", T::sol_name())
-    }
 }
+
+impl<T: SolEncode> crate::SolArrayElement for alloc::vec::Vec<T> {}
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     fn decode_at(input: &[u8], offset: usize) -> Self {

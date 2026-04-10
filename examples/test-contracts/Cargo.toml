@@ -56,7 +56,7 @@ ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-reflection"]
+abi-gen = []
 
 [build-dependencies]
 cargo-pvm-contract-builder = { path = "../../crates/cargo-pvm-contract-builder" }

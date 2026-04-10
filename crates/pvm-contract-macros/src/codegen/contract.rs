@@ -547,11 +547,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let dispatch_arms: Vec<_> = parsed
+    let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = parsed
         .methods
         .iter()
         .map(|m| generate_dispatch_arm(m, mod_name, use_alloc))
-        .collect();
+        .unzip();
 
     let fallback_handler = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
@@ -573,6 +573,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let call_fn = if use_alloc {
         quote! {
+            #[allow(non_upper_case_globals)]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
@@ -586,6 +587,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
+                #(#selector_consts)*
+
                 match selector {
                     #(#dispatch_arms)*
                     _ => {
@@ -597,6 +600,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         let buffer_size = args.buffer_size;
         quote! {
+            #[allow(non_upper_case_globals)]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
@@ -613,6 +617,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
+
+                #(#selector_consts)*
 
                 match selector {
                     #(#dispatch_arms)*

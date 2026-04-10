@@ -206,7 +206,7 @@ fn generate_sol_type_name_expr(sol_type: &SolType) -> syn::Result<TokenStream> {
             })?;
 
             Ok(quote! {
-                <#ty as ::pvm_contract_types::SolEncode>::sol_name()
+                ::std::string::String::from(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME)
             })
         }
         SolType::Array(inner) => {

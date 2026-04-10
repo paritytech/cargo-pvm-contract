@@ -26,5 +26,4 @@ pallet-revive-uapi = { version = "0.10", default-features = false }
 ruint = { version = "1.17", default-features = false }
 
 [features]
-abi-gen = ["abi-reflection", "pvm-contract-macros/abi-reflection", "pvm-contract-types/abi-reflection"]
-abi-reflection = []
+abi-gen = []

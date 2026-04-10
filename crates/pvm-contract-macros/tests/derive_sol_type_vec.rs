@@ -1,6 +1,3 @@
-#[cfg(feature = "abi-reflection")]
-extern crate alloc;
-
 use pvm_contract_macros::SolType;
 use pvm_contract_types::{SolDecode, SolEncode};
 use ruint::aliases::U256;
@@ -233,9 +230,6 @@ fn test_derive_with_multiple_vec_fields() {
 
 #[test]
 fn test_derive_sol_type_name_signature() {
-    #[cfg(feature = "abi-reflection")]
-    {
-        assert_eq!(MixedFields::sol_name(), "(uint32,uint256[])");
-        assert_eq!(WithVecU256::sol_name(), "(uint256[])");
-    }
+    assert_eq!(<MixedFields as SolEncode>::SOL_NAME, "(uint32,uint256[])");
+    assert_eq!(<WithVecU256 as SolEncode>::SOL_NAME, "(uint256[])");
 }

@@ -16,6 +16,53 @@ pub enum SolType {
 }
 
 impl SolType {
+    /// Returns the dynamic/static property only when it can be determined from
+    /// syntax alone. Custom types intentionally return `None` and must be
+    /// resolved through generated trait expressions.
+    pub fn is_dynamic(&self) -> Option<bool> {
+        match self {
+            SolType::DynBytes | SolType::String | SolType::Array(_) => Some(true),
+            SolType::Tuple(types) => {
+                let mut any_dynamic = false;
+                for ty in types {
+                    match ty.is_dynamic() {
+                        Some(true) => any_dynamic = true,
+                        Some(false) => {}
+                        None => return None,
+                    }
+                }
+                Some(any_dynamic)
+            }
+            SolType::FixedArray(inner, _) => inner.is_dynamic(),
+            SolType::Custom(_) => None,
+            _ => Some(false),
+        }
+    }
+
+    /// Returns the ABI head size only when it can be determined from syntax
+    /// alone. Custom types intentionally return `None` and must be resolved
+    /// through generated trait expressions.
+    pub fn head_size(&self) -> Option<usize> {
+        match self {
+            SolType::FixedArray(inner, size) => match inner.is_dynamic()? {
+                true => Some(32),
+                false => Some(inner.head_size()? * size),
+            },
+            SolType::Tuple(types) => match self.is_dynamic()? {
+                true => Some(32),
+                false => {
+                    let mut total = 0usize;
+                    for ty in types {
+                        total += ty.head_size()?;
+                    }
+                    Some(total)
+                }
+            },
+            SolType::Custom(_) => None,
+            _ => Some(32),
+        }
+    }
+
     pub fn canonical_name(&self) -> String {
         match self {
             SolType::Address => "address".to_string(),
@@ -32,27 +79,6 @@ impl SolType {
                 format!("({})", inner.join(","))
             }
             SolType::Custom(name) => name.clone(),
-        }
-    }
-
-    pub fn is_dynamic(&self) -> bool {
-        match self {
-            SolType::DynBytes | SolType::String | SolType::Array(_) => true,
-            SolType::Tuple(types) => types.iter().any(|t| t.is_dynamic()),
-            SolType::FixedArray(inner, _) => inner.is_dynamic(),
-            SolType::Custom(_) => false,
-            _ => false,
-        }
-    }
-
-    pub fn head_size(&self) -> usize {
-        match self {
-            SolType::FixedArray(inner, size) if !inner.is_dynamic() => inner.head_size() * size,
-            SolType::Tuple(types) if !self.is_dynamic() => {
-                types.iter().map(|t| t.head_size()).sum()
-            }
-            SolType::Custom(_) => 0,
-            _ => 32,
         }
     }
 
@@ -83,6 +109,10 @@ impl SolType {
             && let Ok(size) = lit_int.base10_parse::<usize>()
         {
             let inner = Self::from_rust_type(&array.elem)?;
+            // [u8; N] encodes as Solidity bytesN (matching alloy behavior)
+            if inner == SolType::Uint(8) {
+                return Some(SolType::Bytes(size));
+            }
             return Some(SolType::FixedArray(Box::new(inner), size));
         }
 
@@ -103,7 +133,6 @@ impl SolType {
             | "::pvm_contract_types::Address"
             | "pvm_contract::Address"
             | "::pvm_contract::Address" => Some(SolType::Address),
-            "[u8;20]" => Some(SolType::Address),
             "U256" | "ruint::aliases::U256" => Some(SolType::Uint(256)),
             "u256" => Some(SolType::Uint(256)),
             "u128" => Some(SolType::Uint(128)),
@@ -117,7 +146,6 @@ impl SolType {
             "i16" => Some(SolType::Int(16)),
             "i8" => Some(SolType::Int(8)),
             "bool" => Some(SolType::Bool),
-            "[u8;32]" => Some(SolType::Bytes(32)),
             "String" | "alloc::string::String" => Some(SolType::String),
             _ => Some(SolType::Custom(type_str)),
         }
@@ -155,5 +183,23 @@ mod tests {
         let ty: syn::Type = syn::parse_str("my_crate::Foo").unwrap();
         let sol = SolType::from_rust_type(&ty).unwrap();
         assert_eq!(sol.canonical_name(), "my_crate::Foo");
+    }
+
+    #[test]
+    fn custom_type_becomes_custom_variant() {
+        // Proc macro correctly identifies unknown types as Custom
+        let ty: syn::Type = syn::parse_str("Count").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert!(
+            matches!(sol, SolType::Custom(ref name) if name == "Count"),
+            "Type alias should become SolType::Custom, got {:?}",
+            sol
+        );
+    }
+
+    #[test]
+    fn selector_resolution_requires_codegen_not_soltype() {
+        let sol = SolType::Custom("Count".to_string());
+        assert_eq!(sol.canonical_name(), "Count");
     }
 }

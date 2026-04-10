@@ -3,6 +3,7 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params, has_custom_types};
 use super::encode::{generate_dynamic_value_encode, generate_encode};
+use super::sol_type::{sol_type_head_size_expr, sol_type_is_dynamic_expr, sol_type_name_parts};
 use crate::signature::{FunctionSignature, SolType, compute_selector};
 
 pub struct MethodInfo {
@@ -24,11 +25,11 @@ pub(super) fn generate_param_decoding(
     use_alloc: bool,
 ) -> ParamDecoding {
     let decodes = generate_decode_params(sol_types, use_alloc);
-    let min_size = calculate_min_input_size(sol_types);
+    let min_size_expr = calculate_min_input_size(sol_types);
 
-    let size_check = if min_size > 0 {
+    let size_check = if !sol_types.is_empty() {
         quote! {
-            if input.len() < #min_size {
+            if input.len() < (#min_size_expr) {
                 pallet_revive_uapi::HostFnImpl::return_value(
                     pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
             }
@@ -67,13 +68,62 @@ pub(super) fn generate_param_decoding(
     }
 }
 
+fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
+    let fn_name = &method.signature.name;
+    let mut parts: Vec<TokenStream> = Vec::new();
+    let prefix = format!("{}(", fn_name);
+    parts.push(quote! { #prefix });
+
+    for (i, input_type) in method.signature.inputs.iter().enumerate() {
+        if i > 0 {
+            parts.push(quote! { "," });
+        }
+        sol_type_name_parts(input_type, &mut parts);
+    }
+
+    parts.push(quote! { ")" });
+    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+}
+
+fn build_output_size_expr(outputs: &[SolType]) -> TokenStream {
+    let has_custom = outputs.iter().any(|t| t.has_custom_types());
+
+    if !has_custom {
+        let total: usize = outputs
+            .iter()
+            .map(|t| {
+                t.head_size()
+                    .expect("build_output_size_expr called on unresolved custom type")
+            })
+            .sum();
+        return quote! { #total };
+    }
+
+    let size_exprs: Vec<TokenStream> = outputs.iter().map(sol_type_head_size_expr).collect();
+
+    quote! { 0 #(+ #size_exprs)* }
+}
+
 pub fn generate_dispatch_arm(
     method: &MethodInfo,
     mod_name: &syn::Ident,
     use_alloc: bool,
-) -> TokenStream {
-    let selector = compute_selector(&method.signature.canonical_signature());
-    let [s0, s1, s2, s3] = selector;
+) -> (TokenStream, TokenStream) {
+    let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
+    let has_custom_inputs = method.signature.inputs.iter().any(|t| t.has_custom_types());
+
+    let const_def = if has_custom_inputs {
+        let sig_expr = build_const_signature_expr(method);
+        quote! {
+            const #sel_ident: [u8; 4] = ::pvm_contract_types::const_selector(#sig_expr);
+        }
+    } else {
+        let selector = compute_selector(&method.signature.canonical_signature());
+        let [s0, s1, s2, s3] = selector;
+        quote! {
+            const #sel_ident: [u8; 4] = [#s0, #s1, #s2, #s3];
+        }
+    };
 
     let fn_name = &method.fn_name;
     let decoding =
@@ -120,17 +170,23 @@ pub fn generate_dispatch_arm(
         }
     };
 
-    quote! {
-        [#s0, #s1, #s2, #s3] => {
+    let match_arm = quote! {
+        #sel_ident => {
             #size_check
             #(#decode_statements)*
             #body
         }
-    }
+    };
+
+    (const_def, match_arm)
 }
 
-fn has_dynamic_outputs(outputs: &[SolType]) -> bool {
-    outputs.iter().any(|t| t.is_dynamic())
+fn has_known_dynamic_outputs(outputs: &[SolType]) -> bool {
+    outputs.iter().any(|t| t.is_dynamic() == Some(true))
+}
+
+fn has_custom_outputs(outputs: &[SolType]) -> bool {
+    outputs.iter().any(|t| t.has_custom_types())
 }
 
 fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStream {
@@ -138,12 +194,13 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStre
         return quote! { return; };
     }
 
-    let has_dynamic = has_dynamic_outputs(outputs);
+    let has_known_dynamic = has_known_dynamic_outputs(outputs);
+    let has_custom = has_custom_outputs(outputs);
 
-    if has_dynamic && !use_alloc {
+    if has_known_dynamic && !use_alloc {
         let type_name = outputs
             .iter()
-            .find(|t| t.is_dynamic())
+            .find(|t| t.is_dynamic() == Some(true))
             .map(|t| t.canonical_name())
             .unwrap_or_else(|| "dynamic".to_string());
         let msg = format!(
@@ -154,7 +211,7 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStre
         };
     }
 
-    if has_dynamic {
+    if (has_known_dynamic || has_custom) && use_alloc {
         return generate_dynamic_encode_and_return(outputs);
     }
 
@@ -184,15 +241,16 @@ fn generate_encode_and_return(outputs: &[SolType], use_alloc: bool) -> TokenStre
         })
         .collect();
 
-    let total_size: usize = outputs.iter().map(|t| t.head_size()).sum();
+    let total_size_expr = build_output_size_expr(outputs);
 
     quote! {{
-        let mut out = [0u8; #total_size];
+        const __OUT_SIZE: usize = #total_size_expr;
+        let mut out = [0u8; __OUT_SIZE];
         let mut offset = 0;
         #(
             let encoded = #encodes;
-            out[offset..offset + 32].copy_from_slice(&encoded);
-            offset += 32;
+            out[offset..offset + encoded.len()].copy_from_slice(&encoded);
+            offset += encoded.len();
         )*
         pallet_revive_uapi::HostFnImpl::return_value(
             pallet_revive_uapi::ReturnFlags::empty(), &out);
@@ -208,11 +266,9 @@ fn generate_dynamic_encode_and_return(outputs: &[SolType]) -> TokenStream {
             return quote! {{
                 let tail_data = #encode_tail;
                 let mut buf = alloc::vec::Vec::with_capacity(32 + tail_data.len());
-                let offset_value = ruint::aliases::U256::from(32u64);
-                let mut offset_buf = [0u8; 32];
-                <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
-                    &offset_value, &mut offset_buf);
-                buf.extend_from_slice(&offset_buf);
+                let mut __off_buf = [0u8; 32];
+                __off_buf[24..32].copy_from_slice(&(32u64).to_be_bytes());
+                buf.extend_from_slice(&__off_buf);
                 buf.extend_from_slice(&tail_data);
                 pallet_revive_uapi::HostFnImpl::return_value(
                     pallet_revive_uapi::ReturnFlags::empty(), &buf);
@@ -227,45 +283,61 @@ fn generate_dynamic_encode_and_return(outputs: &[SolType]) -> TokenStream {
         }};
     }
 
-    let head_size: usize = outputs.iter().map(|t| t.head_size()).sum();
+    let head_size_expr = build_output_size_expr(outputs);
 
     let encodes: Vec<_> = outputs
         .iter()
         .enumerate()
         .map(|(i, ty)| {
-            let value_expr = if outputs.len() == 1 {
-                quote!(result)
-            } else {
-                let idx = syn::Index::from(i);
-                quote!(result.#idx)
-            };
+            let idx = syn::Index::from(i);
+            let value_expr = quote!(result.#idx);
 
-            if ty.is_dynamic() {
+            if ty.is_dynamic() == Some(true) {
                 let encode_tail = generate_dynamic_value_encode(ty, value_expr);
                 quote! {
-                    let offset = #head_size + tail.len();
-                    let offset_value = ruint::aliases::U256::from(offset);
-                    let mut offset_buf = [0u8; 32];
-                    <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
-                        &offset_value,
-                        &mut offset_buf,
-                    );
-                    head.extend_from_slice(&offset_buf);
+                    let __off = __head_size + tail.len();
+                    let mut __off_buf = [0u8; 32];
+                    __off_buf[24..32].copy_from_slice(&(__off as u64).to_be_bytes());
+                    head.extend_from_slice(&__off_buf);
                     let encoded = #encode_tail;
                     tail.extend_from_slice(&encoded);
                 }
-            } else {
+            } else if ty.is_dynamic() == Some(false) {
                 let encode = generate_encode(ty, value_expr, true);
                 quote! {
                     let encoded = #encode;
                     head.extend_from_slice(&encoded);
+                }
+            } else {
+                let is_dyn_expr = sol_type_is_dynamic_expr(ty);
+                let hs_expr = sol_type_head_size_expr(ty);
+                quote! {
+                    if #is_dyn_expr {
+                        let __off = __head_size + tail.len();
+                        let mut __off_buf = [0u8; 32];
+                        __off_buf[24..32].copy_from_slice(&(__off as u64).to_be_bytes());
+                        head.extend_from_slice(&__off_buf);
+                        let __tl = ::pvm_contract_types::SolEncode::tail_len(&#value_expr);
+                        let mut __tbuf = alloc::vec![0u8; __tl];
+                        ::pvm_contract_types::SolEncode::encode_tail_to(&#value_expr, &mut __tbuf);
+                        tail.extend_from_slice(&__tbuf);
+                    } else {
+                        let __hs: usize = #hs_expr;
+                        let __start = head.len();
+                        head.resize(__start + __hs, 0);
+                        ::pvm_contract_types::SolEncode::encode_to(
+                            &#value_expr,
+                            &mut head[__start..__start + __hs],
+                        );
+                    }
                 }
             }
         })
         .collect();
 
     quote! {{
-        let mut head = alloc::vec::Vec::with_capacity(#head_size);
+        let __head_size: usize = #head_size_expr;
+        let mut head = alloc::vec::Vec::with_capacity(__head_size);
         let mut tail = alloc::vec::Vec::new();
         #(#encodes)*
         head.extend_from_slice(&tail);
@@ -277,6 +349,10 @@ fn generate_dynamic_encode_and_return(outputs: &[SolType]) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn normalize_tokens(ts: TokenStream) -> String {
+        ts.to_string().split_whitespace().collect::<String>()
+    }
 
     #[test]
     fn generate_dispatch_arm_uses_dynamic_encoding_for_string_return_in_alloc_mode() {
@@ -292,10 +368,32 @@ mod tests {
         };
         let mod_name: syn::Ident = syn::parse_str("contract").unwrap();
 
-        let arm = generate_dispatch_arm(&method, &mod_name, true).to_string();
+        let (_const_def, match_arm) = generate_dispatch_arm(&method, &mod_name, true);
 
-        assert!(arm.contains("encode_len"));
-        assert!(!arm.contains("compile_error"));
+        let expected = quote! {
+            __SEL_greeting => {
+                let result = contract::greeting();
+                {
+                    let len = ::pvm_contract_types::SolEncode::encode_len(&result);
+                    let mut buf = alloc::vec![0u8; len];
+                    ::pvm_contract_types::SolEncode::encode_to(&result, &mut buf);
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::empty(),
+                        &buf
+                    );
+                }
+            }
+        };
+
+        assert_eq!(normalize_tokens(match_arm), normalize_tokens(expected));
+    }
+
+    #[test]
+    fn custom_output_routes_to_dynamic_path_with_alloc() {
+        // Custom types may be dynamic, so with alloc they use the dynamic
+        // encoding path (encode_len + encode_to) instead of StaticEncodedLen.
+        let outputs = vec![SolType::Custom("NamedPoint".to_string())];
+        assert!(has_custom_outputs(&outputs));
     }
 
     #[test]
@@ -312,9 +410,36 @@ mod tests {
         };
         let mod_name: syn::Ident = syn::parse_str("contract").unwrap();
 
-        let arm = generate_dispatch_arm(&method, &mod_name, false).to_string();
+        let (_const_def, match_arm) = generate_dispatch_arm(&method, &mod_name, false);
 
-        assert!(arm.contains("compile_error"));
-        assert!(arm.contains("requires an explicit allocator"));
+        let expected = quote! {
+            __SEL_greeting => {
+                let result = contract::greeting();
+                compile_error!(
+                    "Return type `string` is dynamic and requires an explicit allocator. Set `allocator = \"pico\"` or `allocator = \"bump\"` in `#[contract]`, or use static types."
+                );
+            }
+        };
+
+        assert_eq!(normalize_tokens(match_arm), normalize_tokens(expected));
+    }
+
+    #[test]
+    fn has_known_dynamic_returns_false_for_custom_only() {
+        let outputs = vec![SolType::Custom("Point".to_string())];
+        assert!(
+            !has_known_dynamic_outputs(&outputs),
+            "Custom-only outputs: known-dynamic is false"
+        );
+        assert!(
+            has_custom_outputs(&outputs),
+            "Custom-only outputs: has_custom is true"
+        );
+    }
+
+    #[test]
+    fn has_known_dynamic_returns_true_for_string() {
+        let outputs = vec![SolType::String];
+        assert!(has_known_dynamic_outputs(&outputs));
     }
 }
