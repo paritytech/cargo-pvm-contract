@@ -289,11 +289,16 @@ fn build_elf(
 
     let work_dir = manifest_path.parent().context("Invalid manifest path")?;
 
+    // Remove RUSTUP_TOOLCHAIN only when the project has a rust-toolchain.toml that
+    // should control the toolchain. Without it, we keep the inherited toolchain
+    // (e.g. nightly passed via `cargo +nightly`).
+    let has_toolchain_file =
+        work_dir.join("rust-toolchain.toml").exists() || work_dir.join("rust-toolchain").exists();
+
     let mut cmd = Command::new("cargo");
     cmd.current_dir(work_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC")
-        .env_remove("RUSTUP_TOOLCHAIN")
         // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
         // Stripping is done later by polkavm_linker after processing relocations.
         .env("RUSTFLAGS", rustflags)
@@ -310,7 +315,13 @@ fn build_elf(
         .arg(&target_json)
         .arg("-Zbuild-std=core,alloc");
 
-    if cargo_supports_json_target_spec() {
+    if has_toolchain_file {
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
+
+    // `-Zjson-target-spec` was stabilized in newer toolchains. Pass it only when the
+    // cargo that will execute the build still recognises it as an unstable flag.
+    if cargo_supports_z_flag("json-target-spec", has_toolchain_file) {
         cmd.arg("-Zjson-target-spec");
     }
 
@@ -333,16 +344,21 @@ fn build_elf(
     Ok(())
 }
 
-/// Check if the current cargo still requires `-Zjson-target-spec`.
-/// The flag was stabilized in newer toolchains; passing it there causes an error.
-fn cargo_supports_json_target_spec() -> bool {
-    Command::new("cargo")
-        .arg("-Zjson-target-spec")
+/// Check whether the cargo that will run the build still accepts `-Z<flag>`.
+/// `remove_toolchain_env` mirrors the build command's `env_remove("RUSTUP_TOOLCHAIN")`
+/// so that we probe the exact same cargo binary.
+fn cargo_supports_z_flag(flag: &str, remove_toolchain_env: bool) -> bool {
+    let mut probe = Command::new("cargo");
+    probe
+        .arg(format!("-Z{flag}"))
         .arg("version")
         .env("RUSTC_BOOTSTRAP", "1")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if remove_toolchain_env {
+        probe.env_remove("RUSTUP_TOOLCHAIN");
+    }
+    probe.status().map(|s| s.success()).unwrap_or(false)
 }
 
 fn generate_abi_file(
