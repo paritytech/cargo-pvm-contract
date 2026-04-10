@@ -35,7 +35,7 @@ pub struct AbiParam {
 pub fn generate_abi_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
-    target_root: &Path,
+    target_root: Option<&Path>,
 ) -> Result<Option<AbiJson>> {
     generate_abi_via_feature(manifest_dir, bin_name, target_root)
 }
@@ -64,7 +64,7 @@ fn get_host_triple() -> Result<String> {
 fn generate_abi_via_feature(
     manifest_dir: &Path,
     bin_name: &str,
-    target_root: &Path,
+    target_root: Option<&Path>,
 ) -> Result<Option<AbiJson>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists() {
@@ -79,7 +79,10 @@ fn generate_abi_via_feature(
         return generate_abi_from_sol(&sol_full_path);
     }
 
-    let target_dir = target_root.join("abi-gen-target");
+    let target_dir = match target_root {
+        Some(root) => root.join("abi-gen-target"),
+        None => super::get_target_root().join("abi-gen-target"),
+    };
     let manifest_path = manifest_dir.join("Cargo.toml");
 
     // The project's .cargo/config.toml targets RISC-V with build-std=core,alloc.

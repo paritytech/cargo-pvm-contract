@@ -7,7 +7,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | Crate | Description |
 |-------|-------------|
 | `cargo-pvm-contract` | CLI tool — scaffolds contract projects from `.sol` files |
-| `cargo-pvm-contract-builder` | Build helper — `build.rs` integration that links PolkaVM bytecode and generates ABI JSON |
+| `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`) — `no_std` compatible |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -100,7 +100,7 @@ To build the example variants:
 
 ```bash
 cd examples/example-mytoken
-env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release
+cargo pvm-contract build
 ```
 
 The CI `check-examples` job verifies `examples/example-mytoken` builds.

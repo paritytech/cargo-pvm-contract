@@ -84,13 +84,13 @@ cargo pvm-contract encode --abi <PATH> [--function <NAME>] [ARGS...]
 ```bash
 # Encode a function call
 cargo pvm-contract encode \
-  --abi target/my_contract.release.abi.json \
+  --abi target/release/my_contract.abi.json \
   --function transfer \
   0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 1000
 
 # Encode constructor arguments
 cargo pvm-contract encode \
-  --abi target/my_contract.release.abi.json \
+  --abi target/release/my_contract.abi.json \
   1000000
 ```
 
@@ -119,12 +119,12 @@ cargo pvm-contract decode --abi <PATH> --data <HEX> [--constructor]
 ```bash
 # Decode a function call
 cargo pvm-contract decode \
-  --abi target/my_contract.release.abi.json \
+  --abi target/release/my_contract.abi.json \
   --data 0xa9059cbb000000000000000000000000d8da6bf...
 
 # Decode constructor data
 cargo pvm-contract decode \
-  --abi target/my_contract.release.abi.json \
+  --abi target/release/my_contract.abi.json \
   --data 0x00000000000000000000000000000000000f4240 \
   --constructor
 ```
@@ -155,14 +155,14 @@ See [Common Options](#common-options) for `--url`, `--suri`, and `--storage-depo
 ```bash
 # Dry-run first to check for errors
 cargo pvm-contract upload \
-  --code target/my_contract.release.polkavm \
+  --code target/release/my_contract.polkavm \
   --dry-run \
   --url ws://localhost:9944 \
   --suri //Alice
 
 # Submit on-chain
 cargo pvm-contract upload \
-  --code target/my_contract.release.polkavm \
+  --code target/release/my_contract.polkavm \
   --storage-deposit-limit 1000000000000 \
   --url ws://localhost:9944 \
   --suri //Alice
@@ -197,18 +197,18 @@ See [Common Options](#common-options) for `--url`, `--suri`, and `--storage-depo
 ```bash
 # Instantiate without constructor args
 cargo pvm-contract instantiate \
-  --code target/my_contract.release.polkavm \
+  --code target/release/my_contract.polkavm \
   --storage-deposit-limit 1000000000000 \
   --url ws://localhost:9944 \
   --suri //Alice
 
 # Instantiate with constructor args (initial supply = 1_000_000)
 CONSTRUCTOR=$(cargo pvm-contract encode \
-  --abi target/my_contract.release.abi.json \
+  --abi target/release/my_contract.abi.json \
   1000000)
 
 cargo pvm-contract instantiate \
-  --code target/my_contract.release.polkavm \
+  --code target/release/my_contract.polkavm \
   --data $CONSTRUCTOR \
   --storage-deposit-limit 1000000000000 \
   --url ws://localhost:9944 \
@@ -243,7 +243,7 @@ See [Common Options](#common-options) for `--url`, `--suri`, and `--storage-depo
 ```bash
 # Encode the calldata first
 CALLDATA=$(cargo pvm-contract encode \
-  --abi target/my_contract.release.abi.json \
+  --abi target/release/my_contract.abi.json \
   --function transfer \
   0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 1000)
 
@@ -459,25 +459,24 @@ cargo pvm-contract init \
 
 cd my-token
 
-# 2. Build the contract (requires nightly + rust-src)
-cargo +nightly build --release -Z build-std=core,alloc \
-  --target riscv64emac-unknown-none-polkavm
+# 2. Build the contract
+cargo pvm-contract build
 
 # 3. Upload the bytecode to a local node
 cargo pvm-contract upload \
-  --code target/riscv64emac-unknown-none-polkavm/release/my-token.polkavm \
+  --code target/release/my-token.polkavm \
   --storage-deposit-limit 1000000000000 \
   --url ws://localhost:9944 \
   --suri //Alice
 
 # 4. Encode constructor arguments (initial supply = 1_000_000)
 CONSTRUCTOR=$(cargo pvm-contract encode \
-  --abi target/riscv64emac-unknown-none-polkavm/release/my-token.abi.json \
+  --abi target/release/my-token.abi.json \
   1000000)
 
 # 5. Instantiate the contract
 cargo pvm-contract instantiate \
-  --code target/riscv64emac-unknown-none-polkavm/release/my-token.polkavm \
+  --code target/release/my-token.polkavm \
   --data $CONSTRUCTOR \
   --storage-deposit-limit 1000000000000 \
   --url ws://localhost:9944 \
@@ -493,7 +492,7 @@ cargo pvm-contract info \
 
 # 7. Encode a transfer call
 CALLDATA=$(cargo pvm-contract encode \
-  --abi target/riscv64emac-unknown-none-polkavm/release/my-token.abi.json \
+  --abi target/release/my-token.abi.json \
   --function transfer \
   0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045 500)
 
