@@ -56,7 +56,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
             __abi.push_str("{\"type\":\"constructor\",\"inputs\":[");
             let mut __first_ctor_input = true;
             #(#constructor_input_entries)*
-            __abi.push_str("],\"stateMutability\":\"nonpayable\"}");
+            __abi.push_str("],\"stateMutability\":\"payable\"}");
         }
     } else {
         quote! {}
@@ -155,7 +155,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         let mut __first_output = true;
         #(#output_entries)*
 
-        __abi.push_str("],\"stateMutability\":\"nonpayable\"}");
+        __abi.push_str("],\"stateMutability\":\"payable\"}");
     })
 }
 

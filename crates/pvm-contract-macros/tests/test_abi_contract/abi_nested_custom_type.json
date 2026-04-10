@@ -1,5 +1,5 @@
 [
-  {"type":"constructor","inputs":[],"stateMutability":"nonpayable"},
-  {"type":"function","name":"reflect","inputs":[{"name":"line","type":"((uint64,uint64),(uint64,uint64))"}],"outputs":[{"name":"","type":"((uint64,uint64),(uint64,uint64))"}],"stateMutability":"nonpayable"},
-  {"type":"function","name":"origin","inputs":[],"outputs":[{"name":"","type":"(uint64,uint64)"}],"stateMutability":"nonpayable"}
+  {"type":"constructor","inputs":[],"stateMutability":"payable"},
+  {"type":"function","name":"reflect","inputs":[{"name":"line","type":"((uint64,uint64),(uint64,uint64))"}],"outputs":[{"name":"","type":"((uint64,uint64),(uint64,uint64))"}],"stateMutability":"payable"},
+  {"type":"function","name":"origin","inputs":[],"outputs":[{"name":"","type":"(uint64,uint64)"}],"stateMutability":"payable"}
 ]
