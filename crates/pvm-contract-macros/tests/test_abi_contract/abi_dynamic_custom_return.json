@@ -1,0 +1,1 @@
+[{"type":"constructor","inputs":[],"stateMutability":"payable"},{"type":"function","name":"getNamed","inputs":[],"outputs":[{"name":"","type":"(uint64,string)"}],"stateMutability":"payable"},{"type":"function","name":"process","inputs":[{"name":"data","type":"(uint64,string)"},{"name":"flag","type":"bool"}],"outputs":[{"name":"","type":"uint64"}],"stateMutability":"payable"}]

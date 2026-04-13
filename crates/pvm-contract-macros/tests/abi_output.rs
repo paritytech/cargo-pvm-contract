@@ -50,3 +50,21 @@ fn custom_type_method_produces_valid_abi() {
     expect_test::expect_file!("./test_abi_contract/abi_custom_type_method.json")
         .assert_eq(&cargo_run_abi("custom-type-method"));
 }
+
+#[test]
+fn multi_method_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/multi_method.json")
+        .assert_eq(&cargo_run_abi("multi-method"));
+}
+
+#[test]
+fn nested_custom_type_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/nested_custom_type.json")
+        .assert_eq(&cargo_run_abi("nested-custom-type"));
+}
+
+#[test]
+fn dynamic_custom_return_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/dynamic_custom_return.json")
+        .assert_eq(&cargo_run_abi("dynamic-custom-return"));
+}

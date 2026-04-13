@@ -147,6 +147,9 @@ impl SolType {
             "i8" => Some(SolType::Int(8)),
             "bool" => Some(SolType::Bool),
             "String" | "alloc::string::String" => Some(SolType::String),
+            "Bytes" | "pvm_contract_types::Bytes" | "::pvm_contract_types::Bytes" => {
+                Some(SolType::DynBytes)
+            }
             _ => Some(SolType::Custom(type_str)),
         }
     }
@@ -201,5 +204,133 @@ mod tests {
     fn selector_resolution_requires_codegen_not_soltype() {
         let sol = SolType::Custom("Count".to_string());
         assert_eq!(sol.canonical_name(), "Count");
+    }
+
+    #[test]
+    fn is_dynamic_for_dynamic_array() {
+        let sol = SolType::Array(Box::new(SolType::Uint(256)));
+        assert_eq!(sol.is_dynamic(), Some(true));
+    }
+
+    #[test]
+    fn is_dynamic_for_string() {
+        assert_eq!(SolType::String.is_dynamic(), Some(true));
+    }
+
+    #[test]
+    fn is_dynamic_for_static_tuple() {
+        let sol = SolType::Tuple(vec![SolType::Uint(64), SolType::Bool]);
+        assert_eq!(sol.is_dynamic(), Some(false));
+    }
+
+    #[test]
+    fn is_dynamic_for_tuple_with_dynamic_inner() {
+        let sol = SolType::Tuple(vec![SolType::Uint(64), SolType::String]);
+        assert_eq!(sol.is_dynamic(), Some(true));
+    }
+
+    #[test]
+    fn is_dynamic_for_tuple_with_custom_returns_none() {
+        let sol = SolType::Tuple(vec![SolType::Uint(64), SolType::Custom("Foo".into())]);
+        assert_eq!(sol.is_dynamic(), None);
+    }
+
+    #[test]
+    fn is_dynamic_for_fixed_array_of_static() {
+        let sol = SolType::FixedArray(Box::new(SolType::Uint(256)), 3);
+        assert_eq!(sol.is_dynamic(), Some(false));
+    }
+
+    #[test]
+    fn is_dynamic_for_fixed_array_of_dynamic() {
+        let sol = SolType::FixedArray(Box::new(SolType::String), 2);
+        assert_eq!(sol.is_dynamic(), Some(true));
+    }
+
+    #[test]
+    fn head_size_for_primitives() {
+        assert_eq!(SolType::Uint(256).head_size(), Some(32));
+        assert_eq!(SolType::Address.head_size(), Some(32));
+        assert_eq!(SolType::Bool.head_size(), Some(32));
+    }
+
+    #[test]
+    fn head_size_for_fixed_array_static() {
+        let sol = SolType::FixedArray(Box::new(SolType::Uint(256)), 3);
+        assert_eq!(sol.head_size(), Some(96));
+    }
+
+    #[test]
+    fn head_size_for_fixed_array_dynamic() {
+        let sol = SolType::FixedArray(Box::new(SolType::String), 2);
+        assert_eq!(sol.head_size(), Some(32));
+    }
+
+    #[test]
+    fn head_size_for_static_tuple() {
+        let sol = SolType::Tuple(vec![SolType::Uint(64), SolType::Uint(128)]);
+        assert_eq!(sol.head_size(), Some(64));
+    }
+
+    #[test]
+    fn head_size_for_dynamic_tuple() {
+        let sol = SolType::Tuple(vec![SolType::Uint(64), SolType::String]);
+        assert_eq!(sol.head_size(), Some(32));
+    }
+
+    #[test]
+    fn head_size_for_custom_returns_none() {
+        assert_eq!(SolType::Custom("Foo".into()).head_size(), None);
+    }
+
+    #[test]
+    fn has_custom_types_detects_nested() {
+        let sol = SolType::Array(Box::new(SolType::Custom("Foo".into())));
+        assert!(sol.has_custom_types());
+
+        let sol = SolType::FixedArray(Box::new(SolType::Uint(64)), 3);
+        assert!(!sol.has_custom_types());
+
+        let sol = SolType::Tuple(vec![SolType::Bool, SolType::Custom("Bar".into())]);
+        assert!(sol.has_custom_types());
+    }
+
+    #[test]
+    fn maps_vec_to_dynamic_array() {
+        let ty: syn::Type = syn::parse_str("Vec<u64>").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::Array(Box::new(SolType::Uint(64))));
+    }
+
+    #[test]
+    fn maps_u8_array_to_bytes_n() {
+        let ty: syn::Type = syn::parse_str("[u8; 20]").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::Bytes(20));
+    }
+
+    #[test]
+    fn maps_signed_integers() {
+        let ty: syn::Type = syn::parse_str("i32").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::Int(32));
+
+        let ty: syn::Type = syn::parse_str("i128").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::Int(128));
+    }
+
+    #[test]
+    fn maps_string_type() {
+        let ty: syn::Type = syn::parse_str("String").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::String);
+    }
+
+    #[test]
+    fn maps_bytes_to_dyn_bytes() {
+        let ty: syn::Type = syn::parse_str("Bytes").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::DynBytes);
     }
 }

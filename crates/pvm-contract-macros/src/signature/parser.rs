@@ -4,6 +4,7 @@ use super::types::SolType;
 pub struct FunctionSignature {
     pub name: String,
     pub inputs: Vec<SolType>,
+    #[cfg_attr(not(test), allow(dead_code))]
     pub outputs: Vec<SolType>,
 }
 
@@ -261,5 +262,63 @@ mod tests {
     fn test_canonical_signature() {
         let sig = FunctionSignature::parse("transfer(address,uint256)").unwrap();
         assert_eq!(sig.canonical_signature(), "transfer(address,uint256)");
+    }
+
+    #[test]
+    fn test_parse_nested_tuple() {
+        let sig = FunctionSignature::parse("foo((uint256,address),bool)").unwrap();
+        assert_eq!(sig.inputs.len(), 2);
+        match &sig.inputs[0] {
+            SolType::Tuple(types) => {
+                assert_eq!(types.len(), 2);
+                assert_eq!(types[0], SolType::Uint(256));
+                assert_eq!(types[1], SolType::Address);
+            }
+            _ => panic!("Expected tuple"),
+        }
+        assert_eq!(sig.inputs[1], SolType::Bool);
+    }
+
+    #[test]
+    fn test_parse_empty_returns() {
+        let sig = FunctionSignature::parse("foo(uint256) returns ()").unwrap();
+        assert_eq!(sig.inputs.len(), 1);
+        assert!(sig.outputs.is_empty());
+    }
+
+    #[test]
+    fn test_parse_multiple_returns() {
+        let sig = FunctionSignature::parse("foo(uint256) returns (bool,address,uint256)").unwrap();
+        assert_eq!(sig.outputs.len(), 3);
+        assert_eq!(sig.outputs[0], SolType::Bool);
+        assert_eq!(sig.outputs[1], SolType::Address);
+        assert_eq!(sig.outputs[2], SolType::Uint(256));
+    }
+
+    #[test]
+    fn test_parse_bytes_types() {
+        let sig = FunctionSignature::parse("foo(bytes32,bytes)").unwrap();
+        assert_eq!(sig.inputs[0], SolType::Bytes(32));
+        assert_eq!(sig.inputs[1], SolType::DynBytes);
+    }
+
+    #[test]
+    fn test_parse_signed_integers() {
+        let sig = FunctionSignature::parse("foo(int8,int128)").unwrap();
+        assert_eq!(sig.inputs[0], SolType::Int(8));
+        assert_eq!(sig.inputs[1], SolType::Int(128));
+    }
+
+    #[test]
+    fn test_parse_string_type() {
+        let sig = FunctionSignature::parse("foo(string) returns (string)").unwrap();
+        assert_eq!(sig.inputs[0], SolType::String);
+        assert_eq!(sig.outputs[0], SolType::String);
+    }
+
+    #[test]
+    fn test_parse_unknown_type_errors() {
+        let result = FunctionSignature::parse("foo(foobar)");
+        assert!(result.is_err());
     }
 }

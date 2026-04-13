@@ -50,7 +50,7 @@ pub fn upload_command(args: UploadArgs) -> Result<()> {
     let rt = build_runtime();
 
     rt.block_on(async {
-        let exec = UploadCommandBuilder::new(opts, ContractBinary(code.clone()))
+        let mut exec = UploadCommandBuilder::new(opts, ContractBinary(code.clone()))
             .done()
             .await?;
 

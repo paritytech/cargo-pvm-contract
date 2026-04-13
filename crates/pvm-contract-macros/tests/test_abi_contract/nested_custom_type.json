@@ -1,0 +1,36 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "payable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "name": "line",
+        "type": "((uint64,uint64),(uint64,uint64))"
+      }
+    ],
+    "name": "reflect",
+    "outputs": [
+      {
+        "name": "",
+        "type": "((uint64,uint64),(uint64,uint64))"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "origin",
+    "outputs": [
+      {
+        "name": "",
+        "type": "(uint64,uint64)"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  }
+]

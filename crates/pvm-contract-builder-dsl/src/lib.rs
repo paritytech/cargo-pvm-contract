@@ -79,9 +79,33 @@ impl ContractBuilder {
     ///
     /// Panics if more than 16 methods are registered.
     pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
+        assert!(
+            self.len < MAX_METHODS,
+            "ContractBuilder: exceeded MAX_METHODS ({})",
+            MAX_METHODS
+        );
         self.methods[self.len] = (selector, handler);
         self.len += 1;
         self
+    }
+
+    /// Try to route a call by selector without reading calldata.
+    ///
+    /// Returns `Some(())` if a handler matched (the handler may diverge via
+    /// `return_value`). Returns `None` if no selector matched, allowing the
+    /// caller to try another router or fall back.
+    #[inline(always)]
+    pub fn try_route(&self, selector: [u8; 4], input: &[u8]) -> Option<()> {
+        let mut i = 0;
+        while i < self.len {
+            let (sel, handler) = self.methods[i];
+            if sel == selector {
+                handler(input);
+                return Some(());
+            }
+            i += 1;
+        }
+        None
     }
 
     /// Read calldata from the host, match the selector, and dispatch.
@@ -107,16 +131,26 @@ impl ContractBuilder {
         let selector: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
         let input = &buf[4..call_data_len];
 
-        let mut i = 0;
-        while i < self.len {
-            let (sel, handler) = self.methods[i];
-            if sel == selector {
-                handler(input);
-                H::return_value(ReturnFlags::empty(), &[]);
-            }
-            i += 1;
+        if self.try_route(selector, input).is_some() {
+            H::return_value(ReturnFlags::empty(), &[]);
         }
 
         H::return_value(ReturnFlags::REVERT, b"UnknownSelector")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_handler(_: &[u8]) {}
+
+    #[test]
+    #[should_panic(expected = "MAX_METHODS")]
+    fn method_panics_on_overflow() {
+        let mut builder = ContractBuilder::new();
+        for i in 0..=MAX_METHODS {
+            builder = builder.method([i as u8, 0, 0, 0], dummy_handler);
+        }
     }
 }

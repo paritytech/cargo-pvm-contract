@@ -10,6 +10,7 @@
         "type": "uint256"
       }
     ],
+    "stateMutability": "payable",
     "type": "constructor"
   },
   {

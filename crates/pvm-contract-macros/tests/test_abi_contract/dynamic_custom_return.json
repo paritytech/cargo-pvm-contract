@@ -1,0 +1,40 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "payable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "getNamed",
+    "outputs": [
+      {
+        "name": "",
+        "type": "(uint64,string)"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "name": "data",
+        "type": "(uint64,string)"
+      },
+      {
+        "name": "flag",
+        "type": "bool"
+      }
+    ],
+    "name": "process",
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  }
+]

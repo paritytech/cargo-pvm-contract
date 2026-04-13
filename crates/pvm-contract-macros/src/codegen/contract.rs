@@ -2,9 +2,9 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
-use super::abi_gen::generate_abi_gen_main;
-use super::dispatch::{MethodInfo, generate_dispatch_arm, generate_param_decoding};
-use crate::signature::{FunctionSignature, SolType};
+use super::abi_gen::generate_abi_gen;
+use super::dispatch::{MethodInfo, RouteItems, generate_param_decoding, generate_router};
+use crate::signature::compute_selector;
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -124,7 +124,7 @@ pub(super) struct ParsedContract {
     pub(super) has_fallback: bool,
     pub(super) constructor_name: Option<Ident>,
     pub(super) constructor_returns_result: bool,
-    pub(super) constructor_inputs: Vec<(Ident, SolType)>,
+    pub(super) constructor_inputs: Vec<(Ident, syn::Type)>,
     pub(super) fallback_name: Option<Ident>,
 }
 
@@ -135,17 +135,16 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
             && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
             && segments[1].ident == "method"
             && let syn::Meta::List(meta_list) = &attr.meta
+            && let Ok(nv) = syn::parse2::<syn::MetaNameValue>(meta_list.tokens.clone())
+            && nv.path.is_ident("rename")
+            && let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(s),
+                ..
+            }) = &nv.value
         {
-            let tokens_str = meta_list.tokens.to_string();
-            if let Some(start) = tokens_str.find("rename") {
-                let after_rename = &tokens_str[start..];
-                if let Some(eq_pos) = after_rename.find('=') {
-                    let after_eq = after_rename[eq_pos + 1..].trim();
-                    let name = after_eq.trim_matches(|c| c == '"' || c == ' ');
-                    if !name.is_empty() {
-                        return Some(name.to_string());
-                    }
-                }
+            let name = s.value();
+            if !name.is_empty() {
+                return Some(name);
             }
         }
     }
@@ -201,42 +200,25 @@ fn to_camel_case(s: &str) -> String {
     result
 }
 
-fn infer_signature_from_rust(func: &syn::ItemFn) -> syn::Result<FunctionSignature> {
-    let rust_name = func.sig.ident.to_string();
-    let sol_name = to_camel_case(&rust_name);
-
-    let inputs: Vec<SolType> = func
-        .sig
-        .inputs
-        .iter()
-        .filter_map(|arg| {
-            if let syn::FnArg::Typed(pat_type) = arg {
-                SolType::from_rust_type(&pat_type.ty)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let outputs = match &func.sig.output {
+fn extract_return_types(func: &syn::ItemFn) -> Vec<syn::Type> {
+    match &func.sig.output {
         syn::ReturnType::Default => vec![],
         syn::ReturnType::Type(_, ty) => {
             if is_result_return_type(&func.sig.output) {
-                extract_result_ok_type(ty)
-                    .and_then(|inner| SolType::from_rust_type(&inner))
-                    .into_iter()
-                    .collect()
+                extract_result_ok_type(ty).into_iter().collect()
             } else {
-                SolType::from_rust_type(ty).into_iter().collect()
+                extract_output_types(ty)
             }
         }
-    };
+    }
+}
 
-    Ok(FunctionSignature {
-        name: sol_name,
-        inputs,
-        outputs,
-    })
+fn extract_output_types(ty: &syn::Type) -> Vec<syn::Type> {
+    if let syn::Type::Tuple(tuple) = ty {
+        tuple.elems.iter().cloned().collect()
+    } else {
+        vec![ty.clone()]
+    }
 }
 
 fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
@@ -258,7 +240,7 @@ fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
 
 fn extract_typed_params(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
-) -> syn::Result<Vec<(Ident, SolType)>> {
+) -> syn::Result<Vec<(Ident, syn::Type)>> {
     inputs
         .iter()
         .map(|arg| {
@@ -271,13 +253,7 @@ fn extract_typed_params(
                         "Parameters must be simple identifiers",
                     ));
                 };
-                let sol_type = SolType::from_rust_type(&pat_type.ty).ok_or_else(|| {
-                    syn::Error::new_spanned(
-                        &pat_type.ty,
-                        "Cannot map parameter type to a Solidity type",
-                    )
-                })?;
-                Ok((ident, sol_type))
+                Ok((ident, (*pat_type.ty).clone()))
             } else {
                 Err(syn::Error::new_spanned(arg, "Unexpected `self` parameter"))
             }
@@ -315,45 +291,48 @@ fn parse_contract(
                 has_fallback = true;
                 fallback_name = Some(func.sig.ident.clone());
             } else if has_pvm_attr(&func.attrs, "method") {
-                let param_names: Vec<Ident> = extract_typed_params(&func.sig.inputs)?
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect();
+                let typed_params = extract_typed_params(&func.sig.inputs)?;
+                let param_names: Vec<Ident> =
+                    typed_params.iter().map(|(name, _)| name.clone()).collect();
+                let param_types: Vec<syn::Type> =
+                    typed_params.into_iter().map(|(_, ty)| ty).collect();
 
                 let returns_result = is_result_return_type(&func.sig.output);
+                let return_types = extract_return_types(func);
 
-                let sol_fn_name = extract_method_rename(&func.attrs)
-                    .unwrap_or_else(|| to_snake_case(&func.sig.ident.to_string()));
-
-                let signature = if let Some(sol_iface) = sol_interface {
+                let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface {
                     let rust_fn_name = func.sig.ident.to_string();
+                    let rename = extract_method_rename(&func.attrs)
+                        .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .functions
                         .iter()
-                        .find(|f| f.name == sol_fn_name || to_snake_case(&f.name) == rust_fn_name)
+                        .find(|f| f.name == rename || to_snake_case(&f.name) == rust_fn_name)
                         .ok_or_else(|| {
                             syn::Error::new_spanned(
                                 func,
                                 format!(
-                                    "No matching Solidity function found for `{sol_fn_name}` in interface"
+                                    "No matching Solidity function found for `{rename}` in interface"
                                 ),
                             )
                         })?;
                     implemented_sol_methods.push(sol_func.name.clone());
-                    sol_func.signature.clone()
+                    let selector = compute_selector(&sol_func.signature.canonical_signature());
+                    (sol_func.name.clone(), Some(selector))
                 } else {
-                    let mut sig = infer_signature_from_rust(func)?;
-                    if let Some(rename) = extract_method_rename(&func.attrs) {
-                        sig.name = rename;
-                    }
-                    sig
+                    let sol_name = extract_method_rename(&func.attrs)
+                        .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
+                    (sol_name, None)
                 };
 
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
-                    signature,
+                    sol_name,
                     param_names,
+                    param_types,
+                    return_types,
                     returns_result,
+                    precomputed_selector,
                 });
             }
         }
@@ -399,7 +378,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let abi_gen_main = generate_abi_gen_main(&parsed, args.sol_path.is_some());
+    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(&parsed, args.sol_path.is_some());
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -469,7 +448,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
 
-        let sol_types: Vec<_> = parsed
+        let param_types: Vec<_> = parsed
             .constructor_inputs
             .iter()
             .map(|(_, ty)| ty.clone())
@@ -480,7 +459,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             .map(|(name, _)| name.clone())
             .collect();
 
-        let decoding = generate_param_decoding(&param_names, &sol_types, use_alloc);
+        let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
             size_check,
             decode_statements,
@@ -494,7 +473,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         } else if use_alloc {
             quote! {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-                let mut call_data = vec![0u8; call_data_len];
+                let mut call_data = alloc::vec![0u8; call_data_len];
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
@@ -514,7 +493,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         };
 
-        let call_expr = quote! { #mod_name::#constructor_name(#(#call_args),*) };
+        let call_expr = quote! { #constructor_name(#(#call_args),*) };
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -547,16 +526,17 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = parsed
-        .methods
-        .iter()
-        .map(|m| generate_dispatch_arm(m, mod_name, use_alloc))
-        .unzip();
+    let (route_items, router_impl) = generate_router(&parsed.methods, mod_name, use_alloc);
+    let RouteItems {
+        contract_struct,
+        route_fn,
+    } = route_items;
+    let router_impl = router_impl.tokens;
 
     let fallback_handler = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
         quote! {
-            match #mod_name::#fallback_name() {
+            match #fallback_name() {
                 Ok(()) => return,
                 Err(e) => {
                     pallet_revive_uapi::HostFnImpl::return_value(
@@ -573,11 +553,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let call_fn = if use_alloc {
         quote! {
-            #[allow(non_upper_case_globals)]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-                let mut call_data = vec![0u8; call_data_len];
+                let mut call_data = alloc::vec![0u8; call_data_len];
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
@@ -587,20 +566,17 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                #(#selector_consts)*
-
-                match selector {
-                    #(#dispatch_arms)*
-                    _ => {
-                        #fallback_handler
-                    }
+                if route(selector, input).is_some() {
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::empty(), &[]);
                 }
+
+                #fallback_handler
             }
         }
     } else {
         let buffer_size = args.buffer_size;
         quote! {
-            #[allow(non_upper_case_globals)]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
@@ -618,36 +594,42 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                #(#selector_consts)*
-
-                match selector {
-                    #(#dispatch_arms)*
-                    _ => {
-                        #fallback_handler
-                    }
+                if route(selector, input).is_some() {
+                    pallet_revive_uapi::HostFnImpl::return_value(
+                        pallet_revive_uapi::ReturnFlags::empty(), &[]);
                 }
+
+                #fallback_handler
             }
         }
     };
 
     Ok(quote! {
-        #[cfg(not(feature = "abi-gen"))]
-        use pallet_revive_uapi::HostFn as _;
-
         #alloc_setup
 
         #panic_handler
 
-        #[cfg(not(feature = "abi-gen"))]
-        #deploy_fn
-
-        #[cfg(not(feature = "abi-gen"))]
-        #call_fn
-
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
             #mod_content
+
+            #[cfg(not(feature = "abi-gen"))]
+            #contract_struct
+
+            #[cfg(not(feature = "abi-gen"))]
+            #route_fn
+
+            #[cfg(not(feature = "abi-gen"))]
+            #call_fn
+
+            #[cfg(not(feature = "abi-gen"))]
+            #deploy_fn
+
+            #abi_gen_helper
         }
+
+        #[cfg(not(feature = "abi-gen"))]
+        #router_impl
 
         #abi_gen_main
     })
@@ -765,9 +747,43 @@ mod tests {
         // param names are emitted
         assert!(output.contains("\"owner\""));
         assert!(output.contains("\"supply\""));
-        // param types are emitted
-        assert!(output.contains("\"address\""));
-        assert!(output.contains("\"uint256\""));
+        // param types are resolved via trait SOL_NAME
+        assert!(output.contains("SOL_NAME"));
+    }
+
+    #[test]
+    fn generates_router_impl_and_route_fn() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn balance_of(account: Address) -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Router struct is generated inside the module
+        assert!(output.contains("pub struct Contract"));
+        // route() function is generated
+        assert!(
+            output.contains("fn route (selector : [u8 ; 4] , input : & [u8]) -> Option < () >")
+        );
+        // Router trait impl references the module
+        assert!(
+            output.contains("impl :: pvm_contract_types :: Router for my_contract :: Contract")
+        );
+        // call() delegates to route()
+        assert!(output.contains("route (selector , input)"));
     }
 
     #[test]

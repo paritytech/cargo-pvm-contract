@@ -103,18 +103,41 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// # Generated Code
 ///
-/// ## Entry Points
+/// ## Entry Points and Router
 ///
-/// The macro generates two PolkaVM entry points:
+/// The macro generates the following **inside** the contract module
+/// (so that user type imports are in scope for trait-based dispatch):
+///
+/// - `pub struct Contract;` — unit struct used as `Router` trait target
+/// - `pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()>` — selector dispatch
+/// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point
+/// - `pub extern "C" fn call()` — PolkaVM call entry point (delegates to `route()`)
+///
+/// Outside the module, a `Router` trait impl is generated:
 ///
 /// ```ignore
-/// #[no_mangle]
-/// #[polkavm_derive::polkavm_export]
-/// pub extern "C" fn deploy() { /* constructor logic */ }
+/// impl ::pvm_contract_types::Router for my_token::Contract {
+///     fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         my_token::route(selector, input)
+///     }
+/// }
+/// ```
 ///
-/// #[no_mangle]
-/// #[polkavm_derive::polkavm_export]
-/// pub extern "C" fn call() { /* dispatch logic */ }
+/// All generated items are gated behind `#[cfg(not(feature = "abi-gen"))]`.
+///
+/// ### Composition
+///
+/// The `route()` function returns `Option<()>`: `Some(())` means "handled",
+/// `None` means "not my selector". This enables composing multiple contract
+/// modules in a single entrypoint:
+///
+/// ```ignore
+/// pub extern "C" fn call() {
+///     let (selector, input) = read_calldata();
+///     if erc20_base::route(selector, input).is_some() { return; }
+///     if my_extension::route(selector, input).is_some() { return; }
+///     // fallback or revert
+/// }
 /// ```
 ///
 /// ## Error Type
@@ -145,115 +168,118 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// ## Dispatch Logic
 ///
-/// stack and allocator modes use the same direct dispatch logic.
+/// Stack and allocator modes use the same direct dispatch logic.
 /// The only difference is buffer allocation:
 ///
 /// - **allocator mode**: `let mut call_data = vec![0u8; call_data_len];`
 /// - **default stack mode**: `let mut call_data = [0u8; BUFFER_SIZE];` with overflow check
 ///
-/// ### default stack generated `call()` example
+/// All types are decoded and encoded uniformly via trait dispatch (`SolDecode`, `SolEncode`).
+/// The macro never inspects types — it emits trait calls and lets the compiler resolve them.
+///
+/// ### Default stack generated code example
 ///
 /// ```ignore
 /// #[pvm_contract_macros::contract("MyToken.sol", buffer = 512)]
 /// mod my_token {
-///     // Infallible method (no Result wrapper)
+///     use super::*;
+///
 ///     #[pvm_contract::method]
 ///     pub fn balance_of(account: Address) -> U256 { U256::ZERO }
 ///
-///     // Fallible method (returns Result)
 ///     #[pvm_contract::method]
 ///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
-/// }
 ///
-/// // Generates:
-/// #[polkavm_derive::polkavm_export]
-/// pub extern "C" fn call() {
-///     let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-///     let mut call_data = [0u8; 512];
+///     // --- Generated inside the module: ---
 ///
-///     if call_data_len > 512 {
-///         pallet_revive_uapi::HostFnImpl::return_value(
-///             pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
-///     }
-///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+///     pub struct Contract;
 ///
-///     if call_data_len < 4 { /* fallback handling */ }
+///     pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         // Selector consts — precomputed from .sol, or derived via SOL_NAME
+///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
+///         const __SEL_transfer: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 ///
-///     let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
-///     let input = &call_data[4..call_data_len];
-///
-///     // Selector consts (computed at compile time)
-///     const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
-///     const __SEL_transfer: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
-///
-///     match selector {
-///         // balanceOf(address) -> uint256 - Infallible method
-///         __SEL_balance_of => {
-///             // Decode parameters
-///             let account = <::pvm_contract_types::Address as ::pvm_contract_types::SolDecode>::decode(&input);
-///
-///             // Call the method (args wrapped with Into::into for type coercion)
-///             let result = my_token::balance_of(::core::convert::Into::into(account));
-///
-///             // Encode return value (compile-time buffer via StaticEncodedLen)
-///             let encoded = {
-///                 let mut __buf = [0u8; <ruint::aliases::U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///                 <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
-///                     &::core::convert::Into::into(result), &mut __buf);
-///                 __buf
-///             };
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::empty(), &encoded);
-///         }
-///
-///         // transfer(address,uint256) - Fallible method
-///         __SEL_transfer => {
-///             // Decode parameters
-///             let to = <::pvm_contract_types::Address as ::pvm_contract_types::SolDecode>::decode(&input);
-///             let amount = <ruint::aliases::U256 as ::pvm_contract_types::SolDecode>::decode_at(&input, 32);
-///
-///             // Call method and handle Result
-///             match my_token::transfer(::core::convert::Into::into(to), ::core::convert::Into::into(amount)) {
-///                 Ok(()) => return,
-///                 Err(e) => {
+///         match selector {
+///             // balanceOf(address) -> uint256
+///             __SEL_balance_of => {
+///                 if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
 ///                     pallet_revive_uapi::HostFnImpl::return_value(
-///                         pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+///                         pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
+///                 }
+///                 let mut __decode_offset: usize = 0;
+///                 let account = {
+///                     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
+///                         &input, __decode_offset);
+///                     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///                     __value
+///                 };
+///                 let result = balance_of(::core::convert::Into::into(account));
+///                 let mut __buf = [0u8;
+///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+///                 <U256 as ::pvm_contract_types::SolEncode>::encode_body_to(&result, &mut __buf);
+///                 pallet_revive_uapi::HostFnImpl::return_value(
+///                     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+///             }
+///
+///             // transfer(address,uint256) — fallible, no return data
+///             __SEL_transfer => {
+///                 // ... size check + decode ...
+///                 match transfer(
+///                     ::core::convert::Into::into(to),
+///                     ::core::convert::Into::into(amount),
+///                 ) {
+///                     Ok(()) => return Some(()),
+///                     Err(e) => {
+///                         pallet_revive_uapi::HostFnImpl::return_value(
+///                             pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+///                     }
 ///                 }
 ///             }
-///         }
 ///
-///         _ => { /* fallback */ }
+///             _ => None,
+///         }
+///     }
+///
+///     #[polkavm_derive::polkavm_export]
+///     pub extern "C" fn call() {
+///         let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+///         let mut call_data = [0u8; 512];
+///         if call_data_len > 512 {
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
+///         }
+///         pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+///
+///         if call_data_len < 4 { /* fallback handling */ }
+///
+///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+///         let input = &call_data[4..call_data_len];
+///
+///         if route(selector, input).is_some() {
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::empty(), &[]);
+///         }
+///         // fallback or revert
+///     }
+/// }
+///
+/// // Generated outside the module:
+/// impl ::pvm_contract_types::Router for my_token::Contract {
+///     fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         my_token::route(selector, input)
 ///     }
 /// }
 /// ```
 ///
-/// ### allocator generated `call()` example
+/// ### Allocator mode
+///
+/// The only difference is buffer allocation in `call()`:
 ///
 /// ```ignore
-/// #[pvm_contract_macros::contract("MyToken.sol", allocator = "pico")]
-/// mod my_token {
-///     // methods...
-/// }
-///
-/// // Generates:
-/// #[polkavm_derive::polkavm_export]
-/// pub extern "C" fn call() {
-///     let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
-///     let mut call_data = alloc::vec![0u8; call_data_len];
-///     pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..], 0);
-///
-///     if call_data_len < 4 { /* fallback handling */ }
-///
-///     let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
-///     let input = &call_data[4..];
-///
-///     match selector {
-///         [0x70, 0xa0, 0x82, 0x31] => { /* dispatch arm */ }
-///         [0xa9, 0x05, 0x9c, 0xbb] => { /* dispatch arm */ }
-///         _ => { /* fallback */ }
-///     }
-/// }
+/// let mut call_data = alloc::vec![0u8; call_data_len];
 /// ```
+///
+/// The `route()` function and dispatch logic are identical.
 ///
 /// ## Allocator Setup
 ///
@@ -411,48 +437,53 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// #[pvm_contract::method]
 /// pub fn balance_of(account: Address) -> U256 { ... }
 ///
-/// // Generated dispatch arm:
+/// // Generated dispatch arm (inside the module):
 ///
-/// // 1) Decode input parameters
-/// let account = <::pvm_contract_types::Address as ::pvm_contract_types::SolDecode>::decode(&input);
-///
-/// // 2) Call the method (args wrapped with Into::into)
-/// let result = my_token::balance_of(::core::convert::Into::into(account));
-///
-/// // 3) Encode output (compile-time buffer via StaticEncodedLen)
-/// let encoded = {
-///     let mut __buf = [0u8; <ruint::aliases::U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///     <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
-///         &::core::convert::Into::into(result), &mut __buf);
-///     __buf
+/// // 1) Decode input parameters (uniform trait dispatch)
+/// let mut __decode_offset: usize = 0;
+/// let account = {
+///     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
+///         &input, __decode_offset);
+///     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::SLOT_SIZE;
+///     __value
 /// };
 ///
-/// // 4) Return value to caller
+/// // 2) Call the method (no module prefix — generated inside the module)
+/// let result = balance_of(::core::convert::Into::into(account));
+///
+/// // 3) Encode and return via encode_to (smart top-level encoding)
+/// let mut __buf = [0u8; <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+/// <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
 /// pallet_revive_uapi::HostFnImpl::return_value(
-///     pallet_revive_uapi::ReturnFlags::empty(), &encoded);
+///     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 /// ```
 ///
-/// ## Dynamic return (alloc mode)
+/// ## Return encoding (alloc mode)
 ///
-/// In alloc mode, dynamic types (String, `Vec<T>`) automatically use runtime buffer sizing:
+/// In alloc mode, the generated code uses a compile-time `IS_DYNAMIC` branch.
+/// Static types use a stack buffer; dynamic types (String, `Vec<T>`, `Bytes`)
+/// use heap allocation. The compiler eliminates the dead branch at compile time:
 ///
 /// ```ignore
 /// #[pvm_contract::method]
 /// pub fn greeting() -> String { ... }
 ///
-/// // Generated dispatch arm (in alloc mode):
+/// // Generated dispatch arm (in alloc mode, inside route()):
 ///
-/// // 1) Call the method
-/// let result = my_token::greeting();
+/// let result = greeting();
 ///
-/// // 2) Encode output (runtime buffer size)
-/// let len = ::pvm_contract_types::SolEncode::encode_len(&result);
-/// let mut buf = alloc::vec![0u8; len];
-/// ::pvm_contract_types::SolEncode::encode_to(&result, &mut buf);
-///
-/// // 3) Return value to caller
-/// pallet_revive_uapi::HostFnImpl::return_value(
-///     pallet_revive_uapi::ReturnFlags::empty(), &buf);
+/// let __len = <String as ::pvm_contract_types::SolEncode>::encode_len(&result);
+/// if <String as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+///     let mut __buf = alloc::vec![0u8; __len];
+///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// } else {
+///     let mut __buf = [0u8; <String as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
+///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
+/// }
 /// ```
 #[proc_macro_attribute]
 pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -531,7 +562,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Generated Traits
 ///
 /// This derive macro generates implementations for both:
-/// - `SolEncode` - Base trait with `encode_len()` and `encode_to()` methods
+/// - `SolEncode` - Base trait with `encode_body_len()` and `encode_body_to()` methods
 /// - `StaticEncodedLen` - Marker trait with compile-time `ENCODED_SIZE` constant
 ///
 /// Types with only static fields implement `StaticEncodedLen` and can be returned from methods
@@ -558,16 +589,14 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     const SOL_NAME: &'static str = "(uint256,uint256)";
 ///     const HEAD_SIZE: usize = 64;
 ///
-///     fn encode_len(&self) -> usize { 64 }
+///     fn encode_body_len(&self) -> usize { 64 }
 ///
-///     fn encode_to(&self, buf: &mut [u8]) {
+///     fn encode_body_to(&self, buf: &mut [u8]) {
 ///         let mut __offset: usize = 0;
-///         <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
-///             &self.x, &mut buf[__offset..__offset + 32]);
-///         __offset += 32;
-///         <ruint::aliases::U256 as ::pvm_contract_types::SolEncode>::encode_to(
-///             &self.y, &mut buf[__offset..__offset + 32]);
-///         __offset += 32;
+///         ::pvm_contract_types::SolEncode::encode_body_to(&self.x, &mut buf[__offset..]);
+///         __offset += <U256 as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///         ::pvm_contract_types::SolEncode::encode_body_to(&self.y, &mut buf[__offset..]);
+///         __offset += <U256 as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
 ///     }
 /// }
 ///
@@ -577,10 +606,20 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// impl ::pvm_contract_types::SolDecode for Point {
 ///     fn decode_at(input: &[u8], offset: usize) -> Self {
-///         Self {
-///             x: <ruint::aliases::U256 as ::pvm_contract_types::SolDecode>::decode_at(input, offset),
-///             y: <ruint::aliases::U256 as ::pvm_contract_types::SolDecode>::decode_at(input, offset + 32),
-///         }
+///         let mut __offset: usize = 0;
+///         let __field_x = {
+///             let __val = <U256 as ::pvm_contract_types::SolDecode>::decode_at(
+///                 input, offset + __offset);
+///             __offset += <U256 as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///             __val
+///         };
+///         let __field_y = {
+///             let __val = <U256 as ::pvm_contract_types::SolDecode>::decode_at(
+///                 input, offset + __offset);
+///             __offset += <U256 as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///             __val
+///         };
+///         Self { x: __field_x, y: __field_y }
 ///     }
 /// }
 ///
@@ -616,6 +655,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `Address` | `address` | 32 bytes |
 /// | `[u8; N]` (N <= 32) | `bytesN` | 32 bytes |
 /// | `[T; N]` | `T[N]` | N * element size |
+/// | `Bytes` | `bytes` | dynamic |
 /// | `Vec<T>` | `T[]` | dynamic |
 /// | `&[T]` | `T[]` | dynamic |
 /// | `String` | `string` | dynamic |
@@ -649,26 +689,26 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     const SOL_NAME: &'static str = "(string,uint8)";
 ///     const HEAD_SIZE: usize = 64;  // 32 (offset pointer for String) + 32 (u8 slot)
 ///
-///     fn encode_len(&self) -> usize {
-///         64 + ::pvm_contract_types::SolEncode::tail_len(&self.name)
+///     fn encode_body_len(&self) -> usize {
+///         64 + ::pvm_contract_types::SolEncode::encode_body_len(&self.name)
 ///     }
 ///
-///     fn encode_to(&self, buf: &mut [u8]) {
+///     fn encode_body_to(&self, buf: &mut [u8]) {
 ///         let __head_size: usize = 64;
 ///         let mut __tail_offset: usize = __head_size;
 ///
 ///         // Field 0 (name: String) — dynamic, write offset pointer
 ///         buf[0..24].fill(0);
 ///         buf[24..32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-///         let __tail_len = ::pvm_contract_types::SolEncode::tail_len(&self.name);
-///         ::pvm_contract_types::SolEncode::encode_tail_to(
+///         let __tail_len = ::pvm_contract_types::SolEncode::encode_body_len(&self.name);
+///         ::pvm_contract_types::SolEncode::encode_body_to(
 ///             &self.name,
 ///             &mut buf[__tail_offset..__tail_offset + __tail_len]
 ///         );
 ///         __tail_offset += __tail_len;
 ///
 ///         // Field 1 (age: u8) — static, write inline
-///         <u8 as ::pvm_contract_types::SolEncode>::encode_to(
+///         <u8 as ::pvm_contract_types::SolEncode>::encode_body_to(
 ///             &self.age, &mut buf[32..64]);
 ///     }
 /// }
