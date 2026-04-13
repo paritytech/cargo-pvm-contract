@@ -32,11 +32,24 @@ pub fn load_json_abi(
     })
 }
 
-pub fn expand_function(contract_name: syn::Ident, func: &ItemFunction) -> TokenStream {
-    let func_name = format_ident!("{}", to_snake_case(&func.name().to_string()));
-    let selector = compute_selector(&format!("{}{}", func.name(), func.call_type()))
-        .into_iter()
-        .map(|x| quote! { #x });
+pub fn expand_function(
+    contract_name: syn::Ident,
+    func: &ItemFunction,
+    is_constructor: bool,
+) -> TokenStream {
+    let func_name = if is_constructor {
+        format_ident!("{}", "new")
+    } else {
+        format_ident!("{}", to_snake_case(&func.name().to_string()))
+    };
+    let selector: Vec<TokenStream> = if is_constructor {
+        [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
+    } else {
+        compute_selector(&format!("{}{}", func.name(), func.call_type()))
+            .into_iter()
+            .map(|x| quote! { #x })
+            .collect()
+    };
     let args = if func.parameters.is_empty() {
         quote! {}
     } else {
@@ -94,7 +107,7 @@ pub fn expand_function(contract_name: syn::Ident, func: &ItemFunction) -> TokenS
             NonPayable
         }
     };
-    let t : Vec<TokenStream> = types.clone().collect();
+    let t: Vec<TokenStream> = types.clone().collect();
     let res = quote! {
         pub fn #func_name(#self_ #args) -> #contract_name<#state_mutability, ( #(#types),* ), #return_type, true> {
             #contract_name::<#state_mutability, ( #(#t),* ), #return_type, true> {
@@ -130,12 +143,20 @@ fn to_rust_type(typ: &syn_solidity::Type) -> TokenStream {
         }
         syn_solidity::Type::Int(_, non_zero) => {
             let size = non_zero.unwrap().to_string();
+            if size == "256" {
+                return quote! { compile_error!("I256 is not implemented") };
+            }
             let ident = format_ident!("i{}", size);
             quote! { #ident }
         }
         syn_solidity::Type::Uint(_, non_zero) => {
             let size = non_zero.unwrap().to_string();
-            let ident = format_ident!("u{}", size);
+
+            let mut ident = format!("u{}", size);
+            if size == "256" {
+                ident = capitalize(&ident);
+            }
+            let ident = format_ident!("{}", ident);
             quote! { #ident }
         }
         syn_solidity::Type::Tuple(type_tuple) => {
@@ -195,14 +216,18 @@ pub fn expand_to_module(file: &File) -> TokenStream {
                 .body
                 .iter()
                 .filter_map(|x| match x {
-                    syn_solidity::Item::Function(x)
-                        if matches!(x.kind, syn_solidity::FunctionKind::Function(_)) =>
-                    {
-                        Some(x)
-                    }
+                    syn_solidity::Item::Function(x) => {
+                        match x.kind {
+                            syn_solidity::FunctionKind::Constructor(_) => Some((x,true)),
+                            syn_solidity::FunctionKind::Function(_) => Some((x,false)),
+                            syn_solidity::FunctionKind::Fallback(_) |
+                            syn_solidity::FunctionKind::Receive(_) |
+                            syn_solidity::FunctionKind::Modifier(_) => None,
+                        }
+                    },
                     _ => None,
                 })
-                .map(|x| expand_function(contract_name.clone(), x));
+                .map(|(x, is_constructor)| expand_function(contract_name.clone(), x, is_constructor));
             Some(quote! {
                     #[doc = #repr]
                     #[derive(Clone, Copy)]
@@ -219,7 +244,7 @@ pub fn expand_to_module(file: &File) -> TokenStream {
                         /// Create api for the contract from an address
                         pub fn from_address(address: Address) -> #contract_name<Pure, (), (), false> {
                             Self {
-                                address, 
+                                address,
                                 call_builder: CallBuilder::<Pure, (), ()>::default()
                             }
                         }
@@ -265,6 +290,7 @@ pub fn expand_to_module(file: &File) -> TokenStream {
     quote! {
         use pvm_contract_types::*;
         use pvm_contract_core::call::*;
+        use ruint::ailiases::{U256};
         #(#modules)*
     }
 }
@@ -306,6 +332,7 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            use ruint::ailiases::U256;
             /**
             interface example {
                 function add(uint256 a, uint256 b) external view returns (uint256);
@@ -331,10 +358,10 @@ mod test {
                 Inputs: SolEncode,
                 Outputs: SolDecode,
             > Example<Mutability, Inputs, Outputs, false> {
-                pub fn add(mut self, a: u256, b: u256) -> Example<View, (u256, u256), (u256), true> {
-                    Example::<View, (u256, u256), (u256), true> {
+                pub fn add(mut self, a: U256, b: U256) -> Example<View, (U256, U256), (U256), true> {
+                    Example::<View, (U256, U256), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (u256, u256), (u256)> {
+                        call_builder: CallBuilder::<View, (U256, U256), (U256)> {
                             payload: (a, b),
                             selector: [119u8, 22u8, 2u8, 247u8],
                             witness: View::default(),
@@ -343,10 +370,10 @@ mod test {
                         },
                     }
                 }
-                pub fn get_counter(mut self) -> Example<View, (), (u256), true> {
-                    Example::<View, (), (u256), true> {
+                pub fn get_counter(mut self) -> Example<View, (), (U256), true> {
+                    Example::<View, (), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), (u256)> {
+                        call_builder: CallBuilder::<View, (), (U256)> {
                             payload: (),
                             selector: [138u8, 218u8, 6u8, 110u8],
                             witness: View::default(),
@@ -367,10 +394,10 @@ mod test {
                         },
                     }
                 }
-                pub fn is_zero(mut self, val: u256) -> Example<View, (u256), (bool), true> {
-                    Example::<View, (u256), (bool), true> {
+                pub fn is_zero(mut self, val: U256) -> Example<View, (U256), (bool), true> {
+                    Example::<View, (U256), (bool), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (u256), (bool)> {
+                        call_builder: CallBuilder::<View, (U256), (bool)> {
                             payload: (val),
                             selector: [156u8, 43u8, 111u8, 192u8],
                             witness: View::default(),
@@ -379,10 +406,10 @@ mod test {
                         },
                     }
                 }
-                pub fn mul(mut self, a: u256, b: u256) -> Example<View, (u256, u256), (u256), true> {
-                    Example::<View, (u256, u256), (u256), true> {
+                pub fn mul(mut self, a: U256, b: U256) -> Example<View, (U256, U256), (U256), true> {
+                    Example::<View, (U256, U256), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (u256, u256), (u256)> {
+                        call_builder: CallBuilder::<View, (U256, U256), (U256)> {
                             payload: (a, b),
                             selector: [200u8, 164u8, 172u8, 156u8],
                             witness: View::default(),
@@ -451,13 +478,13 @@ mod test {
         .assert_eq(&file);
     }
 
-
     #[test]
     fn storage_types() {
         let file = load("storage-types.release.abi.json");
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            use ruint::ailiases::U256;
             /**
             interface example {
                 function getAddress() external view returns (address);
@@ -555,10 +582,10 @@ mod test {
                         },
                     }
                 }
-                pub fn get_u256(mut self) -> Example<View, (), (u256), true> {
-                    Example::<View, (), (u256), true> {
+                pub fn get_u256(mut self) -> Example<View, (), (U256), true> {
+                    Example::<View, (), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), (u256)> {
+                        call_builder: CallBuilder::<View, (), (U256)> {
                             payload: (),
                             selector: [56u8, 208u8, 249u8, 78u8],
                             witness: View::default(),
@@ -669,10 +696,10 @@ mod test {
                         },
                     }
                 }
-                pub fn set_u256(mut self, val: u256) -> Example<NonPayable, (u256), (), true> {
-                    Example::<NonPayable, (u256), (), true> {
+                pub fn set_u256(mut self, val: U256) -> Example<NonPayable, (U256), (), true> {
+                    Example::<NonPayable, (U256), (), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (u256), ()> {
+                        call_builder: CallBuilder::<NonPayable, (U256), ()> {
                             payload: (val),
                             selector: [21u8, 89u8, 64u8, 56u8],
                             witness: NonPayable::default(),
@@ -765,13 +792,13 @@ mod test {
         .assert_eq(&file);
     }
 
-
     #[test]
     fn return_values() {
         let file = load("return-values.release.abi.json");
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            use ruint::ailiases::U256;
             /**
             interface example {
                 function getPair() external view returns (uint256, bool);
@@ -794,10 +821,10 @@ mod test {
                 Inputs: SolEncode,
                 Outputs: SolDecode,
             > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_pair(mut self) -> Example<View, (), (u256, bool), true> {
-                    Example::<View, (), (u256, bool), true> {
+                pub fn get_pair(mut self) -> Example<View, (), (U256, bool), true> {
+                    Example::<View, (), (U256, bool), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), (u256, bool)> {
+                        call_builder: CallBuilder::<View, (), (U256, bool)> {
                             payload: (),
                             selector: [193u8, 241u8, 177u8, 181u8],
                             witness: View::default(),
@@ -806,10 +833,10 @@ mod test {
                         },
                     }
                 }
-                pub fn get_triple(mut self) -> Example<View, (), (u256, Address, bool), true> {
-                    Example::<View, (), (u256, Address, bool), true> {
+                pub fn get_triple(mut self) -> Example<View, (), (U256, Address, bool), true> {
+                    Example::<View, (), (U256, Address, bool), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), (u256, Address, bool)> {
+                        call_builder: CallBuilder::<View, (), (U256, Address, bool)> {
                             payload: (),
                             selector: [72u8, 187u8, 245u8, 255u8],
                             witness: View::default(),
@@ -818,10 +845,10 @@ mod test {
                         },
                     }
                 }
-                pub fn identity(mut self, val: u256) -> Example<View, (u256), (u256), true> {
-                    Example::<View, (u256), (u256), true> {
+                pub fn identity(mut self, val: U256) -> Example<View, (U256), (U256), true> {
+                    Example::<View, (U256), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (u256), (u256)> {
+                        call_builder: CallBuilder::<View, (U256), (U256)> {
                             payload: (val),
                             selector: [224u8, 131u8, 145u8, 91u8],
                             witness: View::default(),
@@ -884,6 +911,7 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            use ruint::ailiases::U256;
             /**
             interface example {
                 function getFixedArray() external view returns (uint256[3] memory);
@@ -906,10 +934,10 @@ mod test {
                 Inputs: SolEncode,
                 Outputs: SolDecode,
             > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_fixed_array(mut self) -> Example<View, (), ([u256; 3usize]), true> {
-                    Example::<View, (), ([u256; 3usize]), true> {
+                pub fn get_fixed_array(mut self) -> Example<View, (), ([U256; 3usize]), true> {
+                    Example::<View, (), ([U256; 3usize]), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), ([u256; 3usize])> {
+                        call_builder: CallBuilder::<View, (), ([U256; 3usize])> {
                             payload: (),
                             selector: [224u8, 203u8, 106u8, 154u8],
                             witness: View::default(),
@@ -920,11 +948,11 @@ mod test {
                 }
                 pub fn process_tuple(
                     mut self,
-                    data: (u256, bool),
-                ) -> Example<View, ((u256, bool)), (u256), true> {
-                    Example::<View, ((u256, bool)), (u256), true> {
+                    data: (U256, bool),
+                ) -> Example<View, ((U256, bool)), (U256), true> {
+                    Example::<View, ((U256, bool)), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, ((u256, bool)), (u256)> {
+                        call_builder: CallBuilder::<View, ((U256, bool)), (U256)> {
                             payload: (data),
                             selector: [100u8, 29u8, 67u8, 90u8],
                             witness: View::default(),
@@ -935,11 +963,11 @@ mod test {
                 }
                 pub fn sum_fixed_array(
                     mut self,
-                    scores: [u256; 3usize],
-                ) -> Example<View, ([u256; 3usize]), (u256), true> {
-                    Example::<View, ([u256; 3usize]), (u256), true> {
+                    scores: [U256; 3usize],
+                ) -> Example<View, ([U256; 3usize]), (U256), true> {
+                    Example::<View, ([U256; 3usize]), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, ([u256; 3usize]), (u256)> {
+                        call_builder: CallBuilder::<View, ([U256; 3usize]), (U256)> {
                             payload: (scores),
                             selector: [74u8, 80u8, 202u8, 70u8],
                             witness: View::default(),
@@ -992,7 +1020,8 @@ mod test {
                     self
                 }
             }
-        "#]].assert_eq(&file);
+        "#]]
+        .assert_eq(&file);
     }
 
     #[test]
@@ -1001,6 +1030,7 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            use ruint::ailiases::U256;
             /**
             interface example {
                 function echoBytes() external view returns (bytes memory);
@@ -1052,10 +1082,10 @@ mod test {
                         },
                     }
                 }
-                pub fn get_array(mut self) -> Example<View, (), (alloc::vec::Vec<u256>), true> {
-                    Example::<View, (), (alloc::vec::Vec<u256>), true> {
+                pub fn get_array(mut self) -> Example<View, (), (alloc::vec::Vec<U256>), true> {
+                    Example::<View, (), (alloc::vec::Vec<U256>), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), (alloc::vec::Vec<u256>)> {
+                        call_builder: CallBuilder::<View, (), (alloc::vec::Vec<U256>)> {
                             payload: (),
                             selector: [213u8, 4u8, 234u8, 29u8],
                             witness: View::default(),
@@ -1067,13 +1097,13 @@ mod test {
                 pub fn get_bytes_length(
                     mut self,
                     b: pvm_contract_types::alloc::Bytes,
-                ) -> Example<View, (pvm_contract_types::alloc::Bytes), (u256), true> {
-                    Example::<View, (pvm_contract_types::alloc::Bytes), (u256), true> {
+                ) -> Example<View, (pvm_contract_types::alloc::Bytes), (U256), true> {
+                    Example::<View, (pvm_contract_types::alloc::Bytes), (U256), true> {
                         address: self.address,
                         call_builder: CallBuilder::<
                             View,
                             (pvm_contract_types::alloc::Bytes),
-                            (u256),
+                            (U256),
                         > {
                             payload: (b),
                             selector: [43u8, 90u8, 36u8, 201u8],
@@ -1086,10 +1116,10 @@ mod test {
                 pub fn get_string_length(
                     mut self,
                     s: alloc::alloc::String,
-                ) -> Example<View, (alloc::alloc::String), (u256), true> {
-                    Example::<View, (alloc::alloc::String), (u256), true> {
+                ) -> Example<View, (alloc::alloc::String), (U256), true> {
+                    Example::<View, (alloc::alloc::String), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (alloc::alloc::String), (u256)> {
+                        call_builder: CallBuilder::<View, (alloc::alloc::String), (U256)> {
                             payload: (s),
                             selector: [159u8, 121u8, 99u8, 203u8],
                             witness: View::default(),
@@ -1100,11 +1130,11 @@ mod test {
                 }
                 pub fn sum_array(
                     mut self,
-                    arr: alloc::vec::Vec<u256>,
-                ) -> Example<View, (alloc::vec::Vec<u256>), (u256), true> {
-                    Example::<View, (alloc::vec::Vec<u256>), (u256), true> {
+                    arr: alloc::vec::Vec<U256>,
+                ) -> Example<View, (alloc::vec::Vec<U256>), (U256), true> {
+                    Example::<View, (alloc::vec::Vec<U256>), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (alloc::vec::Vec<u256>), (u256)> {
+                        call_builder: CallBuilder::<View, (alloc::vec::Vec<U256>), (U256)> {
                             payload: (arr),
                             selector: [148u8, 196u8, 200u8, 237u8],
                             witness: View::default(),
@@ -1157,7 +1187,8 @@ mod test {
                     self
                 }
             }
-        "#]].assert_eq(&file);
+        "#]]
+        .assert_eq(&file);
     }
 
     #[test]
@@ -1166,6 +1197,7 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            use ruint::ailiases::U256;
             /**
             interface example {
                 function getInitialSupply() external view returns (uint256);
@@ -1187,10 +1219,10 @@ mod test {
                 Inputs: SolEncode,
                 Outputs: SolDecode,
             > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_initial_supply(mut self) -> Example<View, (), (u256), true> {
-                    Example::<View, (), (u256), true> {
+                pub fn get_initial_supply(mut self) -> Example<View, (), (U256), true> {
+                    Example::<View, (), (U256), true> {
                         address: self.address,
-                        call_builder: CallBuilder::<View, (), (u256)> {
+                        call_builder: CallBuilder::<View, (), (U256)> {
                             payload: (),
                             selector: [129u8, 164u8, 166u8, 216u8],
                             witness: View::default(),
@@ -1255,6 +1287,7 @@ mod test {
                     self
                 }
             }
-        "#]].assert_eq(&file);
+        "#]]
+        .assert_eq(&file);
     }
 }

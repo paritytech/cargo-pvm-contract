@@ -47,7 +47,6 @@ fn convert_error(value: ReturnErrorCode, buf: &[u8]) -> CallError {
 /// - pure
 /// - nonpayable # this is the default stateMutability
 /// - payable
-/// - uninit # Call was not initialized yet.
 pub trait StateMutability: Default + Debug + Clone + Copy {
     fn call_flags(&self) -> CallFlags {
         CallFlags::ALLOW_REENTRY
@@ -148,47 +147,6 @@ impl<I: SolEncode, R: SolDecode> CallBuilder<Payable, I, R> {
     pub fn set_value(mut self, value: u128) -> Self {
         self.witness.value = Some(value);
         self
-    }
-}
-
-/// so far a temporary function. should be hidden behind a macro call.
-pub fn new_payable<Inputs: SolEncode, Ret: SolDecode>(
-    selector: [u8; 4],
-    data: Inputs,
-) -> CallBuilder<Payable, Inputs, Ret> {
-    CallBuilder {
-        selector,
-        payload: data,
-        witness: Payable::default(),
-        call_limits: Default::default(),
-        _ret: Default::default(),
-    }
-}
-
-/// so far a temporary function. should be hidden behind a macro call.
-pub fn new_view<Inputs: SolEncode, Ret: SolDecode>(
-    selector: [u8; 4],
-    data: Inputs,
-) -> CallBuilder<View, Inputs, Ret> {
-    CallBuilder {
-        selector,
-        payload: data,
-        witness: View::default(),
-        call_limits: Default::default(),
-        _ret: Default::default(),
-    }
-}
-/// so far a temporary function. should be hidden behind a macro call.
-pub fn new_nonpayable<Inputs: SolEncode, Ret: SolDecode>(
-    selector: [u8; 4],
-    data: Inputs,
-) -> CallBuilder<NonPayable, Inputs, Ret> {
-    CallBuilder {
-        selector,
-        payload: data,
-        witness: NonPayable::default(),
-        call_limits: Default::default(),
-        _ret: Default::default(),
     }
 }
 
@@ -294,29 +252,5 @@ mod test {
         };
 
         let _ = builder.set_value(0);
-    }
-
-    #[test]
-    fn t() {
-        struct T<M: StateMutability, const I: bool = false> {
-            witness: M,
-        }
-
-        impl<M: StateMutability> T<M, true> {
-            fn flip(&self) -> T<View, false> {
-                T { witness: View }
-            }
-        }
-        impl<M: StateMutability> T<M, false> {
-            fn flip(&self) -> T<Pure, true> {
-                T { witness: Pure }
-            }
-        }
-
-        // let b: T<true> = T {
-        //     witness: NonPayable,
-        // };
-        // let c: T<false> = b.flip();
-        // let c: T<true> = c.flip();
     }
 }
