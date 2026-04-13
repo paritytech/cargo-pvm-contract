@@ -4,7 +4,7 @@ use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse:
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{MethodInfo, RouteItems, generate_param_decoding, generate_router};
-use crate::signature::compute_selector;
+use crate::signature::{SolType, compute_selector};
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -128,30 +128,69 @@ pub(super) struct ParsedContract {
     pub(super) fallback_name: Option<Ident>,
 }
 
+const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
+
+/// Verify that a Rust method's parameters are compatible with the Solidity
+/// function it implements. Checks arity strictly, and type compatibility for
+/// non-custom types. Custom types (user-defined structs) are skipped because
+/// they're resolved via trait `SOL_NAME` at runtime — we can't statically
+/// verify them without expanding the full type graph.
+fn check_signature_compatibility(
+    func: &syn::ItemFn,
+    sol_name: &str,
+    sol_inputs: &[SolType],
+    rust_param_types: &[syn::Type],
+) -> syn::Result<()> {
+    if sol_inputs.len() != rust_param_types.len() {
+        return Err(syn::Error::new_spanned(
+            func,
+            format!(
+                "Parameter count mismatch for `{sol_name}`: Solidity expects {}, Rust has {}",
+                sol_inputs.len(),
+                rust_param_types.len()
+            ),
+        ));
+    }
+
+    for (i, (sol_ty, rust_ty)) in sol_inputs.iter().zip(rust_param_types.iter()).enumerate() {
+        let Some(rust_sol) = SolType::from_rust_type(rust_ty) else {
+            continue; // unknown rust type, let downstream codegen produce a better error
+        };
+        // Skip type check if either side involves custom types — resolved via traits at runtime
+        if sol_ty.has_custom_types() || rust_sol.has_custom_types() {
+            continue;
+        }
+        if sol_ty != &rust_sol {
+            return Err(syn::Error::new_spanned(
+                rust_ty,
+                format!(
+                    "Parameter {} type mismatch for `{sol_name}`: Solidity `{}`, Rust maps to `{}`",
+                    i,
+                    sol_ty.canonical_name(),
+                    rust_sol.canonical_name(),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
-            && (segments[0].ident == "pvm" || segments[0].ident == "pvm_contract")
+            && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
             && segments[1].ident == "method"
             && let syn::Meta::List(meta_list) = &attr.meta
-            && let Ok(nv) = syn::parse2::<syn::MetaNameValue>(meta_list.tokens.clone())
-            && nv.path.is_ident("rename")
-            && let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(s),
-                ..
-            }) = &nv.value
+            && let Ok(args) = syn::parse2::<super::method::MethodArgs>(meta_list.tokens.clone())
+            && let Some(name) = args.rename
+            && !name.is_empty()
         {
-            let name = s.value();
-            if !name.is_empty() {
-                return Some(name);
-            }
+            return Some(name);
         }
     }
     None
 }
-
-const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
     for attr in attrs {
@@ -316,6 +355,12 @@ fn parse_contract(
                                 ),
                             )
                         })?;
+                    check_signature_compatibility(
+                        func,
+                        &sol_func.name,
+                        &sol_func.signature.inputs,
+                        &param_types,
+                    )?;
                     implemented_sol_methods.push(sol_func.name.clone());
                     let selector = compute_selector(&sol_func.signature.canonical_signature());
                     (sol_func.name.clone(), Some(selector))
