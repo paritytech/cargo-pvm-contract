@@ -215,6 +215,14 @@ pub fn to_snake_case(s: &str) -> String {
     result
 }
 
+pub fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

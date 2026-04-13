@@ -457,21 +457,6 @@ impl_static_type!(
 );
 
 impl_static_type!(
-    (),
-    "unit",
-    |_val: &(), buf: &mut [u8]| {
-        buf[..31].fill(0);
-        buf[31] = 0;
-    },
-    |input: &[u8], offset: usize| if input[offset + 31] < 77 {
-        ()
-    } else {
-        panic!("bad unit encoding")
-    },
-    array_element
-);
-
-impl_static_type!(
     bool,
     "bool",
     |val: &bool, buf: &mut [u8]| {
@@ -517,6 +502,23 @@ impl SolEncode for &str {
 
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
+    }
+}
+
+impl SolEncode for () {
+    const IS_DYNAMIC: bool = false;
+    const SOL_NAME: &'static str = "unit";
+
+    fn encode_body_len(&self) -> usize {
+        0
+    }
+
+    fn encode_body_to(&self, _buf: &mut [u8]) {}
+}
+
+impl SolDecode for () {
+    fn decode_at(_input: &[u8], _offset: usize) -> Self {
+        ()
     }
 }
 

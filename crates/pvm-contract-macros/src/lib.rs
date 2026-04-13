@@ -1,11 +1,11 @@
 #![doc = include_str!("../../../specs/proc-macros.md")]
 
-extern crate proc_macro;
+extern crate proc_macro2;
 
+mod abi_import;
 mod codegen;
 mod signature;
 mod solidity;
-
 use proc_macro::TokenStream;
 use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 
@@ -731,4 +731,11 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
+}
+
+#[proc_macro]
+pub fn abi_import(input: TokenStream) -> TokenStream {
+    let file = parse_macro_input!(input as syn_solidity::File);
+
+    abi_import::expand_to_module(&file).into()
 }

@@ -29,6 +29,7 @@ fn flipper_call_toggle_state() {
     let val = cast.call(&addr, "get()(bool)", &[]);
     assert_eq!(val, "false", "After calling flip state should be false");
 }
+
 #[test]
 fn flipper_delegate_call_toggle_state() {
     let (_anvil, cast, addr) = deploy("flipper");

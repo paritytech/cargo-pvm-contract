@@ -10,6 +10,7 @@ build = "build.rs"
 [[bin]]
 name = "flipper_call_alloy"
 path = "src/flipper_call_alloy.rs"
+
 [[bin]]
 name = "flipper_delegate"
 path = "src/flipper_delegate.rs"

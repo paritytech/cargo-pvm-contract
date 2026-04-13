@@ -1,24 +1,20 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use alloy_core::sol;
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 
-sol!(
+pvm_contract_macros::abi_import!(
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-interface Flipper {
+interface flipper {
     function flip() external;
     function get() external view returns (bool);
 }
-
 );
 
 #[pvm_contract_macros::contract("DelegateFlipper.sol", allocator = "pico")]
 mod flipper {
-    use crate::Flipper::FlipperCalls;
-    use alloy_core::sol_types::SolInterface;
-    use pvm_contract_core::call::{CallError, new_payable, new_view};
+    use pvm_contract_core::call::CallError;
     use pvm_contract_types::*;
 
     use super::*;
@@ -53,9 +49,10 @@ mod flipper {
 
     #[pvm_contract_macros::method]
     pub fn delegate_flipper(addr: Address) -> Result<(), CallError> {
-        let flip = FlipperCalls::flip(Flipper::flipCall).abi_encode();
-
-        new_payable(addr, flip.as_slice()).delegate_call::<()>()
+        let flip = Flipper::from_address(addr).flip();
+        let mut input = [0u8; 512];
+        let mut output = [0u8; 512];
+        flip.delegate_call_raw(&mut input, &mut output)
     }
 
     #[pvm_contract_macros::method]

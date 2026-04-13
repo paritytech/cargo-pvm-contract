@@ -7,12 +7,12 @@ repository.workspace = true
 description = "ABI encoding/decoding traits for PVM smart contracts"
 
 [dependencies]
-ruint = { version = "1.17", default-features = false }
+ruint = { workspace = true, default-features = false }
 const_format = { workspace = true, default-features = false }
 keccak-const.workspace = true
 
 [dev-dependencies]
-alloy-core = { version = "1.5", features = ["sol-types"] }
+alloy-core = { workspace = true, features = ["sol-types"] }
 pvm-contract-macros = { path = "../pvm-contract-macros" }
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }

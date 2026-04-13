@@ -1,7 +1,7 @@
-use core::fmt::Debug;
+use core::{fmt::Debug, marker::PhantomData};
 
 use pallet_revive_uapi::{CallFlags, HostFn, HostFnImpl as api, ReturnErrorCode};
-use pvm_contract_types::{Address, SolDecode};
+use pvm_contract_types::{Address, SolDecode, SolEncode};
 use ruint::aliases::U256;
 
 /// Errors returned by host_api::call()
@@ -47,7 +47,8 @@ fn convert_error(value: ReturnErrorCode, buf: &[u8]) -> CallError {
 /// - pure
 /// - nonpayable # this is the default stateMutability
 /// - payable
-pub trait StateMutability: Default + Debug {
+/// - uninit # Call was not initialized yet.
+pub trait StateMutability: Default + Debug + Clone + Copy {
     fn call_flags(&self) -> CallFlags {
         CallFlags::ALLOW_REENTRY
     }
@@ -59,7 +60,7 @@ pub trait StateMutability: Default + Debug {
 
 /// Payable stateMutability.
 /// CallBuilder with this typeState allows us to set transfer value.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Payable {
     value: Option<u128>,
 }
@@ -71,13 +72,13 @@ impl StateMutability for Payable {
 
 /// NonPayable stateMutability.
 /// StateMutability selected by default.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct NonPayable;
 impl StateMutability for NonPayable {}
 
 /// View stateMutability.
 /// reads blockchain state.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct View;
 impl StateMutability for View {
     fn call_flags(&self) -> CallFlags {
@@ -87,7 +88,7 @@ impl StateMutability for View {
 
 /// Pure stateMutability.
 /// this function only operates on it's inputs.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct Pure;
 impl StateMutability for Pure {
     fn call_flags(&self) -> CallFlags {
@@ -121,14 +122,28 @@ impl Default for CallLimits {
 
 /// Call builder to construct and configure calls.
 /// depending on the [StateMutability] param can have additional methods.
-pub struct CallBuilder<'a, Mutability: StateMutability> {
-    address: [u8; 20],
-    payload: &'a [u8],
-    witness: Mutability,
-    call_limits: CallLimits,
+#[derive(Clone, Copy)]
+pub struct CallBuilder<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> {
+    pub selector: [u8; 4],
+    pub payload: Inputs,
+    pub witness: Mutability,
+    pub call_limits: CallLimits,
+    pub _ret: PhantomData<Outputs>,
 }
 
-impl<'a> CallBuilder<'a, Payable> {
+impl Default for CallBuilder<Pure, (), ()> {
+    fn default() -> CallBuilder<Pure, (), ()> {
+        Self {
+            selector: Default::default(),
+            payload: (),
+            witness: Pure,
+            call_limits: Default::default(),
+            _ret: PhantomData,
+        }
+    }
+}
+
+impl<I: SolEncode, R: SolDecode> CallBuilder<Payable, I, R> {
     /// Set the transfer `.value` of the call
     pub fn set_value(mut self, value: u128) -> Self {
         self.witness.value = Some(value);
@@ -137,26 +152,47 @@ impl<'a> CallBuilder<'a, Payable> {
 }
 
 /// so far a temporary function. should be hidden behind a macro call.
-pub fn new_payable<'a>(address: Address, data: &'a [u8]) -> CallBuilder<'a, Payable> {
+pub fn new_payable<Inputs: SolEncode, Ret: SolDecode>(
+    selector: [u8; 4],
+    data: Inputs,
+) -> CallBuilder<Payable, Inputs, Ret> {
     CallBuilder {
-        address: address.0,
+        selector,
         payload: data,
         witness: Payable::default(),
         call_limits: Default::default(),
+        _ret: Default::default(),
     }
 }
 
 /// so far a temporary function. should be hidden behind a macro call.
-pub fn new_view<'a>(address: Address, data: &'a [u8]) -> CallBuilder<'a, View> {
+pub fn new_view<Inputs: SolEncode, Ret: SolDecode>(
+    selector: [u8; 4],
+    data: Inputs,
+) -> CallBuilder<View, Inputs, Ret> {
     CallBuilder {
-        address: address.0,
-        payload: &data,
+        selector,
+        payload: data,
         witness: View::default(),
         call_limits: Default::default(),
+        _ret: Default::default(),
+    }
+}
+/// so far a temporary function. should be hidden behind a macro call.
+pub fn new_nonpayable<Inputs: SolEncode, Ret: SolDecode>(
+    selector: [u8; 4],
+    data: Inputs,
+) -> CallBuilder<NonPayable, Inputs, Ret> {
+    CallBuilder {
+        selector,
+        payload: data,
+        witness: NonPayable::default(),
+        call_limits: Default::default(),
+        _ret: Default::default(),
     }
 }
 
-impl<'a, Mutability: StateMutability> CallBuilder<'a, Mutability> {
+impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutability, I, R> {
     /// Set call limits for the given call
     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
         self.call_limits = limits;
@@ -164,16 +200,22 @@ impl<'a, Mutability: StateMutability> CallBuilder<'a, Mutability> {
     }
 
     /// Execute code in the context (storage, caller, value) of the current contract.
-    pub fn delegate_call<T: SolDecode>(&self) -> Result<T, CallError> {
+    pub fn delegate_call(
+        &self,
+        address: Address,
+        input: &mut [u8],
+        output: &mut [u8],
+    ) -> Result<R, CallError> {
         let call_flags = CallFlags::empty();
-        let mut buf = [0; 512];
+        input[..4].copy_from_slice(&self.selector[..]);
+        self.payload.encode_to(&mut input[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => api::delegate_call_evm(
                 call_flags,
-                &self.address,
+                &address.0,
                 limit,
-                &self.payload,
-                Some(&mut buf.as_mut_slice()),
+                &input,
+                Some(&mut output.as_mut()),
             ),
             CallLimits::RefTimeAndProofSize {
                 ref_time_limit,
@@ -181,31 +223,37 @@ impl<'a, Mutability: StateMutability> CallBuilder<'a, Mutability> {
                 deposit_limit,
             } => api::delegate_call(
                 call_flags,
-                &self.address,
+                &address.0,
                 ref_time_limit,
                 proof_size_limit,
                 &deposit_limit,
-                &self.payload,
-                Some(&mut buf.as_mut_slice()),
+                &input,
+                Some(&mut output.as_mut()),
             ),
         }
-        .map_err(|error| convert_error(error, &buf))
-        .map(|_| T::decode(&buf))
+        .map_err(|error| convert_error(error, &output))
+        .map(|_| R::decode(&output))
     }
 
     /// Call a given contract
-    pub fn call<T: SolDecode>(&self) -> Result<T, CallError> {
+    pub fn call(
+        &self,
+        address: Address,
+        input: &mut [u8],
+        output: &mut [u8],
+    ) -> Result<R, CallError> {
         let call_flags = self.witness.call_flags();
         let value = self.witness.value();
-        let mut buf = [0; 512];
+        input[..4].copy_from_slice(&self.selector[..]);
+        self.payload.encode_to(&mut input[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => api::call_evm(
                 call_flags,
-                &self.address,
+                &address.0,
                 limit,
                 &U256::from(value).to_be_bytes(),
-                &self.payload,
-                Some(&mut buf.as_mut_slice()),
+                &input,
+                Some(&mut output.as_mut()),
             ),
             CallLimits::RefTimeAndProofSize {
                 ref_time_limit,
@@ -213,35 +261,62 @@ impl<'a, Mutability: StateMutability> CallBuilder<'a, Mutability> {
                 deposit_limit,
             } => api::call(
                 call_flags,
-                &self.address,
+                &address.0,
                 ref_time_limit,
                 proof_size_limit,
                 &deposit_limit,
                 &U256::from(value).to_be_bytes(),
-                &self.payload,
-                Some(&mut buf.as_mut_slice()),
+                &input,
+                Some(&mut output.as_mut()),
             ),
         }
-        .map_err(|error| convert_error(error, &buf))
-        .map(|_| T::decode(&buf))
+        .map_err(|error| convert_error(error, &output))
+        .map(|_| R::decode(&output))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use std::marker::PhantomData;
+    use core::{default, marker::PhantomData};
+
+    use crate::call::{Pure, StateMutability, View};
 
     use super::{CallBuilder, NonPayable};
 
     #[test]
     fn method_available() {
         let builder = CallBuilder {
-            address: [0; 20],
-            payload: &[0u8; 32],
+            selector: [0; 4],
+            payload: (),
             witness: super::Payable { value: None },
             call_limits: Default::default(),
+            _ret: PhantomData::<()>,
         };
 
         let _ = builder.set_value(0);
+    }
+
+    #[test]
+    fn t() {
+        struct T<M: StateMutability, const I: bool = false> {
+            witness: M,
+        }
+
+        impl<M: StateMutability> T<M, true> {
+            fn flip(&self) -> T<View, false> {
+                T { witness: View }
+            }
+        }
+        impl<M: StateMutability> T<M, false> {
+            fn flip(&self) -> T<Pure, true> {
+                T { witness: Pure }
+            }
+        }
+
+        // let b: T<true> = T {
+        //     witness: NonPayable,
+        // };
+        // let c: T<false> = b.flip();
+        // let c: T<true> = c.flip();
     }
 }

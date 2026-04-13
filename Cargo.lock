@@ -175,6 +175,7 @@ version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95d9fa2daf21f59aa546d549943f10b5cce1ae59986774019fbedae834ffe01b"
 dependencies = [
+ "alloy-json-abi",
  "alloy-sol-macro-input",
  "const-hex",
  "heck 0.5.0",
@@ -193,12 +194,14 @@ version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9396007fe69c26ee118a19f4dee1f5d1d6be186ea75b3881adf16d87f8444686"
 dependencies = [
+ "alloy-json-abi",
  "const-hex",
  "dunce",
  "heck 0.5.0",
  "macro-string",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn 2.0.114",
  "syn-solidity",
 ]
@@ -3655,9 +3658,9 @@ dependencies = [
 
 [[package]]
 name = "pallet-revive-proc-macro"
-version = "0.7.1"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5168bf2cfdd1307b832fedda9a48cab3ce56056e532e9407aba48657a7617c13"
+checksum = "54d78626aaf92f2c5bd0e25f97a16815753e8e2e3328677986564b4155db7667"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3686,7 +3689,20 @@ dependencies = [
  "bitflags 1.3.2",
  "const-crypto",
  "hex-literal",
- "pallet-revive-proc-macro 0.7.1",
+ "pallet-revive-proc-macro 0.7.2",
+ "polkavm-derive 0.30.0",
+]
+
+[[package]]
+name = "pallet-revive-uapi"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b6fbad22d6e4ae82c0a1c1335eb2b5f05fda2eaca4cdb732ec2bf354628c9bf"
+dependencies = [
+ "bitflags 1.3.2",
+ "const-crypto",
+ "hex-literal",
+ "pallet-revive-proc-macro 0.7.2",
  "polkavm-derive 0.30.0",
 ]
 
@@ -4359,7 +4375,7 @@ dependencies = [
 name = "pvm-contract-core"
 version = "0.3.0"
 dependencies = [
- "pallet-revive-uapi 0.10.1",
+ "pallet-revive-uapi 0.11.0",
  "pvm-contract-types",
  "ruint",
 ]
@@ -4382,14 +4398,18 @@ dependencies = [
 name = "pvm-contract-macros"
 version = "0.3.0"
 dependencies = [
+ "alloy-json-abi",
  "expect-test",
  "keccak-const",
+ "prettyplease",
  "proc-macro2",
+ "pvm-contract-core",
  "pvm-contract-types",
  "quote",
  "ruint",
  "serde_json",
  "syn 2.0.114",
+ "syn-solidity",
 ]
 
 [[package]]
@@ -6213,9 +6233,9 @@ dependencies = [
 
 [[package]]
 name = "syn-solidity"
-version = "1.5.2"
+version = "1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f92d01b5de07eaf324f7fca61cc6bd3d82bbc1de5b6c963e6fe79e86f36580d"
+checksum = "53f425ae0b12e2f5ae65542e00898d500d4d318b4baf09f40fd0d410454e9947"
 dependencies = [
  "paste",
  "proc-macro2",
