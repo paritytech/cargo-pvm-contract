@@ -816,6 +816,7 @@ fn sol_type_name_primitives() {
     assert_eq!(<u32 as SolEncode>::SOL_NAME, "uint32");
     assert_eq!(<u16 as SolEncode>::SOL_NAME, "uint16");
     assert_eq!(<u8 as SolEncode>::SOL_NAME, "uint8");
+    assert_eq!(<I256 as SolEncode>::SOL_NAME, "int256");
     assert_eq!(<i128 as SolEncode>::SOL_NAME, "int128");
     assert_eq!(<i64 as SolEncode>::SOL_NAME, "int64");
     assert_eq!(<i32 as SolEncode>::SOL_NAME, "int32");
@@ -826,7 +827,11 @@ fn sol_type_name_primitives() {
     assert_eq!(<[u8; 32] as SolEncode>::SOL_NAME, "bytes32");
     assert_eq!(<[u8; 20] as SolEncode>::SOL_NAME, "bytes20");
     assert_eq!(<[u8; 4] as SolEncode>::SOL_NAME, "bytes4");
+    // Fixed-size arrays of primitives.
     assert_eq!(<[u64; 3] as SolEncode>::SOL_NAME, "uint64[3]");
+    assert_eq!(<[i32; 3] as SolEncode>::SOL_NAME, "int32[3]");
+    assert_eq!(<[i128; 2] as SolEncode>::SOL_NAME, "int128[2]");
+    assert_eq!(<[I256; 2] as SolEncode>::SOL_NAME, "int256[2]");
 }
 
 #[test]
@@ -834,6 +839,12 @@ fn sol_type_name_dynamic_types() {
     assert_eq!(<&str as SolEncode>::SOL_NAME, "string");
     assert_eq!(<alloc::string::String as SolEncode>::SOL_NAME, "string");
     assert_eq!(<Vec<Address> as SolEncode>::SOL_NAME, "address[]");
+    // Tuples, which may be static or dynamic depending on their elements.
+    assert_eq!(<(u64, bool, Address) as SolEncode>::SOL_NAME, "(uint64,bool,address)");
+    assert_eq!(
+        <(u64, alloc::string::String) as SolEncode>::SOL_NAME,
+        "(uint64,string)"
+    );
 }
 
 // ========================================================================
@@ -853,6 +864,7 @@ fn vec_sol_name_for_primitive_types() {
     assert_eq!(<Vec<i32> as SolEncode>::SOL_NAME, "int32[]");
     assert_eq!(<Vec<i64> as SolEncode>::SOL_NAME, "int64[]");
     assert_eq!(<Vec<i128> as SolEncode>::SOL_NAME, "int128[]");
+    assert_eq!(<Vec<I256> as SolEncode>::SOL_NAME, "int256[]");
     assert_eq!(<Vec<bool> as SolEncode>::SOL_NAME, "bool[]");
     assert_eq!(<Vec<Address> as SolEncode>::SOL_NAME, "address[]");
     assert_eq!(<Vec<[u8; 32]> as SolEncode>::SOL_NAME, "bytes32[]");
@@ -1501,28 +1513,6 @@ fn encode_decode_struct_with_empty_bytes() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(WithEmptyBytes::decode(&buf), val);
-}
-
-// --- SOL_NAME tests for tuples and signed arrays ---
-
-#[test]
-fn sol_type_name_tuple_with_dynamic() {
-    assert_eq!(<(u64, alloc::string::String)>::SOL_NAME, "(uint64,string)");
-}
-
-#[test]
-fn sol_type_name_tuple_all_static() {
-    assert_eq!(<(u64, bool, Address)>::SOL_NAME, "(uint64,bool,address)");
-}
-
-#[test]
-fn sol_type_name_fixed_array_of_signed() {
-    assert_eq!(<[i32; 3]>::SOL_NAME, "int32[3]");
-}
-
-#[test]
-fn sol_type_name_fixed_array_of_i128() {
-    assert_eq!(<[i128; 2]>::SOL_NAME, "int128[2]");
 }
 
 // --- Bytes decode_at test ---
@@ -2205,4 +2195,81 @@ fn return_encoding_roundtrip_advanced() {
     let mut buf = vec![0u8; nested.encode_len()];
     nested.encode_to(&mut buf);
     assert_eq!(<((u64, u64), alloc::string::String)>::decode(&buf), nested);
+}
+
+// ========================================================================
+// I256 ABI tests — wire-format compatibility with alloy's `int256` encoding.
+// ========================================================================
+
+use alloy_core::primitives::I256 as AlloyI256;
+
+/// Build an `I256` and an `AlloyI256` from the same big-endian bytes so
+/// every test encodes the two implementations from identical
+/// two's-complement bit patterns.
+fn i256_from_bytes(bytes: [u8; 32]) -> (I256, AlloyI256) {
+    (I256::from_be_slice(&bytes), AlloyI256::from_be_bytes(bytes))
+}
+
+fn i256_limbs_to_bytes(limbs: [u64; 4]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    // Little-endian limbs → big-endian bytes (most significant limb first).
+    for (i, limb) in limbs.iter().rev().enumerate() {
+        out[i * 8..i * 8 + 8].copy_from_slice(&limb.to_be_bytes());
+    }
+    out
+}
+
+#[test]
+fn encode_i256() {
+    for bytes in [
+        [0u8; 32],
+        [0xffu8; 32],
+        i256_limbs_to_bytes([1, 0, 0, 0]),
+        i256_limbs_to_bytes([0, 0, 0, 1u64 << 63]), // I256::MIN
+        i256_limbs_to_bytes([u64::MAX, u64::MAX, u64::MAX, u64::MAX >> 1]), // I256::MAX
+    ] {
+        let (ours, alloy) = i256_from_bytes(bytes);
+        let mut buf = vec![0u8; 32];
+        ours.encode_to(&mut buf);
+        assert_eq!(&buf, &alloy.abi_encode());
+    }
+}
+
+#[test]
+fn encode_decode_i256_proptest() {
+    proptest!(|(limbs: [u64; 4])| {
+        let bytes = i256_limbs_to_bytes(limbs);
+        let (ours, alloy) = i256_from_bytes(bytes);
+        let mut buf = vec![0u8; 32];
+        ours.encode_to(&mut buf);
+        prop_assert_eq!(&buf, &alloy.abi_encode());
+        prop_assert_eq!(I256::decode(&buf), ours);
+    });
+}
+
+#[test]
+fn i256_display_matches_signed_decimal() {
+    use alloc::format;
+    assert_eq!(format!("{}", I256::ZERO), "0");
+    assert_eq!(format!("{}", I256::ONE), "1");
+    assert_eq!(format!("{}", I256::MINUS_ONE), "-1");
+    assert_eq!(format!("{}", I256::from(-42i32)), "-42");
+    assert_eq!(format!("{}", I256::from(i64::MIN)), "-9223372036854775808");
+}
+
+#[test]
+fn i256_from_str_display_round_trip() {
+    use alloc::format;
+    use core::str::FromStr;
+    for val in [
+        I256::ZERO,
+        I256::ONE,
+        I256::MINUS_ONE,
+        I256::from(-12345i64),
+        I256::MAX,
+        I256::MIN + I256::ONE,
+    ] {
+        let s = format!("{val}");
+        assert_eq!(I256::from_str(&s).unwrap(), val, "round-trip for {val}");
+    }
 }

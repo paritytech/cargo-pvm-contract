@@ -137,7 +137,7 @@ pub trait StaticEncodedLen: SolEncode {
 | `uint8`..`uint128` | `u8`..`u128` | yes | yes | `impl_static_type!` | |
 | `uint256` | `U256` (ruint) | yes | yes | `impl_static_type!` | |
 | `int8`..`int128` | `i8`..`i128` | yes | yes | `impl_static_type!` | Sign-extended encoding |
-| `int256` | `I256` | **no** | **no** | **missing** | Macro codegen references `I256` but type doesn't exist |
+| `int256` | `I256` | yes | yes | `impl_static_type!` | Newtype around `U256` with two's-complement signed ops |
 | `bool` | `bool` | yes | yes | `impl_static_type!` | |
 | `address` | `Address` | yes | yes | `impl_static_type!` | Wrapper around `[u8; 20]` |
 | `bytesN` | `[u8; N]` | yes | yes | blanket impl | SOL_NAME = `"bytesN"`, left-aligned encoding |
@@ -159,7 +159,6 @@ The `SolArrayElement` marker trait controls which types can be used as elements 
 
 ### Known Gaps
 
-- **`I256`**: The decode codegen (`decode.rs`) emits `::pvm_contract_types::I256::from_be_slice(...)` for `Int(256)`, but `I256` is never defined. Any contract using `int256` will fail to compile.
 - **`&[u8]`**: No trait impl for byte slices. The macro compensates with inline codegen for no-alloc `bytes` decoding.
 
 ### Custom Types via `#[derive(SolType)]`

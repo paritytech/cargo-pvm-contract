@@ -646,6 +646,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `u32` | `uint32` | 32 bytes |
 /// | `u16` | `uint16` | 32 bytes |
 /// | `u8` | `uint8` | 32 bytes |
+/// | `I256` | `int256` | 32 bytes |
 /// | `i128` | `int128` | 32 bytes |
 /// | `i64` | `int64` | 32 bytes |
 /// | `i32` | `int32` | 32 bytes |

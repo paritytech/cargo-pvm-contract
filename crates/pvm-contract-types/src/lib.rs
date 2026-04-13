@@ -11,6 +11,9 @@ mod alloc_types;
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
 
+mod i256;
+pub use i256::{I256, ParseI256Error};
+
 #[doc(hidden)]
 pub use const_format;
 use ruint::aliases::U256;
@@ -321,6 +324,14 @@ impl_static_type!(
     "uint256",
     |val: &U256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes::<32>()),
     |input: &[u8], offset: usize| U256::from_be_slice(&input[offset..offset + 32]),
+    array_element
+);
+
+impl_static_type!(
+    I256,
+    "int256",
+    |val: &I256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes()),
+    |input: &[u8], offset: usize| I256::from_be_slice(&input[offset..offset + 32]),
     array_element
 );
 
