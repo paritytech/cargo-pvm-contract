@@ -290,7 +290,6 @@ pub fn expand_to_module(file: &File) -> TokenStream {
     quote! {
         use pvm_contract_types::*;
         use pvm_contract_core::call::*;
-        use ruint::ailiases::{U256};
         #(#modules)*
     }
 }
@@ -332,7 +331,6 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            use ruint::ailiases::U256;
             /**
             interface example {
                 function add(uint256 a, uint256 b) external view returns (uint256);
@@ -484,7 +482,6 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            use ruint::ailiases::U256;
             /**
             interface example {
                 function getAddress() external view returns (address);
@@ -798,7 +795,6 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            use ruint::ailiases::U256;
             /**
             interface example {
                 function getPair() external view returns (uint256, bool);
@@ -911,7 +907,6 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            use ruint::ailiases::U256;
             /**
             interface example {
                 function getFixedArray() external view returns (uint256[3] memory);
@@ -1030,7 +1025,6 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            use ruint::ailiases::U256;
             /**
             interface example {
                 function echoBytes() external view returns (bytes memory);
@@ -1197,7 +1191,6 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            use ruint::ailiases::U256;
             /**
             interface example {
                 function getInitialSupply() external view returns (uint256);
