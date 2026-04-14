@@ -1230,6 +1230,7 @@ dependencies = [
  "tempfile",
  "tiny-keccak",
  "tokio",
+ "toml_edit 0.22.27",
  "url",
 ]
 
@@ -1239,7 +1240,6 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "log",
- "object 0.36.7",
  "polkavm-linker",
  "tempfile",
  "toml_edit 0.22.27",
@@ -4356,9 +4356,7 @@ dependencies = [
 name = "pvm-contract-macros"
 version = "0.3.0"
 dependencies = [
- "cargo-pvm-contract-builder",
  "keccak-const",
- "polkavm-linker",
  "proc-macro2",
  "pvm-contract-types",
  "quote",

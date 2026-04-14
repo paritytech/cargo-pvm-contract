@@ -1,15 +1,11 @@
 #![doc = include_str!("../../../specs/build.md")]
 
-mod abi;
-
 use anyhow::{Context, Result};
 use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
-
-pub use abi::extract_abi_from_elf;
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
@@ -146,18 +142,6 @@ fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     Ok(bins)
 }
 
-/// Get the package name from Cargo.toml.
-fn get_package_name(cargo_toml: &Path) -> Result<String> {
-    let content = fs::read_to_string(cargo_toml)
-        .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
-    let doc: toml_edit::DocumentMut = content.parse().context("Failed to parse Cargo.toml")?;
-    doc.get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-        .map(|s| s.to_string())
-        .context("No package name found in Cargo.toml")
-}
-
 /// Build the project.
 fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> Result<()> {
     let profile = Profile::detect();
@@ -174,16 +158,9 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
     }
 
     let target_dir = build_dir;
-    let pkg_name = get_package_name(project_cargo_toml)?;
-    build_elf(
-        project_cargo_toml,
-        &target_dir,
-        &profile,
-        &bins_to_build,
-        &pkg_name,
-    )?;
+    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build)?;
 
-    // Link each ELF to PolkaVM and extract ABI
+    // Link each ELF to PolkaVM
     let elf_dir = target_dir
         .join("riscv64emac-unknown-none-polkavm")
         .join(profile.directory());
@@ -196,28 +173,8 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
 
         let output_path = target_root.join(format!("{}.{}.polkavm", bin, profile.directory()));
         link_to_polkavm(&elf_path, &output_path)?;
-
-        let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
-        generate_abi_file(&elf_path, &abi_path)?;
     }
 
-    Ok(())
-}
-
-/// Extract ABI from the ELF binary and write to a JSON file.
-pub fn generate_abi_file(elf_path: &Path, output_path: &Path) -> Result<()> {
-    let elf_bytes = fs::read(elf_path)
-        .with_context(|| format!("Failed to read ELF: {}", elf_path.display()))?;
-    match abi::extract_abi_from_elf(&elf_bytes)? {
-        Some(json) => {
-            fs::write(output_path, &json)
-                .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
-            eprintln!("Created ABI: {}", output_path.display());
-        }
-        None => {
-            eprintln!("No ABI section found, skipping ABI generation");
-        }
-    }
     Ok(())
 }
 
@@ -227,13 +184,8 @@ fn build_elf(
     target_dir: &Path,
     profile: &Profile,
     bins: &[String],
-    pkg_name: &str,
 ) -> Result<()> {
-    // Force the linker to keep __PVM_ABI even though nothing references it at runtime.
-    let rustflags = format!(
-        "-Zunstable-options -Cpanic=immediate-abort -Clink-arg=--undefined=__PVM_ABI --cfg pvm_entry_crate=\"{}\"",
-        pkg_name
-    );
+    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
 
     let mut args = polkavm_linker::TargetJsonArgs::default();
     args.is_64_bit = true;
@@ -247,9 +199,8 @@ fn build_elf(
     cmd.current_dir(work_dir)
         .env_remove("CARGO_ENCODED_RUSTFLAGS") // We set RUSTFLAGS, but cargo prefers this one
         .env_remove("RUSTC") // Prevent host toolchain override from build.rs
-        .env("RUSTFLAGS", &rustflags)
+        .env("RUSTFLAGS", rustflags)
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("PVM_ENTRY_POINT_CRATE", pkg_name)
         // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
         // Stripping is done later by polkavm_linker after processing relocations.
         .env("CARGO_PROFILE_RELEASE_STRIP", "false")

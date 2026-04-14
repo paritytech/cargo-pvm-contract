@@ -55,6 +55,8 @@ enum PvmContractCommand {
     Rpc(RpcArgs),
     /// Display account info for an H160 address (balance, account ID)
     Account(AccountArgs),
+    /// Generate ABI JSON for a contract
+    GenAbi(GenAbiArgs),
 }
 
 #[derive(Args, Debug)]
@@ -218,6 +220,19 @@ struct AccountArgs {
     url: String,
 }
 
+#[derive(Args, Debug)]
+struct GenAbiArgs {
+    /// Path to contract's Cargo.toml (default: ./Cargo.toml)
+    #[arg(long)]
+    manifest_path: Option<PathBuf>,
+    /// Specific binary to generate ABI for
+    #[arg(long)]
+    bin: Option<String>,
+    /// Output directory for .abi.json files
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 enum InitType {
     New,
@@ -376,6 +391,7 @@ fn handle_pvm_contract(args: PvmContractArgs) -> Result<()> {
         PvmContractCommand::Info(a) => extrinsics::info_command(a),
         PvmContractCommand::Rpc(a) => extrinsics::rpc_command(a),
         PvmContractCommand::Account(a) => extrinsics::account_command(a),
+        PvmContractCommand::GenAbi(a) => gen_abi_command(a),
     }
 }
 
@@ -582,4 +598,112 @@ fn check_dir_exists(contract_name: &str) -> Result<()> {
         anyhow::bail!("Directory already exists: {target_dir:?}");
     }
     Ok(())
+}
+
+fn gen_abi_command(args: GenAbiArgs) -> Result<()> {
+    use std::process::Command;
+
+    let manifest_path = args
+        .manifest_path
+        .unwrap_or_else(|| PathBuf::from("Cargo.toml"));
+    let manifest_path = manifest_path
+        .canonicalize()
+        .with_context(|| format!("Failed to find {}", manifest_path.display()))?;
+    let manifest_dir = manifest_path
+        .parent()
+        .context("Invalid manifest path")?;
+
+    let host = detect_host_triple()?;
+
+    // Resolve binary targets
+    let bins = match args.bin {
+        Some(name) => vec![name],
+        None => resolve_bin_targets(&manifest_path)?,
+    };
+
+    let output_dir = args
+        .output
+        .unwrap_or_else(|| manifest_dir.join("target"));
+
+    for bin in &bins {
+        eprintln!("Generating ABI for {bin}...");
+
+        let output = Command::new("cargo")
+            .current_dir(manifest_dir)
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("RUSTC")
+            .arg("run")
+            .arg("--manifest-path")
+            .arg(&manifest_path)
+            .arg("--target")
+            .arg(&host)
+            .arg("--config")
+            .arg(r#"unstable.build-std=["std","core","alloc"]"#)
+            .arg("--features")
+            .arg("abi-gen")
+            .arg("--bin")
+            .arg(bin)
+            .output()
+            .context("Failed to run abi-gen build")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("ABI generation failed for {bin}:\n{stderr}");
+        }
+
+        let json =
+            String::from_utf8(output.stdout).context("ABI output is not valid UTF-8")?;
+
+        std::fs::create_dir_all(&output_dir)
+            .with_context(|| format!("Failed to create {}", output_dir.display()))?;
+        let abi_path = output_dir.join(format!("{bin}.abi.json"));
+        std::fs::write(&abi_path, json.trim())
+            .with_context(|| format!("Failed to write {}", abi_path.display()))?;
+        eprintln!("Created ABI: {}", abi_path.display());
+    }
+
+    Ok(())
+}
+
+fn resolve_bin_targets(manifest_path: &std::path::Path) -> Result<Vec<String>> {
+    let content =
+        std::fs::read_to_string(manifest_path).context("Failed to read Cargo.toml")?;
+    let doc: toml_edit::DocumentMut = content.parse().context("Failed to parse Cargo.toml")?;
+    let mut names = Vec::new();
+    if let Some(bin_array) = doc.get("bin").and_then(|b| b.as_array_of_tables()) {
+        for bin in bin_array {
+            if let Some(name) = bin.get("name").and_then(|n| n.as_str()) {
+                names.push(name.to_string());
+            }
+        }
+    }
+    if names.is_empty() {
+        if let Some(name) = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+        {
+            names.push(name.to_string());
+        }
+    }
+    if names.is_empty() {
+        anyhow::bail!("No binary targets found in {}", manifest_path.display());
+    }
+    Ok(names)
+}
+
+fn detect_host_triple() -> Result<String> {
+    use std::process::Command;
+
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .context("Failed to run rustc -vV")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(host) = line.strip_prefix("host: ") {
+            return Ok(host.to_string());
+        }
+    }
+    anyhow::bail!("Could not detect host triple from rustc -vV")
 }

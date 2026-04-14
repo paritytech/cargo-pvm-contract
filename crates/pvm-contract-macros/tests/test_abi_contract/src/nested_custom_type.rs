@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 #[derive(pvm_contract_macros::SolType)]
 pub struct Point {

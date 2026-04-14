@@ -12,7 +12,6 @@ anyhow = { workspace = true }
 log = { workspace = true }
 polkavm-linker = { workspace = true }
 toml_edit = { workspace = true }
-object = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.13"

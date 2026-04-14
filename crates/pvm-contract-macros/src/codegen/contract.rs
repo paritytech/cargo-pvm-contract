@@ -377,7 +377,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let abi_section = generate_abi_section(&parsed);
+    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(&parsed);
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -609,19 +609,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
             #deploy_fn
 
-            #abi_section
+            #abi_gen_helper
         }
 
         #router_impl
+
+        #abi_gen_main
     })
 }
 
-/// Generate compile-time ABI JSON embedded in a `.rodata.pvm_abi` ELF section.
+/// Generate compile-time ABI JSON and an `abi-gen` feature-gated `main()`.
 ///
 /// Uses `concatcp!` to build the JSON string from trait constants (`ABI_TYPE`,
-/// `ABI_COMPONENTS`, `SOL_NAME`), then embeds the result as a `#[link_section]`
-/// static so the builder can extract it from the ELF after compilation.
-fn generate_abi_section(parsed: &ParsedContract) -> TokenStream {
+/// `ABI_COMPONENTS`, `SOL_NAME`). The helper function lives inside the contract
+/// module (so type imports are in scope). The `main()` is placed outside and
+/// only compiled when `--features abi-gen` is active (for `cargo pvm-contract gen-abi`).
+fn generate_abi_gen(parsed: &ParsedContract) -> (TokenStream, TokenStream) {
     let mut parts: Vec<TokenStream> = Vec::new();
     parts.push(quote! { "[" });
 
@@ -678,25 +681,26 @@ fn generate_abi_section(parsed: &ParsedContract) -> TokenStream {
 
     parts.push(quote! { "]" });
 
-    quote! {
-        const __PVM_ABI_JSON: &str = ::pvm_contract_types::const_format::concatcp!(
-            #(#parts),*
-        );
+    let helper = quote! {
+        #[cfg(feature = "abi-gen")]
+        #[doc(hidden)]
+        pub fn __abi_json() -> &'static str {
+            const __PVM_ABI_JSON: &str = ::pvm_contract_types::const_format::concatcp!(
+                #(#parts),*
+            );
+            __PVM_ABI_JSON
+        }
+    };
 
-        #[unsafe(link_section = ".rodata.pvm_abi")]
-        #[unsafe(no_mangle)]
-        #[used]
-        static __PVM_ABI: [u8; __PVM_ABI_JSON.len()] = {
-            let b = __PVM_ABI_JSON.as_bytes();
-            let mut a = [0u8; __PVM_ABI_JSON.len()];
-            let mut i = 0;
-            while i < b.len() {
-                a[i] = b[i];
-                i += 1;
-            }
-            a
-        };
-    }
+    let mod_name = &parsed.mod_name;
+    let main_fn = quote! {
+        #[cfg(feature = "abi-gen")]
+        fn main() {
+            ::std::println!("{}", #mod_name::__abi_json());
+        }
+    };
+
+    (helper, main_fn)
 }
 
 /// Push ABI parameter entries into the flat concatcp parts list.
@@ -844,9 +848,9 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // ABI is embedded in ELF section
-        assert!(output.contains("__PVM_ABI_JSON"));
-        assert!(output.contains("link_section"));
+        // abi-gen helper is generated
+        assert!(output.contains("__abi_json"));
+        assert!(output.contains("feature = \"abi-gen\""));
         // constructor entry is present with its inputs array
         assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":["));
         // param names are emitted

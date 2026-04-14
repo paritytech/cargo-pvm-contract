@@ -2,7 +2,6 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
-use super::encode::generate_encode;
 
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
@@ -100,14 +99,6 @@ fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
 
     parts.push(quote! { ")" });
     quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
-}
-
-fn build_output_size_expr(outputs: &[syn::Type]) -> TokenStream {
-    let size_exprs: Vec<TokenStream> = outputs
-        .iter()
-        .map(|ty| quote! { <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE })
-        .collect();
-    quote! { 0 #(+ #size_exprs)* }
 }
 
 pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStream, TokenStream) {
@@ -239,110 +230,58 @@ fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenSt
 fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        let encode = generate_encode(ty, quote!(result));
-        return quote! {
-            let encoded = #encode;
+        return quote! {{
+            const { assert!(
+                !<#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
+                "dynamic types (String, Vec, Bytes) require allocator = \"pico\" or \"bump\""
+            ) };
+            let mut __buf = [0u8; <#ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+            <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
             pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::empty(), &encoded);
-        };
+                pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+        }};
     }
 
-    let encodes: Vec<_> = outputs
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let idx = syn::Index::from(i);
-            generate_encode(ty, quote!(result.#idx))
-        })
-        .collect();
-
-    let total_size_expr = build_output_size_expr(outputs);
-
+    // Multi-return: result is a tuple.
+    let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
-        const __OUT_SIZE: usize = #total_size_expr;
-        let mut out = [0u8; __OUT_SIZE];
-        let mut offset = 0;
-        #(
-            let encoded = #encodes;
-            out[offset..offset + encoded.len()].copy_from_slice(&encoded);
-            offset += encoded.len();
-        )*
+        const { assert!(
+            !<#tuple_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
+            "dynamic return types require allocator = \"pico\" or \"bump\""
+        ) };
+        let mut __buf = [0u8; <#tuple_ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
+        <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
         pallet_revive_uapi::HostFnImpl::return_value(
-            pallet_revive_uapi::ReturnFlags::empty(), &out);
+            pallet_revive_uapi::ReturnFlags::empty(), &__buf);
     }}
 }
 
 fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        // IS_DYNAMIC is a const bool — the compiler eliminates the dead branch.
-        // Static types use a stack buffer; dynamic types use a heap buffer.
-        // The else branch includes a runtime guard to prevent buffer overflow
-        // for the (unreachable) case where a dynamic type reaches the static path.
         return quote! {{
+            let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
             if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
                 let mut __buf = alloc::vec![0u8; __len];
                 <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
                 pallet_revive_uapi::HostFnImpl::return_value(
                     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
             } else {
                 let mut __buf = [0u8; <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
-                let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
-                if __len <= __buf.len() {
-                    <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
-                } else {
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::REVERT, b"EncodingOverflow");
-                }
+                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
             }
         }};
     }
 
-    let head_size_expr = build_output_size_expr(outputs);
-
-    let encodes: Vec<_> = outputs
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let idx = syn::Index::from(i);
-            let value_expr = quote!(result.#idx);
-
-            quote! {
-                if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    let __off = __head_size + tail.len();
-                    let mut __off_buf = [0u8; 32];
-                    __off_buf[24..32].copy_from_slice(&(__off as u64).to_be_bytes());
-                    head.extend_from_slice(&__off_buf);
-                    let __tl = <#ty as ::pvm_contract_types::SolEncode>::tail_len(&#value_expr);
-                    let mut __tbuf = alloc::vec![0u8; __tl];
-                    <#ty as ::pvm_contract_types::SolEncode>::encode_tail_to(&#value_expr, &mut __tbuf);
-                    tail.extend_from_slice(&__tbuf);
-                } else {
-                    let __hs: usize = <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
-                    let __el: usize = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&#value_expr);
-                    let __start = head.len();
-                    head.resize(__start + __hs, 0);
-                    if __el <= __hs {
-                        <#ty as ::pvm_contract_types::SolEncode>::encode_to(
-                            &#value_expr,
-                            &mut head[__start..__start + __hs],
-                        );
-                    }
-                }
-            }
-        })
-        .collect();
-
+    // Multi-return: result is a tuple.
+    let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
-        let __head_size: usize = #head_size_expr;
-        let mut head = alloc::vec::Vec::with_capacity(__head_size);
-        let mut tail = alloc::vec::Vec::new();
-        #(#encodes)*
-        head.extend_from_slice(&tail);
+        let __len = <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+        let mut __buf = alloc::vec![0u8; __len];
+        <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
         pallet_revive_uapi::HostFnImpl::return_value(
-            pallet_revive_uapi::ReturnFlags::empty(), &head);
+            pallet_revive_uapi::ReturnFlags::empty(), &__buf);
     }}
 }
