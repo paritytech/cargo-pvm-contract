@@ -465,6 +465,116 @@ mod tests {
     use super::*;
 
     #[test]
+    fn constants_have_correct_bit_patterns() {
+        // ZERO: all zero.
+        assert_eq!(I256::ZERO.to_be_bytes(), [0u8; 32]);
+
+        // ONE: last byte is 1, rest zero.
+        let mut expected = [0u8; 32];
+        expected[31] = 1;
+        assert_eq!(I256::ONE.to_be_bytes(), expected);
+
+        // MINUS_ONE: all 0xff (two's complement -1).
+        assert_eq!(I256::MINUS_ONE.to_be_bytes(), [0xff; 32]);
+
+        // MIN: -2^255 = only the sign bit set = 0x80 followed by 31 zero bytes.
+        let mut expected = [0u8; 32];
+        expected[0] = 0x80;
+        assert_eq!(I256::MIN.to_be_bytes(), expected);
+
+        // MAX: 2^255 - 1 = 0x7f followed by 31 0xff bytes.
+        let mut expected = [0xff; 32];
+        expected[0] = 0x7f;
+        assert_eq!(I256::MAX.to_be_bytes(), expected);
+
+        // Relationships between constants.
+        assert_eq!(I256::MAX + I256::ONE, I256::MIN); // wrapping overflow
+        assert_eq!(I256::MIN - I256::ONE, I256::MAX); // wrapping underflow
+        assert_eq!(I256::MINUS_ONE + I256::ONE, I256::ZERO);
+    }
+
+    #[test]
+    fn overflowing_returns_correct_wrapped_value_and_flag() {
+        // add: MAX + 1 wraps to MIN.
+        assert_eq!(I256::MAX.overflowing_add(I256::ONE), (I256::MIN, true));
+        // add: no overflow case.
+        assert_eq!(
+            I256::ONE.overflowing_add(I256::ONE),
+            (I256::from(2i32), false)
+        );
+        // add: MIN + (-1) wraps to MAX.
+        assert_eq!(
+            I256::MIN.overflowing_add(I256::MINUS_ONE),
+            (I256::MAX, true)
+        );
+
+        // sub: MIN - 1 wraps to MAX.
+        assert_eq!(I256::MIN.overflowing_sub(I256::ONE), (I256::MAX, true));
+        // sub: no overflow case.
+        assert_eq!(
+            I256::ZERO.overflowing_sub(I256::ONE),
+            (I256::MINUS_ONE, false)
+        );
+
+        // mul: MAX * 2 overflows.
+        let (result, overflow) = I256::MAX.overflowing_mul(I256::from(2i32));
+        assert!(overflow);
+        assert_eq!(result, I256::from(-2i32)); // MAX*2 = 2^256-2, wraps to -2
+
+        // mul: no overflow case.
+        assert_eq!(
+            I256::from(3i32).overflowing_mul(I256::from(4i32)),
+            (I256::from(12i32), false)
+        );
+    }
+
+    #[test]
+    fn signed_ordering_across_boundaries() {
+        // Basic ordering.
+        assert!(I256::MIN < I256::MAX);
+        assert!(I256::MIN < I256::ZERO);
+        assert!(I256::MINUS_ONE < I256::ZERO);
+        assert!(I256::ZERO < I256::ONE);
+        assert!(I256::ZERO < I256::MAX);
+
+        // MIN is the smallest; MAX is the largest.
+        assert!(I256::MIN < I256::MINUS_ONE);
+        assert!(I256::ONE < I256::MAX);
+
+        // Adjacent to sign boundary.
+        assert!(I256::MINUS_ONE < I256::ZERO);
+        assert!(I256::ZERO < I256::ONE);
+
+        // Self-equality.
+        assert_eq!(I256::MIN.cmp(&I256::MIN), core::cmp::Ordering::Equal);
+        assert_eq!(I256::MAX.cmp(&I256::MAX), core::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn shifts_at_extreme_counts() {
+        // Shift by 0: identity.
+        assert_eq!(I256::MAX << 0, I256::MAX);
+        assert_eq!(I256::MAX >> 0, I256::MAX);
+        assert_eq!(I256::MIN << 0, I256::MIN);
+        assert_eq!(I256::MIN >> 0, I256::MIN);
+
+        // Shift by 255: only the sign bit remains (or is shifted out).
+        assert_eq!(I256::ONE << 255, I256::MIN); // 1 << 255 = -2^255 (sign bit)
+        assert_eq!(I256::MIN >> 255, I256::MINUS_ONE); // arithmetic: sign-extend
+
+        // Shift by 256: full width → 0 for shl; -1 for negative asr, 0 for positive.
+        assert_eq!(I256::ONE << 256, I256::ZERO);
+        assert_eq!(I256::MAX << 256, I256::ZERO);
+        assert_eq!(I256::MIN >> 256, I256::MINUS_ONE); // all-ones from sign extension
+        assert_eq!(I256::MAX >> 256, I256::ZERO); // positive: all zeros
+
+        // MINUS_ONE >> any positive shift = MINUS_ONE (arithmetic shift fills with 1s).
+        assert_eq!(I256::MINUS_ONE >> 1, I256::MINUS_ONE);
+        assert_eq!(I256::MINUS_ONE >> 128, I256::MINUS_ONE);
+        assert_eq!(I256::MINUS_ONE >> 255, I256::MINUS_ONE);
+    }
+
+    #[test]
     fn from_signed_native_ints_sign_extends() {
         // Negative i8 must sign-extend to all-1s in the high bytes.
         let v = I256::from(-1i8);

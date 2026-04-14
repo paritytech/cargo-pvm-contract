@@ -2206,6 +2206,21 @@ fn return_encoding_roundtrip_advanced() {
 
 use alloy_core::primitives::I256 as AlloyI256;
 
+#[test]
+fn i256_constants_match_alloy() {
+    assert_eq!(
+        I256::ZERO.to_be_bytes(),
+        AlloyI256::ZERO.to_be_bytes::<32>()
+    );
+    assert_eq!(I256::ONE.to_be_bytes(), AlloyI256::ONE.to_be_bytes::<32>());
+    assert_eq!(
+        I256::MINUS_ONE.to_be_bytes(),
+        AlloyI256::MINUS_ONE.to_be_bytes::<32>()
+    );
+    assert_eq!(I256::MIN.to_be_bytes(), AlloyI256::MIN.to_be_bytes::<32>());
+    assert_eq!(I256::MAX.to_be_bytes(), AlloyI256::MAX.to_be_bytes::<32>());
+}
+
 /// Build an `I256` and an `AlloyI256` from the same big-endian bytes so
 /// every test encodes the two implementations from identical
 /// two's-complement bit patterns.
