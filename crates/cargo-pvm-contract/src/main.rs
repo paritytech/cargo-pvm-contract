@@ -609,9 +609,7 @@ fn gen_abi_command(args: GenAbiArgs) -> Result<()> {
     let manifest_path = manifest_path
         .canonicalize()
         .with_context(|| format!("Failed to find {}", manifest_path.display()))?;
-    let manifest_dir = manifest_path
-        .parent()
-        .context("Invalid manifest path")?;
+    let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
 
     let host = detect_host_triple()?;
 
@@ -621,9 +619,7 @@ fn gen_abi_command(args: GenAbiArgs) -> Result<()> {
         None => resolve_bin_targets(&manifest_path)?,
     };
 
-    let output_dir = args
-        .output
-        .unwrap_or_else(|| manifest_dir.join("target"));
+    let output_dir = args.output.unwrap_or_else(|| manifest_dir.join("target"));
 
     for bin in &bins {
         eprintln!("Generating ABI for {bin}...");
@@ -651,8 +647,7 @@ fn gen_abi_command(args: GenAbiArgs) -> Result<()> {
             anyhow::bail!("ABI generation failed for {bin}:\n{stderr}");
         }
 
-        let json =
-            String::from_utf8(output.stdout).context("ABI output is not valid UTF-8")?;
+        let json = String::from_utf8(output.stdout).context("ABI output is not valid UTF-8")?;
 
         std::fs::create_dir_all(&output_dir)
             .with_context(|| format!("Failed to create {}", output_dir.display()))?;
@@ -666,8 +661,7 @@ fn gen_abi_command(args: GenAbiArgs) -> Result<()> {
 }
 
 fn resolve_bin_targets(manifest_path: &std::path::Path) -> Result<Vec<String>> {
-    let content =
-        std::fs::read_to_string(manifest_path).context("Failed to read Cargo.toml")?;
+    let content = std::fs::read_to_string(manifest_path).context("Failed to read Cargo.toml")?;
     let doc: toml_edit::DocumentMut = content.parse().context("Failed to parse Cargo.toml")?;
     let mut names = Vec::new();
     if let Some(bin_array) = doc.get("bin").and_then(|b| b.as_array_of_tables()) {
