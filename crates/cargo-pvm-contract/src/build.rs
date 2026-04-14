@@ -38,6 +38,9 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
     let profile = builder::Profile::from_name(profile_name);
 
     let bins = builder::get_bin_targets(&manifest_path)?;
+    if bins.is_empty() {
+        anyhow::bail!("No binary targets found in {}", manifest_path.display());
+    }
 
     let output_dir = args
         .output_dir

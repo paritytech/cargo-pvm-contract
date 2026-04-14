@@ -328,7 +328,7 @@ fn build_elf(
 
     // `-Zjson-target-spec` was stabilized in newer toolchains. Pass it only when the
     // cargo that will execute the build still recognises it as an unstable flag.
-    if cargo_supports_z_flag("json-target-spec", has_toolchain_file) {
+    if cargo_supports_z_flag("json-target-spec", work_dir, has_toolchain_file) {
         cmd.arg("-Zjson-target-spec");
     }
 
@@ -419,6 +419,11 @@ fn rustc_version_at_least(
         return true;
     }
 
+    // Nightly with minor < req_minor is definitively below the cutoff.
+    if major == req_major && minor < req_minor {
+        return false;
+    }
+
     // Nightly with minor == req_minor: check commit date from "(hash YYYY-MM-DD)"
     let (req_y, req_m, req_d) = nightly_date;
     parts
@@ -437,9 +442,10 @@ fn rustc_version_at_least(
 /// Check whether the cargo that will run the build still accepts `-Z<flag>`.
 /// `remove_toolchain_env` mirrors the build command's `env_remove("RUSTUP_TOOLCHAIN")`
 /// so that we probe the exact same cargo binary.
-fn cargo_supports_z_flag(flag: &str, remove_toolchain_env: bool) -> bool {
+fn cargo_supports_z_flag(flag: &str, work_dir: &Path, remove_toolchain_env: bool) -> bool {
     let mut probe = Command::new("cargo");
     probe
+        .current_dir(work_dir)
         .arg(format!("-Z{flag}"))
         .arg("version")
         .env("RUSTC_BOOTSTRAP", "1")
@@ -540,6 +546,8 @@ mod tests {
     fn nightly_below_cutoff() {
         assert!(!check_1_91("rustc 1.91.0-nightly (abcd1234 2025-08-15)"));
         assert!(!check_1_91("rustc 1.91.0-nightly (abcd1234 2025-08-31)"));
+        // minor < req_minor must return false even when date is after cutoff
+        assert!(!check_1_91("rustc 1.90.0-nightly (abcd1234 2025-10-15)"));
     }
 
     #[test]
@@ -550,5 +558,7 @@ mod tests {
         assert!(check("rustc 1.96.0-nightly (abcd1234 2026-04-01)"));
         assert!(!check("rustc 1.94.0 (abcd1234 2026-04-01)"));
         assert!(!check("rustc 1.95.0-nightly (abcd1234 2026-02-28)"));
+        // minor < req_minor must return false even when date is after cutoff
+        assert!(!check("rustc 1.94.0-nightly (abcd1234 2026-04-01)"));
     }
 }
