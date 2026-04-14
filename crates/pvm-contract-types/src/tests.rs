@@ -840,7 +840,10 @@ fn sol_type_name_dynamic_types() {
     assert_eq!(<alloc::string::String as SolEncode>::SOL_NAME, "string");
     assert_eq!(<Vec<Address> as SolEncode>::SOL_NAME, "address[]");
     // Tuples, which may be static or dynamic depending on their elements.
-    assert_eq!(<(u64, bool, Address) as SolEncode>::SOL_NAME, "(uint64,bool,address)");
+    assert_eq!(
+        <(u64, bool, Address) as SolEncode>::SOL_NAME,
+        "(uint64,bool,address)"
+    );
     assert_eq!(
         <(u64, alloc::string::String) as SolEncode>::SOL_NAME,
         "(uint64,string)"

@@ -573,7 +573,9 @@ mod tests {
 
                 // div / rem: skip b == 0, and skip i128::MIN / -1 which
                 // overflows i128 but is well-defined in I256.
-                if b != 0 && let Some(q) = a.checked_div(b) {
+                if b != 0
+                    && let Some(q) = a.checked_div(b)
+                {
                     assert_eq!(ai / bi, I256::from(q), "div {a} / {b}");
                     let r = a.checked_rem(b).expect("rem defined when div defined");
                     assert_eq!(ai % bi, I256::from(r), "rem {a} % {b}");
