@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use cargo_pvm_contract_extrinsics::{
-    CallCommandBuilder, Code, ContractBinary, ExtrinsicOptsBuilder, InstantiateCommandBuilder,
-    MapAccountCommandBuilder, RemoveCommandBuilder, UploadCommandBuilder,
+    CallCommandBuilder, Code, ContractBinary, ErrorVariant, ExtrinsicOptsBuilder,
+    InstantiateCommandBuilder, MapAccountCommandBuilder, RemoveCommandBuilder,
+    UploadCommandBuilder,
 };
 use sp_core::H160;
 use subxt_signer::sr25519::Keypair;
@@ -55,9 +56,16 @@ pub fn upload_command(args: UploadArgs) -> Result<()> {
             .await?;
 
         if args.dry_run {
-            let _result = exec.upload_code_rpc().await?;
+            let dry_run = exec.upload_code_rpc().await?;
             let code_hash = ContractBinary(code).code_hash();
-            println!("Upload dry-run succeeded");
+            match dry_run {
+                Ok(_) => println!("Upload dry-run succeeded"),
+                Err(ref err) => {
+                    let decoded =
+                        ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
+                    println!("Upload dry-run failed: {decoded}");
+                }
+            }
             println!("  Code hash: 0x{}", hex::encode(code_hash));
         } else {
             let _result = exec
@@ -93,22 +101,23 @@ pub fn instantiate_command(args: CliInstantiateArgs) -> Result<()> {
         let exec = builder.done().await?;
 
         if args.dry_run {
-            let result = exec.instantiate_dry_run().await?;
-            let weight = result.weight_required;
-            println!("Instantiate dry-run succeeded");
-            println!(
-                "  Result: {}",
-                if result.result.is_ok() {
-                    "success"
-                } else {
-                    "failed"
+            let dry_run = exec.instantiate_dry_run().await?;
+            let weight = dry_run.weight_required;
+            match dry_run.result {
+                Ok(_) => {
+                    println!("Instantiate dry-run succeeded");
+                    println!(
+                        "  Gas required: ref_time={}, proof_size={}",
+                        weight.ref_time(),
+                        weight.proof_size()
+                    );
                 }
-            );
-            println!(
-                "  Gas required: ref_time={}, proof_size={}",
-                weight.ref_time(),
-                weight.proof_size()
-            );
+                Err(ref err) => {
+                    let decoded =
+                        ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
+                    println!("Instantiate dry-run failed: {decoded}");
+                }
+            }
         } else {
             let result = exec
                 .instantiate(None, None)
