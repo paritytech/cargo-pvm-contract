@@ -1,7 +1,6 @@
 mod contract;
 mod decode;
 mod dispatch;
-mod encode;
 mod method;
 mod sol_type;
 

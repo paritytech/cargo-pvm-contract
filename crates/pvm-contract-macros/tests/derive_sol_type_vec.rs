@@ -13,11 +13,11 @@ fn test_derive_with_vec_u256() {
         items: vec![U256::from(1u64), U256::from(2u64)],
     };
 
-    let len = s.encode_len();
+    let len = s.encode_body_len();
     assert_eq!(len, 128);
 
     let mut buf = vec![0u8; len];
-    s.encode_to(&mut buf);
+    s.encode_body_to(&mut buf);
 
     let offset_bytes = &buf[0..32];
     let offset_val = u64::from_be_bytes([
@@ -53,7 +53,7 @@ fn test_derive_with_vec_u256() {
     assert_eq!(elem2_bytes[31], 2);
     assert!(elem2_bytes[0..31].iter().all(|&b| b == 0));
 
-    let decoded = WithVecU256::decode(&buf);
+    let decoded = WithVecU256::decode_at(&buf, 0);
     assert_eq!(decoded, s);
 }
 
@@ -61,11 +61,11 @@ fn test_derive_with_vec_u256() {
 fn test_derive_with_empty_vec() {
     let s = WithVecU256 { items: vec![] };
 
-    let len = s.encode_len();
+    let len = s.encode_body_len();
     assert_eq!(len, 64);
 
     let mut buf = vec![0u8; len];
-    s.encode_to(&mut buf);
+    s.encode_body_to(&mut buf);
 
     let offset_bytes = &buf[0..32];
     let offset_val = u64::from_be_bytes([
@@ -97,11 +97,11 @@ fn test_derive_with_mixed_fields() {
         items: vec![U256::from(100u64), U256::from(200u64)],
     };
 
-    let len = s.encode_len();
+    let len = s.encode_body_len();
     assert_eq!(len, 160);
 
     let mut buf = vec![0u8; len];
-    s.encode_to(&mut buf);
+    s.encode_body_to(&mut buf);
 
     let id_bytes = &buf[0..32];
     assert_eq!(id_bytes[28..32], [0, 0, 0, 42]);
@@ -139,7 +139,7 @@ fn test_derive_with_mixed_fields() {
     let elem2_bytes = &buf[128..160];
     assert_eq!(elem2_bytes[31], 200);
 
-    let decoded = MixedFields::decode(&buf);
+    let decoded = MixedFields::decode_at(&buf, 0);
     assert_eq!(decoded, s);
 }
 
@@ -149,7 +149,7 @@ fn test_dynamic_struct_no_static_encoded_len() {
         items: vec![U256::from(1u64)],
     };
 
-    let len = s.encode_len();
+    let len = s.encode_body_len();
     assert_eq!(len, 96);
 }
 
@@ -166,11 +166,11 @@ fn test_derive_with_multiple_vec_fields() {
         second: vec![U256::from(2u64), U256::from(3u64)],
     };
 
-    let len = s.encode_len();
+    let len = s.encode_body_len();
     assert_eq!(len, 224);
 
     let mut buf = vec![0u8; len];
-    s.encode_to(&mut buf);
+    s.encode_body_to(&mut buf);
 
     let first_offset_bytes = &buf[0..32];
     let first_offset = u64::from_be_bytes([
@@ -224,7 +224,7 @@ fn test_derive_with_multiple_vec_fields() {
     ]);
     assert_eq!(second_len, 2);
 
-    let decoded = MultipleVecs::decode(&buf);
+    let decoded = MultipleVecs::decode_at(&buf, 0);
     assert_eq!(decoded, s);
 }
 
