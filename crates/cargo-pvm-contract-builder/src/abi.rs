@@ -90,15 +90,24 @@ fn generate_abi_via_feature(
     // --target forces the host triple, build-std adds std to the sysroot rebuild.
     let host = get_host_triple()?;
 
-    // Use the rustup proxy ("cargo") so rust-toolchain.toml is respected.
-    // Remove CARGO/RUSTUP_TOOLCHAIN to avoid inheriting the parent's toolchain.
-    let output = Command::new("cargo")
-        .current_dir(manifest_dir)
+    // Remove RUSTUP_TOOLCHAIN only when rust-toolchain.toml exists, matching
+    // build_elf's behavior. Without a toolchain file we keep the inherited
+    // toolchain (e.g. nightly passed via `cargo +nightly`).
+    let has_toolchain_file = manifest_dir.join("rust-toolchain.toml").exists()
+        || manifest_dir.join("rust-toolchain").exists();
+
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(manifest_dir)
         .env_remove("CARGO")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC")
-        .env_remove("RUSTUP_TOOLCHAIN")
-        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_TARGET_DIR", &target_dir);
+
+    if has_toolchain_file {
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
+
+    let output = cmd
         .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")
         .arg("--manifest-path")

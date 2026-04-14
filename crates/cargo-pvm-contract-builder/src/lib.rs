@@ -342,10 +342,11 @@ fn build_elf(
 
     eprintln!("Building PolkaVM binary with profile: {profile}");
 
-    let status = cmd.status().context("Failed to execute cargo build")?;
+    let output = cmd.output().context("Failed to execute cargo build")?;
 
-    if !status.success() {
-        anyhow::bail!("Cargo build failed");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Cargo build failed:\n{stderr}");
     }
 
     Ok(())

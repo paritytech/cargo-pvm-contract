@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use cargo_pvm_contract_builder as builder;
-use clap::Parser;
+use clap::Args;
 use std::path::{Path, PathBuf};
 
-#[derive(Parser, Debug)]
+#[derive(Args, Debug)]
 pub struct BuildArgs {
     /// Path to Cargo.toml
     #[arg(long)]
