@@ -39,9 +39,7 @@ struct ContractDslTemplate {
 
 #[derive(Template)]
 #[template(path = "scaffold/build.rs.txt")]
-struct BuildRsTemplate {
-    use_dsl: bool,
-}
+struct BuildRsTemplate {}
 
 struct MacroFunctionInfo {
     name_snake: String,
@@ -623,8 +621,8 @@ fn solidity_to_dsl_decode_type(sol_type: &str) -> String {
     solidity_to_rust_type(sol_type)
 }
 
-fn generate_build_rs(use_dsl: bool) -> Result<String> {
-    BuildRsTemplate { use_dsl }
+fn generate_build_rs(_use_dsl: bool) -> Result<String> {
+    BuildRsTemplate {}
         .render()
         .context("Failed to render build.rs template")
 }

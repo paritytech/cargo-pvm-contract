@@ -671,14 +671,13 @@ fn resolve_bin_targets(manifest_path: &std::path::Path) -> Result<Vec<String>> {
             }
         }
     }
-    if names.is_empty() {
-        if let Some(name) = doc
+    if names.is_empty()
+        && let Some(name) = doc
             .get("package")
             .and_then(|p| p.get("name"))
             .and_then(|n| n.as_str())
-        {
-            names.push(name.to_string());
-        }
+    {
+        names.push(name.to_string());
     }
     if names.is_empty() {
         anyhow::bail!("No binary targets found in {}", manifest_path.display());
