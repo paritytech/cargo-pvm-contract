@@ -4385,6 +4385,7 @@ name = "pvm-contract-e2e-tests"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "assert_cmd",
  "cargo-pvm-contract-extrinsics",
  "serde_json",
  "sp-core",

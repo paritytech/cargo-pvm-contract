@@ -1,3 +1,4 @@
+use assert_cmd::cargo::cargo_bin;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,19 +8,6 @@ static BUILT: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(Ha
 
 pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn find_cli_binary() -> PathBuf {
-    let root = workspace_root();
-    for profile in ["debug", "release"] {
-        let path = root.join(format!("target/{profile}/cargo-pvm-contract"));
-        if path.exists() {
-            return path;
-        }
-    }
-    panic!(
-        "cargo-pvm-contract binary not found in target/debug or target/release. Build it first with: cargo build -p cargo-pvm-contract"
-    );
 }
 
 pub fn contract(name: &str) -> Contract {
@@ -47,8 +35,7 @@ impl Contract {
             self.dir.display()
         );
 
-        let bin_path = find_cli_binary();
-        let status = Command::new(&bin_path)
+        let status = Command::new(cargo_bin("cargo-pvm-contract"))
             .current_dir(&self.dir)
             .args(["pvm-contract", "build"])
             .status()
