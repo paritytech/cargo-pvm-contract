@@ -17,25 +17,7 @@ mod flipper_call_alloy {
     use pvm_contract_types::*;
 
     use super::*;
-
-    #[derive(Debug, Clone, Copy)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl From<CallError> for Error {
-        fn from(_value: CallError) -> Self {
-            Self::Unexpected
-        }
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
+    type Error = pvm_contract_types::EmptyError;
 
     #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {

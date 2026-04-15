@@ -2,5 +2,9 @@
   {"type":"constructor","inputs":[],"stateMutability":"payable"},
   {"type":"function","name":"setFlag","inputs":[{"name":"flag","type":"bool"}],"outputs":[],"stateMutability":"payable"},
   {"type":"function","name":"transfer","inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"},{"name":"nonce","type":"uint32"}],"outputs":[{"name":"","type":"bool"}],"stateMutability":"payable"},
-  {"type":"function","name":"getCount","inputs":[],"outputs":[{"name":"","type":"uint64"}],"stateMutability":"payable"}
+  {"type":"function","name":"getCount","inputs":[],"outputs":[{"name":"","type":"uint64"}],"stateMutability":"payable"},
+  {"type":"error","name":"InvalidCalldata","inputs":[]},
+  {"type":"error","name":"CalldataTooLarge","inputs":[]},
+  {"type":"error","name":"NoSelector","inputs":[]},
+  {"type":"error","name":"UnknownSelector","inputs":[]}
 ]

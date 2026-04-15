@@ -1,15 +1,15 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pallet_revive_uapi::{CallFlags, HostFn, HostFnImpl as api, ReturnErrorCode};
-use pvm_contract_types::{Address, SolDecode, SolEncode};
+use pvm_contract_types::{
+    Address, SolDecode, SolEncode, SolError, const_selector,
+    framework_errors::{CALLDATA_TOO_LARGE, INVALID_CALLDATA, NO_SELECTOR, UNKNOWN_SELECTOR},
+};
 use ruint::aliases::U256;
 
-/// Errors returned by host_api::call()
+/// Errors returned by host_api::call()/host_api::instantiate()
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CallError {
-    /// The called function ran to completion but decided to revert its state.
-    /// Can only be returned from call and instantiate.
-    CalleeReverted([u8; 512]),
     /// The called function trapped and has its state changes reverted.
     CalleeTrapped,
     /// Transfer failed for other not further specified reason.
@@ -19,13 +19,76 @@ pub enum CallError {
     OutOfResources,
     /// Input buffer too small
     InputBufTooSmall,
+    /// Calldata exceeds the fixed buffer size (no-alloc mode only).
+    CalldataTooLarge,
+    /// Calldata is shorter than the minimum required by the dispatched method.
+    InvalidCalldata,
+    /// Calldata is shorter than 4 bytes (no selector present).
+    NoSelector,
+    /// The 4-byte selector does not match any method in the contract.
+    UnknownSelector,
+    /// The called function ran to completion but decided to revert its state.
+    /// Can only be returned from call and instantiate.
+    GenericError,
 }
 
-impl AsRef<[u8]> for CallError {
-    fn as_ref(&self) -> &[u8] {
-        match *self {
-            _ => b"contract call error",
+impl SolError for CallError {
+    const SELECTOR: [u8; 4] = const_selector("CallError(uint256 code)");
+
+    const SIGNATURE: &'static str = "CallError(uint256 code)";
+
+    fn encode_params(&self, buf: &mut [u8]) -> usize {
+        match self {
+            CallError::CalleeTrapped => {
+                let res = U256::from(0);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::TransferFailed => {
+                let res = U256::from(1);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::OutOfResources => {
+                let res = U256::from(2);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::InputBufTooSmall => {
+                let res = U256::from(3);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::CalldataTooLarge => {
+                let res = U256::from(4);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::InvalidCalldata => {
+                let res = U256::from(5);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::NoSelector => {
+                let res = U256::from(6);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::UnknownSelector => {
+                let res = U256::from(7);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::GenericError => {
+                let res = U256::from(7);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
         }
+    }
+
+    fn encoded_size(&self) -> usize {
+        4 + U256::ZERO.encode_len()
     }
 }
 
@@ -33,9 +96,17 @@ fn convert_error(value: ReturnErrorCode, buf: &[u8]) -> CallError {
     match value {
         ReturnErrorCode::CalleeTrapped => CallError::CalleeTrapped,
         ReturnErrorCode::CalleeReverted => {
-            let mut slice = [0; 512];
-            slice.copy_from_slice(buf);
-            CallError::CalleeReverted(slice)
+            if buf.len() >= 4 {
+                match &buf[..4] {
+                    buf @ _ if buf == &CALLDATA_TOO_LARGE => CallError::CalldataTooLarge,
+                    buf @ _ if buf == &INVALID_CALLDATA => CallError::InvalidCalldata,
+                    buf @ _ if buf == &NO_SELECTOR => CallError::NoSelector,
+                    buf @ _ if buf == &UNKNOWN_SELECTOR => CallError::UnknownSelector,
+                    _ => CallError::GenericError,
+                }
+            } else {
+                CallError::GenericError
+            }
         }
         ReturnErrorCode::TransferFailed => CallError::TransferFailed,
         ReturnErrorCode::OutOfResources => CallError::OutOfResources,

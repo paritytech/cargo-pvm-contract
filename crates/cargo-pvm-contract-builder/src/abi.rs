@@ -23,6 +23,10 @@ pub enum AbiItem {
         #[serde(skip_serializing_if = "Option::is_none")]
         state_mutability: Option<String>,
     },
+    Error {
+        name: String,
+        inputs: Vec<AbiParam>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -154,10 +158,29 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         {
             items.push(func);
         }
+        if line.starts_with("error ")
+            && let Some(err) = parse_sol_error_line(line)
+        {
+            items.push(err);
+        }
     }
 
     if items.is_empty() {
         return Ok(None);
+    }
+
+    // Append framework-level parameterless custom errors, unless the .sol
+    // interface already defines an error with the same name.
+    for name in pvm_contract_types::framework_errors::NAMES {
+        let already_defined = items
+            .iter()
+            .any(|item| matches!(item, AbiItem::Error { name: n, .. } if n == name));
+        if !already_defined {
+            items.push(AbiItem::Error {
+                name: name.to_string(),
+                inputs: vec![],
+            });
+        }
     }
 
     Ok(Some(AbiJson(items)))
@@ -257,6 +280,19 @@ pub(crate) fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
         outputs,
         state_mutability: Some(state_mutability),
     })
+}
+
+fn parse_sol_error_line(line: &str) -> Option<AbiItem> {
+    let line = line.strip_prefix("error ")?.trim();
+
+    let paren_start = line.find('(')?;
+    let name = line[..paren_start].trim().to_string();
+
+    let paren_end = find_matching_paren(line, paren_start)?;
+    let params_str = &line[paren_start + 1..paren_end];
+    let inputs = parse_sol_params(params_str);
+
+    Some(AbiItem::Error { name, inputs })
 }
 
 pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
@@ -500,9 +536,17 @@ interface IToken {{
         let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
         let json = serde_json::to_value(&abi).unwrap();
         let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
+        assert_eq!(arr.len(), 6);
         assert_eq!(arr[0]["name"], "totalSupply");
         assert_eq!(arr[1]["name"], "transfer");
+        assert_eq!(arr[2]["name"], "InvalidCalldata");
+        assert_eq!(arr[2]["type"], "error");
+        assert_eq!(arr[3]["name"], "CalldataTooLarge");
+        assert_eq!(arr[3]["type"], "error");
+        assert_eq!(arr[4]["name"], "NoSelector");
+        assert_eq!(arr[4]["type"], "error");
+        assert_eq!(arr[5]["name"], "UnknownSelector");
+        assert_eq!(arr[5]["type"], "error");
     }
 
     #[test]
@@ -635,5 +679,80 @@ version = "0.1.0"
         } else {
             panic!("expected Function");
         }
+    }
+
+    // --- Error parsing ---
+
+    #[test]
+    fn parse_error_with_params() {
+        assert_eq!(
+            parse_sol_error_line(
+                "error InsufficientBalance(address account, uint256 required, uint256 available);",
+            )
+            .unwrap(),
+            AbiItem::Error {
+                name: "InsufficientBalance".to_string(),
+                inputs: vec![
+                    AbiParam {
+                        name: "account".to_string(),
+                        param_type: "address".to_string()
+                    },
+                    AbiParam {
+                        name: "required".to_string(),
+                        param_type: "uint256".to_string()
+                    },
+                    AbiParam {
+                        name: "available".to_string(),
+                        param_type: "uint256".to_string()
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_error_no_params() {
+        assert_eq!(
+            parse_sol_error_line("error Unauthorized();").unwrap(),
+            AbiItem::Error {
+                name: "Unauthorized".to_string(),
+                inputs: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_includes_errors() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("MyToken.sol");
+        let mut f = std::fs::File::create(&sol_path).unwrap();
+        writeln!(
+            f,
+            r#"interface IToken {{
+    function transfer(address to, uint256 amount) external;
+    error InsufficientBalance(address account, uint256 required);
+    error Unauthorized();
+}}"#
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let json = serde_json::to_value(&abi).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr.len(), 7);
+        assert_eq!(arr[0]["name"], "transfer");
+        assert_eq!(arr[0]["type"], "function");
+        assert_eq!(arr[1]["name"], "InsufficientBalance");
+        assert_eq!(arr[1]["type"], "error");
+        assert_eq!(arr[2]["name"], "Unauthorized");
+        assert_eq!(arr[2]["type"], "error");
+        assert_eq!(arr[3]["name"], "InvalidCalldata");
+        assert_eq!(arr[3]["type"], "error");
+        assert_eq!(arr[4]["name"], "CalldataTooLarge");
+        assert_eq!(arr[4]["type"], "error");
+        assert_eq!(arr[5]["name"], "NoSelector");
+        assert_eq!(arr[5]["type"], "error");
+        assert_eq!(arr[6]["name"], "UnknownSelector");
+        assert_eq!(arr[6]["type"], "error");
     }
 }

@@ -19,26 +19,13 @@ use ruint::aliases::U256;
 mod contract {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        // Add your errors here
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                // Match your errors here
-            }
-        }
-    }
-
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
@@ -54,7 +41,7 @@ mod contract {
     // Add your contract methods here
     // Example:
     // #[pvm_contract_macros::method]
-    // pub fn my_method(param: U256) -> Result<U256, Error> {
+    // pub fn my_method(param: U256) -> Result<U256, pvm_contract_types::EmptyError> {
     //     Ok(param)
     // }
 {% endif %}

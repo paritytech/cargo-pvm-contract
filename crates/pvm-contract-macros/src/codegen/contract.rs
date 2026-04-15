@@ -3,7 +3,9 @@ use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
 
 use super::abi_gen::generate_abi_gen;
-use super::dispatch::{MethodInfo, RouteItems, generate_param_decoding, generate_router};
+use super::dispatch::{
+    MethodInfo, RouteItems, generate_param_decoding, generate_revert_encoding, generate_router,
+};
 use crate::signature::compute_selector;
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
 
@@ -126,6 +128,9 @@ pub(super) struct ParsedContract {
     pub(super) constructor_returns_result: bool,
     pub(super) constructor_inputs: Vec<(Ident, syn::Type)>,
     pub(super) fallback_name: Option<Ident>,
+    pub(super) fallback_returns_result: bool,
+    /// Error types from `Result<T, E>` return types, for ABI generation.
+    pub(super) error_types: Vec<syn::Type>,
 }
 
 fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
@@ -178,6 +183,45 @@ fn is_result_return_type(output: &syn::ReturnType) -> bool {
             false
         }
     }
+}
+
+/// Collect the error type from a `Result<T, E>` return type, deduplicating by type name.
+fn collect_error_type(
+    output: &syn::ReturnType,
+    error_types: &mut Vec<syn::Type>,
+    seen: &mut Vec<String>,
+) {
+    if let Some(err_ty) = extract_error_type(output) {
+        let name = quote::quote!(#err_ty).to_string();
+        if !seen.contains(&name) {
+            seen.push(name);
+            error_types.push(err_ty);
+        }
+    }
+}
+
+/// Extract the error type `E` from a `Result<T, E>` return type.
+fn extract_error_type(output: &syn::ReturnType) -> Option<syn::Type> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return None;
+    };
+    let syn::Type::Path(type_path) = ty.as_ref() else {
+        return None;
+    };
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Result" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    // Result<T, E> — E is the second generic argument
+    let mut iter = args.args.iter();
+    iter.next()?; // skip T
+    let syn::GenericArgument::Type(error_ty) = iter.next()? else {
+        return None;
+    };
+    Some(error_ty.clone())
 }
 
 fn to_camel_case(s: &str) -> String {
@@ -278,7 +322,10 @@ fn parse_contract(
     let mut constructor_returns_result = false;
     let mut constructor_inputs = Vec::new();
     let mut fallback_name = None;
+    let mut fallback_returns_result = false;
     let mut implemented_sol_methods = Vec::new();
+    let mut error_types: Vec<syn::Type> = Vec::new();
+    let mut seen_error_names: Vec<String> = Vec::new();
 
     for item in &content.1 {
         if let syn::Item::Fn(func) = item {
@@ -287,9 +334,12 @@ fn parse_contract(
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
                 constructor_inputs = extract_typed_params(&func.sig.inputs)?;
+                collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
                 fallback_name = Some(func.sig.ident.clone());
+                fallback_returns_result = is_result_return_type(&func.sig.output);
+                collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
                 let typed_params = extract_typed_params(&func.sig.inputs)?;
                 let param_names: Vec<Ident> =
@@ -334,6 +384,7 @@ fn parse_contract(
                     returns_result,
                     precomputed_selector,
                 });
+                collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             }
         }
     }
@@ -366,6 +417,8 @@ fn parse_contract(
         constructor_returns_result,
         constructor_inputs,
         fallback_name,
+        fallback_returns_result,
+        error_types,
     })
 }
 
@@ -485,7 +538,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
                     pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
+                        pallet_revive_uapi::ReturnFlags::REVERT,
+                        &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
                 let input = &call_data[..call_data_len];
@@ -494,14 +548,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         };
 
         let call_expr = quote! { #constructor_name(#(#call_args),*) };
+        let revert_err = generate_revert_encoding(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
                 match #call_expr {
                     Ok(()) => {}
                     Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(
-                            pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                        #revert_err
                     }
                 }
             }
@@ -533,22 +587,38 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } = route_items;
     let router_impl = router_impl.tokens;
 
-    let fallback_handler = if parsed.has_fallback {
+    let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
-        quote! {
-            match #fallback_name() {
-                Ok(()) => return,
-                Err(e) => {
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+        let handler = if parsed.fallback_returns_result {
+            let revert_err = generate_revert_encoding(use_alloc);
+            quote! {
+                match #fallback_name() {
+                    Ok(()) => return,
+                    Err(e) => {
+                        #revert_err
+                    }
                 }
             }
-        }
+        } else {
+            quote! {
+                #fallback_name();
+                return;
+            }
+        };
+        (handler.clone(), handler)
     } else {
-        quote! {
-            pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::REVERT, b"");
-        }
+        (
+            quote! {
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::REVERT,
+                    &::pvm_contract_types::framework_errors::NO_SELECTOR);
+            },
+            quote! {
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::REVERT,
+                    &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+            },
+        )
     };
 
     let call_fn = if use_alloc {
@@ -560,7 +630,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
-                    #fallback_handler
+                    #no_selector_handler
                 }
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
@@ -571,7 +641,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                         pallet_revive_uapi::ReturnFlags::empty(), &[]);
                 }
 
-                #fallback_handler
+                #unknown_selector_handler
             }
         }
     } else {
@@ -583,12 +653,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
                     pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
+                        pallet_revive_uapi::ReturnFlags::REVERT,
+                        &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
-                    #fallback_handler
+                    #no_selector_handler
                 }
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
@@ -599,7 +670,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                         pallet_revive_uapi::ReturnFlags::empty(), &[]);
                 }
 
-                #fallback_handler
+                #unknown_selector_handler
             }
         }
     };
@@ -668,6 +739,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::{ContractArgs, expand_contract};
+    use syn::ItemMod;
 
     #[test]
     fn parses_no_alloc_with_nested_buffer() {
@@ -809,5 +881,70 @@ mod tests {
         // Should have match for Result error handling
         assert!(output.contains("Err (e)"));
         assert!(output.contains("REVERT"));
+    }
+
+    #[test]
+    fn error_paths_do_not_emit_raw_bytes() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() -> Result<(), MyError> {
+                    Ok(())
+                }
+
+                #[pvm_contract_macros::method]
+                pub fn transfer(to: u64) -> Result<(), MyError> {
+                    Ok(())
+                }
+
+                #[pvm_contract_macros::fallback]
+                pub fn fallback() -> Result<(), MyError> {
+                    Ok(())
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Error paths must not use raw bytes (e.as_ref()) — regression guard
+        assert!(
+            !output.contains("as_ref"),
+            "Generated dispatch should not use as_ref for error encoding"
+        );
+    }
+
+    #[test]
+    fn fallback_with_unit_return_generates_plain_call() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::fallback]
+                pub fn fallback() {}
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Unit-return fallback should generate a plain call, not a match on Ok/Err
+        assert!(
+            output.contains("fallback ()"),
+            "Unit-return fallback should generate a direct call"
+        );
+        assert!(
+            !output.contains("match fallback"),
+            "Unit-return fallback should not generate a match expression"
+        );
     }
 }

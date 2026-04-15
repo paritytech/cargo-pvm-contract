@@ -1243,6 +1243,7 @@ dependencies = [
  "anyhow",
  "log",
  "polkavm-linker",
+ "pvm-contract-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -4409,6 +4410,7 @@ dependencies = [
 name = "pvm-contract-macros"
 version = "0.3.0"
 dependencies = [
+ "alloy-core",
  "alloy-json-abi",
  "expect-test",
  "keccak-const",

@@ -15,27 +15,7 @@ pvm_contract_macros::abi_import!(
 mod flipper_delegate {
     use super::*;
     use pvm_contract_core::call::CallError;
-    use pvm_contract_types::*;
-
-    #[derive(Debug, Clone, Copy)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl From<CallError> for Error {
-        fn from(_value: CallError) -> Self {
-            Self::Unexpected
-        }
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
-
+    type Error = pvm_contract_types::EmptyError;
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
 
     #[pvm_contract_macros::constructor]

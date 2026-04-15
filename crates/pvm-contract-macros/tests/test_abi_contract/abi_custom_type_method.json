@@ -20,5 +20,25 @@
     ],
     "stateMutability": "payable",
     "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
   }
 ]

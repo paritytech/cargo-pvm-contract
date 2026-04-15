@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc b3613914836697ae21ef98e5dbf2bec0023fb909cb99621462a513a3446024c4 # shrinks to x = 0, y = 0, name = ""
+cc 7189bd9b310d2762ea2ecd592d0e1bb466bf7cd19ee8df563f8536c0580675a3 # shrinks to a_limbs = [0, 0, 0, 9223372036854775808], shift = 1

@@ -17,27 +17,9 @@ mod flipper_instantiate {
     use pallet_revive_uapi::HostFnImpl as api;
     use pvm_contract_core::call::{CallError, RefTimeAndProofSizeLimits};
     use pvm_contract_types::*;
+    type Error = pvm_contract_types::EmptyError;
 
     use super::*;
-
-    #[derive(Debug, Clone, Copy)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl From<CallError> for Error {
-        fn from(_value: CallError) -> Self {
-            Self::Unexpected
-        }
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
 
     #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
