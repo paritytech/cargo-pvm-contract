@@ -528,7 +528,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -538,7 +540,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -564,7 +566,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -890,7 +892,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -900,7 +904,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -926,7 +930,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1051,7 +1055,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -1061,7 +1067,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1087,7 +1093,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1218,7 +1224,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -1228,7 +1236,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1254,7 +1262,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1433,7 +1441,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -1443,7 +1453,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1469,7 +1479,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1581,7 +1591,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -1591,7 +1603,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1617,7 +1629,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1740,7 +1752,9 @@ mod test {
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
                 ) -> Result<Outputs, errors::Error> {
-                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
+                    self.call_builder
+                        .call(self.address, input_buf, output_buf)
+                        .map_err(|e| errors::Error::from(e))
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
@@ -1750,7 +1764,7 @@ mod test {
                 ) -> Result<Outputs, errors::Error> {
                     self.call_builder
                         .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(Into::into)
+                        .map_err(|e| errors::Error::from(e))
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1776,7 +1790,7 @@ mod test {
                             &mut address_buf,
                             output_buf,
                         )
-                        .map_err(Into::into)?;
+                        .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call

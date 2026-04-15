@@ -1,10 +1,7 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pallet_revive_uapi::{CallFlags, HostFn, HostFnImpl as api, ReturnErrorCode};
-use pvm_contract_types::{
-    Address, SolDecode, SolEncode, SolError, const_selector,
-    framework_errors::{CALLDATA_TOO_LARGE, INVALID_CALLDATA, NO_SELECTOR, UNKNOWN_SELECTOR},
-};
+use pvm_contract_types::{Address, SolDecode, SolEncode, SolError, const_selector};
 use ruint::aliases::U256;
 
 /// Errors returned by host_api::call()/host_api::instantiate()
@@ -19,14 +16,13 @@ pub enum CallError {
     OutOfResources,
     /// Input buffer too small
     InputBufTooSmall,
-
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
     GenericError,
 }
 
 impl SolError for CallError {
-    const SELECTOR: [u8; 4] = const_selector("CallError(uint256 code)");
+    const SELECTOR: [u8; 4] = const_selector("CallError(uint256)");
 
     const SIGNATURE: &'static str = "CallError(uint256 code)";
 
