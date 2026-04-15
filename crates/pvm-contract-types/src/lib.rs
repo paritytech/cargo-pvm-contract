@@ -377,11 +377,12 @@ pub trait SolRevert {
     ///
     /// For single `SolError` types, returns the one signature.
     /// For error enums (`sol_revert_enum!`), returns all inner error signatures.
-    fn error_signatures() -> &'static [&'static str]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str>
     where
         Self: Sized,
     {
-        &[]
+        let arr: &'static [&'static str] = &[];
+        arr.into_iter().chain(&[])
     }
 }
 
@@ -399,8 +400,9 @@ impl<E: SolError> SolRevert for E {
         self.encoded_size()
     }
 
-    fn error_signatures() -> &'static [&'static str] {
-        &[E::SIGNATURE]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
+        let arr = &[E::SIGNATURE];
+        arr.into_iter()
     }
 }
 
@@ -520,8 +522,9 @@ impl SolRevert for SolDefaultError {
         }
     }
 
-    fn error_signatures() -> &'static [&'static str] {
-        &[Panic::SIGNATURE, RevertString::SIGNATURE]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
+        let arr = &[Panic::SIGNATURE, RevertString::SIGNATURE];
+        arr.into_iter()
     }
 }
 
@@ -618,12 +621,14 @@ macro_rules! sol_revert_enum {
                 }
             }
 
-            fn error_signatures() -> &'static [&'static str] {
-                &[
-                    $(<$inner as $crate::SolError>::SIGNATURE,)+
+            fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
+               let arr =  &[
                     <$crate::Panic as $crate::SolError>::SIGNATURE,
                     <$crate::RevertString<'static> as $crate::SolError>::SIGNATURE,
-                ]
+                ];
+                let arr = arr.into_iter();
+                let arr = arr$(.chain(<$inner as $crate::SolRevert>::error_signatures()))+;
+                arr.into_iter()
             }
         }
 
