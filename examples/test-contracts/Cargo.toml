@@ -16,6 +16,10 @@ name = "flipper_delegate"
 path = "src/flipper_delegate.rs"
 
 [[bin]]
+name = "flipper_instantiate"
+path = "src/flipper_instantiate.rs"
+
+[[bin]]
 name = "flipper"
 path = "src/flipper.rs"
 

@@ -22,6 +22,7 @@ keccak-const.workspace = true
 pvm-contract-types = { path = "../pvm-contract-types" }
 pvm-contract-core = { path = "../pvm-contract-core" }
 serde_json = { workspace = true }
+macro-string = { version = "0.2" }
 
 [dev-dependencies]
 ruint = { workspace = true, default-features = false }

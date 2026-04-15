@@ -198,7 +198,7 @@ dependencies = [
  "const-hex",
  "dunce",
  "heck 0.5.0",
- "macro-string",
+ "macro-string 0.1.4",
  "proc-macro2",
  "quote",
  "serde_json",
@@ -3383,6 +3383,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "macro-string"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59a9dbbfc75d2688ed057456ce8a3ee3f48d12eec09229f560f3643b9f275653"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4401,6 +4412,7 @@ dependencies = [
  "alloy-json-abi",
  "expect-test",
  "keccak-const",
+ "macro-string 0.2.0",
  "prettyplease",
  "proc-macro2",
  "pvm-contract-core",

@@ -1,51 +1,30 @@
-use alloy_json_abi::{self, ToSolConfig};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use serde_json;
-use std::path::Path;
 use syn::{self};
 use syn_solidity::{File, ItemFunction, SolIdent};
-
+pub mod parse;
 use crate::signature::compute_selector;
 use crate::solidity::{capitalize, to_snake_case};
-
-pub fn load_json_abi(
-    name: String,
-    token_span: proc_macro2::Span,
-    path: &Path,
-) -> Result<File, syn::Error> {
-    let file = std::fs::read_to_string(path)
-        .map_err(|err| syn::Error::new(token_span, err.to_string()))?;
-
-    let parsed: alloy_json_abi::JsonAbi =
-        serde_json::from_str(&file).map_err(|err| syn::Error::new(token_span, err.to_string()))?;
-    let config = ToSolConfig::new()
-        .print_constructors(true)
-        .for_sol_macro(true);
-
-    let unparsed = &parsed.to_sol(&name, Some(config));
-    let tts = syn::parse_str::<TokenStream>(unparsed)
-        .map_err(|e| syn::Error::new(token_span, &e.to_string()))?;
-
-    syn_solidity::parse2(quote! {
-        #tts
-    })
-}
 
 pub fn expand_function(
     contract_name: syn::Ident,
     func: &ItemFunction,
     is_constructor: bool,
-) -> TokenStream {
+    alloc: bool,
+) -> (bool, TokenStream) {
     let func_name = if is_constructor {
-        format_ident!("{}", "new")
+        format_ident!("{}_{}", "new",  contract_name)
     } else {
         format_ident!("{}", to_snake_case(&func.name().to_string()))
     };
     let selector: Vec<TokenStream> = if is_constructor {
         [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
     } else {
-        compute_selector(&format!("{}{}", func.name(), func.call_type()))
+        let mut name = format!("{}{}", func.name(), func.call_type());
+        if name.rfind(",").is_some_and(|x| x == name.len() - 2) {
+            name.remove(name.len() - 2);
+        }
+        compute_selector(&name)
             .into_iter()
             .map(|x| quote! { #x })
             .collect()
@@ -54,78 +33,101 @@ pub fn expand_function(
         quote! {}
     } else {
         let args = func.parameters.iter().map(|param| {
-            let typ = to_rust_type(&param.ty);
+            let typ = to_rust_type(&param.ty, alloc);
             let name = &param
                 .name
                 .as_ref()
                 .unwrap_or(&SolIdent::new("s"))
                 .to_string();
-            let name = format_ident!("{}", name);
+            let name = format_ident!("{}", to_snake_case(&name));
             quote! {, #name: #typ}
         });
         quote! { #(#args)* }
     };
 
     let return_type = if let Some(ret) = func.return_type() {
-        let typ = to_rust_type(&ret);
+        let typ = to_rust_type(&ret, alloc);
         quote! { #typ}
     } else {
         quote! { () }
     };
 
-    let self_ = quote! {mut self};
+    let self_ = if is_constructor {
+        quote! {}
+    } else {
+        quote! {mut self}
+    };
 
-    let types = func.parameters.types().map(to_rust_type);
+    let types = func.parameters.types().map(|x| to_rust_type(x, alloc));
     let names = func.parameters.names().map(|name| {
         let name = name.as_ref().map_or(&SolIdent::new("s"), |v| v).to_string();
         format_ident!("{}", name)
     });
 
-    let state_mutability = if let Some(mutability) = func.attributes.mutability() {
-        match mutability {
-            syn_solidity::Mutability::Pure(_) => quote! {
-                Pure
-            },
-            syn_solidity::Mutability::View(_) => {
-                quote! {
-                    View
-                }
-            }
-            syn_solidity::Mutability::Payable(_) => {
-                quote! {
-                    Payable
-                }
-            }
-            syn_solidity::Mutability::Constant(_) => {
-                quote! {
-                    compile_error!("constant mutability no supported")
-                }
-            }
+    let state_mutability = if is_constructor {
+        quote! {
+            Payable
         }
     } else {
-        quote! {
-            NonPayable
+        if let Some(mutability) = func.attributes.mutability() {
+            match mutability {
+                syn_solidity::Mutability::Pure(_) => quote! {
+                    Pure
+                },
+                syn_solidity::Mutability::View(_) => {
+                    quote! {
+                        View
+                    }
+                }
+                syn_solidity::Mutability::Payable(_) => {
+                    quote! {
+                        Payable
+                    }
+                }
+                syn_solidity::Mutability::Constant(_) => {
+                    quote! {
+                        compile_error!("constant mutability no supported")
+                    }
+                }
+            }
+        } else {
+            quote! {
+                NonPayable
+            }
         }
     };
-    let t: Vec<TokenStream> = types.clone().collect();
+    let types: Vec<TokenStream> = types.collect();
+    let address = if is_constructor {
+        quote! {[0u8;20].into()}
+    } else {
+        quote! { self.address }
+    };
     let res = quote! {
         pub fn #func_name(#self_ #args) -> #contract_name<#state_mutability, ( #(#types),* ), #return_type, true> {
-            #contract_name::<#state_mutability, ( #(#t),* ), #return_type, true> {
-                address: self.address,
-                call_builder: CallBuilder::<#state_mutability, ( #(#t),* ), #return_type> {
+            #contract_name::<#state_mutability, ( #(#types),* ), #return_type, true> {
+                address: #address,
+                call_builder: CallBuilder::<#state_mutability, ( #(#types),* ), #return_type> {
                     payload: (#(#names),*),
                     selector: [#(#selector),*],
                     witness: #state_mutability::default(),
                     call_limits: Default::default(),
-                    _ret: core::marker::PhantomData,
+                    _ret: core::marker::PhantomData::<#return_type>,
                 }
             }
         }
     };
-    res
+    if is_constructor {
+        dbg!(format!("{}", &res));
+    }
+    (is_constructor, res)
 }
 
-fn to_rust_type(typ: &syn_solidity::Type) -> TokenStream {
+fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
+    if !alloc && typ.is_abi_dynamic() {
+        return quote! {
+            compile_error!("Enable alloc to support dynamic types")
+        };
+    }
     match typ {
         syn_solidity::Type::Address(_span, _payable) => quote! { Address },
         syn_solidity::Type::Bool(_) => quote! { bool },
@@ -143,10 +145,11 @@ fn to_rust_type(typ: &syn_solidity::Type) -> TokenStream {
         }
         syn_solidity::Type::Int(_, non_zero) => {
             let size = non_zero.unwrap().to_string();
+            let mut ident = format!("i{}", size);
             if size == "256" {
-                return quote! { compile_error!("I256 is not implemented") };
+                ident = capitalize(&ident);
             }
-            let ident = format_ident!("i{}", size);
+            let ident = format_ident!("{}", ident);
             quote! { #ident }
         }
         syn_solidity::Type::Uint(_, non_zero) => {
@@ -160,13 +163,13 @@ fn to_rust_type(typ: &syn_solidity::Type) -> TokenStream {
             quote! { #ident }
         }
         syn_solidity::Type::Tuple(type_tuple) => {
-            let args = type_tuple.types.iter().map(to_rust_type);
+            let args = type_tuple.types.iter().map(|x| to_rust_type(x, alloc));
             quote! {
                 (#(#args),*)
             }
         }
         syn_solidity::Type::Array(type_array) => {
-            let typ = to_rust_type(&type_array.ty);
+            let typ = to_rust_type(&type_array.ty, alloc);
             if let Some(size_lit) = type_array.size() {
                 quote! {
                   [#typ; #size_lit]
@@ -178,28 +181,19 @@ fn to_rust_type(typ: &syn_solidity::Type) -> TokenStream {
             }
         }
         typ @ syn_solidity::Type::Function(_) => {
-            let lit = format!(
-                "abi import for function types is not supported: {}",
-                typ.to_string()
-            );
+            let lit = format!("abi import for function types is not supported: {}", typ);
             quote! {
                 compile_error!(#lit);
             }
         }
         typ @ syn_solidity::Type::Mapping(_) => {
-            let lit = format!(
-                "abi import is not supported for type mapping: {}",
-                typ.to_string()
-            );
+            let lit = format!("abi import is not supported for type mapping: {}", typ);
             quote! {
                 compile_error!(#lit);
             }
         }
         syn_solidity::Type::Custom(_) => {
-            let lit = format!(
-                "abi import is not supported for custom types: {}",
-                typ.to_string()
-            );
+            let lit = format!("abi import is not supported for custom types: {}", typ);
             quote! {
                 compile_error!(#lit);
             }
@@ -207,11 +201,11 @@ fn to_rust_type(typ: &syn_solidity::Type) -> TokenStream {
     }
 }
 
-pub fn expand_to_module(file: &File) -> TokenStream {
+pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", capitalize(&item_contract.name.to_string()));
-            let repr = format!("\n{}\n", item_contract.to_string());
+            let repr = format!("\n{}\n", item_contract);
             let funcs = item_contract
                 .body
                 .iter()
@@ -227,7 +221,10 @@ pub fn expand_to_module(file: &File) -> TokenStream {
                     },
                     _ => None,
                 })
-                .map(|(x, is_constructor)| expand_function(contract_name.clone(), x, is_constructor));
+                .map(|(x, is_constructor)| expand_function(contract_name.clone(), x, is_constructor, alloc));
+            let (constructor, funcs): (Vec<(bool, TokenStream)>, Vec<(bool, TokenStream)>) = funcs.partition(|(is_constructor, _)| *is_constructor);
+            let funcs = funcs.into_iter().map(|x| x.1);
+            let constructor = constructor.into_iter().map(|x| x.1);
             Some(quote! {
                     #[doc = #repr]
                     #[derive(Clone, Copy)]
@@ -250,6 +247,9 @@ pub fn expand_to_module(file: &File) -> TokenStream {
                         }
                     }
 
+                    #(#constructor)*
+                    
+
                     impl<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> #contract_name<Mutability, Inputs, Outputs, true> {
                         /// Set call limits for the given call
                         pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
@@ -257,16 +257,30 @@ pub fn expand_to_module(file: &File) -> TokenStream {
                             self
                         }
                         /// Perform a call to another contract
-                        pub fn call_raw(&self, input: &mut [u8], output: &mut [u8]) -> Result<Outputs, CallError> {
-                            self.call_builder.call(self.address, input, output)
+                        pub fn call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, CallError> {
+                            self.call_builder.call(self.address, input_buf, output_buf)
                         }
                         /// Perform a delegated call to another contract
-                        pub fn delegate_call_raw(&self, input: &mut [u8], output: &mut [u8]) -> Result<Outputs, CallError> {
-                            self.call_builder.delegate_call(self.address, input, output)
+                        pub fn delegate_call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, CallError> {
+                            self.call_builder.delegate_call(self.address, input_buf, output_buf)
                         }
                     }
 
                     impl<Inputs: SolEncode, Outputs: SolDecode> #contract_name<Payable, Inputs, Outputs, true> {
+                        /// Instantiate another contract by it's code_hash
+                        pub fn instantiate_raw(&self, code_hash: &[u8;32], value: u128, limits: RefTimeAndProofSizeLimits, salt: Option<&[u8;32]>, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<(Address, Outputs), CallError> {
+                            let mut address_buf = [0u8; 20];
+                            let result = self.call_builder.instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf,
+                                &mut address_buf,
+                                output_buf,
+                                )?;
+                            Ok((address_buf.into(), result))
+                        }
                         /// Set the transfer `.value` of the call
                         pub fn set_value(mut self, value: u128) -> Self {
                             self.call_builder = self.call_builder.set_value(value);
@@ -302,7 +316,7 @@ mod test {
     use quote::ToTokens;
     use syn::parse::{Parse, Parser};
 
-    use super::load_json_abi;
+    use super::parse::load_json_abi;
     fn test_abi_contract_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -321,7 +335,7 @@ mod test {
             &test_abi_contract_dir().join(path),
         )
         .unwrap();
-        let tokens = expand_to_module(&file).to_token_stream();
+        let tokens = expand_to_module(&file, true).to_token_stream();
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
     }
 
@@ -397,7 +411,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<View, (U256), (bool)> {
                             payload: (val),
-                            selector: [156u8, 43u8, 111u8, 192u8],
+                            selector: [122u8, 56u8, 249u8, 235u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -635,7 +649,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (Address), ()> {
                             payload: (val),
-                            selector: [237u8, 18u8, 243u8, 6u8],
+                            selector: [227u8, 0u8, 129u8, 160u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -647,7 +661,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (bool), ()> {
                             payload: (val),
-                            selector: [13u8, 78u8, 4u8, 145u8],
+                            selector: [30u8, 38u8, 253u8, 51u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -662,7 +676,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, ([u8; 32usize]), ()> {
                             payload: (val),
-                            selector: [217u8, 75u8, 69u8, 66u8],
+                            selector: [194u8, 177u8, 42u8, 115u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -674,7 +688,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (u128), ()> {
                             payload: (val),
-                            selector: [106u8, 203u8, 223u8, 247u8],
+                            selector: [211u8, 14u8, 187u8, 114u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -686,7 +700,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (u16), ()> {
                             payload: (val),
-                            selector: [199u8, 21u8, 164u8, 153u8],
+                            selector: [38u8, 78u8, 92u8, 151u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -698,7 +712,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (U256), ()> {
                             payload: (val),
-                            selector: [21u8, 89u8, 64u8, 56u8],
+                            selector: [213u8, 98u8, 193u8, 230u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -710,7 +724,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (u32), ()> {
                             payload: (val),
-                            selector: [140u8, 193u8, 61u8, 176u8],
+                            selector: [188u8, 72u8, 142u8, 235u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -722,7 +736,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (u64), ()> {
                             payload: (val),
-                            selector: [247u8, 41u8, 141u8, 56u8],
+                            selector: [50u8, 201u8, 139u8, 121u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -734,7 +748,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<NonPayable, (u8), ()> {
                             payload: (val),
-                            selector: [148u8, 72u8, 210u8, 250u8],
+                            selector: [23u8, 185u8, 13u8, 148u8],
                             witness: NonPayable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -846,7 +860,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<View, (U256), (U256)> {
                             payload: (val),
-                            selector: [224u8, 131u8, 145u8, 91u8],
+                            selector: [172u8, 55u8, 238u8, 187u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -949,7 +963,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<View, ((U256, bool)), (U256)> {
                             payload: (data),
-                            selector: [100u8, 29u8, 67u8, 90u8],
+                            selector: [19u8, 194u8, 222u8, 227u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -964,7 +978,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<View, ([U256; 3usize]), (U256)> {
                             payload: (scores),
-                            selector: [74u8, 80u8, 202u8, 70u8],
+                            selector: [7u8, 166u8, 156u8, 213u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -1100,7 +1114,7 @@ mod test {
                             (U256),
                         > {
                             payload: (b),
-                            selector: [43u8, 90u8, 36u8, 201u8],
+                            selector: [128u8, 54u8, 240u8, 103u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -1115,7 +1129,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<View, (alloc::alloc::String), (U256)> {
                             payload: (s),
-                            selector: [159u8, 121u8, 99u8, 203u8],
+                            selector: [101u8, 193u8, 154u8, 240u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -1130,7 +1144,7 @@ mod test {
                         address: self.address,
                         call_builder: CallBuilder::<View, (alloc::vec::Vec<U256>), (U256)> {
                             payload: (arr),
-                            selector: [148u8, 196u8, 200u8, 237u8],
+                            selector: [30u8, 42u8, 234u8, 6u8],
                             witness: View::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
@@ -1231,6 +1245,114 @@ mod test {
                             payload: (),
                             selector: [137u8, 61u8, 32u8, 232u8],
                             witness: View::default(),
+                            call_limits: Default::default(),
+                            _ret: core::marker::PhantomData,
+                        },
+                    }
+                }
+            }
+            impl Example<Pure, (), (), false> {
+                /// Create api for the contract from an address
+                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                    Self {
+                        address,
+                        call_builder: CallBuilder::<Pure, (), ()>::default(),
+                    }
+                }
+            }
+            impl<
+                Mutability: StateMutability,
+                Inputs: SolEncode,
+                Outputs: SolDecode,
+            > Example<Mutability, Inputs, Outputs, true> {
+                /// Set call limits for the given call
+                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                    self.call_builder = self.call_builder.set_call_limits(limits);
+                    self
+                }
+                /// Perform a call to another contract
+                pub fn call_raw(
+                    &self,
+                    input: &mut [u8],
+                    output: &mut [u8],
+                ) -> Result<Outputs, CallError> {
+                    self.call_builder.call(self.address, input, output)
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call_raw(
+                    &self,
+                    input: &mut [u8],
+                    output: &mut [u8],
+                ) -> Result<Outputs, CallError> {
+                    self.call_builder.delegate_call(self.address, input, output)
+                }
+            }
+            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Set the transfer `.value` of the call
+                pub fn set_value(mut self, value: u128) -> Self {
+                    self.call_builder = self.call_builder.set_value(value);
+                    self
+                }
+            }
+        "#]]
+        .assert_eq(&file);
+    }
+
+    #[test]
+    fn constructor() {
+        let file = load(
+            "../../../crates/pvm-contract-macros/tests/test_abi_contract/abi_constructor_with_params.json",
+        );
+        expect_test::expect![[r#"
+            use pvm_contract_types::*;
+            use pvm_contract_core::call::*;
+            /**
+            interface example {
+                constructor(address owner, uint256 supply) payable;
+                function balanceOf(address account) external payable returns (uint256);
+            }
+            */
+            #[derive(Clone, Copy)]
+            pub struct Example<
+                Mutability: StateMutability,
+                Inputs: SolEncode,
+                Outputs: SolDecode,
+                const INITIALIZED: bool,
+            > {
+                address: Address,
+                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+            }
+            impl<
+                Mutability: StateMutability,
+                Inputs: SolEncode,
+                Outputs: SolDecode,
+            > Example<Mutability, Inputs, Outputs, false> {
+                pub fn new(
+                    mut self,
+                    owner: Address,
+                    supply: U256,
+                ) -> Example<Payable, (Address, U256), (), true> {
+                    Example::<Payable, (Address, U256), (), true> {
+                        address: self.address,
+                        call_builder: CallBuilder::<Payable, (Address, U256), ()> {
+                            payload: (owner, supply),
+                            selector: [0u8, 0u8, 0u8, 0u8],
+                            witness: Payable::default(),
+                            call_limits: Default::default(),
+                            _ret: core::marker::PhantomData,
+                        },
+                    }
+                }
+                pub fn balance_of(
+                    mut self,
+                    account: Address,
+                ) -> Example<Payable, (Address), (U256), true> {
+                    Example::<Payable, (Address), (U256), true> {
+                        address: self.address,
+                        call_builder: CallBuilder::<Payable, (Address), (U256)> {
+                            payload: (account),
+                            selector: [112u8, 160u8, 130u8, 49u8],
+                            witness: Payable::default(),
                             call_limits: Default::default(),
                             _ret: core::marker::PhantomData,
                         },

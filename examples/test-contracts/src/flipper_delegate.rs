@@ -3,21 +3,19 @@
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 
 pvm_contract_macros::abi_import!(
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.0;
-
-interface flipper {
-    function flip() external;
-    function get() external view returns (bool);
-}
+    alloc = true,
+    flipper,
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/target/flipper.release.abi.json"
+    )
 );
 
 #[pvm_contract_macros::contract("DelegateFlipper.sol", allocator = "pico")]
-mod flipper {
+mod flipper_delegate {
+    use super::*;
     use pvm_contract_core::call::CallError;
     use pvm_contract_types::*;
-
-    use super::*;
 
     #[derive(Debug, Clone, Copy)]
     pub enum Error {

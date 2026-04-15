@@ -735,7 +735,7 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
-    let file = parse_macro_input!(input as syn_solidity::File);
+    let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
 
-    abi_import::expand_to_module(&file).into()
+    abi_import::expand_to_module(&file, alloc).into()
 }

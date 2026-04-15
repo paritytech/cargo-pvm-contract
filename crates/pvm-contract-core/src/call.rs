@@ -17,6 +17,8 @@ pub enum CallError {
     TransferFailed,
     /// The subcall ran out of weight or storage deposit.
     OutOfResources,
+    /// Input buffer too small
+    InputBufTooSmall,
 }
 
 impl AsRef<[u8]> for CallError {
@@ -95,6 +97,18 @@ impl StateMutability for Pure {
     }
 }
 
+/// Describes call limtis
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RefTimeAndProofSizeLimits {
+    /// How much ref_time to devote for the execution. u64::MAX = use all.
+    pub ref_time_limit: u64,
+    /// How much proof_size to devote for the execution. u64::MAX = use all.
+    pub proof_size_limit: u64,
+    /// The storage deposit limit for instantiation.
+    /// Passing u8::MAX means setting no specific limit for the call, which implies storage usage up to the limit of the parent call.
+    pub deposit_limit: [u8; 32],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 /// Describes call limtis
 /// default is CallLimits::GasLimit(u64::MAX)
@@ -102,15 +116,7 @@ pub enum CallLimits {
     /// Gas limit of the call
     GasLimit(u64),
     /// Native ref_time_limit, proof_time_limit and deposit_limit
-    RefTimeAndProofSize {
-        /// How much ref_time to devote for the execution. u64::MAX = use all.
-        ref_time_limit: u64,
-        /// How much proof_size to devote for the execution. u64::MAX = use all.
-        proof_size_limit: u64,
-        /// The storage deposit limit for instantiation.
-        /// Passing u8::MAX means setting no specific limit for the call, which implies storage usage up to the limit of the parent call.
-        deposit_limit: [u8; 32],
-    },
+    RefTimeAndProofSize(RefTimeAndProofSizeLimits),
 }
 
 impl Default for CallLimits {
@@ -161,75 +167,111 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     pub fn delegate_call(
         &self,
         address: Address,
-        input: &mut [u8],
-        output: &mut [u8],
+        input_buf: &mut [u8],
+        output_buf: &mut [u8],
     ) -> Result<R, CallError> {
+        if input_buf.len() < 4 + self.payload.encode_len() {
+            return Err(CallError::InputBufTooSmall);
+        }
         let call_flags = CallFlags::empty();
-        input[..4].copy_from_slice(&self.selector[..]);
-        self.payload.encode_to(&mut input[4..]);
+        input_buf[..4].copy_from_slice(&self.selector[..]);
+        self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => api::delegate_call_evm(
                 call_flags,
                 &address.0,
                 limit,
-                &input,
-                Some(&mut output.as_mut()),
+                &input_buf,
+                Some(&mut output_buf.as_mut()),
             ),
-            CallLimits::RefTimeAndProofSize {
+            CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
                 proof_size_limit,
                 deposit_limit,
-            } => api::delegate_call(
+            }) => api::delegate_call(
                 call_flags,
                 &address.0,
                 ref_time_limit,
                 proof_size_limit,
                 &deposit_limit,
-                &input,
-                Some(&mut output.as_mut()),
+                &input_buf,
+                Some(&mut output_buf.as_mut()),
             ),
         }
-        .map_err(|error| convert_error(error, &output))
-        .map(|_| R::decode(&output))
+        .map_err(|error| convert_error(error, &output_buf))
+        .map(|_| R::decode(&output_buf))
+    }
+
+    /// Call a given contract
+    pub fn instantiate(
+        &self,
+        limits: RefTimeAndProofSizeLimits,
+        value: u128,
+        code_hash: &[u8; 32],
+        salt: Option<&[u8; 32]>,
+        input_buf: &mut [u8],
+        address_buf: &mut [u8; 20],
+        output_buf: &mut [u8],
+    ) -> Result<R, CallError> {
+        if input_buf.len() < 32 + self.payload.encode_len() {
+            return Err(CallError::InputBufTooSmall);
+        }
+        input_buf[..32].copy_from_slice(&code_hash[..]);
+        self.payload.encode_to(&mut input_buf[32..]);
+        api::instantiate(
+            limits.ref_time_limit,
+            limits.proof_size_limit,
+            &limits.deposit_limit,
+            &U256::from(value).to_be_bytes(),
+            &input_buf,
+            Some(address_buf),
+            Some(&mut output_buf.as_mut()),
+            salt,
+        )
+        .map_err(|error| convert_error(error, &output_buf))
+        .map(|_| R::decode(&output_buf))
     }
 
     /// Call a given contract
     pub fn call(
         &self,
         address: Address,
-        input: &mut [u8],
-        output: &mut [u8],
+        input_buf: &mut [u8],
+        output_buf: &mut [u8],
     ) -> Result<R, CallError> {
+        if input_buf.len() < 4 + self.payload.encode_len() {
+            return Err(CallError::InputBufTooSmall);
+        }
         let call_flags = self.witness.call_flags();
         let value = self.witness.value();
-        input[..4].copy_from_slice(&self.selector[..]);
-        self.payload.encode_to(&mut input[4..]);
+        input_buf[..4].copy_from_slice(&self.selector[..]);
+        self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => api::call_evm(
                 call_flags,
                 &address.0,
                 limit,
                 &U256::from(value).to_be_bytes(),
-                &input,
-                Some(&mut output.as_mut()),
+                &input_buf,
+                Some(&mut output_buf.as_mut()),
             ),
-            CallLimits::RefTimeAndProofSize {
+            CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
                 proof_size_limit,
                 deposit_limit,
-            } => api::call(
+            }) => api::call(
                 call_flags,
                 &address.0,
                 ref_time_limit,
                 proof_size_limit,
                 &deposit_limit,
                 &U256::from(value).to_be_bytes(),
-                &input,
-                Some(&mut output.as_mut()),
+                &input_buf,
+                Some(&mut output_buf.as_mut()),
             ),
         }
-        .map_err(|error| convert_error(error, &output))
-        .map(|_| R::decode(&output))
+        .map_err(|error| convert_error(error, &output_buf))
+        .map(|_| R::decode(&output_buf))
     }
 }
 

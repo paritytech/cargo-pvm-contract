@@ -517,9 +517,7 @@ impl SolEncode for () {
 }
 
 impl SolDecode for () {
-    fn decode_at(_input: &[u8], _offset: usize) -> Self {
-        ()
-    }
+    fn decode_at(_input: &[u8], _offset: usize) -> Self {}
 }
 
 // ---------------------------------------------------------------------------
