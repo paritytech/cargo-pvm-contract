@@ -10,14 +10,14 @@ interface Flipper {
     function get() external view returns (bool);
 }
 });
+use errors::Error;
 
 #[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_instantiate {
 
     use pallet_revive_uapi::HostFnImpl as api;
-    use pvm_contract_core::call::{CallError, RefTimeAndProofSizeLimits};
+    use pvm_contract_core::call::RefTimeAndProofSizeLimits;
     use pvm_contract_types::*;
-    type Error = pvm_contract_types::EmptyError;
 
     use super::*;
 
@@ -27,7 +27,7 @@ mod flipper_instantiate {
     }
 
     #[pvm_contract_macros::method]
-    pub fn call_flipper(addr: Address) -> Result<(), CallError> {
+    pub fn call_flipper(addr: Address) -> Result<(), Error> {
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
         let flip = flipper.flip();

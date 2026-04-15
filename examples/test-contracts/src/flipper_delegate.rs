@@ -10,12 +10,12 @@ pvm_contract_macros::abi_import!(
         "/target/flipper.release.abi.json"
     )
 );
+use errors::Error;
 
 #[pvm_contract_macros::contract("DelegateFlipper.sol", allocator = "pico")]
 mod flipper_delegate {
     use super::*;
-    use pvm_contract_core::call::CallError;
-    type Error = pvm_contract_types::EmptyError;
+
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
 
     #[pvm_contract_macros::constructor]
@@ -26,7 +26,7 @@ mod flipper_delegate {
     }
 
     #[pvm_contract_macros::method]
-    pub fn delegate_flipper(addr: Address) -> Result<(), CallError> {
+    pub fn delegate_flipper(addr: Address) -> Result<(), Error> {
         let flip = Flipper::from_address(addr).flip();
         let mut input = [0u8; 512];
         let mut output = [0u8; 512];

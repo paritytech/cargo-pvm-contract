@@ -268,18 +268,18 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                             self
                         }
                         /// Perform a call to another contract
-                        pub fn call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, CallError> {
-                            self.call_builder.call(self.address, input_buf, output_buf)
+                        pub fn call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, errors::Error> {
+                            self.call_builder.call(self.address, input_buf, output_buf).map_err(|e| errors::Error::from(e))
                         }
                         /// Perform a delegated call to another contract
-                        pub fn delegate_call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, CallError> {
-                            self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                        pub fn delegate_call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, errors::Error> {
+                            self.call_builder.delegate_call(self.address, input_buf, output_buf).map_err(|e| errors::Error::from(e))
                         }
                     }
 
                     impl<Inputs: SolEncode, Outputs: SolDecode> #contract_name<Payable, Inputs, Outputs, true> {
                         /// Instantiate another contract by it's code_hash
-                        pub fn instantiate_raw(&self, code_hash: &[u8;32], value: u128, limits: RefTimeAndProofSizeLimits, salt: Option<&[u8;32]>, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<(Address, Outputs), CallError> {
+                        pub fn instantiate_raw(&self, code_hash: &[u8;32], value: u128, limits: RefTimeAndProofSizeLimits, salt: Option<&[u8;32]>, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<(Address, Outputs), errors::Error> {
                             let mut address_buf = [0u8; 20];
                             let result = self.call_builder.instantiate(
                                 limits,
@@ -289,7 +289,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                                 input_buf,
                                 &mut address_buf,
                                 output_buf,
-                                )?;
+                                ).map_err(|e| errors::Error::from(e))?;
                             Ok((address_buf.into(), result))
                         }
                         /// Set the transfer `.value` of the call
@@ -315,6 +315,32 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     quote! {
         use pvm_contract_types::*;
         use pvm_contract_core::call::*;
+
+        pub mod errors {
+            use super::*; 
+
+            #[derive(pvm_contract_macros::SolError)]
+            struct CalldataTooLarge;
+
+            #[derive(pvm_contract_macros::SolError)]
+            struct InvalidCalldata;
+
+            #[derive(pvm_contract_macros::SolError)]
+            struct NoSelector;
+
+            #[derive(pvm_contract_macros::SolError)]
+            struct UnknownSelector;
+
+            sol_revert_enum! {
+                pub enum Error {
+                    CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata),
+                    NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector),
+                    CallError(CallError),
+                }
+            }
+        }
 
         #(#modules)*
     }
@@ -357,10 +383,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 function add(uint256 a, uint256 b) external view returns (uint256);
                 function getCounter() external view returns (uint256);
                 function increment() external;
@@ -481,16 +527,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -503,7 +551,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -515,7 +563,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -534,10 +583,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 function getAddress() external view returns (address);
                 function getBool() external view returns (bool);
                 function getBytes32() external view returns (bytes32);
@@ -820,16 +889,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -842,7 +913,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -854,7 +925,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -873,10 +945,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 function getPair() external view returns (uint256, bool);
                 function getTriple() external view returns (uint256, address, bool);
                 function identity(uint256 val) external view returns (uint256);
@@ -958,16 +1050,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -980,7 +1074,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -992,7 +1086,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1011,10 +1106,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 function getFixedArray() external view returns (uint256[3] memory);
                 function processTuple((uint256,bool) data) external view returns (uint256);
                 function sumFixedArray(uint256[3] memory scores) external view returns (uint256);
@@ -1102,16 +1217,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1124,7 +1241,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -1136,7 +1253,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1155,10 +1273,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 function echoBytes() external view returns (bytes memory);
                 function echoString() external view returns (string memory);
                 function getArray() external view returns (uint256[] memory);
@@ -1294,16 +1432,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1316,7 +1456,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -1328,7 +1468,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1347,10 +1488,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 function getInitialSupply() external view returns (uint256);
                 function getOwner() external view returns (address);
             }
@@ -1419,16 +1580,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1441,7 +1604,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -1453,7 +1616,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call
@@ -1474,10 +1638,30 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
+            pub mod errors {
+                use super::*;
+                #[derive(pvm_contract_macros::SolError)]
+                struct CalldataTooLarge;
+                #[derive(pvm_contract_macros::SolError)]
+                struct InvalidCalldata;
+                #[derive(pvm_contract_macros::SolError)]
+                struct NoSelector;
+                #[derive(pvm_contract_macros::SolError)]
+                struct UnknownSelector;
+                sol_revert_enum! {
+                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
+                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
+                    UnknownSelector(UnknownSelector), CallError(CallError), }
+                }
+            }
             #[derive(Clone, Copy)]
             /// the code is derived from this interface
             /**```solidity
             interface example {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error UnknownSelector();
                 constructor(address owner, uint256 supply) payable;
                 function balanceOf(address account) external payable returns (uint256);
             }
@@ -1555,16 +1739,18 @@ mod test {
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder.call(self.address, input_buf, output_buf).map_err(Into::into)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                ) -> Result<Outputs, errors::Error> {
+                    self.call_builder
+                        .delegate_call(self.address, input_buf, output_buf)
+                        .map_err(Into::into)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
@@ -1577,7 +1763,7 @@ mod test {
                     salt: Option<&[u8; 32]>,
                     input_buf: &mut [u8],
                     output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
+                ) -> Result<(Address, Outputs), errors::Error> {
                     let mut address_buf = [0u8; 20];
                     let result = self
                         .call_builder
@@ -1589,7 +1775,8 @@ mod test {
                             input_buf,
                             &mut address_buf,
                             output_buf,
-                        )?;
+                        )
+                        .map_err(Into::into)?;
                     Ok((address_buf.into(), result))
                 }
                 /// Set the transfer `.value` of the call

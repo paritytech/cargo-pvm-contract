@@ -9,15 +9,14 @@ interface Flipper {
     function get() external view returns (bool);
 }
 });
+use errors::Error;
 
 #[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_call_alloy {
 
-    use pvm_contract_core::call::CallError;
     use pvm_contract_types::*;
 
     use super::*;
-    type Error = pvm_contract_types::EmptyError;
 
     #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
@@ -25,7 +24,7 @@ mod flipper_call_alloy {
     }
 
     #[pvm_contract_macros::method]
-    pub fn call_flipper(addr: Address) -> Result<(), CallError> {
+    pub fn call_flipper(addr: Address) -> Result<(), Error> {
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
         let flip = flipper.flip();

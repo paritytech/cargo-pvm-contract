@@ -19,14 +19,7 @@ pub enum CallError {
     OutOfResources,
     /// Input buffer too small
     InputBufTooSmall,
-    /// Calldata exceeds the fixed buffer size (no-alloc mode only).
-    CalldataTooLarge,
-    /// Calldata is shorter than the minimum required by the dispatched method.
-    InvalidCalldata,
-    /// Calldata is shorter than 4 bytes (no selector present).
-    NoSelector,
-    /// The 4-byte selector does not match any method in the contract.
-    UnknownSelector,
+
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
     GenericError,
@@ -59,26 +52,6 @@ impl SolError for CallError {
                 res.encode_to(buf);
                 return res.encode_len();
             }
-            CallError::CalldataTooLarge => {
-                let res = U256::from(4);
-                res.encode_to(buf);
-                return res.encode_len();
-            }
-            CallError::InvalidCalldata => {
-                let res = U256::from(5);
-                res.encode_to(buf);
-                return res.encode_len();
-            }
-            CallError::NoSelector => {
-                let res = U256::from(6);
-                res.encode_to(buf);
-                return res.encode_len();
-            }
-            CallError::UnknownSelector => {
-                let res = U256::from(7);
-                res.encode_to(buf);
-                return res.encode_len();
-            }
             CallError::GenericError => {
                 let res = U256::from(7);
                 res.encode_to(buf);
@@ -92,22 +65,10 @@ impl SolError for CallError {
     }
 }
 
-fn convert_error(value: ReturnErrorCode, buf: &[u8]) -> CallError {
+fn convert_error(value: ReturnErrorCode) -> CallError {
     match value {
         ReturnErrorCode::CalleeTrapped => CallError::CalleeTrapped,
-        ReturnErrorCode::CalleeReverted => {
-            if buf.len() >= 4 {
-                match &buf[..4] {
-                    buf @ _ if buf == &CALLDATA_TOO_LARGE => CallError::CalldataTooLarge,
-                    buf @ _ if buf == &INVALID_CALLDATA => CallError::InvalidCalldata,
-                    buf @ _ if buf == &NO_SELECTOR => CallError::NoSelector,
-                    buf @ _ if buf == &UNKNOWN_SELECTOR => CallError::UnknownSelector,
-                    _ => CallError::GenericError,
-                }
-            } else {
-                CallError::GenericError
-            }
-        }
+        ReturnErrorCode::CalleeReverted => CallError::GenericError,
         ReturnErrorCode::TransferFailed => CallError::TransferFailed,
         ReturnErrorCode::OutOfResources => CallError::OutOfResources,
         _ => panic!("shouldn't happen"),
@@ -269,7 +230,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 Some(&mut output_buf.as_mut()),
             ),
         }
-        .map_err(|error| convert_error(error, &output_buf))
+        .map_err(|error| convert_error(error))
         .map(|_| R::decode(&output_buf))
     }
 
@@ -299,7 +260,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
             Some(&mut output_buf.as_mut()),
             salt,
         )
-        .map_err(|error| convert_error(error, &output_buf))
+        .map_err(|error| convert_error(error))
         .map(|_| R::decode(&output_buf))
     }
 
@@ -341,7 +302,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 Some(&mut output_buf.as_mut()),
             ),
         }
-        .map_err(|error| convert_error(error, &output_buf))
+        .map_err(|error| convert_error(error))
         .map(|_| R::decode(&output_buf))
     }
 }
