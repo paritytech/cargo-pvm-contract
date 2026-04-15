@@ -60,7 +60,7 @@ mod flipper_instantiate {
         // test deployed
         let mut code_hash = [0; 32];
         let _ = api::code_hash(&addr.0, &mut code_hash);
-        let f = new_Flipper();
+        let f = flipper::new_flipper();
         let deposit_limit = ruint::aliases::U256::from(u128::MAX);
         let deposit_limit = deposit_limit.to_be_bytes();
         let (addr, _) = f.instantiate_raw(

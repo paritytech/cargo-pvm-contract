@@ -13,7 +13,7 @@ pub fn expand_function(
     alloc: bool,
 ) -> (bool, TokenStream) {
     let func_name = if is_constructor {
-        format_ident!("{}_{}", "new",  contract_name)
+        format_ident!("{}_{}", "new",  to_snake_case(&contract_name.to_string()))
     } else {
         format_ident!("{}", to_snake_case(&func.name().to_string()))
     };
@@ -40,9 +40,9 @@ pub fn expand_function(
                 .unwrap_or(&SolIdent::new("s"))
                 .to_string();
             let name = format_ident!("{}", to_snake_case(&name));
-            quote! {, #name: #typ}
+            quote! {#name: #typ}
         });
-        quote! { #(#args)* }
+        quote! { #(#args),* }
     };
 
     let return_type = if let Some(ret) = func.return_type() {
@@ -55,7 +55,7 @@ pub fn expand_function(
     let self_ = if is_constructor {
         quote! {}
     } else {
-        quote! {mut self}
+        quote! {mut self, }
     };
 
     let types = func.parameters.types().map(|x| to_rust_type(x, alloc));
@@ -111,14 +111,11 @@ pub fn expand_function(
                     selector: [#(#selector),*],
                     witness: #state_mutability::default(),
                     call_limits: Default::default(),
-                    _ret: core::marker::PhantomData::<#return_type>,
+                    _ret: core::marker::PhantomData,
                 }
             }
         }
     };
-    if is_constructor {
-        dbg!(format!("{}", &res));
-    }
     (is_constructor, res)
 }
 
@@ -205,7 +202,9 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", capitalize(&item_contract.name.to_string()));
-            let repr = format!("\n{}\n", item_contract);
+            let contract_module = format_ident!("{}", to_snake_case(&item_contract.name.to_string()));
+
+            let repr = format!("```solidity\n{}\n```", item_contract);
             let funcs = item_contract
                 .body
                 .iter()
@@ -224,10 +223,22 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                 .map(|(x, is_constructor)| expand_function(contract_name.clone(), x, is_constructor, alloc));
             let (constructor, funcs): (Vec<(bool, TokenStream)>, Vec<(bool, TokenStream)>) = funcs.partition(|(is_constructor, _)| *is_constructor);
             let funcs = funcs.into_iter().map(|x| x.1);
-            let constructor = constructor.into_iter().map(|x| x.1);
+            let constructor: Vec<TokenStream> = constructor.into_iter().map(|x| x.1).collect();
+            let constructor = if constructor.is_empty() {
+                quote! {}
+            } else {
+                quote! {
+                    pub mod #contract_module {
+                        use super::*;
+                        #(#constructor)*
+                    }
+                }
+            };
             Some(quote! {
-                    #[doc = #repr]
                     #[derive(Clone, Copy)]
+                    /// the code is derived from this interface
+                    #[doc = #repr]
+                    ///
                     pub struct #contract_name<Mutability: StateMutability, Inputs: SolEncode,  Outputs: SolDecode, const INITIALIZED: bool> {
                         address: Address,
                         call_builder: CallBuilder<Mutability, Inputs, Outputs>
@@ -247,7 +258,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                         }
                     }
 
-                    #(#constructor)*
+                    #constructor
                     
 
                     impl<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> #contract_name<Mutability, Inputs, Outputs, true> {
@@ -304,6 +315,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     quote! {
         use pvm_contract_types::*;
         use pvm_contract_core::call::*;
+
         #(#modules)*
     }
 }
@@ -345,7 +357,9 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 function add(uint256 a, uint256 b) external view returns (uint256);
                 function getCounter() external view returns (uint256);
@@ -354,8 +368,8 @@ mod test {
                 function mul(uint256 a, uint256 b) external view returns (uint256);
                 function reset() external;
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -465,21 +479,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
@@ -496,7 +534,9 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 function getAddress() external view returns (address);
                 function getBool() external view returns (bool);
@@ -517,8 +557,8 @@ mod test {
                 function setU64(uint64 val) external;
                 function setU8(uint8 val) external;
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -778,21 +818,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
@@ -809,14 +873,16 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 function getPair() external view returns (uint256, bool);
                 function getTriple() external view returns (uint256, address, bool);
                 function identity(uint256 val) external view returns (uint256);
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -890,21 +956,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
@@ -921,14 +1011,16 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 function getFixedArray() external view returns (uint256[3] memory);
                 function processTuple((uint256,bool) data) external view returns (uint256);
                 function sumFixedArray(uint256[3] memory scores) external view returns (uint256);
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -1008,21 +1100,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
@@ -1039,7 +1155,9 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 function echoBytes() external view returns (bytes memory);
                 function echoString() external view returns (string memory);
@@ -1048,8 +1166,8 @@ mod test {
                 function getStringLength(string memory s) external view returns (uint256);
                 function sumArray(uint256[] memory arr) external view returns (uint256);
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -1174,21 +1292,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
@@ -1205,13 +1347,15 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 function getInitialSupply() external view returns (uint256);
                 function getOwner() external view returns (address);
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -1273,21 +1417,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
@@ -1306,13 +1474,15 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            /**
+            #[derive(Clone, Copy)]
+            /// the code is derived from this interface
+            /**```solidity
             interface example {
                 constructor(address owner, uint256 supply) payable;
                 function balanceOf(address account) external payable returns (uint256);
             }
-            */
-            #[derive(Clone, Copy)]
+            ```*/
+            ///
             pub struct Example<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -1327,22 +1497,6 @@ mod test {
                 Inputs: SolEncode,
                 Outputs: SolDecode,
             > Example<Mutability, Inputs, Outputs, false> {
-                pub fn new(
-                    mut self,
-                    owner: Address,
-                    supply: U256,
-                ) -> Example<Payable, (Address, U256), (), true> {
-                    Example::<Payable, (Address, U256), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<Payable, (Address, U256), ()> {
-                            payload: (owner, supply),
-                            selector: [0u8, 0u8, 0u8, 0u8],
-                            witness: Payable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
                 pub fn balance_of(
                     mut self,
                     account: Address,
@@ -1368,6 +1522,24 @@ mod test {
                     }
                 }
             }
+            pub mod example {
+                use super::*;
+                pub fn new_example(
+                    owner: Address,
+                    supply: U256,
+                ) -> Example<Payable, (Address, U256), (), true> {
+                    Example::<Payable, (Address, U256), (), true> {
+                        address: [0u8; 20].into(),
+                        call_builder: CallBuilder::<Payable, (Address, U256), ()> {
+                            payload: (owner, supply),
+                            selector: [0u8, 0u8, 0u8, 0u8],
+                            witness: Payable::default(),
+                            call_limits: Default::default(),
+                            _ret: core::marker::PhantomData,
+                        },
+                    }
+                }
+            }
             impl<
                 Mutability: StateMutability,
                 Inputs: SolEncode,
@@ -1381,21 +1553,45 @@ mod test {
                 /// Perform a call to another contract
                 pub fn call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.call(self.address, input, output)
+                    self.call_builder.call(self.address, input_buf, output_buf)
                 }
                 /// Perform a delegated call to another contract
                 pub fn delegate_call_raw(
                     &self,
-                    input: &mut [u8],
-                    output: &mut [u8],
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
                 ) -> Result<Outputs, CallError> {
-                    self.call_builder.delegate_call(self.address, input, output)
+                    self.call_builder.delegate_call(self.address, input_buf, output_buf)
                 }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate_raw(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                    input_buf: &mut [u8],
+                    output_buf: &mut [u8],
+                ) -> Result<(Address, Outputs), CallError> {
+                    let mut address_buf = [0u8; 20];
+                    let result = self
+                        .call_builder
+                        .instantiate(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf,
+                            &mut address_buf,
+                            output_buf,
+                        )?;
+                    Ok((address_buf.into(), result))
+                }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
                     self.call_builder = self.call_builder.set_value(value);
