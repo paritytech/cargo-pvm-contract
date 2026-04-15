@@ -13,7 +13,7 @@ pub fn expand_function(
     alloc: bool,
 ) -> (bool, TokenStream) {
     let func_name = if is_constructor {
-        format_ident!("{}_{}", "new",  to_snake_case(&contract_name.to_string()))
+        format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
         format_ident!("{}", to_snake_case(&func.name().to_string()))
     };
@@ -259,7 +259,6 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     }
 
                     #constructor
-                    
 
                     impl<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> #contract_name<Mutability, Inputs, Outputs, true> {
                         /// Set call limits for the given call
@@ -317,7 +316,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
         use pvm_contract_core::call::*;
 
         pub mod errors {
-            use super::*; 
+            use super::*;
 
             #[derive(pvm_contract_macros::SolError)]
             struct CalldataTooLarge;
