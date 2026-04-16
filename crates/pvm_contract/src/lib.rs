@@ -18,7 +18,7 @@ pub use pallet_revive_uapi::{CallFlags, HostFn, HostFnImpl as api, ReturnFlags, 
 
 pub use parity_scale_codec::{Encode, Decode};
 
-pub use abi::{SolAbi, compute_selector};
+pub use abi::{Bytes, SolAbi, compute_selector};
 
 pub use polkavm_derive;
 pub use const_format;

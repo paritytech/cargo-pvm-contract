@@ -97,7 +97,7 @@ pub fn generate_decode(
                 quote! {{
                     let dyn_offset = pvm_contract::U256::from_be_slice(&#data_expr[#offset_lit..#offset_lit + 32]).as_limbs()[0] as usize;
                     let length = pvm_contract::U256::from_be_slice(&#data_expr[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
-                    #data_expr[dyn_offset + 32..dyn_offset + 32 + length].to_vec()
+                    pvm_contract::Bytes(#data_expr[dyn_offset + 32..dyn_offset + 32 + length].to_vec())
                 }}
             } else {
                 quote! {{

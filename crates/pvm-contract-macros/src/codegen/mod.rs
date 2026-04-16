@@ -179,9 +179,80 @@ pub(super) fn generate_resolved_return_parts(
 
 /// If `ty` is `Option<Inner>`, return `Some(Inner)`. Otherwise `None`.
 fn unwrap_option_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    unwrap_single_generic(ty, "Option")
+}
+
+/// Emit a const-expression `&'static str` token stream that resolves to the
+/// Solidity canonical type name for `ty`, recursively unwrapping `Option<T>`
+/// and `Vec<T>` (their blanket `SolAbi` impls use placeholder SOL_NAME strings
+/// because `concatcp!` cannot reference generic type parameters).
+fn sol_name_expr(ty: &syn::Type) -> TokenStream {
+    if let Some(inner) = unwrap_option_inner(ty) {
+        let inner_expr = sol_name_expr(inner);
+        quote! {
+            pvm_contract::const_format::concatcp!("(bool,", #inner_expr, ")")
+        }
+    } else if let Some(inner) = unwrap_vec_inner(ty) {
+        let inner_expr = sol_name_expr(inner);
+        quote! {
+            pvm_contract::const_format::concatcp!(#inner_expr, "[]")
+        }
+    } else {
+        quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
+    }
+}
+
+/// Emit a const-expression `&'static str` token stream for the ABI JSON "type"
+/// field value (e.g. "tuple", "uint256", "bytes[]"). Recursively unwraps
+/// `Option<T>` (→ "tuple") and `Vec<T>` (→ `abi_type_expr(T) + "[]"`).
+fn abi_type_expr(ty: &syn::Type) -> TokenStream {
+    if unwrap_option_inner(ty).is_some() {
+        quote! { "tuple" }
+    } else if let Some(inner) = unwrap_vec_inner(ty) {
+        let inner_expr = abi_type_expr(inner);
+        quote! {
+            pvm_contract::const_format::concatcp!(#inner_expr, "[]")
+        }
+    } else {
+        quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE }
+    }
+}
+
+/// Emit a const-expression `&'static str` for the ABI JSON components fragment
+/// (leading-comma format: `,"components":[...]`, or empty string for leaf types).
+/// Recursively unwraps `Option<T>` (emits the `{isSome,value}` tuple) and
+/// `Vec<T>` (forwards the element's components unchanged — Solidity attaches
+/// components to arrays of tuples by describing the element type).
+fn abi_components_expr(ty: &syn::Type) -> TokenStream {
+    if let Some(inner) = unwrap_option_inner(ty) {
+        let inner_type = abi_type_expr(inner);
+        let inner_components = abi_components_expr(inner);
+        quote! {
+            pvm_contract::const_format::concatcp!(
+                ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
+                #inner_type,
+                "\"",
+                #inner_components,
+                "}]"
+            )
+        }
+    } else if let Some(inner) = unwrap_vec_inner(ty) {
+        abi_components_expr(inner)
+    } else {
+        quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS }
+    }
+}
+
+/// If `ty` is `Vec<Inner>`, return `Some(Inner)`. Otherwise `None`.
+fn unwrap_vec_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    unwrap_single_generic(ty, "Vec")
+}
+
+/// If `ty` is `Name<Inner>` (matching by the last path segment ident), return `Some(Inner)`.
+fn unwrap_single_generic<'a>(ty: &'a syn::Type, name: &str) -> Option<&'a syn::Type> {
     if let syn::Type::Path(type_path) = ty {
         let segment = type_path.path.segments.last()?;
-        if segment.ident == "Option" {
+        if segment.ident == name {
             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                 if args.args.len() == 1 {
                     if let syn::GenericArgument::Type(inner) = &args.args[0] {

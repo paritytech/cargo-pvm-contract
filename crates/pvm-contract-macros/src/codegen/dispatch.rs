@@ -3,6 +3,7 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 use super::encode::generate_encode_return;
+use super::sol_name_expr;
 use crate::signature::{compute_selector, FunctionSignature};
 
 pub struct MethodInfo {
@@ -139,9 +140,8 @@ pub fn generate_trait_dispatch_arm(
     let sol_name = &method.signature.name;
 
     // Build the selector computation using SolAbi::SOL_NAME for each param type
-    let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
-        quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-    }).collect();
+    // (resolved inline for Option<T>/Vec<T> via sol_name_expr).
+    let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(sol_name_expr).collect();
 
     // Build min size computation using SolAbi::HEAD_SIZE
     let head_size_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {

@@ -258,7 +258,7 @@ pub fn generate_encode_params(
                                 __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
                                 __head[#offset..#end].copy_from_slice(&__off);
 
-                                let __data: &[u8] = &#name;
+                                let __data: &[u8] = #name.as_ref();
                                 let __len = __data.len();
                                 let __padded_len = (__len + 31) / 32 * 32;
                                 let mut __len_bytes = [0u8; 32];

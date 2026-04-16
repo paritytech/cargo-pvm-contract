@@ -41,7 +41,7 @@ pub fn expand_derive_sol_abi(input: DeriveInput) -> Result<TokenStream, syn::Err
     }
 }
 
-use super::unwrap_option_inner;
+use super::{abi_components_expr, abi_type_expr, sol_name_expr};
 
 fn expand_newtype(
     name: &syn::Ident,
@@ -50,33 +50,11 @@ fn expand_newtype(
     where_clause: Option<&syn::WhereClause>,
     inner_ty: &syn::Type,
 ) -> TokenStream {
-    // If the newtype wraps Option<T>, resolve the const strings through the inner type
-    let (sol_name_expr, abi_type_expr, abi_components_expr) =
-        if let Some(inner) = unwrap_option_inner(inner_ty) {
-            (
-                quote! {
-                    pvm_contract::const_format::concatcp!(
-                        "(bool,", <#inner as pvm_contract::SolAbi>::SOL_NAME, ")"
-                    )
-                },
-                quote! { "tuple" },
-                quote! {
-                    pvm_contract::const_format::concatcp!(
-                        ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
-                        <#inner as pvm_contract::SolAbi>::ABI_TYPE,
-                        "\"",
-                        <#inner as pvm_contract::SolAbi>::ABI_COMPONENTS,
-                        "}]"
-                    )
-                },
-            )
-        } else {
-            (
-                quote! { <#inner_ty as pvm_contract::SolAbi>::SOL_NAME },
-                quote! { <#inner_ty as pvm_contract::SolAbi>::ABI_TYPE },
-                quote! { <#inner_ty as pvm_contract::SolAbi>::ABI_COMPONENTS },
-            )
-        };
+    // Delegate const strings through the recursive resolvers so nested
+    // Option<Vec<T>> / Vec<Option<T>> chains unwrap correctly.
+    let sol_name_expr = sol_name_expr(inner_ty);
+    let abi_type_expr = abi_type_expr(inner_ty);
+    let abi_components_expr = abi_components_expr(inner_ty);
 
     quote! {
         impl #impl_generics pvm_contract::SolAbi for #name #ty_generics #where_clause {
@@ -113,50 +91,31 @@ fn expand_named_struct(
         field_types.push(field.ty.clone());
     }
 
-    // Build SOL_NAME using concatcp! so it works with trait-delegated names (nested structs)
-    // For Option<T> fields, resolve through the inner type to avoid placeholder const strings
+    // Build SOL_NAME via concatcp!, resolving each field's type through the
+    // recursive helpers so nested Option<T>/Vec<T> wrappers unwrap correctly.
     let sol_name_parts: Vec<TokenStream> = field_types.iter().enumerate().map(|(i, ty)| {
-        let comma = if i > 0 { quote! { "," } } else { quote! {} };
-        let type_name = if let Some(inner) = unwrap_option_inner(ty) {
-            quote! { "(bool,", <#inner as pvm_contract::SolAbi>::SOL_NAME, ")" }
-        } else {
-            quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-        };
+        let type_name_expr = sol_name_expr(ty);
         if i > 0 {
-            quote! { #comma, #type_name }
+            quote! { ",", #type_name_expr }
         } else {
-            quote! { #type_name }
+            quote! { #type_name_expr }
         }
     }).collect();
 
-    // Build ABI_COMPONENTS: ,"components":[{field entries}]
-    // For Option<T> fields, inline the tuple component structure
+    // Build ABI_COMPONENTS: ,"components":[{field entries}]. Type + nested
+    // components come from the recursive resolvers.
     let component_parts: Vec<TokenStream> = field_idents.iter().zip(field_types.iter()).enumerate().map(|(i, (ident, ty))| {
         let field_name = ident.to_string();
-        let comma = if i > 0 {
-            quote! { ",", }
-        } else {
-            quote! {}
-        };
-        if let Some(inner) = unwrap_option_inner(ty) {
-            quote! {
-                #comma
-                "{\"name\":\"", #field_name, "\",\"type\":\"tuple\"",
-                ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
-                <#inner as pvm_contract::SolAbi>::ABI_TYPE,
-                "\"",
-                <#inner as pvm_contract::SolAbi>::ABI_COMPONENTS,
-                "}]}"
-            }
-        } else {
-            quote! {
-                #comma
-                "{\"name\":\"", #field_name, "\",\"type\":\"",
-                <#ty as pvm_contract::SolAbi>::ABI_TYPE,
-                "\"",
-                <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS,
-                "}"
-            }
+        let comma = if i > 0 { quote! { ",", } } else { quote! {} };
+        let type_expr = abi_type_expr(ty);
+        let components_expr = abi_components_expr(ty);
+        quote! {
+            #comma
+            "{\"name\":\"", #field_name, "\",\"type\":\"",
+            #type_expr,
+            "\"",
+            #components_expr,
+            "}"
         }
     }).collect();
 
@@ -226,7 +185,17 @@ fn expand_named_struct(
             }
 
             fn abi_decode(data: &[u8], offset: usize) -> Self {
-                let sd = &data[offset..];
+                // Dynamic structs follow the same convention as String/Vec/Bytes/Option:
+                // the slot at `offset` holds a pointer (relative to `data`'s start) to
+                // the struct's actual head. Dereference before decoding so that inner
+                // dynamic-field pointers — which are relative to the struct's head —
+                // resolve within the correct slice.
+                let base = if <Self as pvm_contract::SolAbi>::IS_DYNAMIC {
+                    pvm_contract::U256::from_be_slice(&data[offset..offset + 32]).as_limbs()[0] as usize
+                } else {
+                    offset
+                };
+                let sd = &data[base..];
                 let mut hp = 0usize;
                 Self {
                     #( #field_idents4: {

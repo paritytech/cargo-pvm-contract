@@ -313,14 +313,38 @@ impl SolAbi for String {
     }
 }
 
-// -- Vec<u8> (dynamic bytes) --
+// -- Bytes newtype (Solidity `bytes`) --
+//
+// Wraps `Vec<u8>` so the "bytes" encoding (one byte per byte, tightly packed
+// with 32-byte padding) is distinct from `Vec<u8>`, which encodes as `uint8[]`
+// via the generic `Vec<T>` impl below.
 
-impl SolAbi for Vec<u8> {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct Bytes(pub Vec<u8>);
+
+impl From<Vec<u8>> for Bytes {
+    fn from(v: Vec<u8>) -> Self { Bytes(v) }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(b: Bytes) -> Self { b.0 }
+}
+
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] { &self.0 }
+}
+
+impl core::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { &self.0 }
+}
+
+impl SolAbi for Bytes {
     const SOL_NAME: &'static str = "bytes";
     const IS_DYNAMIC: bool = true;
 
     fn abi_encode(&self, buf: &mut Vec<u8>) {
-        let len = self.len();
+        let len = self.0.len();
         let padded_len = (len + 31) / 32 * 32;
 
         // Encode length
@@ -329,7 +353,7 @@ impl SolAbi for Vec<u8> {
         buf.extend_from_slice(&len_bytes);
 
         // Encode data + padding
-        buf.extend_from_slice(self);
+        buf.extend_from_slice(&self.0);
         buf.resize(buf.len() + padded_len - len, 0);
     }
 
@@ -338,7 +362,80 @@ impl SolAbi for Vec<u8> {
             crate::U256::from_be_slice(&data[offset..offset + 32]).as_limbs()[0] as usize;
         let length =
             crate::U256::from_be_slice(&data[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
-        data[dyn_offset + 32..dyn_offset + 32 + length].to_vec()
+        Bytes(data[dyn_offset + 32..dyn_offset + 32 + length].to_vec())
+    }
+}
+
+// -- Vec<T> (dynamic array, Solidity `T[]`) --
+//
+// Blanket impl covers all `T: SolAbi`, including user-defined `#[derive(SolAbi)]`
+// types. SOL_NAME/ABI_TYPE/ABI_COMPONENTS use placeholder values here because
+// `concatcp!` cannot reference generic type parameters (Rust E0401). The derive
+// and contract macros inline these const strings with the concrete `T` wherever
+// `Vec<T>` appears as a field, parameter, or return type.
+
+impl<T: SolAbi> SolAbi for Vec<T> {
+    const SOL_NAME: &'static str = "?[]";
+    const ABI_TYPE: &'static str = "?[]";
+    const ABI_COMPONENTS: &'static str = "";
+    const HEAD_SIZE: usize = 32;
+    const IS_DYNAMIC: bool = true;
+
+    fn abi_encode(&self, buf: &mut Vec<u8>) {
+        // Length prefix
+        let mut len_bytes = [0u8; 32];
+        len_bytes[24..32].copy_from_slice(&(self.len() as u64).to_be_bytes());
+        buf.extend_from_slice(&len_bytes);
+
+        if self.is_empty() {
+            return;
+        }
+
+        if T::IS_DYNAMIC {
+            // Elements tuple: head of n pointers + concatenated tails.
+            // Offsets are relative to the start of the elements area (after the length word).
+            let elems_start = buf.len();
+            let head_len = self.len() * 32;
+            buf.resize(elems_start + head_len, 0);
+            let mut tail = Vec::new();
+            for (i, elem) in self.iter().enumerate() {
+                let off = (head_len + tail.len()) as u64;
+                let hp = elems_start + i * 32;
+                buf[hp + 24..hp + 32].copy_from_slice(&off.to_be_bytes());
+                elem.abi_encode(&mut tail);
+            }
+            buf.extend_from_slice(&tail);
+        } else {
+            // Static elements encode in-place, each occupying T::HEAD_SIZE bytes.
+            for elem in self.iter() {
+                elem.abi_encode(buf);
+            }
+        }
+    }
+
+    fn abi_decode(data: &[u8], offset: usize) -> Self {
+        // Vec<T> is always dynamic: the slot at `offset` holds a pointer to [len | elements].
+        let dyn_offset =
+            crate::U256::from_be_slice(&data[offset..offset + 32]).as_limbs()[0] as usize;
+        let length =
+            crate::U256::from_be_slice(&data[dyn_offset..dyn_offset + 32]).as_limbs()[0] as usize;
+        let elems_start = dyn_offset + 32;
+
+        let mut out = Vec::with_capacity(length);
+        if T::IS_DYNAMIC {
+            // Each element's head slot is at elems_start + i*32 and holds an offset
+            // relative to elems_start pointing to the element's tail data.
+            let sub = &data[elems_start..];
+            for i in 0..length {
+                out.push(T::abi_decode(sub, i * 32));
+            }
+        } else {
+            let stride = T::HEAD_SIZE;
+            for i in 0..length {
+                out.push(T::abi_decode(data, elems_start + i * stride));
+            }
+        }
+        out
     }
 }
 
@@ -388,11 +485,22 @@ impl<T: SolAbi> SolAbi for Option<T> {
     }
 
     fn abi_decode(data: &[u8], offset: usize) -> Self {
-        let is_some = bool::abi_decode(data, offset);
+        // When T is dynamic, Option is dynamic too and the slot at `offset` is a
+        // pointer (relative to `data`'s start) to Option's own encoding. Shift
+        // `data` to Option's start so the inner pointer (for dynamic T, written
+        // relative to Option's start) resolves correctly.
+        let sd = if T::IS_DYNAMIC {
+            let base =
+                crate::U256::from_be_slice(&data[offset..offset + 32]).as_limbs()[0] as usize;
+            &data[base..]
+        } else {
+            &data[offset..]
+        };
+        let is_some = bool::abi_decode(sd, 0);
         if !is_some {
             return None;
         }
-        Some(T::abi_decode(data, offset + 32))
+        Some(T::abi_decode(sd, 32))
     }
 }
 

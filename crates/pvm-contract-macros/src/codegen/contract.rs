@@ -5,7 +5,7 @@ use syn::{parse::Parse, parse::ParseStream, Attribute, Ident, ItemMod, LitInt, L
 use super::decode::{calculate_min_input_size, generate_decode_params};
 use super::dispatch::{generate_dispatch_arm, generate_trait_dispatch_arm, MethodInfo};
 use super::encode::{generate_encode_params, generate_encode_params_trait};
-use super::{generate_cdm_reference, generate_resolved_return_parts, unwrap_option_inner};
+use super::{abi_components_expr, abi_type_expr, generate_cdm_reference, generate_resolved_return_parts, sol_name_expr};
 use crate::signature::{compute_selector, FunctionSignature, SolType};
 use crate::solidity::{parse_solidity_interface, to_snake_case, SolInterface};
 
@@ -822,27 +822,15 @@ fn generate_cdm_section(cdm_name: &str, is_entry_point: bool) -> TokenStream {
     }
 }
 
-/// Push ABI type and components tokens for a Rust type, with special handling
-/// for `Option<T>` (which needs inline component generation since the blanket
-/// `SolAbi for Option<T>` impl cannot produce `ABI_COMPONENTS` via `concatcp!`).
+/// Push ABI type and components tokens for a Rust type. Handling for
+/// `Option<T>` and `Vec<T>` is delegated to the recursive `abi_type_expr` /
+/// `abi_components_expr` resolvers so nested wrapper chains unwrap correctly.
 fn push_abi_type_and_components(parts: &mut Vec<TokenStream>, ty: &syn::Type) {
-    if let Some(inner) = unwrap_option_inner(ty) {
-        parts.push(quote! { "tuple" });
-        parts.push(quote! { "\"" });
-        parts.push(quote! {
-            pvm_contract::const_format::concatcp!(
-                ",\"components\":[{\"name\":\"isSome\",\"type\":\"bool\"},{\"name\":\"value\",\"type\":\"",
-                <#inner as pvm_contract::SolAbi>::ABI_TYPE,
-                "\"",
-                <#inner as pvm_contract::SolAbi>::ABI_COMPONENTS,
-                "}]"
-            )
-        });
-    } else {
-        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_TYPE });
-        parts.push(quote! { "\"" });
-        parts.push(quote! { <#ty as pvm_contract::SolAbi>::ABI_COMPONENTS });
-    }
+    let type_expr = abi_type_expr(ty);
+    let components_expr = abi_components_expr(ty);
+    parts.push(type_expr);
+    parts.push(quote! { "\"" });
+    parts.push(components_expr);
 }
 
 /// Push ABI parameter expressions into the flat parts list.
@@ -958,9 +946,7 @@ fn generate_reference_method(method: &MethodInfo) -> TokenStream {
     } else {
         let sol_name = &sig.name;
         let param_types = &method.param_types;
-        let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(|ty| {
-            quote! { <#ty as pvm_contract::SolAbi>::SOL_NAME }
-        }).collect();
+        let sol_name_exprs: Vec<TokenStream> = param_types.iter().map(sol_name_expr).collect();
         quote! {
             let __sel = pvm_contract::compute_selector(#sol_name, &[
                 #(#sol_name_exprs),*

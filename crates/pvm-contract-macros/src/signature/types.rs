@@ -56,7 +56,7 @@ impl SolType {
             }
             SolType::DynBytes => {
                 if use_alloc {
-                    quote!(alloc::vec::Vec<u8>)
+                    quote!(pvm_contract::Bytes)
                 } else {
                     quote!(&[u8])
                 }
@@ -128,6 +128,7 @@ impl SolType {
             "[u8;32]" => Some(SolType::Bytes(32)),
             "[u8;20]" => Some(SolType::Bytes(20)),
             "String" | "alloc::string::String" => Some(SolType::String),
+            "Bytes" | "pvm_contract::Bytes" => Some(SolType::DynBytes),
             _ => None,
         }
     }
