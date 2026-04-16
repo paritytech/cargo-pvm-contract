@@ -32,6 +32,10 @@ pub enum AbiItem {
         #[serde(rename = "stateMutability")]
         state_mutability: String,
     },
+    Error {
+        name: String,
+        inputs: Vec<AbiParam>,
+    },
 }
 
 /// Serialize a list of ABI items to a JSON string.

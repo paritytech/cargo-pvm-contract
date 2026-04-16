@@ -1,1 +1,1 @@
-[{"type":"constructor","inputs":[],"stateMutability":"nonpayable"}]
+[{"type":"constructor","inputs":[],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCalldata","inputs":[]},{"type":"error","name":"CalldataTooLarge","inputs":[]},{"type":"error","name":"NoSelector","inputs":[]},{"type":"error","name":"UnknownSelector","inputs":[]}]

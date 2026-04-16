@@ -91,7 +91,7 @@ impl FunctionSignature {
         Ok(types)
     }
 
-    fn parse_single_type(s: &str) -> Result<SolType, String> {
+    pub(crate) fn parse_single_type(s: &str) -> Result<SolType, String> {
         let s = s.trim();
 
         if s.starts_with('(') {

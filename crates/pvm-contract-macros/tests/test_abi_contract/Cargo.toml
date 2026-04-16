@@ -38,4 +38,4 @@ pallet-revive-uapi = { version = "0.10", default-features = false }
 ruint = { version = "1.17", default-features = false }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-gen"]
+abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]

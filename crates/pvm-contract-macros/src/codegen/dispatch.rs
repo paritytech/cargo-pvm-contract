@@ -3,6 +3,29 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 
+/// Generate the error revert encoding for an `Err(e)` arm.
+/// In alloc mode, uses a dynamically-sized `Vec<u8>` so dynamic error fields
+/// are safe regardless of payload size.
+/// In stack mode, uses a fixed 256-byte buffer.
+pub(super) fn generate_revert_encoding(use_alloc: bool) -> TokenStream {
+    if use_alloc {
+        quote! {
+            let __revert_len = ::pvm_contract_types::SolRevert::revert_data_len(&e);
+            let mut __revert_buf = alloc::vec![0u8; __revert_len];
+            ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
+            pallet_revive_uapi::HostFnImpl::return_value(
+                pallet_revive_uapi::ReturnFlags::REVERT, &__revert_buf);
+        }
+    } else {
+        quote! {
+            let mut __revert_buf = [0u8; 256];
+            let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
+            pallet_revive_uapi::HostFnImpl::return_value(
+                pallet_revive_uapi::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
+        }
+    }
+}
+
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
     pub sol_name: String,
@@ -32,7 +55,8 @@ pub(super) fn generate_param_decoding(
         quote! {
             if input.len() < (#min_size_expr) {
                 pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
+                    pallet_revive_uapi::ReturnFlags::REVERT,
+                    &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
             }
         }
     } else {
@@ -115,14 +139,15 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     let has_return = !method.return_types.is_empty();
     let encode_and_return = generate_encode_and_return(&method.return_types, use_alloc);
 
+    let revert_err = generate_revert_encoding(use_alloc);
+
     let body = if method.returns_result {
         if has_return {
             quote! {
                 match #fn_name(#(#call_args),*) {
                     Ok(result) => { #encode_and_return }
                     Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(
-                            pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                        #revert_err
                     }
                 }
             }
@@ -131,8 +156,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
                 match #fn_name(#(#call_args),*) {
                     Ok(()) => return Some(()),
                     Err(e) => {
-                        pallet_revive_uapi::HostFnImpl::return_value(
-                            pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+                        #revert_err
                     }
                 }
             }

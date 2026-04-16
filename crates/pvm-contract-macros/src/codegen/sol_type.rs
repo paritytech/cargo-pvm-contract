@@ -54,7 +54,14 @@ fn expand_static_sol_type(
     let encode_body = generate_static_encode_body(fields);
     let decode_body = generate_static_decode_body(fields);
 
+    // Stylus trick: only emit abi_param when the proc-macro crate itself has
+    // abi-gen enabled (via feature unification from the consumer's abi-gen feature).
+    // This avoids emitting #[cfg(feature = "abi-gen")] into consumer code, which
+    // would leak the feature name and trigger check-cfg warnings.
+    #[cfg(feature = "abi-gen")]
     let abi_param_fn = generate_abi_param_fn(fields, field_info);
+    #[cfg(not(feature = "abi-gen"))]
+    let abi_param_fn = quote::quote! {};
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
@@ -100,7 +107,10 @@ fn expand_dynamic_sol_type(
     let encode_body = generate_dynamic_encode_body(fields, field_info, &head_size_expr);
     let decode_body = generate_dynamic_decode_body(fields, field_info);
 
+    #[cfg(feature = "abi-gen")]
     let abi_param_fn = generate_abi_param_fn(fields, field_info);
+    #[cfg(not(feature = "abi-gen"))]
+    let abi_param_fn = quote::quote! {};
 
     Ok(quote! {
         impl ::pvm_contract_types::SolEncode for #name {
@@ -156,7 +166,6 @@ fn generate_abi_param_fn(
         .collect();
 
     quote! {
-        #[cfg(feature = "abi-gen")]
         fn abi_param(name: &str) -> ::pvm_contract_types::AbiParam {
             extern crate alloc;
             ::pvm_contract_types::AbiParam {
@@ -412,7 +421,7 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 // -----------------------------------------------------------------------
 
 /// Compute the total head size expression for a dynamic struct.
-fn build_dynamic_head_size_expr(
+pub(crate) fn build_dynamic_head_size_expr(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> TokenStream {
@@ -471,7 +480,7 @@ fn build_dynamic_head_sum_expr(
     quote! { (0 #(+ #parts)*) }
 }
 
-fn generate_dynamic_encode_len(
+pub(crate) fn generate_dynamic_encode_len(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
     head_size_expr: &TokenStream,
@@ -515,7 +524,7 @@ fn generate_dynamic_encode_len(
     }
 }
 
-fn generate_dynamic_encode_body(
+pub(crate) fn generate_dynamic_encode_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
     head_size_expr: &TokenStream,
@@ -666,7 +675,9 @@ fn generate_dynamic_field_decode(
     }
 }
 
-fn extract_field_info(fields: &Fields) -> syn::Result<Vec<(Option<syn::Ident>, SolType)>> {
+pub(crate) fn extract_field_info(
+    fields: &Fields,
+) -> syn::Result<Vec<(Option<syn::Ident>, SolType)>> {
     let mut result = Vec::new();
 
     match fields {

@@ -816,6 +816,7 @@ fn sol_type_name_primitives() {
     assert_eq!(<u32 as SolEncode>::SOL_NAME, "uint32");
     assert_eq!(<u16 as SolEncode>::SOL_NAME, "uint16");
     assert_eq!(<u8 as SolEncode>::SOL_NAME, "uint8");
+    assert_eq!(<I256 as SolEncode>::SOL_NAME, "int256");
     assert_eq!(<i128 as SolEncode>::SOL_NAME, "int128");
     assert_eq!(<i64 as SolEncode>::SOL_NAME, "int64");
     assert_eq!(<i32 as SolEncode>::SOL_NAME, "int32");
@@ -826,7 +827,11 @@ fn sol_type_name_primitives() {
     assert_eq!(<[u8; 32] as SolEncode>::SOL_NAME, "bytes32");
     assert_eq!(<[u8; 20] as SolEncode>::SOL_NAME, "bytes20");
     assert_eq!(<[u8; 4] as SolEncode>::SOL_NAME, "bytes4");
+    // Fixed-size arrays of primitives.
     assert_eq!(<[u64; 3] as SolEncode>::SOL_NAME, "uint64[3]");
+    assert_eq!(<[i32; 3] as SolEncode>::SOL_NAME, "int32[3]");
+    assert_eq!(<[i128; 2] as SolEncode>::SOL_NAME, "int128[2]");
+    assert_eq!(<[I256; 2] as SolEncode>::SOL_NAME, "int256[2]");
 }
 
 #[test]
@@ -834,6 +839,15 @@ fn sol_type_name_dynamic_types() {
     assert_eq!(<&str as SolEncode>::SOL_NAME, "string");
     assert_eq!(<alloc::string::String as SolEncode>::SOL_NAME, "string");
     assert_eq!(<Vec<Address> as SolEncode>::SOL_NAME, "address[]");
+    // Tuples, which may be static or dynamic depending on their elements.
+    assert_eq!(
+        <(u64, bool, Address) as SolEncode>::SOL_NAME,
+        "(uint64,bool,address)"
+    );
+    assert_eq!(
+        <(u64, alloc::string::String) as SolEncode>::SOL_NAME,
+        "(uint64,string)"
+    );
 }
 
 // ========================================================================
@@ -853,6 +867,7 @@ fn vec_sol_name_for_primitive_types() {
     assert_eq!(<Vec<i32> as SolEncode>::SOL_NAME, "int32[]");
     assert_eq!(<Vec<i64> as SolEncode>::SOL_NAME, "int64[]");
     assert_eq!(<Vec<i128> as SolEncode>::SOL_NAME, "int128[]");
+    assert_eq!(<Vec<I256> as SolEncode>::SOL_NAME, "int256[]");
     assert_eq!(<Vec<bool> as SolEncode>::SOL_NAME, "bool[]");
     assert_eq!(<Vec<Address> as SolEncode>::SOL_NAME, "address[]");
     assert_eq!(<Vec<[u8; 32]> as SolEncode>::SOL_NAME, "bytes32[]");
@@ -1501,28 +1516,6 @@ fn encode_decode_struct_with_empty_bytes() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(WithEmptyBytes::decode(&buf), val);
-}
-
-// --- SOL_NAME tests for tuples and signed arrays ---
-
-#[test]
-fn sol_type_name_tuple_with_dynamic() {
-    assert_eq!(<(u64, alloc::string::String)>::SOL_NAME, "(uint64,string)");
-}
-
-#[test]
-fn sol_type_name_tuple_all_static() {
-    assert_eq!(<(u64, bool, Address)>::SOL_NAME, "(uint64,bool,address)");
-}
-
-#[test]
-fn sol_type_name_fixed_array_of_signed() {
-    assert_eq!(<[i32; 3]>::SOL_NAME, "int32[3]");
-}
-
-#[test]
-fn sol_type_name_fixed_array_of_i128() {
-    assert_eq!(<[i128; 2]>::SOL_NAME, "int128[2]");
 }
 
 // --- Bytes decode_at test ---
@@ -2205,4 +2198,401 @@ fn return_encoding_roundtrip_advanced() {
     let mut buf = vec![0u8; nested.encode_len()];
     nested.encode_to(&mut buf);
     assert_eq!(<((u64, u64), alloc::string::String)>::decode(&buf), nested);
+}
+
+// ---------------------------------------------------------------------------
+// Error encoding tests (SolError, SolRevert, Panic, RevertString)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn revert_string_selector_is_correct() {
+    // keccak256("Error(string)")[0:4] = 0x08c379a0
+    assert_eq!(RevertString::SELECTOR, [0x08, 0xc3, 0x79, 0xa0]);
+    assert_eq!(RevertString::SELECTOR, const_selector("Error(string)"));
+}
+
+#[test]
+fn revert_string_encoding_matches_solidity() {
+    let error = RevertString("insufficient balance");
+    let mut buf = [0u8; 256];
+    let len = error.revert_data(&mut buf);
+    let encoded = &buf[..len];
+
+    // Selector
+    assert_eq!(&encoded[0..4], &[0x08, 0xc3, 0x79, 0xa0]);
+
+    // Cross-validate with alloy (alloy prepends "revert: " to decoded strings)
+    let decoded = alloy_core::sol_types::decode_revert_reason(encoded);
+    assert_eq!(decoded, Some("revert: insufficient balance".to_string()));
+}
+
+#[test]
+fn revert_string_empty() {
+    let error = RevertString("");
+    let mut buf = [0u8; 256];
+    let params_len = error.encode_params(&mut buf);
+    // offset(32) + length(32) + no padded data = 64 bytes
+    assert_eq!(params_len, 64);
+    // length field should be 0
+    assert_eq!(
+        u64::from_be_bytes(buf[32 + 24..32 + 32].try_into().unwrap()),
+        0
+    );
+}
+
+#[test]
+fn revert_string_exact_32_bytes() {
+    let msg = "abcdefghijklmnopqrstuvwxyz012345"; // 32 chars
+    let error = RevertString(msg);
+    let mut buf = [0u8; 256];
+    let params_len = error.encode_params(&mut buf);
+    // offset(32) + length(32) + data(32, no padding needed) = 96
+    assert_eq!(params_len, 96);
+}
+
+#[test]
+fn revert_string_33_bytes_pads_to_64() {
+    let msg = "abcdefghijklmnopqrstuvwxyz0123456"; // 33 chars
+    let error = RevertString(msg);
+    let mut buf = [0u8; 256];
+    let params_len = error.encode_params(&mut buf);
+    // offset(32) + length(32) + data(64, padded from 33 to 64) = 128
+    assert_eq!(params_len, 128);
+    // Padding bytes must be zero
+    assert!(buf[64 + 33..64 + 64].iter().all(|&b| b == 0));
+}
+
+#[test]
+fn revert_string_encoded_size_matches_encode_params() {
+    for msg in ["", "x", "hello world", "abcdefghijklmnopqrstuvwxyz012345"] {
+        let error = RevertString(msg);
+        let mut buf = [0u8; 256];
+        let params_len = error.encode_params(&mut buf);
+        assert_eq!(error.encoded_size(), 4 + params_len);
+    }
+}
+
+#[test]
+fn panic_selector_is_correct() {
+    // keccak256("Panic(uint256)")[0:4] = 0x4e487b71
+    assert_eq!(Panic::SELECTOR, [0x4e, 0x48, 0x7b, 0x71]);
+    assert_eq!(Panic::SELECTOR, const_selector("Panic(uint256)"));
+}
+
+#[test]
+fn panic_overflow_encoding() {
+    let error = Panic::Overflow;
+    let mut buf = [0u8; 256];
+    let len = error.revert_data(&mut buf);
+    let encoded = &buf[..len];
+
+    assert_eq!(len, 36); // 4 selector + 32 uint256
+    assert_eq!(&encoded[0..4], &Panic::SELECTOR);
+    // Panic code 0x11, big-endian in 32 bytes
+    assert!(encoded[4..35].iter().all(|&b| b == 0));
+    assert_eq!(encoded[35], 0x11);
+}
+
+#[test]
+fn panic_division_by_zero_encoding() {
+    let error = Panic::DivisionByZero;
+    let mut buf = [0u8; 256];
+    let len = error.revert_data(&mut buf);
+    let encoded = &buf[..len];
+
+    assert_eq!(len, 36);
+    assert_eq!(encoded[35], 0x12);
+}
+
+#[test]
+fn panic_encoded_size_matches() {
+    assert_eq!(Panic::Overflow.encoded_size(), 36);
+    assert_eq!(Panic::DivisionByZero.encoded_size(), 36);
+}
+
+#[test]
+fn sol_default_error_from_panic() {
+    let err: SolDefaultError = Panic::Overflow.into();
+    let mut buf = [0u8; 256];
+    let len = err.revert_data(&mut buf);
+    assert_eq!(&buf[0..4], &Panic::SELECTOR);
+    assert_eq!(len, 36);
+}
+
+#[test]
+fn sol_default_error_from_revert_string() {
+    let err: SolDefaultError = RevertString("fail").into();
+    let mut buf = [0u8; 256];
+    let len = err.revert_data(&mut buf);
+    assert_eq!(&buf[0..4], &RevertString::SELECTOR);
+    assert!(len > 4);
+
+    let decoded = alloy_core::sol_types::decode_revert_reason(&buf[..len]);
+    assert_eq!(decoded, Some("revert: fail".to_string()));
+}
+
+#[test]
+fn sol_revert_enum_dispatches_correctly() {
+    struct ErrA;
+    impl SolError for ErrA {
+        const SELECTOR: [u8; 4] = [0xAA, 0, 0, 0];
+        const SIGNATURE: &'static str = "ErrA()";
+        fn encode_params(&self, _buf: &mut [u8]) -> usize {
+            0
+        }
+        fn encoded_size(&self) -> usize {
+            4
+        }
+    }
+
+    struct ErrB;
+    impl SolError for ErrB {
+        const SELECTOR: [u8; 4] = [0xBB, 0, 0, 0];
+        const SIGNATURE: &'static str = "ErrB()";
+        fn encode_params(&self, _buf: &mut [u8]) -> usize {
+            0
+        }
+        fn encoded_size(&self) -> usize {
+            4
+        }
+    }
+
+    sol_revert_enum! {
+        enum TestError {
+            A(ErrA),
+            B(ErrB),
+        }
+    }
+
+    let mut buf = [0u8; 256];
+
+    // Custom errors
+    let err: TestError = ErrA.into();
+    let len = err.revert_data(&mut buf);
+    assert_eq!(len, 4);
+    assert_eq!(buf[0], 0xAA);
+
+    let err: TestError = ErrB.into();
+    let len = err.revert_data(&mut buf);
+    assert_eq!(len, 4);
+    assert_eq!(buf[0], 0xBB);
+
+    // Auto-injected Panic
+    let err: TestError = Panic::Overflow.into();
+    let len = err.revert_data(&mut buf);
+    assert_eq!(len, 36);
+    assert_eq!(&buf[0..4], &Panic::SELECTOR);
+    assert_eq!(buf[35], 0x11);
+
+    // Auto-injected RevertString
+    let err: TestError = RevertString("fail").into();
+    let len = err.revert_data(&mut buf);
+    assert_eq!(&buf[0..4], &RevertString::SELECTOR);
+    assert!(len > 4);
+}
+
+#[test]
+fn sol_revert_enum_question_mark_propagation() {
+    struct CustomErr;
+    impl SolError for CustomErr {
+        const SELECTOR: [u8; 4] = [0xCC, 0, 0, 0];
+        const SIGNATURE: &'static str = "CustomErr()";
+        fn encode_params(&self, _buf: &mut [u8]) -> usize {
+            0
+        }
+        fn encoded_size(&self) -> usize {
+            4
+        }
+    }
+
+    sol_revert_enum! {
+        enum MyError {
+            Custom(CustomErr),
+        }
+    }
+
+    // Verify From impls work for ? propagation
+    fn returns_custom() -> Result<(), MyError> {
+        Err(CustomErr)?
+    }
+    fn returns_panic() -> Result<(), MyError> {
+        Err(Panic::Overflow)?
+    }
+    fn returns_revert() -> Result<(), MyError> {
+        Err(RevertString("nope"))?
+    }
+
+    assert!(returns_custom().is_err());
+    assert!(returns_panic().is_err());
+    assert!(returns_revert().is_err());
+}
+
+#[test]
+fn revert_string_truncates_long_message() {
+    // With a 100-byte buffer: max_data_space = 36, rounded down to 32.
+    let long_msg = "a".repeat(200);
+    let error = RevertString(&long_msg);
+    let mut buf = [0u8; 100];
+    let len = error.encode_params(&mut buf);
+
+    // Should not panic, and should fit in buffer
+    assert!(len <= 100);
+
+    // Verify the encoded length field matches the truncated string
+    let encoded_len = u64::from_be_bytes(buf[32 + 24..32 + 32].try_into().unwrap()) as usize;
+    assert!(encoded_len < long_msg.len());
+    assert!(encoded_len <= 32); // 100 - 64 = 36, rounded down to 32
+}
+
+#[test]
+fn revert_string_fits_in_256_byte_revert_buffer() {
+    // Simulate the full revert_data path with a 256-byte buffer
+    // (4 selector + up to 252 params)
+    let msg = "x".repeat(180); // long but should fit
+    let error = RevertString(&msg);
+    let mut buf = [0u8; 256];
+    let len = error.revert_data(&mut buf);
+    assert!(len <= 256);
+    assert_eq!(&buf[0..4], &RevertString::SELECTOR);
+
+    // Decode with alloy to verify it's valid
+    let decoded = alloy_core::sol_types::decode_revert_reason(&buf[..len]);
+    assert!(decoded.is_some());
+}
+
+#[test]
+fn revert_string_very_long_truncates_in_revert_buffer() {
+    // A 300-char string must be truncated to fit in 256-byte revert buffer
+    let msg = "y".repeat(300);
+    let error = RevertString(&msg);
+    let mut buf = [0u8; 256];
+    let len = error.revert_data(&mut buf);
+    assert!(len <= 256);
+
+    // The encoded string length should be less than 300
+    let encoded_str_len =
+        u64::from_be_bytes(buf[4 + 32 + 24..4 + 32 + 32].try_into().unwrap()) as usize;
+    assert!(encoded_str_len < 300);
+}
+
+#[test]
+fn sol_default_error_question_mark_propagation() {
+    fn checked_sub(a: u64, b: u64) -> Result<u64, SolDefaultError> {
+        a.checked_sub(b).ok_or(Panic::Overflow.into())
+    }
+
+    fn do_transfer(balance: u64, amount: u64) -> Result<u64, SolDefaultError> {
+        let new_balance = checked_sub(balance, amount)?;
+        Ok(new_balance)
+    }
+
+    match do_transfer(100, 50) {
+        Ok(val) => assert_eq!(val, 50),
+        Err(_) => panic!("expected success"),
+    }
+    assert!(do_transfer(10, 20).is_err());
+
+    // Verify the error encodes correctly
+    match do_transfer(10, 20) {
+        Err(err) => {
+            let mut buf = [0u8; 256];
+            let len = err.revert_data(&mut buf);
+            assert_eq!(&buf[0..4], &Panic::SELECTOR);
+            assert_eq!(buf[35], 0x11); // Overflow code
+            assert_eq!(len, 36);
+        }
+        Ok(_) => panic!("expected error"),
+    }
+}
+
+// ========================================================================
+// I256 ABI tests — wire-format compatibility with alloy's `int256` encoding.
+// ========================================================================
+
+use alloy_core::primitives::I256 as AlloyI256;
+
+#[test]
+fn i256_constants_match_alloy() {
+    assert_eq!(
+        I256::ZERO.to_be_bytes(),
+        AlloyI256::ZERO.to_be_bytes::<32>()
+    );
+    assert_eq!(I256::ONE.to_be_bytes(), AlloyI256::ONE.to_be_bytes::<32>());
+    assert_eq!(
+        I256::MINUS_ONE.to_be_bytes(),
+        AlloyI256::MINUS_ONE.to_be_bytes::<32>()
+    );
+    assert_eq!(I256::MIN.to_be_bytes(), AlloyI256::MIN.to_be_bytes::<32>());
+    assert_eq!(I256::MAX.to_be_bytes(), AlloyI256::MAX.to_be_bytes::<32>());
+}
+
+/// Build an `I256` and an `AlloyI256` from the same big-endian bytes so
+/// every test encodes the two implementations from identical
+/// two's-complement bit patterns.
+fn i256_from_bytes(bytes: [u8; 32]) -> (I256, AlloyI256) {
+    (I256::from_be_slice(&bytes), AlloyI256::from_be_bytes(bytes))
+}
+
+fn i256_limbs_to_bytes(limbs: [u64; 4]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    // Little-endian limbs → big-endian bytes (most significant limb first).
+    for (i, limb) in limbs.iter().rev().enumerate() {
+        out[i * 8..i * 8 + 8].copy_from_slice(&limb.to_be_bytes());
+    }
+    out
+}
+
+#[test]
+fn encode_i256() {
+    for bytes in [
+        [0u8; 32],
+        [0xffu8; 32],
+        i256_limbs_to_bytes([1, 0, 0, 0]),
+        i256_limbs_to_bytes([0, 0, 0, 1u64 << 63]), // I256::MIN
+        i256_limbs_to_bytes([u64::MAX, u64::MAX, u64::MAX, u64::MAX >> 1]), // I256::MAX
+    ] {
+        let (ours, alloy) = i256_from_bytes(bytes);
+        let mut buf = vec![0u8; 32];
+        ours.encode_to(&mut buf);
+        assert_eq!(&buf, &alloy.abi_encode());
+    }
+}
+
+#[test]
+fn encode_decode_i256_proptest() {
+    proptest!(|(limbs: [u64; 4])| {
+        let bytes = i256_limbs_to_bytes(limbs);
+        let (ours, alloy) = i256_from_bytes(bytes);
+        let mut buf = vec![0u8; 32];
+        ours.encode_to(&mut buf);
+        prop_assert_eq!(&buf, &alloy.abi_encode());
+        prop_assert_eq!(I256::decode(&buf), ours);
+    });
+}
+
+#[test]
+fn i256_display_matches_signed_decimal() {
+    use alloc::format;
+    assert_eq!(format!("{}", I256::ZERO), "0");
+    assert_eq!(format!("{}", I256::ONE), "1");
+    assert_eq!(format!("{}", I256::MINUS_ONE), "-1");
+    assert_eq!(format!("{}", I256::from(-42i32)), "-42");
+    assert_eq!(format!("{}", I256::from(i64::MIN)), "-9223372036854775808");
+}
+
+#[test]
+fn i256_from_str_display_round_trip() {
+    use alloc::format;
+    use core::str::FromStr;
+    for val in [
+        I256::ZERO,
+        I256::ONE,
+        I256::MINUS_ONE,
+        I256::from(-12345i64),
+        I256::MAX,
+        I256::MIN + I256::ONE,
+    ] {
+        let s = format!("{val}");
+        assert_eq!(I256::from_str(&s).unwrap(), val, "round-trip for {val}");
+    }
 }
