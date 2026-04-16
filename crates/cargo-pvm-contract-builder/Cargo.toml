@@ -11,6 +11,7 @@ publish = true
 anyhow = { workspace = true }
 log = { workspace = true }
 polkavm-linker = { workspace = true }
+pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
 toml_edit = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

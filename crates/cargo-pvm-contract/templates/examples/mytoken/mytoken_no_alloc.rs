@@ -9,21 +9,11 @@ mod my_token {
     use super::*;
     use pvm_contract_types::Address;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        InsufficientBalance,
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::InsufficientBalance => b"InsufficientBalance",
-            }
-        }
-    }
+    #[derive(Debug, pvm_contract_macros::SolError)]
+    pub struct InsufficientBalance;
 
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
@@ -53,12 +43,12 @@ mod my_token {
     }
 
     #[pvm_contract_macros::method]
-    pub fn transfer(to: Address, amount: U256) -> Result<(), Error> {
+    pub fn transfer(to: Address, amount: U256) -> Result<(), InsufficientBalance> {
         let caller = get_caller();
         let sender_balance = balance_of(caller.into());
 
         if sender_balance < amount {
-            return Err(Error::InsufficientBalance);
+            return Err(InsufficientBalance);
         }
 
         let new_sender_balance = sender_balance - amount;
@@ -74,7 +64,7 @@ mod my_token {
     }
 
     #[pvm_contract_macros::method]
-    pub fn mint(to: Address, amount: U256) -> Result<(), Error> {
+    pub fn mint(to: Address, amount: U256) -> Result<(), InsufficientBalance> {
         let new_recipient_balance = balance_of(to).saturating_add(amount);
 
         let to: [u8; 20] = to.into();
@@ -89,7 +79,7 @@ mod my_token {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 

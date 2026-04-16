@@ -6,21 +6,8 @@ use ruint::aliases::U256;
 mod composite_types {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
-
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
@@ -40,7 +27,7 @@ mod composite_types {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 }

@@ -4,5 +4,9 @@
     {"name":"value","type":"(uint256,uint256)"}
   ],"outputs":[
     {"name":"","type":"(uint256,uint256)"}
-  ],"stateMutability":"payable"}
+  ],"stateMutability":"payable"},
+  {"type":"error","name":"InvalidCalldata","inputs":[]},
+  {"type":"error","name":"CalldataTooLarge","inputs":[]},
+  {"type":"error","name":"NoSelector","inputs":[]},
+  {"type":"error","name":"UnknownSelector","inputs":[]}
 ]

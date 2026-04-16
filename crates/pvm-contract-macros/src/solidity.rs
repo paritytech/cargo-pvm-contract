@@ -1,4 +1,5 @@
 use crate::signature::FunctionSignature;
+use crate::signature::SolType;
 
 #[derive(Debug, Clone)]
 pub struct SolFunction {
@@ -6,14 +7,31 @@ pub struct SolFunction {
     pub signature: FunctionSignature,
 }
 
+/// A parsed Solidity `error` declaration.
+///
+/// Example: `error InsufficientBalance(address account, uint256 required, uint256 available);`
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Fields used by builder crate's ABI generation; will be consumed here when .sol error codegen lands
+pub struct SolErrorDecl {
+    /// Error name (e.g. "InsufficientBalance")
+    pub name: String,
+    /// Parameter names (e.g. ["account", "required", "available"])
+    pub param_names: Vec<String>,
+    /// Parameter types as SolType (e.g. [Address, Uint(256), Uint(256)])
+    pub param_types: Vec<SolType>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SolInterface {
     pub functions: Vec<SolFunction>,
+    #[allow(dead_code)]
+    pub errors: Vec<SolErrorDecl>,
 }
 
 pub fn parse_solidity_interface(source: &str) -> Result<SolInterface, String> {
     let mut interface_name = String::new();
     let mut functions = Vec::new();
+    let mut errors = Vec::new();
     let mut pending: Option<String> = None;
 
     for line in source.lines() {
@@ -45,13 +63,74 @@ pub fn parse_solidity_interface(source: &str) -> Result<SolInterface, String> {
                 pending = Some(line.to_string());
             }
         }
+
+        if line.starts_with("error ")
+            && let Some(err) = parse_error_line(line)
+        {
+            errors.push(err);
+        }
     }
 
     if interface_name.is_empty() {
         return Err("No interface found in Solidity file".to_string());
     }
 
-    Ok(SolInterface { functions })
+    Ok(SolInterface { functions, errors })
+}
+
+/// Parse an `error` declaration line.
+///
+/// Accepts lines like:
+/// - `error InsufficientBalance(address account, uint256 required, uint256 available);`
+/// - `error Unauthorized();`
+fn parse_error_line(line: &str) -> Option<SolErrorDecl> {
+    let line = line.strip_prefix("error ")?.trim();
+
+    let paren_start = line.find('(')?;
+    let name = line[..paren_start].trim().to_string();
+    let paren_end = find_matching_paren(line, paren_start)?;
+    let params_str = &line[paren_start + 1..paren_end];
+
+    let mut param_names = Vec::new();
+    let mut param_types = Vec::new();
+
+    if !params_str.trim().is_empty() {
+        let params = split_top_level(params_str);
+        for param in &params {
+            let (ty_str, name_str) = parse_typed_param(param)?;
+            let sol_type = crate::signature::FunctionSignature::parse_single_type(&ty_str).ok()?;
+            param_types.push(sol_type);
+            param_names.push(name_str);
+        }
+    }
+
+    Some(SolErrorDecl {
+        name,
+        param_names,
+        param_types,
+    })
+}
+
+/// Parse a typed parameter like "uint256 amount" or "address account"
+/// into (type_string, name_string). Unnamed params like "uint256" return
+/// an empty name.
+fn parse_typed_param(param: &str) -> Option<(String, String)> {
+    let param = param.trim();
+    if param.is_empty() {
+        return None;
+    }
+    // If there's no whitespace, it's a type-only param (no name)
+    match param.rfind(|c: char| c.is_whitespace()) {
+        Some(last_space) => {
+            let ty = param[..last_space].trim().to_string();
+            let name = param[last_space..].trim().to_string();
+            if ty.is_empty() {
+                return None;
+            }
+            Some((ty, name))
+        }
+        None => Some((param.to_string(), String::new())),
+    }
 }
 
 /// Check if all opening parens have matching closing parens.
@@ -242,6 +321,82 @@ mod tests {
         assert_eq!(to_snake_case("totalSupply"), "total_supply");
         assert_eq!(to_snake_case("balanceOf"), "balance_of");
         assert_eq!(to_snake_case("transfer"), "transfer");
+    }
+
+    #[test]
+    fn test_parse_error_with_params() {
+        let source = r#"
+            interface MyToken {
+                function transfer(address to, uint256 amount) external;
+                error InsufficientBalance(address account, uint256 required, uint256 available);
+                error Unauthorized();
+            }
+        "#;
+
+        let iface = parse_solidity_interface(source).unwrap();
+        assert_eq!(iface.errors.len(), 2);
+
+        let err = &iface.errors[0];
+        assert_eq!(err.name, "InsufficientBalance");
+        assert_eq!(err.param_names, vec!["account", "required", "available"]);
+        assert_eq!(err.param_types.len(), 3);
+        assert!(matches!(err.param_types[0], SolType::Address));
+        assert!(matches!(err.param_types[1], SolType::Uint(256)));
+        assert!(matches!(err.param_types[2], SolType::Uint(256)));
+
+        let err = &iface.errors[1];
+        assert_eq!(err.name, "Unauthorized");
+        assert!(err.param_names.is_empty());
+        assert!(err.param_types.is_empty());
+    }
+
+    #[test]
+    fn test_parse_error_line_directly() {
+        let err = parse_error_line("error Overflow(uint64 value, uint64 max);").unwrap();
+        assert_eq!(err.name, "Overflow");
+        assert_eq!(err.param_names, vec!["value", "max"]);
+        assert!(matches!(err.param_types[0], SolType::Uint(64)));
+        assert!(matches!(err.param_types[1], SolType::Uint(64)));
+    }
+
+    #[test]
+    fn test_parse_error_no_params() {
+        let err = parse_error_line("error Unauthorized();").unwrap();
+        assert_eq!(err.name, "Unauthorized");
+        assert!(err.param_names.is_empty());
+        assert!(err.param_types.is_empty());
+    }
+
+    #[test]
+    fn test_parse_error_with_tuple_param() {
+        let err =
+            parse_error_line("error BadSwap((address,uint256) order, uint256 minOutput);").unwrap();
+        assert_eq!(err.name, "BadSwap");
+        assert_eq!(err.param_names, vec!["order", "minOutput"]);
+        assert_eq!(err.param_types.len(), 2);
+        assert!(matches!(&err.param_types[0], SolType::Tuple(t) if t.len() == 2));
+        assert!(matches!(err.param_types[1], SolType::Uint(256)));
+    }
+
+    #[test]
+    fn test_parse_error_with_array_param() {
+        let err = parse_error_line("error BadBatch(uint256[] ids);").unwrap();
+        assert_eq!(err.name, "BadBatch");
+        assert!(
+            matches!(&err.param_types[0], SolType::Array(inner) if matches!(**inner, SolType::Uint(256)))
+        );
+    }
+
+    #[test]
+    fn test_parse_error_unnamed_params() {
+        let err = parse_error_line("error E(uint256, address);").unwrap();
+        assert_eq!(err.name, "E");
+        assert_eq!(err.param_types.len(), 2);
+        assert!(matches!(err.param_types[0], SolType::Uint(256)));
+        assert!(matches!(err.param_types[1], SolType::Address));
+        // Names should be empty for unnamed params
+        assert_eq!(err.param_names[0], "");
+        assert_eq!(err.param_names[1], "");
     }
 
     #[test]

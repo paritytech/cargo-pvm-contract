@@ -3,22 +3,13 @@
 
 #[pvm_contract_macros::contract("Fibonacci.sol", allocator = "bump")]
 mod fibonacci {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {}
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {}
-        }
-    }
-
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 

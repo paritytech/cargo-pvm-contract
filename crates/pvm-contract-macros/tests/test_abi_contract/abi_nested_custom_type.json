@@ -1,5 +1,9 @@
 [
   {"type":"constructor","inputs":[],"stateMutability":"payable"},
   {"type":"function","name":"reflect","inputs":[{"name":"line","type":"((uint64,uint64),(uint64,uint64))"}],"outputs":[{"name":"","type":"((uint64,uint64),(uint64,uint64))"}],"stateMutability":"payable"},
-  {"type":"function","name":"origin","inputs":[],"outputs":[{"name":"","type":"(uint64,uint64)"}],"stateMutability":"payable"}
+  {"type":"function","name":"origin","inputs":[],"outputs":[{"name":"","type":"(uint64,uint64)"}],"stateMutability":"payable"},
+  {"type":"error","name":"InvalidCalldata","inputs":[]},
+  {"type":"error","name":"CalldataTooLarge","inputs":[]},
+  {"type":"error","name":"NoSelector","inputs":[]},
+  {"type":"error","name":"UnknownSelector","inputs":[]}
 ]

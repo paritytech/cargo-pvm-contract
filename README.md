@@ -128,4 +128,4 @@ env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release
 
 ## License
 
-MIT
+Licensed under Apache 2.0

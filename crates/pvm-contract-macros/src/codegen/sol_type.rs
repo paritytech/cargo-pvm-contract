@@ -369,7 +369,7 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 // -----------------------------------------------------------------------
 
 /// Compute the total head size expression for a dynamic struct.
-fn build_dynamic_head_size_expr(
+pub(crate) fn build_dynamic_head_size_expr(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> TokenStream {
@@ -428,7 +428,7 @@ fn build_dynamic_head_sum_expr(
     quote! { (0 #(+ #parts)*) }
 }
 
-fn generate_dynamic_encode_len(
+pub(crate) fn generate_dynamic_encode_len(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
     head_size_expr: &TokenStream,
@@ -472,7 +472,7 @@ fn generate_dynamic_encode_len(
     }
 }
 
-fn generate_dynamic_encode_body(
+pub(crate) fn generate_dynamic_encode_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
     head_size_expr: &TokenStream,
@@ -623,7 +623,9 @@ fn generate_dynamic_field_decode(
     }
 }
 
-fn extract_field_info(fields: &Fields) -> syn::Result<Vec<(Option<syn::Ident>, SolType)>> {
+pub(crate) fn extract_field_info(
+    fields: &Fields,
+) -> syn::Result<Vec<(Option<syn::Ident>, SolType)>> {
     let mut result = Vec::new();
 
     match fields {

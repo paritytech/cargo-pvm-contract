@@ -7,31 +7,29 @@ use ruint::aliases::U256;
 mod error_handling {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        AlwaysReverts,
-        ZeroNotAllowed,
-    }
+    #[derive(Debug, pvm_contract_macros::SolError)]
+    pub struct AlwaysReverts;
 
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::AlwaysReverts => b"AlwaysReverts",
-                Error::ZeroNotAllowed => b"ZeroNotAllowed",
-            }
+    #[derive(Debug, pvm_contract_macros::SolError)]
+    pub struct ZeroNotAllowed;
+
+    pvm_contract_types::sol_revert_enum! {
+        pub enum ContractError {
+            AlwaysReverts(AlwaysReverts),
+            ZeroNotAllowed(ZeroNotAllowed),
         }
     }
 
     const GUARDED_KEY: [u8; 32] = [0u8; 32];
 
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), ContractError> {
         Ok(())
     }
 
     #[pvm_contract_macros::method]
-    pub fn will_revert() -> Result<(), Error> {
-        Err(Error::AlwaysReverts)
+    pub fn will_revert() -> Result<(), ContractError> {
+        Err(AlwaysReverts.into())
     }
 
     #[pvm_contract_macros::method]
@@ -40,9 +38,9 @@ mod error_handling {
     }
 
     #[pvm_contract_macros::method]
-    pub fn set_guarded(val: U256) -> Result<(), Error> {
+    pub fn set_guarded(val: U256) -> Result<(), ContractError> {
         if val == U256::ZERO {
-            return Err(Error::ZeroNotAllowed)
+            return Err(ZeroNotAllowed.into())
         }
         api::set_storage(StorageFlags::empty(), &GUARDED_KEY, &val.to_be_bytes::<32>());
         Ok(())
@@ -59,7 +57,7 @@ mod error_handling {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), ContractError> {
         Ok(())
     }
 }

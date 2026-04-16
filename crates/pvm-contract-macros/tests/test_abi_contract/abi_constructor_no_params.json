@@ -1,3 +1,7 @@
 [
-  {"type":"constructor","inputs":[],"stateMutability":"payable"}
+  {"type":"constructor","inputs":[],"stateMutability":"payable"},
+  {"type":"error","name":"InvalidCalldata","inputs":[]},
+  {"type":"error","name":"CalldataTooLarge","inputs":[]},
+  {"type":"error","name":"NoSelector","inputs":[]},
+  {"type":"error","name":"UnknownSelector","inputs":[]}
 ]
