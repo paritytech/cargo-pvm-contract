@@ -255,11 +255,7 @@ impl HostApi for PolkaVmHost {
     fn set_storage(flags: StorageFlags, key: &[u8], value: &[u8]) -> Option<u32> {
         pallet_revive_uapi::HostFnImpl::set_storage(flags, key, value)
     }
-    fn set_storage_or_clear(
-        flags: StorageFlags,
-        key: &[u8; 32],
-        value: &[u8; 32],
-    ) -> Option<u32> {
+    fn set_storage_or_clear(flags: StorageFlags, key: &[u8; 32], value: &[u8; 32]) -> Option<u32> {
         pallet_revive_uapi::HostFnImpl::set_storage_or_clear(flags, key, value)
     }
     fn get_storage_or_zero(flags: StorageFlags, key: &[u8; 32], output: &mut [u8; 32]) {
