@@ -1118,3 +1118,57 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 
     abi_import::expand_to_module(&file, alloc).into()
 }
+
+/// Derive the [`SolEvent`] trait for a struct, enabling Solidity-compatible
+/// event emission with automatic topic hashing and indexed field packing.
+///
+/// Fields marked with `#[indexed]` become log topics (max 3). Remaining fields
+/// are ABI-encoded as the log data blob. The event signature hash is computed
+/// at compile time as topic0.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(SolEvent)]
+/// struct Transfer {
+///     #[indexed]
+///     from: Address,
+///     #[indexed]
+///     to: Address,
+///     value: U256,
+/// }
+///
+/// // Emitting the event inside a contract method:
+/// let event = Transfer { from, to, value };
+/// api::deposit_event(&event.topics(), &event.data());
+/// ```
+///
+/// # Generated Code
+///
+/// For the `Transfer` example above, the macro generates:
+///
+/// ```ignore
+/// impl ::pvm_contract_types::SolEvent for Transfer {
+///     const TOPIC: [u8; 32] = /* keccak256("Transfer(address,address,uint256)") */;
+///     const NAME: &'static str = "Transfer";
+///     const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
+///     const INDEXED_COUNT: usize = 2;
+///
+///     fn topics(&self) -> Vec<[u8; 32]> {
+///         // [topic0 (sig hash), from (right-aligned), to (right-aligned)]
+///     }
+///
+///     fn data(&self) -> Vec<u8> {
+///         // ABI-encoded value
+///     }
+/// }
+/// ```
+#[proc_macro_derive(SolEvent, attributes(indexed))]
+pub fn sol_event(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_event(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}

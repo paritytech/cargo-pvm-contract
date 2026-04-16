@@ -1772,6 +1772,184 @@ fn i256_display_matches_signed_decimal() {
     assert_eq!(format!("{}", I256::from(i64::MIN)), "-9223372036854775808");
 }
 
+// ---------------------------------------------------------------------------
+// SolEvent trait tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn const_event_topic_matches_keccak256() {
+    use alloy_core::primitives::keccak256;
+
+    let sig = "Transfer(address,address,uint256)";
+    let expected = keccak256(sig.as_bytes());
+    let got = const_event_topic(sig);
+    assert_eq!(
+        got, expected.0,
+        "const_event_topic should match alloy keccak256"
+    );
+}
+
+#[test]
+fn sol_event_transfer_topic0_is_signature_hash() {
+    use alloy_core::primitives::keccak256;
+
+    struct Transfer {
+        from: Address,
+        to: Address,
+        value: U256,
+    }
+
+    impl SolEvent for Transfer {
+        const TOPIC: [u8; 32] = const_event_topic("Transfer(address,address,uint256)");
+        const NAME: &'static str = "Transfer";
+        const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
+        const INDEXED_COUNT: usize = 2;
+
+        fn topics(&self) -> Vec<[u8; 32]> {
+            let mut from_topic = [0u8; 32];
+            from_topic[12..32].copy_from_slice(&self.from.0);
+
+            let mut to_topic = [0u8; 32];
+            to_topic[12..32].copy_from_slice(&self.to.0);
+
+            vec![Self::TOPIC, from_topic, to_topic]
+        }
+
+        fn data(&self) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            self.value.encode_to(&mut buf);
+            buf
+        }
+    }
+
+    let expected_topic = keccak256("Transfer(address,address,uint256)".as_bytes());
+    assert_eq!(Transfer::TOPIC, expected_topic.0);
+}
+
+#[test]
+fn sol_event_transfer_topics_pack_addresses_correctly() {
+    struct Transfer {
+        from: Address,
+        to: Address,
+        _value: U256,
+    }
+
+    impl SolEvent for Transfer {
+        const TOPIC: [u8; 32] = const_event_topic("Transfer(address,address,uint256)");
+        const NAME: &'static str = "Transfer";
+        const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
+        const INDEXED_COUNT: usize = 2;
+
+        fn topics(&self) -> Vec<[u8; 32]> {
+            let mut from_topic = [0u8; 32];
+            from_topic[12..32].copy_from_slice(&self.from.0);
+
+            let mut to_topic = [0u8; 32];
+            to_topic[12..32].copy_from_slice(&self.to.0);
+
+            vec![Self::TOPIC, from_topic, to_topic]
+        }
+
+        fn data(&self) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            self._value.encode_to(&mut buf);
+            buf
+        }
+    }
+
+    let from = Address([0xAA; 20]);
+    let to = Address([0xBB; 20]);
+    let event = Transfer {
+        from,
+        to,
+        _value: U256::ZERO,
+    };
+
+    let topics = event.topics();
+    assert_eq!(topics.len(), 3, "topic0 + 2 indexed");
+
+    // topic0 is signature hash
+    assert_eq!(topics[0], Transfer::TOPIC);
+
+    // indexed address is right-aligned: 12 zero bytes + 20 address bytes
+    assert_eq!(&topics[1][..12], &[0u8; 12]);
+    assert_eq!(&topics[1][12..], &[0xAA; 20]);
+    assert_eq!(&topics[2][..12], &[0u8; 12]);
+    assert_eq!(&topics[2][12..], &[0xBB; 20]);
+}
+
+#[test]
+fn sol_event_transfer_data_encodes_non_indexed() {
+    struct Transfer {
+        _from: Address,
+        _to: Address,
+        value: U256,
+    }
+
+    impl SolEvent for Transfer {
+        const TOPIC: [u8; 32] = const_event_topic("Transfer(address,address,uint256)");
+        const NAME: &'static str = "Transfer";
+        const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
+        const INDEXED_COUNT: usize = 2;
+
+        fn topics(&self) -> Vec<[u8; 32]> {
+            let mut from_topic = [0u8; 32];
+            from_topic[12..32].copy_from_slice(&self._from.0);
+            let mut to_topic = [0u8; 32];
+            to_topic[12..32].copy_from_slice(&self._to.0);
+            vec![Self::TOPIC, from_topic, to_topic]
+        }
+
+        fn data(&self) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            self.value.encode_to(&mut buf);
+            buf
+        }
+    }
+
+    let event = Transfer {
+        _from: Address([0; 20]),
+        _to: Address([0; 20]),
+        value: U256::from(42u64),
+    };
+
+    let data = event.data();
+    assert_eq!(data.len(), 32);
+    let decoded = U256::decode(&data);
+    assert_eq!(decoded, U256::from(42u64));
+}
+
+#[test]
+fn sol_event_no_indexed_fields() {
+    struct Log {
+        message: u64,
+    }
+
+    impl SolEvent for Log {
+        const TOPIC: [u8; 32] = const_event_topic("Log(uint64)");
+        const NAME: &'static str = "Log";
+        const SIGNATURE: &'static str = "Log(uint64)";
+        const INDEXED_COUNT: usize = 0;
+
+        fn topics(&self) -> Vec<[u8; 32]> {
+            vec![Self::TOPIC]
+        }
+
+        fn data(&self) -> Vec<u8> {
+            let mut buf = vec![0u8; 32];
+            self.message.encode_to(&mut buf);
+            buf
+        }
+    }
+
+    let event = Log { message: 99 };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 1, "only topic0 when no indexed fields");
+
+    let data = event.data();
+    assert_eq!(u64::decode(&data), 99);
+}
+
 #[test]
 fn i256_from_str_display_round_trip() {
     use alloc::format;

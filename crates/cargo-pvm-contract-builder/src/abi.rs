@@ -286,6 +286,11 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
                 pending = Some(line.to_string());
             }
         }
+        if line.starts_with("event ")
+            && let Some(evt) = parse_sol_event_line(line)
+        {
+            items.push(evt);
+        }
     }
 
     if items.is_empty() {
@@ -464,6 +469,54 @@ fn parse_sol_error_line(line: &str) -> Option<AbiItem> {
     let inputs = parse_sol_params(params_str);
 
     Some(AbiItem::Error { name, inputs })
+}
+
+fn parse_sol_event_line(line: &str) -> Option<AbiItem> {
+    let line = line.strip_prefix("event ")?.trim();
+
+    let paren_start = line.find('(')?;
+    let name = line[..paren_start].trim().to_string();
+
+    let paren_end = find_matching_paren(line, paren_start)?;
+    let params_str = &line[paren_start + 1..paren_end];
+    let inputs = parse_sol_event_params(params_str);
+
+    let anonymous = line[paren_end..].contains("anonymous");
+
+    Some(AbiItem::Event {
+        name,
+        inputs,
+        anonymous,
+    })
+}
+
+fn parse_sol_event_params(params_str: &str) -> Vec<AbiEventParam> {
+    if params_str.trim().is_empty() {
+        return vec![];
+    }
+
+    split_top_level(params_str)
+        .into_iter()
+        .filter_map(|p| {
+            let p = p.trim().to_string();
+            let parts: Vec<&str> = p.split_whitespace().collect();
+            if parts.is_empty() {
+                return None;
+            }
+            let param_type = parts[0].to_string();
+            let indexed = parts.contains(&"indexed");
+            let name = parts[1..]
+                .iter()
+                .find(|s| !matches!(**s, "indexed" | "memory" | "calldata" | "storage"))
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            Some(AbiEventParam {
+                name,
+                param_type,
+                indexed,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
@@ -1218,5 +1271,100 @@ interface Token {{
     #[test]
     fn no_slot_attr_returns_false() {
         assert!(!has_slot_fields("pub struct MyToken;"));
+    }
+
+    // --- Event parsing ---
+
+    #[test]
+    fn parse_event_with_indexed_params() {
+        assert_eq!(
+            parse_sol_event_line(
+                "event Transfer(address indexed from, address indexed to, uint256 value);"
+            )
+            .unwrap(),
+            AbiItem::Event {
+                name: "Transfer".to_string(),
+                inputs: vec![
+                    AbiEventParam {
+                        name: "from".to_string(),
+                        param_type: "address".to_string(),
+                        indexed: true,
+                    },
+                    AbiEventParam {
+                        name: "to".to_string(),
+                        param_type: "address".to_string(),
+                        indexed: true,
+                    },
+                    AbiEventParam {
+                        name: "value".to_string(),
+                        param_type: "uint256".to_string(),
+                        indexed: false,
+                    },
+                ],
+                anonymous: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_event_no_params() {
+        assert_eq!(
+            parse_sol_event_line("event Paused();").unwrap(),
+            AbiItem::Event {
+                name: "Paused".to_string(),
+                inputs: vec![],
+                anonymous: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_event_anonymous() {
+        let item = parse_sol_event_line("event Debug(uint256 value) anonymous;").unwrap();
+        if let AbiItem::Event { anonymous, .. } = &item {
+            assert!(anonymous);
+        } else {
+            panic!("expected Event");
+        }
+    }
+
+    #[test]
+    fn parse_event_not_an_event() {
+        assert!(parse_sol_event_line("function transfer(address,uint256)").is_none());
+    }
+
+    #[test]
+    fn generate_abi_from_sol_includes_events() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Events.sol");
+        let mut f = std::fs::File::create(&sol_path).unwrap();
+        writeln!(
+            f,
+            r#"interface IEvents {{
+    function setValue(uint256 val) external;
+    event ValueChanged(address indexed who, uint256 oldValue, uint256 newValue);
+}}"#
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let json = serde_json::to_value(&abi).unwrap();
+        let arr = json.as_array().unwrap();
+
+        let event = arr.iter().find(|item| item["type"] == "event").unwrap();
+        assert_eq!(event["name"], "ValueChanged");
+        assert_eq!(event["anonymous"], false);
+
+        let inputs = event["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0]["name"], "who");
+        assert_eq!(inputs[0]["type"], "address");
+        assert_eq!(inputs[0]["indexed"], true);
+        assert_eq!(inputs[1]["name"], "oldValue");
+        assert_eq!(inputs[1]["type"], "uint256");
+        assert_eq!(inputs[1]["indexed"], false);
+        assert_eq!(inputs[2]["name"], "newValue");
+        assert_eq!(inputs[2]["type"], "uint256");
+        assert_eq!(inputs[2]["indexed"], false);
     }
 }

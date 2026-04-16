@@ -202,6 +202,19 @@ pub const fn const_selector(sig: &str) -> [u8; 4] {
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
+/// Computes the full 32-byte keccak256 hash of an event signature at compile time.
+pub const fn const_event_topic(sig: &str) -> [u8; 32] {
+    keccak_const::Keccak256::new()
+        .update(sig.as_bytes())
+        .finalize()
+}
+
+/// Computes keccak256 of arbitrary bytes. Used by `SolEvent` to hash dynamic
+/// indexed fields at runtime.
+pub fn keccak256(data: &[u8]) -> [u8; 32] {
+    keccak_const::Keccak256::new().update(data).finalize()
+}
+
 /// ABI-compatible parameterless custom errors for framework-level reverts.
 ///
 /// Each constant is `keccak256("ErrorName()")[0..4]`. Contracts revert with
@@ -760,6 +773,50 @@ macro_rules! sol_revert_enum {
             }
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// Event trait for Solidity-compatible log emission
+// ---------------------------------------------------------------------------
+
+/// Trait for Solidity-compatible event emission.
+///
+/// Each implementor represents a single Solidity event type. The derive macro
+/// `#[derive(SolEvent)]` generates this impl automatically, computing the topic
+/// hash at compile time, packing indexed fields into topics, and ABI-encoding
+/// non-indexed fields into the data blob.
+///
+/// # Topic layout
+///
+/// - `topics()[0]` is always `keccak256(SIGNATURE)` (the event selector).
+/// - `topics()[1..=3]` are the indexed fields, packed into 32-byte slots:
+///   - Static types (address, uintN, bool, bytesN): ABI-encoded directly.
+///   - Dynamic types (string, bytes, arrays): `keccak256(abi_encode(value))`.
+/// - Maximum 3 indexed fields (4 topics total including the selector).
+///
+/// # Data layout
+///
+/// Non-indexed fields are ABI-encoded in declaration order, identical to
+/// a Solidity `abi.encode(field1, field2, ...)` call.
+#[cfg(feature = "alloc")]
+pub trait SolEvent {
+    /// Full 32-byte keccak256 hash of the canonical event signature.
+    const TOPIC: [u8; 32];
+
+    /// Event name, e.g. `"Transfer"`.
+    const NAME: &'static str;
+
+    /// Canonical Solidity event signature, e.g. `"Transfer(address,address,uint256)"`.
+    const SIGNATURE: &'static str;
+
+    /// Number of indexed fields (excluding topic0). Range: 0..=3.
+    const INDEXED_COUNT: usize;
+
+    /// Build the topics array: topic0 (signature hash) + indexed field values.
+    fn topics(&self) -> alloc::vec::Vec<[u8; 32]>;
+
+    /// ABI-encode the non-indexed fields into a data blob.
+    fn data(&self) -> alloc::vec::Vec<u8>;
 }
 
 // ---------------------------------------------------------------------------
