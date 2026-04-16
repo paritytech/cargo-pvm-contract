@@ -8,19 +8,6 @@ mod constructor_args {
     use super::*;
     use pvm_contract_types::Address;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
-
     const OWNER_KEY: [u8; 32] = key(0);
     const SUPPLY_KEY: [u8; 32] = key(1);
 
@@ -31,7 +18,7 @@ mod constructor_args {
     }
 
     #[pvm_contract_macros::constructor]
-    pub fn new(owner: Address, initial_supply: U256) -> Result<(), Error> {
+    pub fn new(owner: Address, initial_supply: U256) -> Result<(), pvm_contract_types::EmptyError> {
         let addr: [u8; 20] = owner.into();
         let mut buf = [0u8; 32];
         buf[12..32].copy_from_slice(&addr);
@@ -58,7 +45,7 @@ mod constructor_args {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 

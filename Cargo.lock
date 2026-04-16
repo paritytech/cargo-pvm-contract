@@ -1241,6 +1241,7 @@ dependencies = [
  "anyhow",
  "log",
  "polkavm-linker",
+ "pvm-contract-types",
  "tempfile",
  "toml_edit 0.22.27",
 ]
@@ -4356,6 +4357,7 @@ dependencies = [
 name = "pvm-contract-macros"
 version = "0.3.0"
 dependencies = [
+ "alloy-core",
  "keccak-const",
  "proc-macro2",
  "pvm-contract-types",

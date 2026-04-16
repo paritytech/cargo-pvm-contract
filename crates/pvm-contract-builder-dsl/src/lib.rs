@@ -10,6 +10,41 @@ pub use ruint;
 /// 4-byte Solidity function selector.
 pub type Selector = [u8; 4];
 
+/// Fixed-size stack buffer for encoding ABI-compatible revert data.
+///
+/// Encodes errors via [`pvm_contract_types::SolRevert::revert_data`] and
+/// returns a slice of the encoded bytes. Works with both single
+/// [`pvm_contract_types::SolError`] types and error enums from
+/// [`pvm_contract_types::sol_revert_enum!`].
+///
+/// # Example
+///
+/// ```ignore
+/// let mut buf = RevertBuffer::<64>::new();
+/// let payload = buf.encode(&error);
+/// HostFnImpl::return_value(ReturnFlags::REVERT, payload);
+/// ```
+pub struct RevertBuffer<const N: usize> {
+    buf: [u8; N],
+}
+
+impl<const N: usize> Default for RevertBuffer<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<const N: usize> RevertBuffer<N> {
+    pub fn new() -> Self {
+        Self { buf: [0; N] }
+    }
+
+    pub fn encode<'a, E: pvm_contract_types::SolRevert>(&'a mut self, e: &E) -> &'a [u8] {
+        let len = e.revert_data(&mut self.buf);
+        &self.buf[..len]
+    }
+}
+
 /// A method handler receives the calldata bytes after the 4-byte selector.
 ///
 /// The handler is responsible for decoding inputs, executing logic, and calling
@@ -120,12 +155,18 @@ impl ContractBuilder {
 
         let mut buf = [0u8; BUF_SIZE];
         if call_data_len > BUF_SIZE {
-            H::return_value(ReturnFlags::REVERT, b"CalldataTooLarge");
+            H::return_value(
+                ReturnFlags::REVERT,
+                &pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE,
+            );
         }
         H::call_data_copy(&mut buf[..call_data_len], 0);
 
         if call_data_len < 4 {
-            H::return_value(ReturnFlags::REVERT, b"NoSelector");
+            H::return_value(
+                ReturnFlags::REVERT,
+                &pvm_contract_types::framework_errors::NO_SELECTOR,
+            );
         }
 
         let selector: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
@@ -135,7 +176,10 @@ impl ContractBuilder {
             H::return_value(ReturnFlags::empty(), &[]);
         }
 
-        H::return_value(ReturnFlags::REVERT, b"UnknownSelector")
+        H::return_value(
+            ReturnFlags::REVERT,
+            &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR,
+        )
     }
 }
 

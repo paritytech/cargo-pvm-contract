@@ -51,7 +51,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     pub fn balance_of(_account: Address) -> U256 { U256::ZERO }
 ///
 ///     #[pvm_contract::method]
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
+///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
 ///
 ///     #[pvm_contract::fallback]
 ///     pub fn fallback() -> Result<(), Error> { Err(Error::UnknownSelector) }
@@ -79,7 +79,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     pub fn balance_of(account: Address) -> U256 { U256::ZERO }
 ///
 ///     #[pvm_contract::method]
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
+///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
 ///
 ///     #[pvm_contract::fallback]
 ///     pub fn fallback() -> Result<(), Error> { Err(Error::UnknownSelector) }
@@ -140,29 +140,26 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// }
 /// ```
 ///
-/// ## Error Type
+/// ## Error Handling
 ///
-/// The scaffold generates an empty `Error` enum inside the contract module.
-/// You are expected to add your own error variants as needed:
+/// The scaffold uses `EmptyError` for methods that don't produce errors.
+/// To add custom errors, define `SolError` structs and use them directly:
 ///
 /// ```ignore
 /// mod my_token {
-///     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-///     pub enum Error {
-///         // Add your errors here:
-///         InsufficientBalance,
-///         Unauthorized,
-///     }
+///     #[derive(Debug, pvm_contract_macros::SolError)]
+///     pub struct InsufficientBalance;
 ///
-///     impl AsRef<[u8]> for Error {
-///         fn as_ref(&self) -> &[u8] {
-///             match self {
-///                 Self::InsufficientBalance => b"InsufficientBalance",
-///                 Self::Unauthorized => b"Unauthorized",
-///             }
-///         }
-///     }
-///     // ... methods
+///     // Single error: use the struct directly
+///     pub fn transfer(to: Address, amount: U256) -> Result<(), InsufficientBalance> { ... }
+///
+///     // Multiple errors: wrap with sol_revert_enum!
+///     // pvm_contract_types::sol_revert_enum! {
+///     //     pub enum TokenError {
+///     //         InsufficientBalance(InsufficientBalance),
+///     //         Unauthorized(Unauthorized),
+///     //     }
+///     // }
 /// }
 /// ```
 ///
@@ -188,7 +185,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     pub fn balance_of(account: Address) -> U256 { U256::ZERO }
 ///
 ///     #[pvm_contract::method]
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), Error> { Ok(()) }
+///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
 ///
 ///     // --- Generated inside the module: ---
 ///
@@ -204,7 +201,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///             __SEL_balance_of => {
 ///                 if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
 ///                     pallet_revive_uapi::HostFnImpl::return_value(
-///                         pallet_revive_uapi::ReturnFlags::REVERT, b"InvalidCalldata");
+///                         pallet_revive_uapi::ReturnFlags::REVERT,
+///                         &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
 ///                 }
 ///                 let mut __decode_offset: usize = 0;
 ///                 let account = {
@@ -230,8 +228,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 ) {
 ///                     Ok(()) => return Some(()),
 ///                     Err(e) => {
+///                         let mut __revert_buf = [0u8; 256];
+///                         let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
 ///                         pallet_revive_uapi::HostFnImpl::return_value(
-///                             pallet_revive_uapi::ReturnFlags::REVERT, e.as_ref());
+///                             pallet_revive_uapi::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
 ///                     }
 ///                 }
 ///             }
@@ -246,11 +246,17 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         let mut call_data = [0u8; 512];
 ///         if call_data_len > 512 {
 ///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::REVERT, b"CalldataTooLarge");
+///                 pallet_revive_uapi::ReturnFlags::REVERT,
+///                 &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
 ///         }
 ///         pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
-///         if call_data_len < 4 { /* fallback handling */ }
+///         if call_data_len < 4 {
+///             // With #[fallback]: calls fallback. Without: reverts with NoSelector.
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::REVERT,
+///                 &::pvm_contract_types::framework_errors::NO_SELECTOR);
+///         }
 ///
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///         let input = &call_data[4..call_data_len];
@@ -259,7 +265,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///             pallet_revive_uapi::HostFnImpl::return_value(
 ///                 pallet_revive_uapi::ReturnFlags::empty(), &[]);
 ///         }
-///         // fallback or revert
+///         // With #[fallback]: calls fallback. Without: reverts with UnknownSelector.
+///         pallet_revive_uapi::HostFnImpl::return_value(
+///             pallet_revive_uapi::ReturnFlags::REVERT,
+///             &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
 ///     }
 /// }
 ///
@@ -659,6 +668,7 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `u32` | `uint32` | 32 bytes |
 /// | `u16` | `uint16` | 32 bytes |
 /// | `u8` | `uint8` | 32 bytes |
+/// | `I256` | `int256` | 32 bytes |
 /// | `i128` | `int128` | 32 bytes |
 /// | `i64` | `int64` | 32 bytes |
 /// | `i32` | `int32` | 32 bytes |
@@ -741,6 +751,40 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match codegen::expand_sol_type(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive the [`SolError`] trait for a struct, enabling Solidity-compatible
+/// ABI-encoded revert data.
+///
+/// Generates `SELECTOR` (compile-time keccak256), `SIGNATURE`, and
+/// `encode_params` from the struct fields. Each field must implement
+/// [`SolEncode`].
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(SolError)]
+/// pub struct InsufficientBalance {
+///     pub account: Address,
+///     pub required: U256,
+///     pub available: U256,
+/// }
+/// ```
+///
+/// Zero-field errors are valid:
+///
+/// ```ignore
+/// #[derive(SolError)]
+/// pub struct Unauthorized;
+/// ```
+#[proc_macro_derive(SolError)]
+pub fn sol_error(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_error(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

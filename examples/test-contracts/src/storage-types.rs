@@ -8,19 +8,6 @@ mod storage_types {
     use super::*;
     use pvm_contract_types::Address;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
-
     const KEY_U8: [u8; 32] = key(0);
     const KEY_U16: [u8; 32] = key(1);
     const KEY_U32: [u8; 32] = key(2);
@@ -38,7 +25,7 @@ mod storage_types {
     }
 
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
@@ -164,7 +151,7 @@ mod storage_types {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 

@@ -135,6 +135,10 @@ impl SolType {
             | "::pvm_contract::Address" => Some(SolType::Address),
             "U256" | "ruint::aliases::U256" => Some(SolType::Uint(256)),
             "u256" => Some(SolType::Uint(256)),
+            "I256" | "pvm_contract_types::I256" | "::pvm_contract_types::I256" => {
+                Some(SolType::Int(256))
+            }
+            "i256" => Some(SolType::Int(256)),
             "u128" => Some(SolType::Uint(128)),
             "u64" => Some(SolType::Uint(64)),
             "u32" => Some(SolType::Uint(32)),
@@ -318,6 +322,14 @@ mod tests {
         let ty: syn::Type = syn::parse_str("i128").unwrap();
         let sol = SolType::from_rust_type(&ty).unwrap();
         assert_eq!(sol, SolType::Int(128));
+
+        let ty: syn::Type = syn::parse_str("I256").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::Int(256));
+
+        let ty: syn::Type = syn::parse_str("pvm_contract_types::I256").unwrap();
+        let sol = SolType::from_rust_type(&ty).unwrap();
+        assert_eq!(sol, SolType::Int(256));
     }
 
     #[test]
