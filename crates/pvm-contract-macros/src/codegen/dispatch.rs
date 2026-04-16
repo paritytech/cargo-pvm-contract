@@ -13,15 +13,15 @@ pub(super) fn generate_revert_encoding(use_alloc: bool) -> TokenStream {
             let __revert_len = ::pvm_contract_types::SolRevert::revert_data_len(&e);
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
             ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::REVERT, &__revert_buf);
+            ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf);
         }
     } else {
         quote! {
             let mut __revert_buf = [0u8; 256];
             let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
+            ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
         }
     }
 }
@@ -54,8 +54,8 @@ pub(super) fn generate_param_decoding(
     let size_check = if !param_types.is_empty() {
         quote! {
             if input.len() < (#min_size_expr) {
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::REVERT,
+                ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::ReturnFlags::REVERT,
                     &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
             }
         }
@@ -263,8 +263,8 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
             ) };
             let mut __buf = [0u8; <#ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
             <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-            pallet_revive_uapi::HostFnImpl::return_value(
-                pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+            ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::ReturnFlags::empty(), &__buf);
         }};
     }
 
@@ -277,8 +277,8 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         ) };
         let mut __buf = [0u8; <#tuple_ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
         <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-        pallet_revive_uapi::HostFnImpl::return_value(
-            pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+        ::pvm_contract_types::PolkaVmHost::return_value(
+            ::pvm_contract_types::ReturnFlags::empty(), &__buf);
     }}
 }
 
@@ -295,13 +295,13 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
             if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
                 let mut __buf = alloc::vec![0u8; __len];
                 <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+                ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::ReturnFlags::empty(), &__buf);
             } else {
                 let mut __buf = [0u8; <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
                 <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
+                ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::ReturnFlags::empty(), &__buf[..__len]);
             }
         }};
     }
@@ -312,7 +312,7 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         let __len = <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
         let mut __buf = alloc::vec![0u8; __len];
         <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-        pallet_revive_uapi::HostFnImpl::return_value(
-            pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+        ::pvm_contract_types::PolkaVmHost::return_value(
+            ::pvm_contract_types::ReturnFlags::empty(), &__buf);
     }}
 }

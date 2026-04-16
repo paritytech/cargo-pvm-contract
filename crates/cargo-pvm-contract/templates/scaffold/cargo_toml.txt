@@ -28,7 +28,6 @@ pvm-contract-types = { path = "{{ path }}/crates/pvm-contract-types" }
 pvm-contract-macros = "{{ builder_version }}"
 pvm-contract-types = "{{ builder_version }}"
 {% endif -%}
-pallet-revive-uapi = { version = "0.10", default-features = false }
 {% endif -%}
 {% if use_alloc -%}
 {% if let Some(path) = local_path -%}

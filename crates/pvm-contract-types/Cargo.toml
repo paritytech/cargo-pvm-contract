@@ -10,6 +10,7 @@ description = "ABI encoding/decoding traits for PVM smart contracts"
 ruint = { version = "1.17", default-features = false }
 const_format = { workspace = true, default-features = false }
 keccak-const.workspace = true
+pallet-revive-uapi = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 alloy-core = { version = "1.5", features = ["sol-types"] }
@@ -20,6 +21,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [features]
 default = []
 alloc = []
+std = ["alloc"]
 
 [[bench]]
 name = "encoding"

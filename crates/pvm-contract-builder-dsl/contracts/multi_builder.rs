@@ -2,7 +2,7 @@
 #![no_main]
 #![no_std]
 
-use pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
+use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
 use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
 use ruint::aliases::U256;
@@ -44,7 +44,7 @@ pub extern "C" fn call() {
         .method(BIT_AND_SELECTOR, bit_and_handler)
         .method(IS_ZERO_SELECTOR, is_zero_handler)
         .method(INCREMENT_SELECTOR, increment_handler)
-        .dispatch::<HostFnImpl, 256>()
+        .dispatch::<PolkaVmHost, 256>()
 }
 
 fn add_handler(input: &[u8]) {
@@ -53,7 +53,7 @@ fn add_handler(input: &[u8]) {
     let result = a.wrapping_add(b);
     let mut buf = [0u8; <u32 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn multiply_handler(input: &[u8]) {
@@ -62,7 +62,7 @@ fn multiply_handler(input: &[u8]) {
     let result = a.wrapping_mul(b);
     let mut buf = [0u8; <u64 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn is_even_handler(input: &[u8]) {
@@ -70,7 +70,7 @@ fn is_even_handler(input: &[u8]) {
     let result = (n & 1) == 0;
     let mut buf = [0u8; <bool as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn negate_handler(input: &[u8]) {
@@ -78,7 +78,7 @@ fn negate_handler(input: &[u8]) {
     let result = !value + U256::from(1u8);
     let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn max_handler(input: &[u8]) {
@@ -87,7 +87,7 @@ fn max_handler(input: &[u8]) {
     let result = if a > b { a } else { b };
     let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn hash_handler(input: &[u8]) {
@@ -97,7 +97,7 @@ fn hash_handler(input: &[u8]) {
     let result = U256::from_be_bytes::<32>(bytes);
     let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn sum3_handler(input: &[u8]) {
@@ -107,7 +107,7 @@ fn sum3_handler(input: &[u8]) {
     let result = a.wrapping_add(b).wrapping_add(c);
     let mut buf = [0u8; <u32 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn bit_and_handler(input: &[u8]) {
@@ -116,7 +116,7 @@ fn bit_and_handler(input: &[u8]) {
     let result = a & b;
     let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn is_zero_handler(input: &[u8]) {
@@ -124,7 +124,7 @@ fn is_zero_handler(input: &[u8]) {
     let result = value == U256::ZERO;
     let mut buf = [0u8; <bool as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn increment_handler(input: &[u8]) {
@@ -132,5 +132,5 @@ fn increment_handler(input: &[u8]) {
     let result = n.wrapping_add(1);
     let mut buf = [0u8; <u32 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }

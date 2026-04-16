@@ -525,23 +525,23 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {}
         } else if use_alloc {
             quote! {
-                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
             }
         } else {
             let buffer_size = args.buffer_size;
             quote! {
-                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::REVERT,
+                    ::pvm_contract_types::PolkaVmHost::return_value(
+                        ::pvm_contract_types::ReturnFlags::REVERT,
                         &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
                 let input = &call_data[..call_data_len];
                 #size_check
             }
@@ -609,13 +609,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::REVERT,
+                ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::ReturnFlags::REVERT,
                     &::pvm_contract_types::framework_errors::NO_SELECTOR);
             },
             quote! {
-                pallet_revive_uapi::HostFnImpl::return_value(
-                    pallet_revive_uapi::ReturnFlags::REVERT,
+                ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::ReturnFlags::REVERT,
                     &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
             },
         )
@@ -625,9 +625,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -637,8 +637,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let input = &call_data[4..];
 
                 if route(selector, input).is_some() {
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::empty(), &[]);
+                    ::pvm_contract_types::PolkaVmHost::return_value(
+                        ::pvm_contract_types::ReturnFlags::empty(), &[]);
                 }
 
                 #unknown_selector_handler
@@ -649,14 +649,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::REVERT,
+                    ::pvm_contract_types::PolkaVmHost::return_value(
+                        ::pvm_contract_types::ReturnFlags::REVERT,
                         &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -666,8 +666,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let input = &call_data[4..call_data_len];
 
                 if route(selector, input).is_some() {
-                    pallet_revive_uapi::HostFnImpl::return_value(
-                        pallet_revive_uapi::ReturnFlags::empty(), &[]);
+                    ::pvm_contract_types::PolkaVmHost::return_value(
+                        ::pvm_contract_types::ReturnFlags::empty(), &[]);
                 }
 
                 #unknown_selector_handler
@@ -684,7 +684,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #mod_vis mod #mod_name {
             #mod_content
 
-            #[cfg(not(feature = "abi-gen"))]
             #contract_struct
 
             #[cfg(not(feature = "abi-gen"))]
@@ -730,7 +729,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
 
     quote! {
         #[allow(unused_imports)]
-        use pallet_revive_uapi::HostFn as _;
+        use ::pvm_contract_types::HostApi as _;
 
         #(#items)*
     }

@@ -4376,6 +4376,7 @@ dependencies = [
  "const_format",
  "criterion",
  "keccak-const",
+ "pallet-revive-uapi 0.10.1",
  "proptest",
  "pvm-contract-macros",
  "ruint",

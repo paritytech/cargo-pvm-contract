@@ -39,6 +39,7 @@ dependencies = [
  "anyhow",
  "log",
  "polkavm-linker",
+ "pvm-contract-types",
  "serde",
  "serde_json",
  "toml_edit",
@@ -390,6 +391,7 @@ version = "0.3.0"
 dependencies = [
  "const_format",
  "keccak-const",
+ "pallet-revive-uapi",
  "ruint",
 ]
 

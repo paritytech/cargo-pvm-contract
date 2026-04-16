@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pallet_revive_uapi::{HostFnImpl as api, ReturnFlags, StorageFlags};
+use pvm_contract_types::{PolkaVmHost as api, ReturnFlags, StorageFlags};
 use ruint::aliases::U256;
 
 {% if let Some(sol_file_name) = sol_file_name %}

@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+use pvm_contract_types::{PolkaVmHost as api, StorageFlags};
 use ruint::aliases::U256;
 
 #[cfg(not(feature = "abi-gen"))]
