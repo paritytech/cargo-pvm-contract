@@ -1,0 +1,52 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "readStorage",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "writeStorage",
+    "inputs": [
+      {
+        "name": "key",
+        "type": "uint256"
+      },
+      {
+        "name": "value",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "getCaller",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "payable"
+  }
+]

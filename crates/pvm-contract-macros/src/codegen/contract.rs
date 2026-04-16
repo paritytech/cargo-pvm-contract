@@ -696,13 +696,35 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
                             || segments[1].ident == "constructor"
                             || segments[1].ident == "fallback"))
                 });
-                quote! { #new_func }
+                // Gate user functions behind not(abi-gen): abi-gen only needs
+                // type info (`SolEncode::SOL_NAME`) — function bodies may call
+                // host APIs that don't exist on the native target used for
+                // abi-gen compilation.
+                quote! {
+                    #[cfg(not(feature = "abi-gen"))]
+                    #new_func
+                }
+            }
+            syn::Item::Use(use_item) => {
+                // Gate `use alloc::*` imports behind not(abi-gen): when the
+                // allocator's `extern crate alloc` is cfg-gated out, these
+                // would fail to resolve on the host target.
+                let use_str = quote! { #use_item }.to_string();
+                if use_str.contains("alloc ::") || use_str.contains("alloc::") {
+                    quote! {
+                        #[cfg(not(feature = "abi-gen"))]
+                        #use_item
+                    }
+                } else {
+                    quote! { #use_item }
+                }
             }
             other => quote! { #other },
         })
         .collect();
 
     quote! {
+        #[cfg(not(feature = "abi-gen"))]
         #[allow(unused_imports)]
         use pallet_revive_uapi::HostFn as _;
 
@@ -854,5 +876,38 @@ mod tests {
         // Should have match for Result error handling
         assert!(output.contains("Err (e)"));
         assert!(output.contains("REVERT"));
+    }
+
+    #[test]
+    fn user_functions_are_cfg_gated_for_abi_gen() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn do_something(value: U256) -> U256 {
+                    value
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // User functions should be gated behind not(abi-gen) so they don't
+        // compile on the host target (they may call host APIs).
+        // The function name should only appear inside a cfg(not(abi-gen)) block.
+        assert!(
+            output.contains("not (feature = \"abi-gen\")"),
+            "user functions must be cfg-gated for abi-gen"
+        );
+
+        // The abi-gen helper should still reference the type for SOL_NAME
+        assert!(output.contains("SOL_NAME"));
     }
 }
