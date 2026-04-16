@@ -54,10 +54,6 @@ fn expand_static_sol_type(
     let encode_body = generate_static_encode_body(fields);
     let decode_body = generate_static_decode_body(fields);
 
-    // Stylus trick: only emit abi_param when the proc-macro crate itself has
-    // abi-gen enabled (via feature unification from the consumer's abi-gen feature).
-    // This avoids emitting #[cfg(feature = "abi-gen")] into consumer code, which
-    // would leak the feature name and trigger check-cfg warnings.
     #[cfg(feature = "abi-gen")]
     let abi_param_fn = generate_abi_param_fn(fields, field_info);
     #[cfg(not(feature = "abi-gen"))]

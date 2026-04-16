@@ -797,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn constructor_inputs_appear_in_abi_gen_output() {
+    fn constructor_with_params_generates_deploy_decoding() {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
@@ -812,15 +812,13 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // abi-gen main is generated (no sol_path)
-        assert!(output.contains("feature = \"abi-gen\""));
-        // constructor entry uses AbiItem struct
-        assert!(output.contains("AbiItem"));
-        // param names are emitted
+        // deploy() is generated with param decoding
+        assert!(output.contains("deploy"));
+        // param names are used in decode statements
         assert!(output.contains("\"owner\""));
         assert!(output.contains("\"supply\""));
-        // param types are resolved via trait abi_param
-        assert!(output.contains("abi_param"));
+        // route function is generated
+        assert!(output.contains("fn route"));
     }
 
     #[test]
