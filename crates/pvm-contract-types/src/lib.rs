@@ -20,7 +20,7 @@ use ruint::aliases::U256;
 /// Use [`ConstStr::new`] to concatenate two `&str` values in a `const`
 /// context, then call [`ConstStr::as_str`] to obtain the resulting `&str`.
 pub struct ConstStr {
-    buf: [u8; 256],
+    buf: [u8; 4096],
     len: usize,
 }
 
@@ -30,9 +30,9 @@ impl ConstStr {
         let a = a.as_bytes();
         let b = b.as_bytes();
         let len = a.len() + b.len();
-        assert!(len <= 256, "concatenated string exceeds 256 bytes");
+        assert!(len <= 4096, "concatenated string exceeds 4096 bytes");
 
-        let mut buf = [0u8; 256];
+        let mut buf = [0u8; 4096];
         let mut i = 0;
         while i < a.len() {
             buf[i] = a[i];
@@ -50,7 +50,7 @@ impl ConstStr {
     pub const fn append(self, s: &str) -> Self {
         let s = s.as_bytes();
         let new_len = self.len + s.len();
-        assert!(new_len <= 256, "appended string exceeds 256 bytes");
+        assert!(new_len <= 4096, "appended string exceeds 4096 bytes");
 
         let mut buf = self.buf;
         let mut i = 0;
@@ -79,7 +79,7 @@ impl ConstStr {
         let mut i = num_digits;
         while i > 0 {
             i -= 1;
-            assert!(new_len < 256, "appended usize exceeds 256 bytes");
+            assert!(new_len < 4096, "appended usize exceeds 4096 bytes");
             buf[new_len] = digits[i];
             new_len += 1;
         }

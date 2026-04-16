@@ -70,9 +70,21 @@ fn build_project(project_dir: &Path, profile: &str) {
     assert!(status.success(), "cargo build ({profile}) failed");
 }
 
+fn gen_abi(project_dir: &Path) {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(project_dir)
+        .env_remove("CARGO")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .arg("pvm-contract")
+        .arg("gen-abi")
+        .assert()
+        .success();
+}
+
 fn verify_build_artifacts(project_dir: &Path, binary_name: &str, profile: &str) {
     verify_polkavm_binary(project_dir, binary_name, profile);
-    verify_abi_json(project_dir, binary_name, profile);
+    gen_abi(project_dir);
+    verify_abi_json(project_dir, binary_name);
 }
 
 fn verify_polkavm_binary(project_dir: &Path, binary_name: &str, profile: &str) {
@@ -85,9 +97,9 @@ fn verify_polkavm_binary(project_dir: &Path, binary_name: &str, profile: &str) {
     );
 }
 
-fn verify_abi_json(project_dir: &Path, binary_name: &str, profile: &str) {
+fn verify_abi_json(project_dir: &Path, binary_name: &str) {
     let target_dir = project_dir.join("target");
-    let abi_file = target_dir.join(format!("{binary_name}.{profile}.abi.json"));
+    let abi_file = target_dir.join(format!("{binary_name}.abi.json"));
     assert!(
         abi_file.exists(),
         "ABI JSON not found: {}",
@@ -239,8 +251,9 @@ fn abi_json_has_correct_structure() {
     let project_dir = scaffold_example(&temp_dir, "abi-test", "MyToken", "macro");
 
     build_project(&project_dir, "debug");
+    gen_abi(&project_dir);
 
-    let abi_file = project_dir.join("target").join("abi-test.debug.abi.json");
+    let abi_file = project_dir.join("target").join("abi-test.abi.json");
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
     let abi: Vec<serde_json::Value> = serde_json::from_str(&abi_content).expect("parse ABI JSON");
 

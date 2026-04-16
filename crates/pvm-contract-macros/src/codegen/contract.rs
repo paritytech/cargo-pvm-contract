@@ -127,7 +127,7 @@ pub(super) struct ParsedContract {
     pub(super) fallback_name: Option<Ident>,
 }
 
-fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
+fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -143,11 +143,29 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
         {
             let name = s.value();
             if !name.is_empty() {
-                return Some(name);
+                if !is_valid_solidity_identifier(&name) {
+                    return Err(syn::Error::new(
+                        s.span(),
+                        format!(
+                            "Invalid Solidity identifier `{name}`. \
+                             Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
+                        ),
+                    ));
+                }
+                return Ok(Some(name));
             }
         }
     }
-    None
+    Ok(None)
+}
+
+fn is_valid_solidity_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
@@ -301,7 +319,7 @@ fn parse_contract(
 
                 let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)
+                    let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .functions
@@ -319,7 +337,7 @@ fn parse_contract(
                     let selector = compute_selector(&sol_func.signature.canonical_signature());
                     (sol_func.name.clone(), Some(selector))
                 } else {
-                    let sol_name = extract_method_rename(&func.attrs)
+                    let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
                     (sol_name, None)
                 };
@@ -385,16 +403,20 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let mod_content = strip_pvm_attrs(&input);
 
+    // Only `#[global_allocator]` needs to be gated out of abi-gen builds: the contract-local
+    // allocators (picoalloc/pvm_bump_allocator) have tiny fixed-size backing buffers (default 1 KB)
+    // that are too small for std's allocations on the host. The `extern crate alloc;` and
+    // `use alloc::vec::{self, Vec};` lines work fine under std (alloc is always in the sysroot),
+    // so they stay unconditional.
     let alloc_setup = match args.allocator {
         Some(AllocatorKind::Pico) => {
             let allocator_size = args.allocator_size;
             quote! {
-                                extern crate alloc;
-
+                extern crate alloc;
                 use alloc::vec;
-
                 use alloc::vec::Vec;
 
+                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
                     static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
@@ -408,12 +430,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         Some(AllocatorKind::Bump) => {
             let allocator_size = args.allocator_size;
             quote! {
-                                extern crate alloc;
-
+                extern crate alloc;
                 use alloc::vec;
-
                 use alloc::vec::Vec;
 
+                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static ALLOC: pvm_bump_allocator::BumpAllocator<#allocator_size> =
                     pvm_bump_allocator::BumpAllocator::new();
@@ -423,7 +444,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let panic_handler = quote! {
-        #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+        #[cfg(all(
+            not(feature = "abi-gen"),
+            any(target_arch = "riscv32", target_arch = "riscv64")
+        ))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
             unsafe {
@@ -601,17 +625,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #mod_vis mod #mod_name {
             #mod_content
 
+            #[cfg(not(feature = "abi-gen"))]
             #contract_struct
 
+            #[cfg(not(feature = "abi-gen"))]
             #route_fn
 
+            #[cfg(not(feature = "abi-gen"))]
             #call_fn
 
+            #[cfg(not(feature = "abi-gen"))]
             #deploy_fn
 
             #abi_gen_helper
         }
 
+        #[cfg(not(feature = "abi-gen"))]
         #router_impl
 
         #abi_gen_main
@@ -703,43 +732,37 @@ fn generate_abi_gen(parsed: &ParsedContract) -> (TokenStream, TokenStream) {
     (helper, main_fn)
 }
 
-/// Push ABI parameter entries into the flat concatcp parts list.
+/// Push a single ABI parameter/output entry: `{"name":"<name>","type":"<ABI_TYPE>"<ABI_COMPONENTS>}`.
+///
+/// Centralised so that adding new ABI fields (e.g. `internalType`, `indexed`)
+/// only requires changes in one place.
+fn push_abi_entry(parts: &mut Vec<TokenStream>, name: &str, ty: &syn::Type) {
+    parts.push(quote! { "{\"name\":\"" });
+    parts.push(quote! { #name });
+    parts.push(quote! { "\",\"type\":\"" });
+    parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_TYPE });
+    parts.push(quote! { "\"" });
+    parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
+    parts.push(quote! { "}" });
+}
+
+/// Push a comma-separated list of ABI parameter entries (named).
 fn push_abi_params(parts: &mut Vec<TokenStream>, param_names: &[Ident], param_types: &[syn::Type]) {
     for (i, name) in param_names.iter().enumerate() {
         if i > 0 {
             parts.push(quote! { "," });
         }
-        let name_str = name.to_string();
-        let ty = &param_types[i];
-
-        parts.push(quote! { "{\"name\":\"" });
-        parts.push(quote! { #name_str });
-        parts.push(quote! { "\",\"type\":\"" });
-
-        // Use trait constants for type and components
-        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_TYPE });
-        parts.push(quote! { "\"" });
-        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
-
-        parts.push(quote! { "}" });
+        push_abi_entry(parts, &name.to_string(), &param_types[i]);
     }
 }
 
-/// Push ABI output entries into the flat concatcp parts list.
+/// Push a comma-separated list of ABI output entries (unnamed).
 fn push_abi_outputs(parts: &mut Vec<TokenStream>, return_types: &[syn::Type]) {
     for (i, ty) in return_types.iter().enumerate() {
         if i > 0 {
             parts.push(quote! { "," });
         }
-
-        parts.push(quote! { "{\"name\":\"\"" });
-        parts.push(quote! { ",\"type\":\"" });
-
-        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_TYPE });
-        parts.push(quote! { "\"" });
-        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::ABI_COMPONENTS });
-
-        parts.push(quote! { "}" });
+        push_abi_entry(parts, "", ty);
     }
 }
 
@@ -749,6 +772,10 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
         .1
         .iter()
         .map(|item| match item {
+            // User functions (both pvm-annotated methods/constructors/fallbacks and helpers)
+            // may call `api::*` which is unavailable when building for the host with abi-gen,
+            // so gate them out. Non-function items (types, consts, use statements) are kept
+            // so that `__abi_json()` can reference user-defined SolType struct types.
             syn::Item::Fn(func) => {
                 let mut new_func = func.clone();
                 new_func.attrs.retain(|attr| {
@@ -759,13 +786,17 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
                             || segments[1].ident == "constructor"
                             || segments[1].ident == "fallback"))
                 });
-                quote! { #new_func }
+                quote! {
+                    #[cfg(not(feature = "abi-gen"))]
+                    #new_func
+                }
             }
             other => quote! { #other },
         })
         .collect();
 
     quote! {
+        #[cfg(not(feature = "abi-gen"))]
         #[allow(unused_imports)]
         use pallet_revive_uapi::HostFn as _;
 
