@@ -75,8 +75,27 @@ where
     }
 
     /// Uploads contract code to the blockchain via an extrinsic.
-    pub async fn upload_code(&self) -> Result<UploadResult<C>, ErrorVariant> {
-        let storage_deposit_limit = self.opts.storage_deposit_limit().unwrap_or(u128::MAX);
+    ///
+    /// If no storage deposit limit was provided, a dry-run is performed first
+    /// to estimate the required deposit.
+    pub async fn upload_code(&mut self) -> Result<UploadResult<C>, ErrorVariant> {
+        if self.opts.storage_deposit_limit().is_none() {
+            let dry_run_result = self
+                .upload_code_rpc()
+                .await
+                .map_err(|e| {
+                    ErrorVariant::from(anyhow::anyhow!(
+                        "Dry-run to estimate storage deposit limit failed: {e}"
+                    ))
+                })?
+                .map_err(|e| {
+                    ErrorVariant::from(anyhow::anyhow!(
+                        "Upload dry-run returned dispatch error: {e:?}"
+                    ))
+                })?;
+            self.set_storage_deposit_limit(Some(dry_run_result.deposit));
+        }
+        let storage_deposit_limit = self.opts.storage_deposit_limit().expect("set above");
 
         let call = UploadCode::new(self.code.clone(), storage_deposit_limit).build();
 

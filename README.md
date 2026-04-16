@@ -134,4 +134,4 @@ cargo pvm-contract build
 
 ## License
 
-MIT
+Licensed under Apache 2.0

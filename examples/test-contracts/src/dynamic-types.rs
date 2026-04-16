@@ -8,22 +8,10 @@ mod dynamic_types {
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
+    use pvm_contract_types::Bytes;
 
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
@@ -38,13 +26,13 @@ mod dynamic_types {
     }
 
     #[pvm_contract_macros::method]
-    pub fn get_bytes_length(b: Vec<u8>) -> U256 {
-        U256::from(b.len())
+    pub fn get_bytes_length(b: Bytes) -> U256 {
+        U256::from(b.0.len())
     }
 
     #[pvm_contract_macros::method]
-    pub fn echo_bytes() -> Vec<u8> {
-        vec![0xDE, 0xAD, 0xBE, 0xEF]
+    pub fn echo_bytes() -> Bytes {
+        Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])
     }
 
     #[pvm_contract_macros::method]
@@ -62,7 +50,7 @@ mod dynamic_types {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 }

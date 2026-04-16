@@ -72,7 +72,7 @@ impl SubstrateClient {
         code: &[u8],
         signer: &TestSigner,
     ) -> Result<UploadResult<TestConfig>> {
-        let exec = UploadCommandBuilder::new(self.opts(signer), ContractBinary(code.to_vec()))
+        let mut exec = UploadCommandBuilder::new(self.opts(signer), ContractBinary(code.to_vec()))
             .done()
             .await?;
         exec.upload_code().await.map_err(|e| anyhow::anyhow!("{e}"))

@@ -61,3 +61,24 @@ fn custom_type_method_produces_valid_abi() {
         expected_abi("custom_type_method"),
     );
 }
+
+#[test]
+fn multi_method_produces_valid_abi() {
+    assert_eq!(cargo_run_abi("multi-method"), expected_abi("multi_method"),);
+}
+
+#[test]
+fn nested_custom_type_produces_valid_abi() {
+    assert_eq!(
+        cargo_run_abi("nested-custom-type"),
+        expected_abi("nested_custom_type"),
+    );
+}
+
+#[test]
+fn dynamic_custom_return_produces_valid_abi() {
+    assert_eq!(
+        cargo_run_abi("dynamic-custom-return"),
+        expected_abi("dynamic_custom_return"),
+    );
+}

@@ -7,23 +7,10 @@ use ruint::aliases::U256;
 mod multi_method {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {
-        Unexpected,
-    }
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] {
-            match *self {
-                Error::Unexpected => b"Unexpected",
-            }
-        }
-    }
-
     const COUNTER_KEY: [u8; 32] = [0u8; 32];
 
     #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
+    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 
@@ -65,7 +52,7 @@ mod multi_method {
     }
 
     #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
+    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
         Ok(())
     }
 }
