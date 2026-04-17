@@ -382,7 +382,7 @@ pub trait SolRevert {
         Self: Sized,
     {
         let arr: &'static [&'static str] = &[];
-        arr.into_iter().chain(&[])
+        arr.iter()
     }
 }
 
@@ -402,7 +402,7 @@ impl<E: SolError> SolRevert for E {
 
     fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
         let arr = &[E::SIGNATURE];
-        arr.into_iter()
+        arr.iter()
     }
 }
 
@@ -524,7 +524,7 @@ impl SolRevert for SolDefaultError {
 
     fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
         let arr = &[Panic::SIGNATURE, RevertString::SIGNATURE];
-        arr.into_iter()
+        arr.iter()
     }
 }
 

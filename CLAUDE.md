@@ -143,7 +143,7 @@ pub trait SolError {
 pub trait SolRevert {
     fn revert_data(&self, buf: &mut [u8]) -> usize;    // selector + encode_params
     fn revert_data_len(&self) -> usize;                 // total revert data size
-    fn error_signatures() -> &'static [&'static str];   // for ABI JSON generation
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str>;   // for ABI JSON generation
 }
 ```
 

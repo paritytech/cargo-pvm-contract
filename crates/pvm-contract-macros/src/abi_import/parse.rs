@@ -11,7 +11,7 @@ pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File,
         if let Ok(syn::MetaNameValue { path, value, .. }) = fork.parse::<syn::MetaNameValue>() {
             (
                 true,
-                path.get_ident().is_some_and(|x| x.to_string() == "alloc")
+                path.get_ident().is_some_and(|x| *x == "alloc")
                     && matches!(
                         value,
                         Expr::Lit(syn::ExprLit {

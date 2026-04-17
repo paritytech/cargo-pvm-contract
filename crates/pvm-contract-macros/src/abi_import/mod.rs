@@ -39,7 +39,7 @@ pub fn expand_function(
                 .as_ref()
                 .unwrap_or(&SolIdent::new("s"))
                 .to_string();
-            let name = format_ident!("{}", to_snake_case(&name));
+            let name = format_ident!("{}", to_snake_case(name));
             quote! {#name: #typ}
         });
         quote! { #(#args),* }
@@ -221,7 +221,8 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     _ => None,
                 })
                 .map(|(x, is_constructor)| expand_function(contract_name.clone(), x, is_constructor, alloc));
-            let (constructor, funcs): (Vec<(bool, TokenStream)>, Vec<(bool, TokenStream)>) = funcs.partition(|(is_constructor, _)| *is_constructor);
+            type Funcs = Vec<(bool, TokenStream)>;
+            let (constructor, funcs): (Funcs, Funcs) = funcs.partition(|(is_constructor, _)| *is_constructor);
             let funcs = funcs.into_iter().map(|x| x.1);
             let constructor: Vec<TokenStream> = constructor.into_iter().map(|x| x.1).collect();
             let constructor = if constructor.is_empty() {
@@ -348,7 +349,6 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
 #[cfg(test)]
 mod test {
     use crate::abi_import::expand_to_module;
-    use expect_test;
     use proc_macro2::Span;
     use quote::ToTokens;
     use syn::parse::{Parse, Parser};
