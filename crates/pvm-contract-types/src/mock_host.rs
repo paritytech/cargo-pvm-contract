@@ -3,6 +3,10 @@
 //! [`MockHost`] implements [`HostApi`](super::HostApi) using thread-local state,
 //! allowing contract logic to be tested with `cargo test` on the host target.
 //!
+//! All `HostApi` methods are implemented. Methods that need external context
+//! (`call`, `instantiate`, etc.) use configurable mock returns — register
+//! expected results via [`MockHost::mock_call`] / [`MockHost::mock_instantiate`].
+//!
 //! # Quick start
 //!
 //! ```ignore
@@ -17,6 +21,7 @@
 //!
 //! // Contract logic can now call HostApi methods:
 //! // MockHost::get_storage, set_storage, caller, deposit_event, etc.
+//! MockHost::deposit_event(&[[0; 32]], &[1, 2, 3]);
 //!
 //! let events = MockHost::events();
 //! assert_eq!(events.len(), 1);
@@ -55,6 +60,16 @@ use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, ReturnFlags, 
 /// `Err(())` — call reverts with `ReturnErrorCode::CalleeReverted`.
 type MockCallReturn = Result<Vec<u8>, ()>;
 
+/// Return value for mocked `instantiate` calls.
+///
+/// `address` — the deployed contract address written to the address output.
+/// `output` — optional output data written to the output buffer.
+#[derive(Clone)]
+struct MockInstantiateReturn {
+    address: [u8; 20],
+    output: Vec<u8>,
+}
+
 #[derive(Default)]
 struct MockState {
     // --- Input state (configured before contract execution) ---
@@ -62,22 +77,27 @@ struct MockState {
     origin: [u8; 20],
     address: [u8; 20],
     balance: [u8; 32],
+    balances: HashMap<[u8; 20], [u8; 32]>,
     chain_id: [u8; 32],
+    base_fee: [u8; 32],
     block_number: [u8; 32],
     block_timestamp: [u8; 32],
     block_author: [u8; 20],
     value_transferred: [u8; 32],
     calldata: Vec<u8>,
+    immutable_data: Vec<u8>,
 
     // --- Persistent state (read/written during execution) ---
     storage: HashMap<Vec<u8>, Vec<u8>>,
 
-    // --- Mock call returns (keyed by callee address) ---
+    // --- Mock call/instantiate returns ---
     call_returns: HashMap<[u8; 20], MockCallReturn>,
+    instantiate_return: Option<MockInstantiateReturn>,
 
     // --- Output state (captured during execution) ---
     events: Vec<(Vec<[u8; 32]>, Vec<u8>)>,
     return_value: Option<(ReturnFlags, Vec<u8>)>,
+    return_data: Vec<u8>,
 }
 
 thread_local! {
@@ -125,6 +145,23 @@ impl MockHost {
         MOCK_STATE.with(|s| s.borrow_mut().balance = balance);
     }
 
+    /// Set the balance of a specific address returned by [`HostApi::balance_of`].
+    pub fn set_balance_of(addr: [u8; 20], balance: [u8; 32]) {
+        MOCK_STATE.with(|s| {
+            s.borrow_mut().balances.insert(addr, balance);
+        });
+    }
+
+    /// Set the base fee returned by [`HostApi::base_fee`].
+    pub fn set_base_fee(base_fee: [u8; 32]) {
+        MOCK_STATE.with(|s| s.borrow_mut().base_fee = base_fee);
+    }
+
+    /// Set the immutable data returned by [`HostApi::get_immutable_data`].
+    pub fn set_immutable_data(data: Vec<u8>) {
+        MOCK_STATE.with(|s| s.borrow_mut().immutable_data = data);
+    }
+
     /// Set the chain ID returned by [`HostApi::chain_id`].
     pub fn set_chain_id(chain_id: [u8; 32]) {
         MOCK_STATE.with(|s| s.borrow_mut().chain_id = chain_id);
@@ -133,6 +170,11 @@ impl MockHost {
     /// Set the block number returned by [`HostApi::block_number`].
     pub fn set_block_number(block_number: [u8; 32]) {
         MOCK_STATE.with(|s| s.borrow_mut().block_number = block_number);
+    }
+
+    /// Set the block author returned by [`HostApi::block_author`].
+    pub fn set_block_author(block_author: [u8; 20]) {
+        MOCK_STATE.with(|s| s.borrow_mut().block_author = block_author);
     }
 
     /// Set the block timestamp returned by [`HostApi::now`].
@@ -164,6 +206,17 @@ impl MockHost {
         });
     }
 
+    /// Register a mock return for [`HostApi::instantiate`].
+    ///
+    /// When contract code calls `instantiate`, the mock will return `Ok(())`
+    /// and write `address` to the address output parameter.
+    pub fn mock_instantiate(address: [u8; 20], output: Vec<u8>) {
+        MOCK_STATE.with(|s| {
+            s.borrow_mut().instantiate_return =
+                Some(MockInstantiateReturn { address, output });
+        });
+    }
+
     // --- Storage helpers ---
 
     /// Read raw storage for test assertions.
@@ -190,6 +243,11 @@ impl MockHost {
     /// Returns `None` if `return_value` was never called.
     pub fn take_return_value() -> Option<(ReturnFlags, Vec<u8>)> {
         MOCK_STATE.with(|s| s.borrow_mut().return_value.take())
+    }
+
+    /// Get the return data from the last external call.
+    pub fn return_data() -> Vec<u8> {
+        MOCK_STATE.with(|s| s.borrow().return_data.clone())
     }
 }
 
@@ -241,6 +299,24 @@ impl MockHostBuilder {
     /// Set the contract balance.
     pub fn balance(mut self, balance: [u8; 32]) -> Self {
         self.state.balance = balance;
+        self
+    }
+
+    /// Set the balance of a specific address.
+    pub fn balance_of(mut self, addr: [u8; 20], balance: [u8; 32]) -> Self {
+        self.state.balances.insert(addr, balance);
+        self
+    }
+
+    /// Set the base fee.
+    pub fn base_fee(mut self, base_fee: [u8; 32]) -> Self {
+        self.state.base_fee = base_fee;
+        self
+    }
+
+    /// Set the immutable data.
+    pub fn immutable_data(mut self, data: Vec<u8>) -> Self {
+        self.state.immutable_data = data;
         self
     }
 
@@ -312,20 +388,32 @@ impl HostApi for MockHost {
         MOCK_STATE.with(|s| output.copy_from_slice(&s.borrow().address));
     }
 
-    fn get_immutable_data(_output: &mut &mut [u8]) {
-        unimplemented!("MockHost::get_immutable_data")
+    fn get_immutable_data(output: &mut &mut [u8]) {
+        MOCK_STATE.with(|s| {
+            let state = s.borrow();
+            let len = state.immutable_data.len().min(output.len());
+            output[..len].copy_from_slice(&state.immutable_data[..len]);
+            let tmp = core::mem::take(output);
+            *output = &mut tmp[..len];
+        });
     }
 
-    fn set_immutable_data(_data: &[u8]) {
-        unimplemented!("MockHost::set_immutable_data")
+    fn set_immutable_data(data: &[u8]) {
+        MOCK_STATE.with(|s| s.borrow_mut().immutable_data = data.to_vec());
     }
 
     fn balance(output: &mut [u8; 32]) {
         MOCK_STATE.with(|s| output.copy_from_slice(&s.borrow().balance));
     }
 
-    fn balance_of(_addr: &[u8; 20], _output: &mut [u8; 32]) {
-        unimplemented!("MockHost::balance_of")
+    fn balance_of(addr: &[u8; 20], output: &mut [u8; 32]) {
+        MOCK_STATE.with(|s| {
+            let state = s.borrow();
+            match state.balances.get(addr) {
+                Some(bal) => output.copy_from_slice(bal),
+                None => output.fill(0),
+            }
+        });
     }
 
     fn chain_id(output: &mut [u8; 32]) {
@@ -336,8 +424,8 @@ impl HostApi for MockHost {
         0
     }
 
-    fn base_fee(_output: &mut [u8; 32]) {
-        unimplemented!("MockHost::base_fee")
+    fn base_fee(output: &mut [u8; 32]) {
+        MOCK_STATE.with(|s| output.copy_from_slice(&s.borrow().base_fee));
     }
 
     fn call_data_size() -> u64 {
@@ -355,17 +443,24 @@ impl HostApi for MockHost {
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
         MOCK_STATE.with(|s| {
-            let state = s.borrow();
-            match state.call_returns.get(callee) {
+            let mock_return = s.borrow().call_returns.get(callee).cloned();
+            match mock_return {
                 Some(Ok(data)) => {
+                    s.borrow_mut().return_data = data.clone();
                     if let Some(out) = output {
                         let len = data.len().min(out.len());
                         out[..len].copy_from_slice(&data[..len]);
                     }
                     Ok(())
                 }
-                Some(Err(())) => Err(ReturnErrorCode::CalleeReverted),
-                None => Ok(()),
+                Some(Err(())) => {
+                    s.borrow_mut().return_data.clear();
+                    Err(ReturnErrorCode::CalleeReverted)
+                }
+                None => {
+                    s.borrow_mut().return_data.clear();
+                    Ok(())
+                }
             }
         })
     }
@@ -379,17 +474,24 @@ impl HostApi for MockHost {
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
         MOCK_STATE.with(|s| {
-            let state = s.borrow();
-            match state.call_returns.get(callee) {
+            let mock_return = s.borrow().call_returns.get(callee).cloned();
+            match mock_return {
                 Some(Ok(data)) => {
+                    s.borrow_mut().return_data = data.clone();
                     if let Some(out) = output {
                         let len = data.len().min(out.len());
                         out[..len].copy_from_slice(&data[..len]);
                     }
                     Ok(())
                 }
-                Some(Err(())) => Err(ReturnErrorCode::CalleeReverted),
-                None => Ok(()),
+                Some(Err(())) => {
+                    s.borrow_mut().return_data.clear();
+                    Err(ReturnErrorCode::CalleeReverted)
+                }
+                None => {
+                    s.borrow_mut().return_data.clear();
+                    Ok(())
+                }
             }
         })
     }
@@ -402,34 +504,74 @@ impl HostApi for MockHost {
         MOCK_STATE.with(|s| output.copy_from_slice(&s.borrow().origin));
     }
 
-    fn code_hash(_addr: &[u8; 20], _output: &mut [u8; 32]) {
-        unimplemented!("MockHost::code_hash")
+    fn code_hash(_addr: &[u8; 20], output: &mut [u8; 32]) {
+        output.fill(0);
     }
 
     fn code_size(_addr: &[u8; 20]) -> u64 {
-        unimplemented!("MockHost::code_size")
+        0
     }
 
     fn delegate_call(
         _flags: CallFlags,
-        _address: &[u8; 20],
+        address: &[u8; 20],
         _ref_time_limit: u64,
         _proof_size_limit: u64,
         _deposit_limit: &[u8; 32],
         _input_data: &[u8],
-        _output: Option<&mut &mut [u8]>,
+        output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        unimplemented!("MockHost::delegate_call")
+        MOCK_STATE.with(|s| {
+            let mock_return = s.borrow().call_returns.get(address).cloned();
+            match mock_return {
+                Some(Ok(data)) => {
+                    s.borrow_mut().return_data = data.clone();
+                    if let Some(out) = output {
+                        let len = data.len().min(out.len());
+                        out[..len].copy_from_slice(&data[..len]);
+                    }
+                    Ok(())
+                }
+                Some(Err(())) => {
+                    s.borrow_mut().return_data.clear();
+                    Err(ReturnErrorCode::CalleeReverted)
+                }
+                None => {
+                    s.borrow_mut().return_data.clear();
+                    Ok(())
+                }
+            }
+        })
     }
 
     fn delegate_call_evm(
         _flags: CallFlags,
-        _address: &[u8; 20],
+        address: &[u8; 20],
         _gas: u64,
         _input_data: &[u8],
-        _output: Option<&mut &mut [u8]>,
+        output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        unimplemented!("MockHost::delegate_call_evm")
+        MOCK_STATE.with(|s| {
+            let mock_return = s.borrow().call_returns.get(address).cloned();
+            match mock_return {
+                Some(Ok(data)) => {
+                    s.borrow_mut().return_data = data.clone();
+                    if let Some(out) = output {
+                        let len = data.len().min(out.len());
+                        out[..len].copy_from_slice(&data[..len]);
+                    }
+                    Ok(())
+                }
+                Some(Err(())) => {
+                    s.borrow_mut().return_data.clear();
+                    Err(ReturnErrorCode::CalleeReverted)
+                }
+                None => {
+                    s.borrow_mut().return_data.clear();
+                    Ok(())
+                }
+            }
+        })
     }
 
     fn deposit_event(topics: &[[u8; 32]], data: &[u8]) {
@@ -446,6 +588,8 @@ impl HostApi for MockHost {
                 Some(value) => {
                     let len = value.len().min(output.len());
                     output[..len].copy_from_slice(&value[..len]);
+                    let tmp = core::mem::take(output);
+                    *output = &mut tmp[..len];
                     Ok(())
                 }
                 None => Err(ReturnErrorCode::KeyNotFound),
@@ -460,18 +604,19 @@ impl HostApi for MockHost {
     fn call_data_copy(output: &mut [u8], offset: u32) {
         MOCK_STATE.with(|s| {
             let state = s.borrow();
-            let start = offset as usize;
-            let len = output.len().min(state.calldata.len().saturating_sub(start));
+            let start = (offset as usize).min(state.calldata.len());
+            let len = output.len().min(state.calldata.len() - start);
             output[..len].copy_from_slice(&state.calldata[start..start + len]);
+            output[len..].fill(0);
         });
     }
 
     fn call_data_load(output: &mut [u8; 32], offset: u32) {
         MOCK_STATE.with(|s| {
             let state = s.borrow();
-            let start = offset as usize;
+            let start = (offset as usize).min(state.calldata.len());
             output.fill(0);
-            let len = 32.min(state.calldata.len().saturating_sub(start));
+            let len = 32.min(state.calldata.len() - start);
             output[..len].copy_from_slice(&state.calldata[start..start + len]);
         });
     }
@@ -482,11 +627,27 @@ impl HostApi for MockHost {
         _deposit: &[u8; 32],
         _value: &[u8; 32],
         _input: &[u8],
-        _address: Option<&mut [u8; 20]>,
-        _output: Option<&mut &mut [u8]>,
+        address: Option<&mut [u8; 20]>,
+        output: Option<&mut &mut [u8]>,
         _salt: Option<&[u8; 32]>,
     ) -> HostResult {
-        unimplemented!("MockHost::instantiate")
+        MOCK_STATE.with(|s| {
+            let mock_ret = s.borrow().instantiate_return.clone();
+            match mock_ret {
+                Some(ret) => {
+                    if let Some(addr) = address {
+                        addr.copy_from_slice(&ret.address);
+                    }
+                    s.borrow_mut().return_data = ret.output.clone();
+                    if let Some(out) = output {
+                        let len = ret.output.len().min(out.len());
+                        out[..len].copy_from_slice(&ret.output[..len]);
+                    }
+                    Ok(())
+                }
+                None => Err(ReturnErrorCode::OutOfResources),
+            }
+        })
     }
 
     fn now(output: &mut [u8; 32]) {
@@ -514,7 +675,16 @@ impl HostApi for MockHost {
     }
 
     fn set_storage_or_clear(flags: StorageFlags, key: &[u8; 32], value: &[u8; 32]) -> Option<u32> {
-        Self::set_storage(flags, key.as_slice(), value.as_slice())
+        let _ = flags;
+        MOCK_STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            if *value == [0u8; 32] {
+                state.storage.remove(key.as_slice()).map(|v| v.len() as u32)
+            } else {
+                let prev = state.storage.insert(key.to_vec(), value.to_vec());
+                prev.map(|v| v.len() as u32)
+            }
+        })
     }
 
     fn get_storage_or_zero(flags: StorageFlags, key: &[u8; 32], output: &mut [u8; 32]) {
@@ -537,11 +707,18 @@ impl HostApi for MockHost {
     }
 
     fn return_data_size() -> u64 {
-        0
+        MOCK_STATE.with(|s| s.borrow().return_data.len() as u64)
     }
 
-    fn return_data_copy(_output: &mut &mut [u8], _offset: u32) {
-        unimplemented!("MockHost::return_data_copy")
+    fn return_data_copy(output: &mut &mut [u8], offset: u32) {
+        MOCK_STATE.with(|s| {
+            let state = s.borrow();
+            let start = (offset as usize).min(state.return_data.len());
+            let len = output.len().min(state.return_data.len() - start);
+            output[..len].copy_from_slice(&state.return_data[start..start + len]);
+            let tmp = core::mem::take(output);
+            *output = &mut tmp[..len];
+        });
     }
 
     fn gas_left() -> u64 {
@@ -862,5 +1039,86 @@ mod tests {
         let mut output = [0u8; 32];
         MockHost::now(&mut output);
         assert_eq!(output[31], 42);
+    }
+
+    #[test]
+    fn get_storage_shrinks_output_slice() {
+        MockHost::reset();
+        let key = [1u8; 32];
+        let value = [42u8; 10]; // 10 bytes, shorter than buffer
+
+        MockHost::set_storage(StorageFlags::empty(), &key, &value);
+
+        let mut buf = [0xFFu8; 32];
+        let mut out = &mut buf[..];
+        assert!(MockHost::get_storage(StorageFlags::empty(), &key, &mut out).is_ok());
+        assert_eq!(out.len(), 10); // slice was shrunk to actual data length
+        assert_eq!(&buf[..10], &value);
+    }
+
+    #[test]
+    fn set_storage_or_clear_deletes_on_zero_value() {
+        MockHost::reset();
+        let key = [1u8; 32];
+        let value = [42u8; 32];
+
+        MockHost::set_storage(StorageFlags::empty(), &key, &value);
+        assert!(MockHost::get_raw_storage(&key).is_some());
+
+        // Writing zeros via set_storage_or_clear should delete the key
+        MockHost::set_storage_or_clear(StorageFlags::empty(), &key, &[0u8; 32]);
+        assert!(MockHost::get_raw_storage(&key).is_none());
+
+        // get_storage should now return KeyNotFound
+        let mut buf = [0u8; 32];
+        let mut out = &mut buf[..];
+        assert_eq!(
+            MockHost::get_storage(StorageFlags::empty(), &key, &mut out),
+            Err(ReturnErrorCode::KeyNotFound)
+        );
+    }
+
+    #[test]
+    fn delegate_call_updates_return_data() {
+        MockHost::reset();
+        let callee = [0xBB; 20];
+        MockHost::mock_call(callee, Ok(vec![1, 2, 3, 4]));
+
+        let result = MockHost::delegate_call(
+            CallFlags::empty(),
+            &callee,
+            0,
+            0,
+            &[0u8; 32],
+            &[],
+            None,
+        );
+        assert!(result.is_ok());
+
+        assert_eq!(MockHost::return_data_size(), 4);
+        let mut buf = [0u8; 4];
+        let mut out = &mut buf[..];
+        MockHost::return_data_copy(&mut out, 0);
+        assert_eq!(buf, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn call_data_copy_zero_pads_tail() {
+        MockHost::reset();
+        MockHost::set_calldata(vec![1, 2, 3]); // 3 bytes
+
+        let mut buf = [0xFF; 8]; // 8-byte buffer, pre-filled with 0xFF
+        MockHost::call_data_copy(&mut buf, 0);
+        assert_eq!(buf, [1, 2, 3, 0, 0, 0, 0, 0]); // tail is zeroed, not 0xFF
+    }
+
+    #[test]
+    fn call_data_copy_offset_beyond_length() {
+        MockHost::reset();
+        MockHost::set_calldata(vec![1, 2, 3]);
+
+        let mut buf = [0xFF; 4];
+        MockHost::call_data_copy(&mut buf, 10); // offset past end
+        assert_eq!(buf, [0, 0, 0, 0]); // all zeroed
     }
 }
