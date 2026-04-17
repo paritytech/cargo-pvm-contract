@@ -84,7 +84,6 @@ fn data_encodes_non_indexed_value() {
     assert_eq!(decoded, U256::from(42u64));
 }
 
-// Cross-check topic hash against alloy
 mod alloy_cross_check {
     use alloy_core::primitives::keccak256;
     use pvm_contract_types::SolEvent as _;
@@ -97,7 +96,6 @@ mod alloy_cross_check {
     }
 }
 
-// Event with no indexed fields
 #[derive(SolEvent)]
 struct Log {
     value: u64,
@@ -131,7 +129,6 @@ fn no_indexed_signature() {
     assert_eq!(Log::INDEXED_COUNT, 0);
 }
 
-// Event with all indexed fields (no data)
 #[derive(SolEvent)]
 struct Approval {
     #[indexed]
@@ -170,7 +167,6 @@ fn all_indexed_signature() {
     assert_eq!(Approval::INDEXED_COUNT, 3);
 }
 
-// Verify U256 indexed topic is packed as 32 big-endian bytes
 #[test]
 fn u256_indexed_topic_packing() {
     let event = Approval {
@@ -180,7 +176,6 @@ fn u256_indexed_topic_packing() {
     };
     let topics = event.topics();
     let value_topic = topics[3];
-    // U256 big-endian: last 4 bytes should be 0xDEADBEEF
     assert_eq!(value_topic[28], 0xDE);
     assert_eq!(value_topic[29], 0xAD);
     assert_eq!(value_topic[30], 0xBE);
@@ -188,7 +183,6 @@ fn u256_indexed_topic_packing() {
     assert_eq!(&value_topic[..28], &[0u8; 28]);
 }
 
-// ABI_ENTRY renders a valid JSON event entry with per-field name/type/indexed.
 #[test]
 fn abi_entry_matches_expected_shape() {
     assert_eq!(
@@ -211,4 +205,284 @@ fn abi_entry_all_indexed() {
         Approval::ABI_ENTRY,
         r#"{"type":"event","name":"Approval","inputs":[{"name":"owner","type":"address","indexed":true},{"name":"spender","type":"address","indexed":true},{"name":"value","type":"uint256","indexed":true}],"anonymous":false}"#
     );
+}
+
+#[derive(SolEvent)]
+struct Tagged {
+    #[indexed]
+    tag: alloc::string::String,
+    value: U256,
+}
+
+#[test]
+fn dynamic_indexed_string_topic_is_keccak_of_raw_bytes() {
+    use alloc::string::ToString;
+
+    let tag = "hello".to_string();
+    let event = Tagged {
+        tag: tag.clone(),
+        value: U256::from(42u64),
+    };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2, "topic0 + 1 indexed");
+
+    let expected = alloy_core::primitives::keccak256(tag.as_bytes()).0;
+    assert_eq!(
+        topics[1], expected,
+        "Indexed string topic must be keccak256 of raw UTF-8 bytes (Solidity event spec)"
+    );
+}
+
+#[derive(SolEvent)]
+struct Mixed {
+    value: U256,
+    name: alloc::string::String,
+}
+
+#[test]
+fn multi_field_dynamic_data_matches_alloy_tuple_encoding() {
+    use alloc::string::ToString;
+    use alloy_core::sol_types::SolValue;
+
+    let event = Mixed {
+        value: U256::from(0xDEADBEEFu64),
+        name: "hello".to_string(),
+    };
+    let our_data = event.data();
+
+    let alloy_tuple = (
+        alloy_core::primitives::U256::from(0xDEADBEEFu64),
+        "hello".to_string(),
+    );
+    let alloy_data = alloy_tuple.abi_encode_sequence();
+
+    assert_eq!(
+        our_data, alloy_data,
+        "Event data() must match alloy's flat (uint256,string) tuple encoding"
+    );
+}
+
+#[derive(SolEvent)]
+struct BlobTagged {
+    #[indexed]
+    blob: pvm_contract_types::Bytes,
+    value: U256,
+}
+
+#[test]
+fn dynamic_indexed_bytes_topic_is_keccak_of_raw_bytes() {
+    let raw = alloc::vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02];
+    let event = BlobTagged {
+        blob: pvm_contract_types::Bytes(raw.clone()),
+        value: U256::from(1u64),
+    };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2, "topic0 + 1 indexed");
+
+    let expected = alloy_core::primitives::keccak256(&raw).0;
+    assert_eq!(
+        topics[1], expected,
+        "Indexed bytes topic must be keccak256 of raw bytes (Solidity event spec)"
+    );
+}
+
+#[derive(SolEvent)]
+struct SingleString {
+    name: alloc::string::String,
+}
+
+#[test]
+fn single_dynamic_field_data_matches_alloy_tuple_encoding() {
+    use alloc::string::ToString;
+    use alloy_core::sol_types::SolValue;
+
+    let event = SingleString {
+        name: "single dynamic field".to_string(),
+    };
+    let our_data = event.data();
+
+    let alloy_tuple = ("single dynamic field".to_string(),);
+    let alloy_data = alloy_tuple.abi_encode_sequence();
+
+    assert_eq!(
+        our_data, alloy_data,
+        "Single-field event data() must match alloy's (string,) tuple encoding"
+    );
+}
+
+#[derive(SolEvent)]
+struct TwoStrings {
+    first: alloc::string::String,
+    second: alloc::string::String,
+}
+
+#[test]
+fn two_dynamic_fields_data_matches_alloy_tuple_encoding() {
+    use alloc::string::ToString;
+    use alloy_core::sol_types::SolValue;
+
+    let event = TwoStrings {
+        first: "hello world".to_string(),
+        second: "a longer second value that forces multi-word tail".to_string(),
+    };
+    let our_data = event.data();
+
+    let alloy_tuple = (
+        "hello world".to_string(),
+        "a longer second value that forces multi-word tail".to_string(),
+    );
+    let alloy_data = alloy_tuple.abi_encode_sequence();
+
+    assert_eq!(
+        our_data, alloy_data,
+        "(string,string) event data() must match alloy tuple sequence encoding"
+    );
+}
+
+#[derive(SolEvent)]
+struct StaticThenDynamics {
+    count: U256,
+    first: alloc::string::String,
+    second: alloc::string::String,
+}
+
+#[test]
+fn static_plus_two_dynamic_fields_matches_alloy() {
+    use alloc::string::ToString;
+    use alloy_core::sol_types::SolValue;
+
+    let event = StaticThenDynamics {
+        count: U256::from(7u64),
+        first: "alpha".to_string(),
+        second: "beta".to_string(),
+    };
+    let our_data = event.data();
+
+    let alloy_tuple = (
+        alloy_core::primitives::U256::from(7u64),
+        "alpha".to_string(),
+        "beta".to_string(),
+    );
+    let alloy_data = alloy_tuple.abi_encode_sequence();
+
+    assert_eq!(
+        our_data, alloy_data,
+        "(uint256,string,string) event data() must match alloy tuple sequence encoding"
+    );
+}
+
+mod alloy_decode_roundtrip {
+    use crate::Transfer as OurTransfer;
+    use alloy_core::primitives::{B256, LogData};
+    use alloy_core::sol_types::SolEvent as AlloySolEvent;
+    use pvm_contract_types::{Address, SolEvent as _};
+    use ruint::aliases::U256;
+
+    alloy_core::sol! {
+        event Transfer(address indexed from, address indexed to, uint256 value);
+    }
+
+    #[test]
+    fn alloy_decode_log_recovers_static_fields() {
+        let our_event = OurTransfer {
+            from: Address([0xAA; 20]),
+            to: Address([0xBB; 20]),
+            value: U256::from(1_000_000u64),
+        };
+
+        let our_topics: alloc::vec::Vec<B256> =
+            our_event.topics().into_iter().map(B256::from).collect();
+        let our_data = our_event.data();
+
+        let log = LogData::new_unchecked(our_topics, our_data.into());
+        let decoded = Transfer::decode_log_data(&log)
+            .expect("alloy must be able to decode our derive's wire output");
+
+        assert_eq!(decoded.from.0.0, [0xAA; 20]);
+        assert_eq!(decoded.to.0.0, [0xBB; 20]);
+        assert_eq!(
+            decoded.value,
+            alloy_core::primitives::U256::from(1_000_000u64)
+        );
+    }
+}
+
+mod alloy_decode_roundtrip_mixed {
+    use crate::Tagged as OurTagged;
+    use alloy_core::primitives::{B256, LogData};
+    use alloy_core::sol_types::SolEvent as AlloySolEvent;
+    use pvm_contract_types::SolEvent as _;
+    use ruint::aliases::U256;
+
+    alloy_core::sol! {
+        event Tagged(string indexed tag, uint256 value);
+    }
+
+    #[test]
+    fn alloy_decode_recovers_mixed_fields() {
+        use alloc::string::ToString;
+
+        let our_event = OurTagged {
+            tag: "category-A".to_string(),
+            value: U256::from(99u64),
+        };
+
+        let our_topics: alloc::vec::Vec<B256> =
+            our_event.topics().into_iter().map(B256::from).collect();
+        let our_data = our_event.data();
+
+        let log = LogData::new_unchecked(our_topics, our_data.into());
+        let decoded = Tagged::decode_log_data(&log)
+            .expect("alloy must decode our derive's wire output for indexed string + uint256");
+
+        let expected_topic_hash = alloy_core::primitives::keccak256("category-A".as_bytes());
+        assert_eq!(decoded.tag, expected_topic_hash);
+        assert_eq!(decoded.value, alloy_core::primitives::U256::from(99u64));
+    }
+}
+
+type Owner = Address;
+
+#[derive(SolEvent)]
+struct Ownership {
+    #[indexed]
+    owner: Owner,
+    value: U256,
+}
+
+#[test]
+fn alias_to_static_primitive_is_accepted_and_right_aligned() {
+    let event = Ownership {
+        owner: Address([0xCC; 20]),
+        value: U256::from(1u64),
+    };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2);
+    assert_eq!(&topics[1][..12], &[0u8; 12]);
+    assert_eq!(&topics[1][12..], &[0xCC; 20]);
+    assert_eq!(Ownership::SIGNATURE, "Ownership(address,uint256)");
+}
+
+type TagAlias = alloc::string::String;
+
+#[derive(SolEvent)]
+struct AliasedTag {
+    #[indexed]
+    tag: TagAlias,
+    value: U256,
+}
+
+#[test]
+fn alias_to_dynamic_primitive_hashes_raw_bytes() {
+    use alloc::string::ToString;
+
+    let event = AliasedTag {
+        tag: "category-A".to_string(),
+        value: U256::from(7u64),
+    };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2);
+
+    let expected = alloy_core::primitives::keccak256("category-A".as_bytes()).0;
+    assert_eq!(topics[1], expected);
 }

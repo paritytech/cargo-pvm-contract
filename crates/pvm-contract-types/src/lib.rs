@@ -387,6 +387,17 @@ pub trait SolEncode {
             self.encode_body_to(&mut buf[32..]);
         }
     }
+
+    /// 32-byte topic slot for this value when used as an indexed event
+    /// parameter. Default: right-align the value into one 32-byte word via
+    /// `encode_body_to`, suitable for static primitives (`address`, `bool`,
+    /// `uintN`, `intN`, `bytesN`). Dynamic primitives (`string`, `bytes`)
+    /// override this to `keccak256(raw_bytes)` per the Solidity event spec.
+    fn indexed_topic(&self) -> [u8; 32] {
+        let mut slot = [0u8; 32];
+        self.encode_body_to(&mut slot);
+        slot
+    }
 }
 
 /// Marker trait for types with compile-time known encoded size.

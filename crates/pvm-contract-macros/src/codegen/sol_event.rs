@@ -36,6 +36,8 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
+    validate_indexed_field_types(fields, &indexed_flags, &field_info)?;
+
     let sig_expr = build_signature_expr(&name_str, &field_info);
     let topic_expr = build_topic_expr(&name_str, &field_info);
     let indexed_count_lit = indexed_count;
@@ -46,9 +48,6 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl #name {
-            /// Pre-rendered ABI JSON entry for this event. Used by the
-            /// `#[contract]` macro's `abi-gen` codepath to emit event entries
-            /// for contracts without a `.sol` interface file.
             #[doc(hidden)]
             pub const ABI_ENTRY: &'static str = #abi_entry_expr;
         }
@@ -117,6 +116,38 @@ fn build_abi_entry_expr(
     parts.push(quote! { "],\"anonymous\":false}" });
 
     quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+}
+
+fn validate_indexed_field_types(
+    fields: &Fields,
+    indexed_flags: &[bool],
+    field_info: &[(Option<syn::Ident>, SolType)],
+) -> syn::Result<()> {
+    let Fields::Named(named) = fields else {
+        return Ok(());
+    };
+
+    for (i, field) in named.named.iter().enumerate() {
+        if !indexed_flags[i] {
+            continue;
+        }
+        let sol_type = &field_info[i].1;
+        let unsupported = matches!(
+            sol_type,
+            SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_)
+        );
+        if unsupported {
+            return Err(syn::Error::new_spanned(
+                &field.ty,
+                format!(
+                    "SolEvent does not support `{}` as an indexed type. \
+                     Arrays, fixed arrays, and tuples cannot be indexed.",
+                    sol_type.canonical_name()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn collect_indexed_flags(fields: &Fields) -> syn::Result<Vec<bool>> {
@@ -223,49 +254,20 @@ fn generate_topics_body(
 
 fn generate_indexed_topic_pack(
     field_name: &syn::Ident,
-    sol_type: &SolType,
+    _sol_type: &SolType,
     rust_type: &syn::Type,
 ) -> TokenStream {
-    let is_dynamic = match sol_type.is_dynamic() {
-        Some(true) => true,
-        Some(false) => false,
-        None => {
-            // Custom type: use trait-level IS_DYNAMIC check at compile time.
-            // For dynamic types, we keccak256 the ABI encoding.
-            // For static types, we ABI-encode directly into a 32-byte slot.
-            return quote! {
-                if <#rust_type as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    let mut __enc = alloc::vec![0u8; <#rust_type as ::pvm_contract_types::SolEncode>::encode_len(&self.#field_name)];
-                    <#rust_type as ::pvm_contract_types::SolEncode>::encode_to(&self.#field_name, &mut __enc);
-                    let __hash = ::pvm_contract_types::keccak256(&__enc);
-                    __topics.push(__hash);
-                } else {
-                    let mut __slot = [0u8; 32];
-                    <#rust_type as ::pvm_contract_types::SolEncode>::encode_body_to(&self.#field_name, &mut __slot);
-                    __topics.push(__slot);
-                }
-            };
-        }
-    };
-
-    if is_dynamic {
-        // Dynamic indexed types: keccak256 the ABI encoding
-        quote! {
-            {
-                let mut __enc = alloc::vec![0u8; <#rust_type as ::pvm_contract_types::SolEncode>::encode_len(&self.#field_name)];
-                <#rust_type as ::pvm_contract_types::SolEncode>::encode_to(&self.#field_name, &mut __enc);
-                let __hash = ::pvm_contract_types::keccak256(&__enc);
-                __topics.push(__hash);
-            }
-        }
-    } else {
-        // Static indexed types: ABI-encode into 32-byte slot
-        quote! {
-            {
-                let mut __slot = [0u8; 32];
-                <#rust_type as ::pvm_contract_types::SolEncode>::encode_body_to(&self.#field_name, &mut __slot);
-                __topics.push(__slot);
-            }
+    quote! {
+        {
+            const _: () = assert!(
+                <#rust_type as ::pvm_contract_types::SolEncode>::IS_DYNAMIC
+                    || <#rust_type as ::pvm_contract_types::SolEncode>::HEAD_SIZE <= 32,
+                "SolEvent: #[indexed] static fields must fit in 32 bytes. \
+                 Use the underlying primitive, or remove #[indexed]."
+            );
+            __topics.push(
+                <#rust_type as ::pvm_contract_types::SolEncode>::indexed_topic(&self.#field_name)
+            );
         }
     }
 }
@@ -310,7 +312,6 @@ fn generate_data_body(
         };
     }
 
-    // Multiple non-indexed fields: encode as flat tuple (head + tail).
     let head_size_parts: Vec<TokenStream> = field_types
         .iter()
         .map(|ft| quote! { <#ft as ::pvm_contract_types::SolEncode>::SLOT_SIZE })
@@ -322,7 +323,7 @@ fn generate_data_body(
         .map(|(ft, fn_)| {
             quote! {
                 if <#ft as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    <#ft as ::pvm_contract_types::SolEncode>::encode_body_len(&self.#fn_) + 32
+                    <#ft as ::pvm_contract_types::SolEncode>::encode_body_len(&self.#fn_)
                 } else {
                     0
                 }
@@ -339,16 +340,9 @@ fn generate_data_body(
                     __buf[__head_offset + 24..__head_offset + 32]
                         .copy_from_slice(&(__tail_offset as u64).to_be_bytes());
                     let __body_len = <#ft as ::pvm_contract_types::SolEncode>::encode_body_len(&self.#fn_);
-                    __buf[__tail_offset + 24..__tail_offset + 32]
-                        .copy_from_slice(&(__body_len as u64).to_be_bytes());
                     <#ft as ::pvm_contract_types::SolEncode>::encode_body_to(
-                        &self.#fn_, &mut __buf[__tail_offset + 32..__tail_offset + 32 + __body_len]);
-                    __tail_offset += 32 + __body_len;
-                    let __pad = (32 - (__body_len % 32)) % 32;
-                    for __i in 0..__pad {
-                        __buf[__tail_offset + __i] = 0;
-                    }
-                    __tail_offset += __pad;
+                        &self.#fn_, &mut __buf[__tail_offset..__tail_offset + __body_len]);
+                    __tail_offset += __body_len;
                 } else {
                     <#ft as ::pvm_contract_types::SolEncode>::encode_body_to(
                         &self.#fn_, &mut __buf[__head_offset..__head_offset + 32]);
@@ -462,6 +456,67 @@ mod tests {
             !topic_str.contains("const_event_topic"),
             "Known types should use literal topic: {topic_str}"
         );
+    }
+
+    #[test]
+    fn rejects_indexed_dynamic_array() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Bad {
+                #[indexed] items: Vec<u64>,
+            }"#,
+        )
+        .unwrap();
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(
+            err.contains("indexed") && err.contains("uint64[]"),
+            "Should reject Vec<_> indexed with a clear message: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_indexed_fixed_array() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Bad {
+                #[indexed] items: [u64; 3],
+            }"#,
+        )
+        .unwrap();
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(
+            err.contains("indexed") && err.contains("uint64[3]"),
+            "Should reject fixed array indexed with a clear message: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_indexed_tuple() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Bad {
+                #[indexed] pair: (u64, u64),
+            }"#,
+        )
+        .unwrap();
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(
+            err.contains("indexed") && err.contains("(uint64,uint64)"),
+            "Should reject tuple indexed with a clear message: {err}"
+        );
+    }
+
+    // Custom-typed indexed fields pass derive-time validation because `Custom`
+    // also covers type aliases like `type Owner = Address;`. Incompatible
+    // custom types (dynamic, or composite > 32 bytes) are rejected by a
+    // `const _: () = assert!(...)` in the generated code.
+    #[test]
+    fn accepts_indexed_custom_type_at_derive_time() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Ownership {
+                #[indexed] inner: MyAlias,
+                value: U256,
+            }"#,
+        )
+        .unwrap();
+        assert!(expand_sol_event(input).is_ok());
     }
 
     #[test]
