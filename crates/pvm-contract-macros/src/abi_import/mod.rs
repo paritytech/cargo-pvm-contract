@@ -242,7 +242,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                         pub fn call(&self) -> Result<Outputs, errors::Error> {
                             let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![0; 4 + self.call_builder.payload.encode_len()];
                             self.call_builder.call_raw(self.address, input_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))?;
-                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().min(512)];
+                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().max(512)];
                             self.call_builder.extract_output(output_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))
                         }
 
@@ -250,7 +250,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                         pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
                             let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![0; 4 + self.call_builder.payload.encode_len()];
                             self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))?;
-                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().min(512)];
+                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().max(512)];
                             self.call_builder.extract_output(output_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))
                         }
                 }
@@ -272,7 +272,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                                 input_buf.as_mut_slice(),
                                 &mut address_buf,
                             ).map_err(|e| errors::Error::from(e))?;
-                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().min(512)];
+                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().max(512)];
                             let output = self.call_builder.extract_output(output_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))?;
                             Ok((address_buf.into(), output))
                         }

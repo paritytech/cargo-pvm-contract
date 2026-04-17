@@ -14,6 +14,9 @@ pub enum CallError {
     TransferFailed,
     /// The subcall ran out of weight or storage deposit.
     OutOfResources,
+    /// Contract instantiation failed because the address already exists.
+    /// Occurs when instantiating the same contract with the same salt more than once.
+    DuplicateContractAddress,
     /// Input buffer too small
     InputBufTooSmall,
     /// Output buffer too small
@@ -21,6 +24,8 @@ pub enum CallError {
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
     GenericError,
+    /// Unknown error occured
+    Unknown,
 }
 
 impl SolError for CallError {
@@ -55,8 +60,18 @@ impl SolError for CallError {
                 res.encode_to(buf);
                 return res.encode_len();
             }
-            CallError::GenericError => {
+            CallError::DuplicateContractAddress => {
                 let res = U256::from(5);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::Unknown => {
+                let res = U256::from(6);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
+            CallError::GenericError => {
+                let res = U256::from(7);
                 res.encode_to(buf);
                 return res.encode_len();
             }
@@ -74,7 +89,7 @@ fn convert_error(value: ReturnErrorCode) -> CallError {
         ReturnErrorCode::CalleeReverted => CallError::GenericError,
         ReturnErrorCode::TransferFailed => CallError::TransferFailed,
         ReturnErrorCode::OutOfResources => CallError::OutOfResources,
-        _ => panic!("shouldn't happen"),
+        _ => CallError::Unknown,
     }
 }
 
@@ -86,7 +101,7 @@ fn convert_error(value: ReturnErrorCode) -> CallError {
 /// - payable
 pub trait StateMutability: Default + Debug + Clone + Copy {
     fn call_flags(&self) -> CallFlags {
-        CallFlags::ALLOW_REENTRY
+        CallFlags::empty()
     }
 
     fn value(&self) -> u128 {
@@ -118,7 +133,7 @@ impl StateMutability for NonPayable {}
 pub struct View;
 impl StateMutability for View {
     fn call_flags(&self) -> CallFlags {
-        CallFlags::ALLOW_REENTRY.union(CallFlags::READ_ONLY)
+        CallFlags::READ_ONLY
     }
 }
 
@@ -128,7 +143,7 @@ impl StateMutability for View {
 pub struct Pure;
 impl StateMutability for Pure {
     fn call_flags(&self) -> CallFlags {
-        CallFlags::ALLOW_REENTRY.union(CallFlags::READ_ONLY)
+        CallFlags::READ_ONLY
     }
 }
 
