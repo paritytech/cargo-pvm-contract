@@ -69,8 +69,9 @@ pub fn expand_function(
             Payable
         }
     } else {
-        if let Some(mutability) = func.attributes.mutability() {
-            match mutability {
+        func.attributes
+            .mutability()
+            .map(|mutability| match mutability {
                 syn_solidity::Mutability::Pure(_) => quote! {
                     Pure
                 },
@@ -89,12 +90,12 @@ pub fn expand_function(
                         compile_error!("constant mutability no supported")
                     }
                 }
-            }
-        } else {
-            quote! {
-                NonPayable
-            }
-        }
+            })
+            .unwrap_or_else(|| {
+                quote! {
+                    NonPayable
+                }
+            })
     };
     let types: Vec<TokenStream> = types.collect();
     let address = if is_constructor {

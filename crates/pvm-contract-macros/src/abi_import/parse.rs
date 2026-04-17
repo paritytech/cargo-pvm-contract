@@ -45,15 +45,13 @@ pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File,
         })
     {
         parse_json(input).map(|x| (x, is_alloc))
-    } else {
-        if alloc_present {
-            let content;
+    } else if alloc_present {
+        let content;
 
-            syn::braced!(content in input);
-            syn_solidity::File::parse(&content).map(|x| (x, is_alloc))
-        } else {
-            syn_solidity::File::parse(input).map(|x| (x, is_alloc))
-        }
+        syn::braced!(content in input);
+        syn_solidity::File::parse(&content).map(|x| (x, is_alloc))
+    } else {
+        syn_solidity::File::parse(input).map(|x| (x, is_alloc))
     }
 }
 
