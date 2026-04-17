@@ -398,7 +398,7 @@ mod test {
             .print_constructors(true)
             .for_sol_macro(true);
 
-        let unparsed = &parsed.to_sol(&name, Some(config));
+        let unparsed = &parsed.to_sol(name, Some(config));
         let tts = syn::parse_str::<proc_macro2::TokenStream>(unparsed).unwrap();
 
         let file = syn_solidity::parse2(quote::quote! {
