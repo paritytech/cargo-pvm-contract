@@ -1,7 +1,9 @@
 use core::{fmt::Debug, marker::PhantomData};
 
-use pallet_revive_uapi::{CallFlags, HostFn, HostFnImpl as api, ReturnErrorCode};
-use pvm_contract_types::{Address, SolDecode, SolEncode, SolError, const_selector};
+use pvm_contract_types::{
+    Address, CallFlags, HostApi, PolkaVmHost as api, ReturnErrorCode, SolDecode, SolEncode,
+    SolError, const_selector,
+};
 use ruint::aliases::U256;
 
 /// Errors returned by host_api::call()/host_api::instantiate()
@@ -38,42 +40,42 @@ impl SolError for CallError {
             CallError::CalleeTrapped => {
                 let res = U256::from(0);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::TransferFailed => {
                 let res = U256::from(1);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::OutOfResources => {
                 let res = U256::from(2);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::InputBufTooSmall => {
                 let res = U256::from(3);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::OutputBufTooSmall => {
                 let res = U256::from(4);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::DuplicateContractAddress => {
                 let res = U256::from(5);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::Unknown => {
                 let res = U256::from(6);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
             CallError::GenericError => {
                 let res = U256::from(7);
                 res.encode_to(buf);
-                return res.encode_len();
+                res.encode_len()
             }
         }
     }
@@ -227,7 +229,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => {
-                api::delegate_call_evm(call_flags, &address.0, limit, &input_buf, None)
+                api::delegate_call_evm(call_flags, &address.0, limit, input_buf, None)
             }
             CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
@@ -239,19 +241,19 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 ref_time_limit,
                 proof_size_limit,
                 &deposit_limit,
-                &input_buf,
+                input_buf,
                 None,
             ),
         }
-        .map_err(|error| convert_error(error))
+        .map_err(convert_error)
     }
 
-    pub fn extract_output(&self, output_buf: &mut [u8]) -> Result<R, CallError> {
+    pub fn extract_output(&self, mut output_buf: &mut [u8]) -> Result<R, CallError> {
         if self.output_size() > output_buf.len() {
             return Err(CallError::OutputBufTooSmall);
         }
-        api::return_data_copy(&mut output_buf.as_mut(), 0);
-        Ok(R::decode(&output_buf))
+        api::return_data_copy(&mut output_buf, 0);
+        Ok(R::decode(output_buf))
     }
 
     pub fn output_size(&self) -> usize {
@@ -290,14 +292,15 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
             limits.proof_size_limit,
             &limits.deposit_limit,
             &U256::from(value).to_be_bytes(),
-            &input_buf,
+            input_buf,
             Some(address_buf),
             None,
             salt,
         )
-        .map_err(|error| convert_error(error))
+        .map_err(convert_error)
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// Execute code in the context (storage, caller, value) of the current contract.
     pub fn instantiate(
         &self,
@@ -327,7 +330,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 &address.0,
                 limit,
                 &U256::from(value).to_be_bytes(),
-                &input_buf,
+                input_buf,
                 None,
             ),
             CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
@@ -341,11 +344,11 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 proof_size_limit,
                 &deposit_limit,
                 &U256::from(value).to_be_bytes(),
-                &input_buf,
+                input_buf,
                 None,
             ),
         }
-        .map_err(|error| convert_error(error))
+        .map_err(convert_error)
     }
 
     /// Execute code in the context (storage, caller, value) of the current contract.
@@ -362,11 +365,9 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
 
 #[cfg(test)]
 mod test {
-    use core::{default, marker::PhantomData};
+    use core::marker::PhantomData;
 
-    use crate::call::{Pure, StateMutability, View};
-
-    use super::{CallBuilder, NonPayable};
+    use super::CallBuilder;
 
     #[test]
     fn method_available() {

@@ -1413,7 +1413,6 @@ dependencies = [
 name = "pvm-contract-core"
 version = "0.3.0"
 dependencies = [
- "pallet-revive-uapi",
  "pvm-contract-types",
  "ruint",
 ]

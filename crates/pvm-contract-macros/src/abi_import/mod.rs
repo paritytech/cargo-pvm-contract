@@ -407,25 +407,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -439,225 +425,217 @@ mod test {
                 function reset() external;
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn add(mut self, a: U256, b: U256) -> Example<View, (U256, U256), (U256), true> {
-                    Example::<View, (U256, U256), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (U256, U256), (U256)> {
-                            payload: (a, b),
-                            selector: [119u8, 22u8, 2u8, 247u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn add(
+                        mut self,
+                        a: U256,
+                        b: U256,
+                    ) -> Example<View, (U256, U256), (U256), true> {
+                        Example::<View, (U256, U256), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (U256, U256), (U256)> {
+                                payload: (a, b),
+                                selector: [119u8, 22u8, 2u8, 247u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_counter(mut self) -> Example<View, (), (U256), true> {
+                        Example::<View, (), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (U256)> {
+                                payload: (),
+                                selector: [138u8, 218u8, 6u8, 110u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn increment(mut self) -> Example<NonPayable, (), (), true> {
+                        Example::<NonPayable, (), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (), ()> {
+                                payload: (),
+                                selector: [208u8, 157u8, 224u8, 138u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn is_zero(mut self, val: U256) -> Example<View, (U256), (bool), true> {
+                        Example::<View, (U256), (bool), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (U256), (bool)> {
+                                payload: (val),
+                                selector: [122u8, 56u8, 249u8, 235u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn mul(
+                        mut self,
+                        a: U256,
+                        b: U256,
+                    ) -> Example<View, (U256, U256), (U256), true> {
+                        Example::<View, (U256, U256), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (U256, U256), (U256)> {
+                                payload: (a, b),
+                                selector: [200u8, 164u8, 172u8, 156u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn reset(mut self) -> Example<NonPayable, (), (), true> {
+                        Example::<NonPayable, (), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (), ()> {
+                                payload: (),
+                                selector: [216u8, 38u8, 248u8, 143u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-                pub fn get_counter(mut self) -> Example<View, (), (U256), true> {
-                    Example::<View, (), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (U256)> {
-                            payload: (),
-                            selector: [138u8, 218u8, 6u8, 110u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-                pub fn increment(mut self) -> Example<NonPayable, (), (), true> {
-                    Example::<NonPayable, (), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (), ()> {
-                            payload: (),
-                            selector: [208u8, 157u8, 224u8, 138u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-                pub fn is_zero(mut self, val: U256) -> Example<View, (U256), (bool), true> {
-                    Example::<View, (U256), (bool), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (U256), (bool)> {
-                            payload: (val),
-                            selector: [122u8, 56u8, 249u8, 235u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
                     }
-                }
-                pub fn mul(mut self, a: U256, b: U256) -> Example<View, (U256, U256), (U256), true> {
-                    Example::<View, (U256, U256), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (U256, U256), (U256)> {
-                            payload: (a, b),
-                            selector: [200u8, 164u8, 172u8, 156u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
                     }
-                }
-                pub fn reset(mut self) -> Example<NonPayable, (), (), true> {
-                    Example::<NonPayable, (), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (), ()> {
-                            payload: (),
-                            selector: [216u8, 38u8, 248u8, 143u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
                     }
-                }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
-                    }
-                }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
-                }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
                 }
             }
         "#]]
@@ -670,25 +648,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -714,375 +678,359 @@ mod test {
                 function setU8(uint8 val) external;
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_address(mut self) -> Example<View, (), (Address), true> {
-                    Example::<View, (), (Address), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (Address)> {
-                            payload: (),
-                            selector: [56u8, 204u8, 72u8, 49u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn get_address(mut self) -> Example<View, (), (Address), true> {
+                        Example::<View, (), (Address), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (Address)> {
+                                payload: (),
+                                selector: [56u8, 204u8, 72u8, 49u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_bool(mut self) -> Example<View, (), (bool), true> {
+                        Example::<View, (), (bool), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (bool)> {
+                                payload: (),
+                                selector: [18u8, 167u8, 185u8, 20u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_bytes32(mut self) -> Example<View, (), ([u8; 32usize]), true> {
+                        Example::<View, (), ([u8; 32usize]), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), ([u8; 32usize])> {
+                                payload: (),
+                                selector: [31u8, 144u8, 48u8, 55u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_u128(mut self) -> Example<View, (), (u128), true> {
+                        Example::<View, (), (u128), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (u128)> {
+                                payload: (),
+                                selector: [148u8, 179u8, 108u8, 163u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_u16(mut self) -> Example<View, (), (u16), true> {
+                        Example::<View, (), (u16), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (u16)> {
+                                payload: (),
+                                selector: [106u8, 0u8, 96u8, 206u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_u256(mut self) -> Example<View, (), (U256), true> {
+                        Example::<View, (), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (U256)> {
+                                payload: (),
+                                selector: [56u8, 208u8, 249u8, 78u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_u32(mut self) -> Example<View, (), (u32), true> {
+                        Example::<View, (), (u32), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (u32)> {
+                                payload: (),
+                                selector: [255u8, 105u8, 175u8, 182u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_u64(mut self) -> Example<View, (), (u64), true> {
+                        Example::<View, (), (u64), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (u64)> {
+                                payload: (),
+                                selector: [170u8, 123u8, 219u8, 142u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_u8(mut self) -> Example<View, (), (u8), true> {
+                        Example::<View, (), (u8), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (u8)> {
+                                payload: (),
+                                selector: [62u8, 72u8, 107u8, 252u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_address(
+                        mut self,
+                        val: Address,
+                    ) -> Example<NonPayable, (Address), (), true> {
+                        Example::<NonPayable, (Address), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (Address), ()> {
+                                payload: (val),
+                                selector: [227u8, 0u8, 129u8, 160u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_bool(mut self, val: bool) -> Example<NonPayable, (bool), (), true> {
+                        Example::<NonPayable, (bool), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (bool), ()> {
+                                payload: (val),
+                                selector: [30u8, 38u8, 253u8, 51u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_bytes32(
+                        mut self,
+                        val: [u8; 32usize],
+                    ) -> Example<NonPayable, ([u8; 32usize]), (), true> {
+                        Example::<NonPayable, ([u8; 32usize]), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, ([u8; 32usize]), ()> {
+                                payload: (val),
+                                selector: [194u8, 177u8, 42u8, 115u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_u128(mut self, val: u128) -> Example<NonPayable, (u128), (), true> {
+                        Example::<NonPayable, (u128), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (u128), ()> {
+                                payload: (val),
+                                selector: [211u8, 14u8, 187u8, 114u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_u16(mut self, val: u16) -> Example<NonPayable, (u16), (), true> {
+                        Example::<NonPayable, (u16), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (u16), ()> {
+                                payload: (val),
+                                selector: [38u8, 78u8, 92u8, 151u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_u256(mut self, val: U256) -> Example<NonPayable, (U256), (), true> {
+                        Example::<NonPayable, (U256), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (U256), ()> {
+                                payload: (val),
+                                selector: [213u8, 98u8, 193u8, 230u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_u32(mut self, val: u32) -> Example<NonPayable, (u32), (), true> {
+                        Example::<NonPayable, (u32), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (u32), ()> {
+                                payload: (val),
+                                selector: [188u8, 72u8, 142u8, 235u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_u64(mut self, val: u64) -> Example<NonPayable, (u64), (), true> {
+                        Example::<NonPayable, (u64), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (u64), ()> {
+                                payload: (val),
+                                selector: [50u8, 201u8, 139u8, 121u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn set_u8(mut self, val: u8) -> Example<NonPayable, (u8), (), true> {
+                        Example::<NonPayable, (u8), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (u8), ()> {
+                                payload: (val),
+                                selector: [23u8, 185u8, 13u8, 148u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-                pub fn get_bool(mut self) -> Example<View, (), (bool), true> {
-                    Example::<View, (), (bool), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (bool)> {
-                            payload: (),
-                            selector: [18u8, 167u8, 185u8, 20u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-                pub fn get_bytes32(mut self) -> Example<View, (), ([u8; 32usize]), true> {
-                    Example::<View, (), ([u8; 32usize]), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), ([u8; 32usize])> {
-                            payload: (),
-                            selector: [31u8, 144u8, 48u8, 55u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-                pub fn get_u128(mut self) -> Example<View, (), (u128), true> {
-                    Example::<View, (), (u128), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (u128)> {
-                            payload: (),
-                            selector: [148u8, 179u8, 108u8, 163u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
                     }
-                }
-                pub fn get_u16(mut self) -> Example<View, (), (u16), true> {
-                    Example::<View, (), (u16), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (u16)> {
-                            payload: (),
-                            selector: [106u8, 0u8, 96u8, 206u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
                     }
-                }
-                pub fn get_u256(mut self) -> Example<View, (), (U256), true> {
-                    Example::<View, (), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (U256)> {
-                            payload: (),
-                            selector: [56u8, 208u8, 249u8, 78u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
                     }
-                }
-                pub fn get_u32(mut self) -> Example<View, (), (u32), true> {
-                    Example::<View, (), (u32), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (u32)> {
-                            payload: (),
-                            selector: [255u8, 105u8, 175u8, 182u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn get_u64(mut self) -> Example<View, (), (u64), true> {
-                    Example::<View, (), (u64), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (u64)> {
-                            payload: (),
-                            selector: [170u8, 123u8, 219u8, 142u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn get_u8(mut self) -> Example<View, (), (u8), true> {
-                    Example::<View, (), (u8), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (u8)> {
-                            payload: (),
-                            selector: [62u8, 72u8, 107u8, 252u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_address(
-                    mut self,
-                    val: Address,
-                ) -> Example<NonPayable, (Address), (), true> {
-                    Example::<NonPayable, (Address), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (Address), ()> {
-                            payload: (val),
-                            selector: [227u8, 0u8, 129u8, 160u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_bool(mut self, val: bool) -> Example<NonPayable, (bool), (), true> {
-                    Example::<NonPayable, (bool), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (bool), ()> {
-                            payload: (val),
-                            selector: [30u8, 38u8, 253u8, 51u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_bytes32(
-                    mut self,
-                    val: [u8; 32usize],
-                ) -> Example<NonPayable, ([u8; 32usize]), (), true> {
-                    Example::<NonPayable, ([u8; 32usize]), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, ([u8; 32usize]), ()> {
-                            payload: (val),
-                            selector: [194u8, 177u8, 42u8, 115u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_u128(mut self, val: u128) -> Example<NonPayable, (u128), (), true> {
-                    Example::<NonPayable, (u128), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (u128), ()> {
-                            payload: (val),
-                            selector: [211u8, 14u8, 187u8, 114u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_u16(mut self, val: u16) -> Example<NonPayable, (u16), (), true> {
-                    Example::<NonPayable, (u16), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (u16), ()> {
-                            payload: (val),
-                            selector: [38u8, 78u8, 92u8, 151u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_u256(mut self, val: U256) -> Example<NonPayable, (U256), (), true> {
-                    Example::<NonPayable, (U256), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (U256), ()> {
-                            payload: (val),
-                            selector: [213u8, 98u8, 193u8, 230u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_u32(mut self, val: u32) -> Example<NonPayable, (u32), (), true> {
-                    Example::<NonPayable, (u32), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (u32), ()> {
-                            payload: (val),
-                            selector: [188u8, 72u8, 142u8, 235u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_u64(mut self, val: u64) -> Example<NonPayable, (u64), (), true> {
-                    Example::<NonPayable, (u64), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (u64), ()> {
-                            payload: (val),
-                            selector: [50u8, 201u8, 139u8, 121u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-                pub fn set_u8(mut self, val: u8) -> Example<NonPayable, (u8), (), true> {
-                    Example::<NonPayable, (u8), (), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<NonPayable, (u8), ()> {
-                            payload: (val),
-                            selector: [23u8, 185u8, 13u8, 148u8],
-                            witness: NonPayable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
-                    }
-                }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
-                    }
-                }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
-                }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
                 }
             }
         "#]]
@@ -1095,25 +1043,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -1124,189 +1058,173 @@ mod test {
                 function identity(uint256 val) external view returns (uint256);
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_pair(mut self) -> Example<View, (), (U256, bool), true> {
-                    Example::<View, (), (U256, bool), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (U256, bool)> {
-                            payload: (),
-                            selector: [193u8, 241u8, 177u8, 181u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn get_pair(mut self) -> Example<View, (), (U256, bool), true> {
+                        Example::<View, (), (U256, bool), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (U256, bool)> {
+                                payload: (),
+                                selector: [193u8, 241u8, 177u8, 181u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_triple(mut self) -> Example<View, (), (U256, Address, bool), true> {
+                        Example::<View, (), (U256, Address, bool), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (U256, Address, bool)> {
+                                payload: (),
+                                selector: [72u8, 187u8, 245u8, 255u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn identity(mut self, val: U256) -> Example<View, (U256), (U256), true> {
+                        Example::<View, (U256), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (U256), (U256)> {
+                                payload: (val),
+                                selector: [172u8, 55u8, 238u8, 187u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-                pub fn get_triple(mut self) -> Example<View, (), (U256, Address, bool), true> {
-                    Example::<View, (), (U256, Address, bool), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (U256, Address, bool)> {
-                            payload: (),
-                            selector: [72u8, 187u8, 245u8, 255u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-                pub fn identity(mut self, val: U256) -> Example<View, (U256), (U256), true> {
-                    Example::<View, (U256), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (U256), (U256)> {
-                            payload: (val),
-                            selector: [172u8, 55u8, 238u8, 187u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
                     }
-                }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
-                }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
                 }
             }
         "#]]
@@ -1319,25 +1237,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -1348,195 +1252,179 @@ mod test {
                 function sumFixedArray(uint256[3] memory scores) external view returns (uint256);
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_fixed_array(mut self) -> Example<View, (), ([U256; 3usize]), true> {
-                    Example::<View, (), ([U256; 3usize]), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), ([U256; 3usize])> {
-                            payload: (),
-                            selector: [224u8, 203u8, 106u8, 154u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn get_fixed_array(mut self) -> Example<View, (), ([U256; 3usize]), true> {
+                        Example::<View, (), ([U256; 3usize]), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), ([U256; 3usize])> {
+                                payload: (),
+                                selector: [224u8, 203u8, 106u8, 154u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn process_tuple(
+                        mut self,
+                        data: (U256, bool),
+                    ) -> Example<View, ((U256, bool)), (U256), true> {
+                        Example::<View, ((U256, bool)), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, ((U256, bool)), (U256)> {
+                                payload: (data),
+                                selector: [19u8, 194u8, 222u8, 227u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn sum_fixed_array(
+                        mut self,
+                        scores: [U256; 3usize],
+                    ) -> Example<View, ([U256; 3usize]), (U256), true> {
+                        Example::<View, ([U256; 3usize]), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, ([U256; 3usize]), (U256)> {
+                                payload: (scores),
+                                selector: [7u8, 166u8, 156u8, 213u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-                pub fn process_tuple(
-                    mut self,
-                    data: (U256, bool),
-                ) -> Example<View, ((U256, bool)), (U256), true> {
-                    Example::<View, ((U256, bool)), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, ((U256, bool)), (U256)> {
-                            payload: (data),
-                            selector: [19u8, 194u8, 222u8, 227u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-                pub fn sum_fixed_array(
-                    mut self,
-                    scores: [U256; 3usize],
-                ) -> Example<View, ([U256; 3usize]), (U256), true> {
-                    Example::<View, ([U256; 3usize]), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, ([U256; 3usize]), (U256)> {
-                            payload: (scores),
-                            selector: [7u8, 166u8, 156u8, 213u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
                     }
-                }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
-                }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
                 }
             }
         "#]]
@@ -1549,25 +1437,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -1581,240 +1455,228 @@ mod test {
                 function sumArray(uint256[] memory arr) external view returns (uint256);
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn echo_bytes(
-                    mut self,
-                ) -> Example<View, (), (pvm_contract_types::alloc::Bytes), true> {
-                    Example::<View, (), (pvm_contract_types::alloc::Bytes), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (pvm_contract_types::alloc::Bytes)> {
-                            payload: (),
-                            selector: [90u8, 98u8, 121u8, 241u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn echo_bytes(
+                        mut self,
+                    ) -> Example<View, (), (pvm_contract_types::alloc::Bytes), true> {
+                        Example::<View, (), (pvm_contract_types::alloc::Bytes), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<
+                                View,
+                                (),
+                                (pvm_contract_types::alloc::Bytes),
+                            > {
+                                payload: (),
+                                selector: [90u8, 98u8, 121u8, 241u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn echo_string(mut self) -> Example<View, (), (alloc::alloc::String), true> {
+                        Example::<View, (), (alloc::alloc::String), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (alloc::alloc::String)> {
+                                payload: (),
+                                selector: [140u8, 104u8, 3u8, 183u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_array(mut self) -> Example<View, (), (alloc::vec::Vec<U256>), true> {
+                        Example::<View, (), (alloc::vec::Vec<U256>), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (alloc::vec::Vec<U256>)> {
+                                payload: (),
+                                selector: [213u8, 4u8, 234u8, 29u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_bytes_length(
+                        mut self,
+                        b: pvm_contract_types::alloc::Bytes,
+                    ) -> Example<View, (pvm_contract_types::alloc::Bytes), (U256), true> {
+                        Example::<View, (pvm_contract_types::alloc::Bytes), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<
+                                View,
+                                (pvm_contract_types::alloc::Bytes),
+                                (U256),
+                            > {
+                                payload: (b),
+                                selector: [128u8, 54u8, 240u8, 103u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_string_length(
+                        mut self,
+                        s: alloc::alloc::String,
+                    ) -> Example<View, (alloc::alloc::String), (U256), true> {
+                        Example::<View, (alloc::alloc::String), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (alloc::alloc::String), (U256)> {
+                                payload: (s),
+                                selector: [101u8, 193u8, 154u8, 240u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn sum_array(
+                        mut self,
+                        arr: alloc::vec::Vec<U256>,
+                    ) -> Example<View, (alloc::vec::Vec<U256>), (U256), true> {
+                        Example::<View, (alloc::vec::Vec<U256>), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (alloc::vec::Vec<U256>), (U256)> {
+                                payload: (arr),
+                                selector: [30u8, 42u8, 234u8, 6u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-                pub fn echo_string(mut self) -> Example<View, (), (alloc::alloc::String), true> {
-                    Example::<View, (), (alloc::alloc::String), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (alloc::alloc::String)> {
-                            payload: (),
-                            selector: [140u8, 104u8, 3u8, 183u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-                pub fn get_array(mut self) -> Example<View, (), (alloc::vec::Vec<U256>), true> {
-                    Example::<View, (), (alloc::vec::Vec<U256>), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (alloc::vec::Vec<U256>)> {
-                            payload: (),
-                            selector: [213u8, 4u8, 234u8, 29u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-                pub fn get_bytes_length(
-                    mut self,
-                    b: pvm_contract_types::alloc::Bytes,
-                ) -> Example<View, (pvm_contract_types::alloc::Bytes), (U256), true> {
-                    Example::<View, (pvm_contract_types::alloc::Bytes), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<
-                            View,
-                            (pvm_contract_types::alloc::Bytes),
-                            (U256),
-                        > {
-                            payload: (b),
-                            selector: [128u8, 54u8, 240u8, 103u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
                     }
-                }
-                pub fn get_string_length(
-                    mut self,
-                    s: alloc::alloc::String,
-                ) -> Example<View, (alloc::alloc::String), (U256), true> {
-                    Example::<View, (alloc::alloc::String), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (alloc::alloc::String), (U256)> {
-                            payload: (s),
-                            selector: [101u8, 193u8, 154u8, 240u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
                     }
-                }
-                pub fn sum_array(
-                    mut self,
-                    arr: alloc::vec::Vec<U256>,
-                ) -> Example<View, (alloc::vec::Vec<U256>), (U256), true> {
-                    Example::<View, (alloc::vec::Vec<U256>), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (alloc::vec::Vec<U256>), (U256)> {
-                            payload: (arr),
-                            selector: [30u8, 42u8, 234u8, 6u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
                     }
-                }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
-                    }
-                }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
-                }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
                 }
             }
         "#]]
@@ -1827,25 +1689,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -1855,177 +1703,161 @@ mod test {
                 function getOwner() external view returns (address);
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn get_initial_supply(mut self) -> Example<View, (), (U256), true> {
-                    Example::<View, (), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (U256)> {
-                            payload: (),
-                            selector: [129u8, 164u8, 166u8, 216u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn get_initial_supply(mut self) -> Example<View, (), (U256), true> {
+                        Example::<View, (), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (U256)> {
+                                payload: (),
+                                selector: [129u8, 164u8, 166u8, 216u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn get_owner(mut self) -> Example<View, (), (Address), true> {
+                        Example::<View, (), (Address), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (), (Address)> {
+                                payload: (),
+                                selector: [137u8, 61u8, 32u8, 232u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-                pub fn get_owner(mut self) -> Example<View, (), (Address), true> {
-                    Example::<View, (), (Address), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<View, (), (Address)> {
-                            payload: (),
-                            selector: [137u8, 61u8, 32u8, 232u8],
-                            witness: View::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
-                }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
                 }
             }
         "#]]
@@ -2040,25 +1872,11 @@ mod test {
         expect_test::expect![[r#"
             use pvm_contract_types::*;
             use pvm_contract_core::call::*;
-            pub mod errors {
+            pub mod example {
                 use super::*;
-                #[derive(pvm_contract_macros::SolError)]
-                struct CalldataTooLarge;
-                #[derive(pvm_contract_macros::SolError)]
-                struct InvalidCalldata;
-                #[derive(pvm_contract_macros::SolError)]
-                struct NoSelector;
-                #[derive(pvm_contract_macros::SolError)]
-                struct UnknownSelector;
-                sol_revert_enum! {
-                    pub enum Error { CalldataTooLarge(CalldataTooLarge),
-                    InvalidCalldata(InvalidCalldata), NoSelector(NoSelector),
-                    UnknownSelector(UnknownSelector), CallError(CallError), }
-                }
-            }
-            #[derive(Clone, Copy)]
-            /// the code is derived from this interface
-            /**```solidity
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
             interface example {
                 error CalldataTooLarge();
                 error InvalidCalldata();
@@ -2068,48 +1886,46 @@ mod test {
                 function balanceOf(address account) external payable returns (uint256);
             }
             ```*/
-            ///
-            pub struct Example<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-                const INITIALIZED: bool,
-            > {
-                address: Address,
-                call_builder: CallBuilder<Mutability, Inputs, Outputs>,
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, false> {
-                pub fn balance_of(
-                    mut self,
-                    account: Address,
-                ) -> Example<Payable, (Address), (U256), true> {
-                    Example::<Payable, (Address), (U256), true> {
-                        address: self.address,
-                        call_builder: CallBuilder::<Payable, (Address), (U256)> {
-                            payload: (account),
-                            selector: [112u8, 160u8, 130u8, 49u8],
-                            witness: Payable::default(),
-                            call_limits: Default::default(),
-                            _ret: core::marker::PhantomData,
-                        },
+                ///
+                pub struct Example<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, false> {
+                    pub fn balance_of(
+                        mut self,
+                        account: Address,
+                    ) -> Example<Payable, (Address), (U256), true> {
+                        Example::<Payable, (Address), (U256), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<Payable, (Address), (U256)> {
+                                payload: (account),
+                                selector: [112u8, 160u8, 130u8, 49u8],
+                                witness: Payable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
                     }
                 }
-            }
-            impl Example<Pure, (), (), false> {
-                /// Create api for the contract from an address
-                pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
-                    Self {
-                        address,
-                        call_builder: CallBuilder::<Pure, (), ()>::default(),
+                impl Example<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Example<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
                     }
                 }
-            }
-            pub mod example {
-                use super::*;
                 pub fn new_example(
                     owner: Address,
                     supply: U256,
@@ -2125,129 +1941,112 @@ mod test {
                         },
                     }
                 }
-            }
-            impl<
-                Mutability: StateMutability,
-                Inputs: SolEncode,
-                Outputs: SolDecode,
-            > Example<Mutability, Inputs, Outputs, true> {
-                /// Set call limits for the given call
-                pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
-                    self.call_builder = self.call_builder.set_call_limits(limits);
-                    self
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Example<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
                 }
-                /// Perform a call to another contract
-                pub fn call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call_raw(
-                    &self,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<Outputs, CallError> {
-                    self.call_builder
-                        .delegate_call(self.address, input_buf, output_buf)
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a call to another contract
-                pub fn call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-                /// Perform a delegated call to another contract
-                pub fn delegate_call(&self) -> Result<Outputs, CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 4 + self.call_builder.payload.encode_len()
-                    ];
-                    self.call_builder
-                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    self.call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))
-                }
-            }
-            impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate_raw(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                    input_buf: &mut [u8],
-                    output_buf: &mut [u8],
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut address_buf = [0u8; 20];
-                    let result = self
-                        .call_builder
-                        .instantiate(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            &mut address_buf,
-                            input_buf,
-                            output_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), result))
-                }
-                /// Instantiate another contract by it's code_hash
-                pub fn instantiate(
-                    &self,
-                    code_hash: &[u8; 32],
-                    value: u128,
-                    limits: RefTimeAndProofSizeLimits,
-                    salt: Option<&[u8; 32]>,
-                ) -> Result<(Address, Outputs), CallError> {
-                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; 32 + self.call_builder.payload.encode_len()
-                    ];
-                    let mut address_buf = [0u8; 20];
-                    self.call_builder
-                        .instantiate_raw(
-                            limits,
-                            value,
-                            code_hash,
-                            salt,
-                            input_buf.as_mut_slice(),
-                            &mut address_buf,
-                        )
-                        .map_err(|e| CallError::from(e))?;
-                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
-                        0; self.call_builder.output_size().min(512)
-                    ];
-                    let output = self
-                        .call_builder
-                        .extract_output(output_buf.as_mut_slice())
-                        .map_err(|e| CallError::from(e))?;
-                    Ok((address_buf.into(), output))
-                }
-                /// Set the transfer `.value` of the call
-                pub fn set_value(mut self, value: u128) -> Self {
-                    self.call_builder = self.call_builder.set_value(value);
-                    self
+                impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
                 }
             }
         "#]]

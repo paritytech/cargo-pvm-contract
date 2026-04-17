@@ -1,0 +1,72 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "payable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "name": "key",
+        "type": "uint256"
+      }
+    ],
+    "name": "readStorage",
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "name": "key",
+        "type": "uint256"
+      },
+      {
+        "name": "value",
+        "type": "uint256"
+      }
+    ],
+    "name": "writeStorage",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getCaller",
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  }
+]

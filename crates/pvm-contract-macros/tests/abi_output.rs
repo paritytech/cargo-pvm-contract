@@ -74,8 +74,6 @@ fn dynamic_custom_return_produces_valid_abi() {
 /// that reference HostFnImpl methods unavailable on the host target.
 #[test]
 fn host_api_calls_produces_valid_abi() {
-    assert_eq!(
-        cargo_run_abi("host-api-calls"),
-        expected_abi("host_api_calls"),
-    );
+    expect_test::expect_file!("./test_abi_contract/host_api_calls.json")
+        .assert_eq(&cargo_run_abi("host-api-calls"))
 }
