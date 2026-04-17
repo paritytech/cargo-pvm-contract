@@ -4360,6 +4360,7 @@ version = "0.3.0"
 dependencies = [
  "alloy-core",
  "keccak-const",
+ "prettyplease",
  "proc-macro2",
  "pvm-contract-types",
  "quote",

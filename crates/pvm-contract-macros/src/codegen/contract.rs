@@ -967,20 +967,24 @@ mod tests {
         )
         .unwrap();
 
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
+        let tokens = expand_contract(ContractArgs::default(), item).unwrap();
+        let output = tokens.to_string();
+        let pretty = prettyplease::unparse(
+            &syn::parse_file(&output).expect("expanded output should be valid Rust"),
+        );
 
         // User functions should be gated behind not(abi-gen) so they don't
         // compile on the host target (they may call host APIs).
-        // The function name should only appear inside a cfg(not(abi-gen)) block.
         assert!(
             output.contains("not (feature = \"abi-gen\")"),
-            "user functions must be cfg-gated for abi-gen"
+            "user functions must be cfg-gated for abi-gen.\nExpanded output:\n{pretty}"
         );
 
         // The abi-gen helper should still reference the type for SOL_NAME
-        assert!(output.contains("SOL_NAME"));
+        assert!(
+            output.contains("SOL_NAME"),
+            "abi-gen helper must reference SOL_NAME.\nExpanded output:\n{pretty}"
+        );
     }
 
     #[test]
