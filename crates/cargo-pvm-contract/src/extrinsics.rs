@@ -59,14 +59,16 @@ pub fn upload_command(args: UploadArgs) -> Result<()> {
             let dry_run = exec.upload_code_rpc().await?;
             let code_hash = ContractBinary(code).code_hash();
             match dry_run {
-                Ok(_) => println!("Upload dry-run succeeded"),
+                Ok(_) => {
+                    println!("Upload dry-run succeeded");
+                    println!("  Code hash: 0x{}", hex::encode(code_hash));
+                }
                 Err(ref err) => {
                     let decoded =
                         ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
                     println!("Upload dry-run failed: {decoded}");
                 }
             }
-            println!("  Code hash: 0x{}", hex::encode(code_hash));
         } else {
             let _result = exec
                 .upload_code()
@@ -156,7 +158,9 @@ pub fn call_command(args: CallArgs) -> Result<()> {
                     );
                 }
                 Err(ref err) => {
-                    println!("Call dry-run failed: {err:?}");
+                    let decoded =
+                        ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
+                    println!("Call dry-run failed: {decoded}");
                 }
             }
         } else {
