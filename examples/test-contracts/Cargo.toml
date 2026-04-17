@@ -8,8 +8,8 @@ rust-version = "1.92"
 build = "build.rs"
 
 [[bin]]
-name = "flipper_call_alloy"
-path = "src/flipper_call_alloy.rs"
+name = "flipper_call"
+path = "src/flipper_call.rs"
 
 [[bin]]
 name = "flipper_delegate"

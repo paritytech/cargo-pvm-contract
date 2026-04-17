@@ -31,13 +31,11 @@ mod flipper_instantiate {
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
         let flip = flipper.flip();
-        let mut input = [0u8; 512];
-        let mut output = [0u8; 512];
 
-        let res = get.call_raw(&mut input, &mut output)?;
+        let res = get.call()?;
         assert_eq!(res, false);
-        let _ = flip.call_raw(&mut input, &mut output)?;
-        let res = get.call_raw(&mut input, &mut output)?;
+        let _ = flip.call()?;
+        let res = get.call()?;
         assert_eq!(res, true);
         // test deployed
         let mut code_hash = [0; 32];
@@ -45,7 +43,7 @@ mod flipper_instantiate {
         let f = flipper::new_flipper();
         let deposit_limit = ruint::aliases::U256::from(u128::MAX);
         let deposit_limit = deposit_limit.to_be_bytes();
-        let (addr, _) = f.instantiate_raw(
+        let (addr, _) = f.instantiate(
             &code_hash,
             0,
             RefTimeAndProofSizeLimits {
@@ -54,19 +52,15 @@ mod flipper_instantiate {
                 deposit_limit: deposit_limit,
             },
             None,
-            &mut input,
-            &mut output,
         )?;
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
         let flip = flipper.flip();
-        let mut input = [0u8; 512];
-        let mut output = [0u8; 512];
 
-        let res = get.call_raw(&mut input, &mut output)?;
+        let res = get.call()?;
         assert_eq!(res, false);
-        let _ = flip.call_raw(&mut input, &mut output)?;
-        let res = get.call_raw(&mut input, &mut output)?;
+        let _ = flip.call()?;
+        let res = get.call()?;
         assert_eq!(res, true);
         Ok(())
     }

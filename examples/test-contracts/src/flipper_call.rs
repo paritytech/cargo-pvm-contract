@@ -28,13 +28,11 @@ mod flipper_call_alloy {
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
         let flip = flipper.flip();
-        let mut input = [0u8; 512];
-        let mut output = [0u8; 512];
 
-        let res = get.call_raw(&mut input, &mut output)?;
+        let res = get.call()?;
         assert_eq!(res, false);
-        let _ = flip.call_raw(&mut input, &mut output)?;
-        let res = get.call_raw(&mut input, &mut output)?;
+        let _ = flip.call()?;
+        let res = get.call()?;
         assert_eq!(res, true);
         Ok(())
     }

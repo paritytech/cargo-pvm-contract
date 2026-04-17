@@ -16,6 +16,8 @@ pub enum CallError {
     OutOfResources,
     /// Input buffer too small
     InputBufTooSmall,
+    /// Output buffer too small
+    OutputBufTooSmall,
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
     GenericError,
@@ -48,8 +50,13 @@ impl SolError for CallError {
                 res.encode_to(buf);
                 return res.encode_len();
             }
+            CallError::OutputBufTooSmall => {
+                let res = U256::from(4);
+                res.encode_to(buf);
+                return res.encode_len();
+            }
             CallError::GenericError => {
-                let res = U256::from(7);
+                let res = U256::from(5);
                 res.encode_to(buf);
                 return res.encode_len();
             }
@@ -192,12 +199,11 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     }
 
     /// Execute code in the context (storage, caller, value) of the current contract.
-    pub fn delegate_call(
+    pub fn delegate_call_raw(
         &self,
         address: Address,
         input_buf: &mut [u8],
-        output_buf: &mut [u8],
-    ) -> Result<R, CallError> {
+    ) -> Result<(), CallError> {
         if input_buf.len() < 4 + self.payload.encode_len() {
             return Err(CallError::InputBufTooSmall);
         }
@@ -205,13 +211,9 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf[..4].copy_from_slice(&self.selector[..]);
         self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
-            CallLimits::GasLimit(limit) => api::delegate_call_evm(
-                call_flags,
-                &address.0,
-                limit,
-                &input_buf,
-                Some(&mut output_buf.as_mut()),
-            ),
+            CallLimits::GasLimit(limit) => {
+                api::delegate_call_evm(call_flags, &address.0, limit, &input_buf, None)
+            }
             CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
                 proof_size_limit,
@@ -223,15 +225,38 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 proof_size_limit,
                 &deposit_limit,
                 &input_buf,
-                Some(&mut output_buf.as_mut()),
+                None,
             ),
         }
         .map_err(|error| convert_error(error))
-        .map(|_| R::decode(&output_buf))
+    }
+
+    pub fn extract_output(&self, output_buf: &mut [u8]) -> Result<R, CallError> {
+        if self.output_size() > output_buf.len() {
+            return Err(CallError::OutputBufTooSmall);
+        }
+        api::return_data_copy(&mut output_buf.as_mut(), 0);
+        Ok(R::decode(&output_buf))
+    }
+
+    pub fn output_size(&self) -> usize {
+        // safe as we always run on 64bit arches
+        api::return_data_size() as usize
+    }
+
+    /// Execute code in the context (storage, caller, value) of the current contract.
+    pub fn delegate_call(
+        &self,
+        address: Address,
+        input_buf: &mut [u8],
+        output_buf: &mut [u8],
+    ) -> Result<R, CallError> {
+        self.delegate_call_raw(address, input_buf)
+            .and_then(|_| self.extract_output(output_buf))
     }
 
     /// Call a given contract
-    pub fn instantiate(
+    pub fn instantiate_raw(
         &self,
         limits: RefTimeAndProofSizeLimits,
         value: u128,
@@ -239,8 +264,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         salt: Option<&[u8; 32]>,
         input_buf: &mut [u8],
         address_buf: &mut [u8; 20],
-        output_buf: &mut [u8],
-    ) -> Result<R, CallError> {
+    ) -> Result<(), CallError> {
         if input_buf.len() < 32 + self.payload.encode_len() {
             return Err(CallError::InputBufTooSmall);
         }
@@ -253,20 +277,28 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
             &U256::from(value).to_be_bytes(),
             &input_buf,
             Some(address_buf),
-            Some(&mut output_buf.as_mut()),
+            None,
             salt,
         )
         .map_err(|error| convert_error(error))
-        .map(|_| R::decode(&output_buf))
     }
 
-    /// Call a given contract
-    pub fn call(
+    /// Execute code in the context (storage, caller, value) of the current contract.
+    pub fn instantiate(
         &self,
-        address: Address,
+        limits: RefTimeAndProofSizeLimits,
+        value: u128,
+        code_hash: &[u8; 32],
+        salt: Option<&[u8; 32]>,
+        address_buf: &mut [u8; 20],
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
+        self.instantiate_raw(limits, value, code_hash, salt, input_buf, address_buf)
+            .and_then(|_| self.extract_output(output_buf))
+    }
+    /// Call a given contract
+    pub fn call_raw(&self, address: Address, input_buf: &mut [u8]) -> Result<(), CallError> {
         if input_buf.len() < 4 + self.payload.encode_len() {
             return Err(CallError::InputBufTooSmall);
         }
@@ -281,7 +313,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 limit,
                 &U256::from(value).to_be_bytes(),
                 &input_buf,
-                Some(&mut output_buf.as_mut()),
+                None,
             ),
             CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
@@ -295,11 +327,21 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 &deposit_limit,
                 &U256::from(value).to_be_bytes(),
                 &input_buf,
-                Some(&mut output_buf.as_mut()),
+                None,
             ),
         }
         .map_err(|error| convert_error(error))
-        .map(|_| R::decode(&output_buf))
+    }
+
+    /// Execute code in the context (storage, caller, value) of the current contract.
+    pub fn call(
+        &self,
+        address: Address,
+        input_buf: &mut [u8],
+        output_buf: &mut [u8],
+    ) -> Result<R, CallError> {
+        self.call_raw(address, input_buf)
+            .and_then(|_| self.extract_output(output_buf))
     }
 }
 

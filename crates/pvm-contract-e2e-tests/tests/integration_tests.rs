@@ -16,7 +16,7 @@ fn deploy(binary_name: &str) -> (AnvilPolkadot, CastClient, String) {
 fn flipper_call_toggle_state() {
     let (_anvil, cast, addr) = deploy("flipper");
     let c = contract("test-contracts");
-    let hex = c.bytecode_hex("flipper_call_alloy", "release");
+    let hex = c.bytecode_hex("flipper_call", "release");
     let caller_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
     cast.send(
         &caller_addr,

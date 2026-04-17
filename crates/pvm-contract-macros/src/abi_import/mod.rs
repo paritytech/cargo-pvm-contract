@@ -236,6 +236,50 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     }
                 }
             };
+            let alloc_calls = if alloc {
+                quote! {
+                        /// Perform a call to another contract
+                        pub fn call(&self) -> Result<Outputs, errors::Error> {
+                            let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![0; 4 + self.call_builder.payload.encode_len()];
+                            self.call_builder.call_raw(self.address, input_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))?;
+                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().min(512)];
+                            self.call_builder.extract_output(output_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))
+                        }
+
+                        /// Perform a delegated call to another contract
+                        pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                            let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![0; 4 + self.call_builder.payload.encode_len()];
+                            self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))?;
+                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().min(512)];
+                            self.call_builder.extract_output(output_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))
+                        }
+                }
+            } else {
+                quote! {}
+            };
+
+            let alloc_instantiate = if alloc {
+                quote! {
+                        /// Instantiate another contract by it's code_hash
+                        pub fn instantiate(&self, code_hash: &[u8;32], value: u128, limits: RefTimeAndProofSizeLimits, salt: Option<&[u8;32]>) -> Result<(Address, Outputs), errors::Error> {
+                            let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![0; 32 + self.call_builder.payload.encode_len()];
+                            let mut address_buf = [0u8; 20];
+                            self.call_builder.instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                input_buf.as_mut_slice(),
+                                &mut address_buf,
+                            ).map_err(|e| errors::Error::from(e))?;
+                            let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![0; self.call_builder.output_size().min(512)];
+                            let output = self.call_builder.extract_output(output_buf.as_mut_slice()).map_err(|e| errors::Error::from(e))?;
+                            Ok((address_buf.into(), output))
+                        }
+                }
+            } else {
+                quote! {}
+            };
             Some(quote! {
                     #[derive(Clone, Copy)]
                     /// the code is derived from this interface
@@ -276,6 +320,8 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                         pub fn delegate_call_raw(&self, input_buf: &mut [u8], output_buf: &mut [u8]) -> Result<Outputs, errors::Error> {
                             self.call_builder.delegate_call(self.address, input_buf, output_buf).map_err(|e| errors::Error::from(e))
                         }
+
+                        #alloc_calls
                     }
 
                     impl<Inputs: SolEncode, Outputs: SolDecode> #contract_name<Payable, Inputs, Outputs, true> {
@@ -287,12 +333,15 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                                 value,
                                 code_hash,
                                 salt,
-                                input_buf,
                                 &mut address_buf,
+                                input_buf,
                                 output_buf,
                                 ).map_err(|e| errors::Error::from(e))?;
                             Ok((address_buf.into(), result))
                         }
+
+                        #alloc_instantiate
+
                         /// Set the transfer `.value` of the call
                         pub fn set_value(mut self, value: u128) -> Self {
                             self.call_builder = self.call_builder.set_value(value);
@@ -542,6 +591,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -562,12 +641,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
@@ -906,6 +1016,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -926,12 +1066,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
@@ -1069,6 +1240,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -1089,12 +1290,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
@@ -1238,6 +1470,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -1258,12 +1520,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
@@ -1455,6 +1748,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -1475,12 +1798,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
@@ -1605,6 +1959,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -1625,12 +2009,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {
@@ -1766,6 +2181,36 @@ mod test {
                         .delegate_call(self.address, input_buf, output_buf)
                         .map_err(|e| errors::Error::from(e))
                 }
+                /// Perform a call to another contract
+                pub fn call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
+                /// Perform a delegated call to another contract
+                pub fn delegate_call(&self) -> Result<Outputs, errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 4 + self.call_builder.payload.encode_len()
+                    ];
+                    self.call_builder
+                        .delegate_call_raw(self.address, input_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    self.call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))
+                }
             }
             impl<Inputs: SolEncode, Outputs: SolDecode> Example<Payable, Inputs, Outputs, true> {
                 /// Instantiate another contract by it's code_hash
@@ -1786,12 +2231,43 @@ mod test {
                             value,
                             code_hash,
                             salt,
-                            input_buf,
                             &mut address_buf,
+                            input_buf,
                             output_buf,
                         )
                         .map_err(|e| errors::Error::from(e))?;
                     Ok((address_buf.into(), result))
+                }
+                /// Instantiate another contract by it's code_hash
+                pub fn instantiate(
+                    &self,
+                    code_hash: &[u8; 32],
+                    value: u128,
+                    limits: RefTimeAndProofSizeLimits,
+                    salt: Option<&[u8; 32]>,
+                ) -> Result<(Address, Outputs), errors::Error> {
+                    let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; 32 + self.call_builder.payload.encode_len()
+                    ];
+                    let mut address_buf = [0u8; 20];
+                    self.call_builder
+                        .instantiate_raw(
+                            limits,
+                            value,
+                            code_hash,
+                            salt,
+                            input_buf.as_mut_slice(),
+                            &mut address_buf,
+                        )
+                        .map_err(|e| errors::Error::from(e))?;
+                    let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                        0; self.call_builder.output_size().min(512)
+                    ];
+                    let output = self
+                        .call_builder
+                        .extract_output(output_buf.as_mut_slice())
+                        .map_err(|e| errors::Error::from(e))?;
+                    Ok((address_buf.into(), output))
                 }
                 /// Set the transfer `.value` of the call
                 pub fn set_value(mut self, value: u128) -> Self {

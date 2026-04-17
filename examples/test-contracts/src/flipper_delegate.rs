@@ -2,14 +2,15 @@
 
 use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
 
-pvm_contract_macros::abi_import!(
-    alloc = true,
-    flipper,
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/target/flipper.release.abi.json"
-    )
-);
+pvm_contract_macros::abi_import!(alloc = true, {
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface Flipper {
+    function flip() external;
+    function get() external view returns (bool);
+}
+});
 use errors::Error;
 
 #[pvm_contract_macros::contract("DelegateFlipper.sol", allocator = "pico")]
@@ -28,9 +29,7 @@ mod flipper_delegate {
     #[pvm_contract_macros::method]
     pub fn delegate_flipper(addr: Address) -> Result<(), Error> {
         let flip = Flipper::from_address(addr).flip();
-        let mut input = [0u8; 512];
-        let mut output = [0u8; 512];
-        flip.delegate_call_raw(&mut input, &mut output)
+        flip.delegate_call()
     }
 
     #[pvm_contract_macros::method]
