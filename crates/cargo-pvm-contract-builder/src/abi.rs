@@ -1,43 +1,9 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct AbiJson(Vec<AbiItem>);
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum AbiItem {
-    Function {
-        name: String,
-        inputs: Vec<AbiParam>,
-        outputs: Vec<AbiParam>,
-        #[serde(rename = "stateMutability")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        state_mutability: Option<String>,
-    },
-    Constructor {
-        inputs: Vec<AbiParam>,
-        #[serde(rename = "stateMutability")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        state_mutability: Option<String>,
-    },
-    Error {
-        name: String,
-        inputs: Vec<AbiParam>,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct AbiParam {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub param_type: String,
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub components: Vec<AbiParam>,
-}
+// Re-export ABI types from the canonical definitions in pvm-contract-types.
+pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam};
 
 pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
     generate_abi_via_feature(manifest_dir, bin_name)

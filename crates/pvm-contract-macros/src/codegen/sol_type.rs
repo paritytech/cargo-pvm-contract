@@ -141,6 +141,7 @@ fn expand_dynamic_sol_type(
 
 /// Generate the `abi_param()` method override for a struct.
 /// Returns `"type": "tuple"` with `components` listing each field.
+#[cfg(feature = "abi-gen")]
 fn generate_abi_param_fn(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],

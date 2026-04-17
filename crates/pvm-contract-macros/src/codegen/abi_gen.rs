@@ -41,7 +41,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         quote! {
             __items.push(::pvm_contract_types::AbiItem::Constructor {
                 inputs: vec![#(#ctor_params),*],
-                state_mutability: "nonpayable".into(),
+                state_mutability: Some("payable".into()),
             });
         }
     } else {
@@ -55,6 +55,8 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         .collect::<syn::Result<Vec<_>>>()?;
 
     // Emit error ABI entries by calling error_signatures() on each error type.
+    // Deduplication uses exact-match on the full signature ("Name(type1,type2)")
+    // so that overloaded errors with different params are all emitted.
     let error_entries: Vec<TokenStream> = parsed
         .error_types
         .iter()
@@ -118,6 +120,11 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         quote! {}
     };
 
+    // Framework errors are emitted unless a user-defined error already covers
+    // the same name (regardless of parameters). We match by name prefix ("Name(")
+    // rather than exact signature so that e.g. a user-defined
+    // `error InvalidCalldata(uint256)` suppresses the framework's parameterless
+    // `error InvalidCalldata()`.
     let framework_error_entries: Vec<TokenStream> = pvm_contract_types::framework_errors::NAMES
         .iter()
         .map(|name| {
@@ -191,15 +198,16 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    let has_return = !method.return_types.is_empty();
-    let mutability = if has_return { "view" } else { "nonpayable" };
-
+    // All methods are emitted with `"stateMutability":"payable"` because we don't yet
+    // support `payable`/`nonpayable`/`view`/`pure` attributes on Rust methods.
+    // Once state mutability attributes are added, this should be derived from the
+    // method annotation instead of hardcoded.
     Ok(quote! {
         __items.push(::pvm_contract_types::AbiItem::Function {
             name: #method_name.into(),
             inputs: vec![#(#input_params),*],
             outputs: vec![#(#output_params),*],
-            state_mutability: #mutability.into(),
+            state_mutability: Some("payable".into()),
         });
     })
 }
