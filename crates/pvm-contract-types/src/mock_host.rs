@@ -212,8 +212,7 @@ impl MockHost {
     /// and write `address` to the address output parameter.
     pub fn mock_instantiate(address: [u8; 20], output: Vec<u8>) {
         MOCK_STATE.with(|s| {
-            s.borrow_mut().instantiate_return =
-                Some(MockInstantiateReturn { address, output });
+            s.borrow_mut().instantiate_return = Some(MockInstantiateReturn { address, output });
         });
     }
 
@@ -1084,15 +1083,8 @@ mod tests {
         let callee = [0xBB; 20];
         MockHost::mock_call(callee, Ok(vec![1, 2, 3, 4]));
 
-        let result = MockHost::delegate_call(
-            CallFlags::empty(),
-            &callee,
-            0,
-            0,
-            &[0u8; 32],
-            &[],
-            None,
-        );
+        let result =
+            MockHost::delegate_call(CallFlags::empty(), &callee, 0, 0, &[0u8; 32], &[], None);
         assert!(result.is_ok());
 
         assert_eq!(MockHost::return_data_size(), 4);
@@ -1250,7 +1242,16 @@ mod tests {
         let mut addr = [0u8; 20];
         let mut buf = [0u8; 8];
         let mut out = &mut buf[..];
-        let result = MockHost::instantiate(0, 0, &[0; 32], &[0; 32], &[], Some(&mut addr), Some(&mut out), None);
+        let result = MockHost::instantiate(
+            0,
+            0,
+            &[0; 32],
+            &[0; 32],
+            &[],
+            Some(&mut addr),
+            Some(&mut out),
+            None,
+        );
         assert!(result.is_ok());
         assert_eq!(addr, deployed_addr);
         assert_eq!(&buf[..2], &[1, 2]);
@@ -1331,13 +1332,7 @@ mod tests {
         let callee = [0xCC; 20];
         MockHost::mock_call(callee, Ok(vec![9, 8, 7]));
 
-        let result = MockHost::delegate_call_evm(
-            CallFlags::empty(),
-            &callee,
-            0,
-            &[],
-            None,
-        );
+        let result = MockHost::delegate_call_evm(CallFlags::empty(), &callee, 0, &[], None);
         assert!(result.is_ok());
         assert_eq!(MockHost::return_data_size(), 3);
     }
