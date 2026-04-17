@@ -90,6 +90,8 @@ jobs:
           -o solc
           chmod +x solc
           sudo mv solc /usr/local/bin/solc
+      - name: Install CLI tool
+        run: cargo install --path crates/cargo-pvm-contract
       - name: Build example project
         working-directory: examples/example-mytoken
-        run: env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release
+        run: cargo pvm-contract build

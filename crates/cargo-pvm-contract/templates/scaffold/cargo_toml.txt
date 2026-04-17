@@ -5,7 +5,6 @@ name = "{{ contract_name }}"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "{{ contract_name }}"
@@ -28,7 +27,6 @@ pvm-contract-types = { path = "{{ path }}/crates/pvm-contract-types" }
 pvm-contract-macros = "{{ builder_version }}"
 pvm-contract-types = "{{ builder_version }}"
 {% endif -%}
-pallet-revive-uapi = { version = "0.10", default-features = false }
 {% endif -%}
 {% if use_alloc -%}
 {% if let Some(path) = local_path -%}
@@ -46,13 +44,6 @@ ruint = { version = "1.17", default-features = false }
 abi-gen = []
 
 {% endif -%}
-[build-dependencies]
-{% if let Some(path) = local_path -%}
-cargo-pvm-contract-builder = { path = "{{ path }}/crates/cargo-pvm-contract-builder" }
-{% else -%}
-cargo-pvm-contract-builder = "{{ builder_version }}"
-{% endif %}
-
 [profile.release]
 codegen-units = 1
 lto = true

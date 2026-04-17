@@ -16,6 +16,7 @@ interface Flipper {
 mod flipper_delegate {
     use super::*;
     use pvm_contract_core::call::CallError;
+    use pvm_contract_types::PolkaVmHost as api;
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
     use flipper::{self, Flipper};

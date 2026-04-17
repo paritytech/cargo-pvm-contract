@@ -36,11 +36,40 @@ pub struct AbiParam {
     pub param_type: String,
 }
 
-pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
-    generate_abi_via_feature(manifest_dir, bin_name)
+pub fn generate_abi_for_bin(
+    manifest_dir: &Path,
+    bin_name: &str,
+    target_root: Option<&Path>,
+) -> Result<Option<AbiJson>> {
+    generate_abi_via_feature(manifest_dir, bin_name, target_root)
 }
 
-fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
+fn get_host_triple() -> Result<String> {
+    if let Ok(host) = env::var("HOST") {
+        return Ok(host);
+    }
+    // Fallback: parse `rustc -vV` output
+    let output = Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .context("Failed to execute rustc -vV")?;
+    if !output.status.success() {
+        anyhow::bail!("rustc -vV failed");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(triple) = line.strip_prefix("host: ") {
+            return Ok(triple.trim().to_string());
+        }
+    }
+    anyhow::bail!("Could not determine host triple from rustc -vV")
+}
+
+fn generate_abi_via_feature(
+    manifest_dir: &Path,
+    bin_name: &str,
+    target_root: Option<&Path>,
+) -> Result<Option<AbiJson>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists() {
         return Ok(None);
@@ -54,21 +83,42 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         return generate_abi_from_sol(&sol_full_path);
     }
 
-    let target_dir = super::get_target_root().join("abi-gen-target");
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    // ABI generation requires either a `.sol` file or the `#[contract]` macro
+    // (which generates `__abi_json()` under `--features abi-gen`). DSL-based
+    // contracts don't use the macro and are expected to handle ABI themselves.
+    if !has_contract_macro(&source_content) {
+        return Ok(None);
+    }
+
+    let target_dir = match target_root {
+        Some(root) => root.join("abi-gen-target"),
+        None => super::get_target_root().join("abi-gen-target"),
+    };
     let manifest_path = manifest_dir.join("Cargo.toml");
 
     // The project's .cargo/config.toml targets RISC-V with build-std=core,alloc.
     // The abi-gen binary needs std and must run on the host, so we override both:
     // --target forces the host triple, build-std adds std to the sysroot rebuild.
-    let host = env::var("HOST")
-        .context("HOST env var not set — generate_abi_via_feature must run from build.rs")?;
+    let host = get_host_triple()?;
 
-    let output = Command::new(&cargo)
-        .current_dir(manifest_dir)
+    // Remove RUSTUP_TOOLCHAIN only when rust-toolchain.toml exists, matching
+    // build_elf's behavior. Without a toolchain file we keep the inherited
+    // toolchain (e.g. nightly passed via `cargo +nightly`).
+    let has_toolchain_file = manifest_dir.join("rust-toolchain.toml").exists()
+        || manifest_dir.join("rust-toolchain").exists();
+
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(manifest_dir)
+        .env_remove("CARGO")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC")
-        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_TARGET_DIR", &target_dir);
+
+    if has_toolchain_file {
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
+
+    let output = cmd
         .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")
         .arg("--manifest-path")
@@ -96,6 +146,13 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
         .context("Failed to parse ABI JSON from abi-gen output")?;
 
     Ok(Some(abi))
+}
+
+/// Detect whether the source uses the `#[contract]` attribute macro. Matches
+/// both `::contract]` (no args) and `::contract(` (with args). Used to skip
+/// ABI generation for DSL-based contracts that don't use the macro.
+pub(crate) fn has_contract_macro(source: &str) -> bool {
+    source.contains("::contract]") || source.contains("::contract(")
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
@@ -363,6 +420,32 @@ mod tests {
         // Actually "contract(\"" consumes up to the quote, then after_quote starts at MyToken.sol)
         // find('"') returns None since there's no second quote
         assert_eq!(extract_sol_path_from_source(source), None);
+    }
+
+    // --- has_contract_macro ---
+
+    #[test]
+    fn has_contract_macro_with_args() {
+        let source = r#"#[pvm_contract_macros::contract(allocator = "pico")]"#;
+        assert!(has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_with_sol_path() {
+        let source = r#"#[pvm_contract_macros::contract("MyToken.sol")]"#;
+        assert!(has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_no_args() {
+        let source = r#"#[pvm_contract_macros::contract]"#;
+        assert!(has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_dsl_binary() {
+        let source = r#"use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};"#;
+        assert!(!has_contract_macro(source));
     }
 
     // --- parse_sol_params ---

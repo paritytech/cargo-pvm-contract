@@ -31,7 +31,6 @@ impl Variant {
 fn cargo_toml_no_alloc(contract: &str, base_path: &Path) -> String {
     let macros_path = base_path.join("crates/pvm-contract-macros");
     let types_path = base_path.join("crates/pvm-contract-types");
-    let builder_path = base_path.join("crates/cargo-pvm-contract-builder");
 
     format!(
         r#"[package]
@@ -39,7 +38,6 @@ name = "{}"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "{}"
@@ -51,9 +49,6 @@ pvm-contract-types = {{ path = "{}" }}
 pallet-revive-uapi = {{ version = "0.10", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
 ruint = {{ version = "1.17", default-features = false }}
-
-[build-dependencies]
-cargo-pvm-contract-builder = {{ path = "{}" }}
 
 [profile.dev]
 panic = "abort"
@@ -70,14 +65,12 @@ overflow-checks = false
         contract,
         macros_path.display(),
         types_path.display(),
-        builder_path.display()
     )
 }
 
 fn cargo_toml_with_alloc(contract: &str, base_path: &Path) -> String {
     let macros_path = base_path.join("crates/pvm-contract-macros");
     let types_path = base_path.join("crates/pvm-contract-types");
-    let builder_path = base_path.join("crates/cargo-pvm-contract-builder");
     let bump_alloc_path = base_path.join("crates/pvm-bump-allocator");
 
     format!(
@@ -86,7 +79,6 @@ name = "{}"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "{}"
@@ -99,9 +91,6 @@ pvm-bump-allocator = {{ path = "{}" }}
 pallet-revive-uapi = {{ version = "0.10", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
 ruint = {{ version = "1.17", default-features = false }}
-
-[build-dependencies]
-cargo-pvm-contract-builder = {{ path = "{}" }}
 
 [profile.dev]
 panic = "abort"
@@ -119,14 +108,12 @@ overflow-checks = false
         macros_path.display(),
         types_path.display(),
         bump_alloc_path.display(),
-        builder_path.display()
     )
 }
 
 fn cargo_toml_builder_dsl(contract: &str, base_path: &Path) -> String {
     let dsl_path = base_path.join("crates/pvm-contract-builder-dsl");
     let types_path = base_path.join("crates/pvm-contract-types");
-    let builder_path = base_path.join("crates/cargo-pvm-contract-builder");
 
     format!(
         r#"[package]
@@ -134,7 +121,6 @@ name = "{}"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "{}"
@@ -146,9 +132,6 @@ pvm-contract-types = {{ path = "{}" }}
 pallet-revive-uapi = {{ version = "0.10", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
 ruint = {{ version = "1.17", default-features = false }}
-
-[build-dependencies]
-cargo-pvm-contract-builder = {{ path = "{}" }}
 
 [profile.dev]
 panic = "abort"
@@ -165,7 +148,6 @@ overflow-checks = false
         contract,
         dsl_path.display(),
         types_path.display(),
-        builder_path.display()
     )
 }
 
@@ -230,65 +212,30 @@ fn build_variant(
     let cargo_toml_path = temp_path.join("Cargo.toml");
     fs::write(&cargo_toml_path, cargo_toml_content).context("Failed to write Cargo.toml")?;
 
-    let build_rs = r#"fn main() {
-    cargo_pvm_contract_builder::PvmBuilder::new().build();
-}
-"#;
-    fs::write(temp_path.join("build.rs"), build_rs).context("Failed to write build.rs")?;
+    let build_profile = cargo_pvm_contract_builder::Profile::from_name(profile);
+    let output_dir = temp_path.join("target");
+    let bins = vec![contract.to_string()];
 
-    let cargo_profile = if profile == "debug" { "dev" } else { profile };
-
-    let mut args = polkavm_linker::TargetJsonArgs::default();
-    args.is_64_bit = true;
-    let target_json = polkavm_linker::target_json_path(args)
-        .map_err(|e| anyhow::anyhow!("Failed to get target JSON: {e}"))?;
-
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.current_dir(temp_path)
-        .arg("build")
-        .arg("--profile")
-        .arg(cargo_profile)
-        .arg("--target")
-        .arg(&target_json)
-        .arg("-Zbuild-std=core,alloc")
-        .arg("-Zjson-target-spec");
-
-    let output = cmd.output().context("Failed to execute cargo build")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "Build failed for {} {} ({}): {}",
+    cargo_pvm_contract_builder::build_contract(
+        &cargo_toml_path,
+        &output_dir,
+        &build_profile,
+        &bins,
+        None,
+    )
+    .with_context(|| {
+        format!(
+            "Build failed for {} {} ({})",
             contract,
             variant.name(),
             profile,
-            stderr
-        );
-    }
+        )
+    })?;
 
-    let polkavm_file = temp_path
-        .join("target")
-        .join(format!("{contract}.{profile}.polkavm"));
+    let polkavm_file = output_dir.join(profile).join(format!("{contract}.polkavm"));
 
     if !polkavm_file.exists() {
-        let target_dir = temp_path.join("target");
-        let files: Vec<_> = fs::read_dir(&target_dir)
-            .ok()
-            .and_then(|d| {
-                d.filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .find(|p| p.extension().is_some_and(|ext| ext == "polkavm"))
-            })
-            .into_iter()
-            .collect();
-
-        anyhow::bail!(
-            "PolkaVM file not found at {}. Found files: {:?}",
-            polkavm_file.display(),
-            files
-        );
+        anyhow::bail!("PolkaVM file not found at {}", polkavm_file.display(),);
     }
 
     let output_name = format!("{}_{}.{}.polkavm", contract, variant.name(), profile);

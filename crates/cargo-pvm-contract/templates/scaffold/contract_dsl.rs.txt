@@ -48,7 +48,7 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
 static ALLOC: BumpAllocator = BumpAllocator;
 {% endif %}
 
-use pvm_contract_builder_dsl::pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags, StorageFlags};
+use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags, StorageFlags};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
 use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
 use ruint::aliases::U256;
@@ -79,14 +79,14 @@ pub extern "C" fn call() {
     // const MY_METHOD: [u8; 4] = solidity_selector("myMethod(uint256)");
     // ContractBuilder::new()
     //     .method(MY_METHOD, my_method_handler)
-    //     .dispatch::<HostFnImpl, 256>()
-    HostFnImpl::return_value(ReturnFlags::REVERT, b"NoMethods");
+    //     .dispatch::<PolkaVmHost, 256>()
+    PolkaVmHost::return_value(ReturnFlags::REVERT, b"NoMethods");
 {% else %}
     ContractBuilder::new()
 {% for func in functions %}
         .method({{ func.selector_const }}, {{ func.name_snake }}_handler)
 {% endfor %}
-        .dispatch::<HostFnImpl, 256>()
+        .dispatch::<PolkaVmHost, 256>()
 {% endif %}
 }
 {% if !functions.is_empty() %}
@@ -104,7 +104,7 @@ fn {{ func.name_snake }}_handler({% if func.params.is_empty() %}_input{% else %}
     let _result: {{ func.return_rust_type }} = todo!();
     let mut buf = [0u8; <{{ func.return_rust_type }} as StaticEncodedLen>::ENCODED_SIZE];
     _result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 {% endif %}
 }
 {% endfor %}

@@ -69,7 +69,7 @@ alloy-core = { version = "1.5.7", default-features = false, features = [
     "sol-types",
     "json",
 ] }
-pallet-revive-uapi = { version = "0.10", default-features = false }
+pallet-revive-uapi = { version = "0.11", default-features = false }
 polkavm-derive = { version = "0.31.0" }
 ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }

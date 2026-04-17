@@ -1,6 +1,7 @@
 #![no_main]
 #![no_std]
 
+use pvm_contract_types::Address;
 use ruint::aliases::U256;
 
 #[pvm_contract_macros::contract("Multi.sol", buffer = 256)]
@@ -43,9 +44,9 @@ mod multi {
     }
 
     #[pvm_contract_macros::method]
-    pub fn hash(account: [u8; 20]) -> U256 {
+    pub fn hash(account: Address) -> U256 {
         let mut bytes = [0u8; 32];
-        bytes[12..].copy_from_slice(&account);
+        bytes[12..].copy_from_slice(account.as_ref());
         U256::from_be_bytes::<32>(bytes)
     }
 
