@@ -10,16 +10,22 @@ interface Flipper {
     function get() external view returns (bool);
 }
 });
-use errors::Error;
 
 #[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_instantiate {
 
     use pallet_revive_uapi::HostFnImpl as api;
-    use pvm_contract_core::call::RefTimeAndProofSizeLimits;
+    use pvm_contract_core::call::{CallError, RefTimeAndProofSizeLimits};
     use pvm_contract_types::*;
 
     use super::*;
+    use flipper::{self, Flipper};
+
+    sol_revert_enum! {
+        pub enum Error {
+            CallError(CallError)
+        }
+    }
 
     #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {

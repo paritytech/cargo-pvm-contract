@@ -11,13 +11,20 @@ interface Flipper {
     function get() external view returns (bool);
 }
 });
-use errors::Error;
 
 #[pvm_contract_macros::contract("DelegateFlipper.sol", allocator = "pico")]
 mod flipper_delegate {
     use super::*;
+    use pvm_contract_core::call::CallError;
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
+    use flipper::{self, Flipper};
+
+    sol_revert_enum! {
+        pub enum Error {
+            CallError(CallError)
+        }
+    }
 
     #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
@@ -29,7 +36,7 @@ mod flipper_delegate {
     #[pvm_contract_macros::method]
     pub fn delegate_flipper(addr: Address) -> Result<(), Error> {
         let flip = Flipper::from_address(addr).flip();
-        flip.delegate_call()
+        Ok(flip.delegate_call()?)
     }
 
     #[pvm_contract_macros::method]

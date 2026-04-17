@@ -9,15 +9,20 @@ interface Flipper {
     function get() external view returns (bool);
 }
 });
-use errors::Error;
 
 #[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_call_alloy {
 
+    use pvm_contract_core::call::CallError;
     use pvm_contract_types::*;
 
     use super::*;
-
+    use flipper::{self, Flipper};
+    sol_revert_enum! {
+        pub enum Error {
+            CallError(CallError)
+        }
+    }
     #[pvm_contract_macros::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
