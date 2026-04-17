@@ -53,19 +53,19 @@ fn custom_type_method_produces_valid_abi() {
 
 #[test]
 fn multi_method_produces_valid_abi() {
-    expect_test::expect_file!("./test_abi_contract/multi_method.json")
+    expect_test::expect_file!("./test_abi_contract/abi_multi_method.json")
         .assert_eq(&cargo_run_abi("multi-method"));
 }
 
 #[test]
 fn nested_custom_type_produces_valid_abi() {
-    expect_test::expect_file!("./test_abi_contract/nested_custom_type.json")
+    expect_test::expect_file!("./test_abi_contract/abi_nested_custom_type.json")
         .assert_eq(&cargo_run_abi("nested-custom-type"));
 }
 
 #[test]
 fn dynamic_custom_return_produces_valid_abi() {
-    expect_test::expect_file!("./test_abi_contract/dynamic_custom_return.json")
+    expect_test::expect_file!("./test_abi_contract/abi_dynamic_custom_return.json")
         .assert_eq(&cargo_run_abi("dynamic-custom-return"));
 }
 
@@ -74,6 +74,6 @@ fn dynamic_custom_return_produces_valid_abi() {
 /// that reference HostFnImpl methods unavailable on the host target.
 #[test]
 fn host_api_calls_produces_valid_abi() {
-    expect_test::expect_file!("./test_abi_contract/host_api_calls.json")
+    expect_test::expect_file!("./test_abi_contract/abi_host_api_calls.json")
         .assert_eq(&cargo_run_abi("host-api-calls"))
 }

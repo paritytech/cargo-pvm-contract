@@ -373,11 +373,10 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
 
 #[cfg(test)]
 mod test {
-    use crate::{abi_import::expand_to_module, solidity::to_snake_case};
+    use crate::abi_import::expand_to_module;
     use alloy_json_abi::ToSolConfig;
     use quote::ToTokens;
-    use std::path::PathBuf;
-    use std::process::Command;
+    use std::{fs, path::PathBuf};
     use syn::parse::{Parse, Parser};
     fn test_abi_contract_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -385,40 +384,21 @@ mod test {
             .join("test_abi_contract")
     }
 
-    fn cargo_run_abi(bin_name: &str) -> String {
+    fn cargo_load_abi(bin_name: &str) -> String {
         let dir = test_abi_contract_dir();
 
-        let output = Command::new(env!("CARGO"))
-            .current_dir(&dir)
-            .arg("run")
-            .arg("--features")
-            .arg("abi-gen")
-            .arg("--bin")
-            .arg(bin_name)
-            .output()
-            .expect("failed to run cargo");
-
-        assert!(
-            output.status.success(),
-            "cargo run failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let stdout = String::from_utf8(output.stdout).expect("invalid utf8 in stdout");
-        serde_json::to_string_pretty(
-            &serde_json::from_str::<serde_json::Value>(&stdout).expect("failed to parse ABI JSON"),
-        )
-        .expect("failed to serialzie json abi")
+        fs::read_to_string(dir.join(format!("abi_{}.json", bin_name))).unwrap()
     }
 
     fn load(name: &str) -> String {
-        let json = cargo_run_abi(name);
+        let name = &name.replace('-', "_");
+        let json = cargo_load_abi(name);
         let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(&json).unwrap();
         let config = ToSolConfig::new()
             .print_constructors(true)
             .for_sol_macro(true);
 
-        let unparsed = &parsed.to_sol(&to_snake_case(&name.replace('-', "_")), Some(config));
+        let unparsed = &parsed.to_sol(&name, Some(config));
         let tts = syn::parse_str::<proc_macro2::TokenStream>(unparsed).unwrap();
 
         let file = syn_solidity::parse2(quote::quote! {
