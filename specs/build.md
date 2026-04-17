@@ -50,6 +50,10 @@ my_contract/
 
 ## Build
 
+Both options below are supported side by side. An existing project with a `build.rs` keeps
+working unchanged, and `cargo pvm-contract build` works on any project regardless of whether
+it has a `build.rs`.
+
 ### Option 1: CLI (recommended)
 
 ```bash
