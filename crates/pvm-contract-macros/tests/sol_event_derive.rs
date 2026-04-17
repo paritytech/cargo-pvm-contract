@@ -187,3 +187,28 @@ fn u256_indexed_topic_packing() {
     assert_eq!(value_topic[31], 0xEF);
     assert_eq!(&value_topic[..28], &[0u8; 28]);
 }
+
+// ABI_ENTRY renders a valid JSON event entry with per-field name/type/indexed.
+#[test]
+fn abi_entry_matches_expected_shape() {
+    assert_eq!(
+        Transfer::ABI_ENTRY,
+        r#"{"type":"event","name":"Transfer","inputs":[{"name":"from","type":"address","indexed":true},{"name":"to","type":"address","indexed":true},{"name":"value","type":"uint256","indexed":false}],"anonymous":false}"#
+    );
+}
+
+#[test]
+fn abi_entry_no_indexed_fields() {
+    assert_eq!(
+        Log::ABI_ENTRY,
+        r#"{"type":"event","name":"Log","inputs":[{"name":"value","type":"uint64","indexed":false},{"name":"flag","type":"bool","indexed":false}],"anonymous":false}"#
+    );
+}
+
+#[test]
+fn abi_entry_all_indexed() {
+    assert_eq!(
+        Approval::ABI_ENTRY,
+        r#"{"type":"event","name":"Approval","inputs":[{"name":"owner","type":"address","indexed":true},{"name":"spender","type":"address","indexed":true},{"name":"value","type":"uint256","indexed":true}],"anonymous":false}"#
+    );
+}

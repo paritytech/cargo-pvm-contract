@@ -391,6 +391,88 @@ Error types are included in the generated ABI JSON:
 }
 ```
 
+## Events
+
+Events are logged via `pallet_revive_uapi::HostFnImpl::deposit_event(topics, data)`.
+Topics and data follow Solidity's event wire format.
+
+### Wire Format
+
+An event log consists of:
+
+- **Topics**: A list of 32-byte values, up to 4 entries.
+  - `topic0` is always `keccak256(canonical_signature)` (non-anonymous events).
+  - `topic1..topic3` are the ABI-packed values of fields marked `#[indexed]`.
+  - Maximum 3 indexed fields per event (4-topic EVM limit including topic0).
+- **Data**: ABI-encoded concatenation of the non-indexed fields, laid out as a
+  flat tuple (head + tail, matching `(T1,T2,...)` encoding rules).
+
+### Indexed Field Packing
+
+Static types (≤ 32 bytes): ABI-encoded directly into a 32-byte topic slot
+(integers right-aligned big-endian, `address` right-aligned in the low 20 bytes,
+`bytesN` left-aligned).
+
+Dynamic types (`bytes`, `string`, `T[]`, dynamic structs): the topic is
+`keccak256(abi_encode(value))`. The raw value is not recoverable from the topic;
+indexed dynamic fields are for filtering only.
+
+### Canonical Signature
+
+Built from the event name and the source-order list of Rust field types
+(translated to their Solidity canonical names - same rules as function
+selectors). Example:
+
+```rust,ignore
+#[derive(pvm_contract_macros::SolEvent)]
+struct Transfer {
+    #[indexed] from: Address,
+    #[indexed] to: Address,
+    value: U256,
+}
+// signature = "Transfer(address,address,uint256)"
+// topic0    = keccak256("Transfer(address,address,uint256)")
+```
+
+Indexed fields keep their position in the signature — indexing does not reorder
+the tuple.
+
+### Emission
+
+The derive generates `topics()` and `data()` methods; the contract calls
+`api::deposit_event` directly:
+
+```rust,ignore
+let event = Transfer { from, to, value };
+api::deposit_event(&event.topics(), &event.data());
+```
+
+### ABI JSON
+
+Events emit one entry per derive:
+
+```json
+{
+  "type": "event",
+  "name": "Transfer",
+  "inputs": [
+    { "name": "from",  "type": "address", "indexed": true  },
+    { "name": "to",    "type": "address", "indexed": true  },
+    { "name": "value", "type": "uint256", "indexed": false }
+  ],
+  "anonymous": false
+}
+```
+
+Entries come from one of two sources:
+
+1. **`.sol` interface** - the builder parses `event` declarations from the
+   provided Solidity file. Preferred path when a `.sol` interface exists.
+2. **`abi-gen` feature** - for contracts without a `.sol` file, the
+   `#[contract]` macro scans its module body for structs carrying
+   `#[derive(SolEvent)]` and emits their pre-rendered `ABI_ENTRY` constant.
+   Events defined outside the module body are not auto-discovered via this path.
+
 ## Limitations
 
 ### Not Supported

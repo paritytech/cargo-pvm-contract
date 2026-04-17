@@ -144,6 +144,9 @@ pub(super) struct ParsedContract {
     pub(super) fallback_is_payable: bool,
     /// Error types from `Result<T, E>` return types, for ABI generation.
     pub(super) error_types: Vec<syn::Type>,
+    /// Idents of structs in the module body carrying `#[derive(SolEvent)]`.
+    /// Used by the abi-gen codepath to emit event entries for no-sol contracts.
+    pub(super) event_idents: Vec<Ident>,
 }
 
 /// A storage field annotated with `#[slot(N)]` on the contract struct.
@@ -748,8 +751,16 @@ fn parse_contract(
     let mut implemented_sol_methods = Vec::new();
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
+    let mut event_idents: Vec<Ident> = Vec::new();
 
     for item in &content.1 {
+        // Collect event structs with #[derive(SolEvent)]
+        if let syn::Item::Struct(item_struct) = item
+            && has_sol_event_derive(&item_struct.attrs)
+        {
+            event_idents.push(item_struct.ident.clone());
+        }
+
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
@@ -960,7 +971,31 @@ fn parse_contract(
         fallback_returns_result,
         fallback_is_payable,
         error_types,
+        event_idents,
     })
+}
+
+/// match both `SolEvent` and paths ending in `SolEvent` (e.g.
+/// `pvm_contract_macros::SolEvent`).
+fn has_sol_event_derive(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(last) = meta.path.segments.last()
+                && last.ident == "SolEvent"
+            {
+                found = true;
+            }
+            Ok(())
+        });
+        if found {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenStream> {
@@ -2336,6 +2371,41 @@ mod tests {
     }
 
     #[test]
+    fn event_structs_inside_module_are_wired_into_abi_gen() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(pvm_contract_macros::SolEvent)]
+                struct Transfer {
+                    #[indexed] from: Address,
+                    #[indexed] to: Address,
+                    value: U256,
+                }
+
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            output.contains("Transfer :: ABI_ENTRY") || output.contains("Transfer::ABI_ENTRY"),
+            "abi-gen output should reference Transfer::ABI_ENTRY, got: {output}"
+        );
+    }
+
+    #[test]
     fn call_body_omits_value_code_when_all_payable() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
@@ -2555,6 +2625,36 @@ mod tests {
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
             "mixed contract should guard non-payable arms"
+        );
+    }
+
+    #[test]
+    fn struct_without_sol_event_derive_is_ignored() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(Debug, Clone)]
+                struct Plain {
+                    x: u64,
+                }
+
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("Plain :: ABI_ENTRY") && !output.contains("Plain::ABI_ENTRY"),
+            "Non-event structs should not leak into abi-gen output"
         );
     }
 

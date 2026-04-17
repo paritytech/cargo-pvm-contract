@@ -42,8 +42,17 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let topics_body = generate_topics_body(fields, &field_info, &indexed_flags);
     let data_body = generate_data_body(fields, &field_info, &indexed_flags);
+    let abi_entry_expr = build_abi_entry_expr(&name_str, fields, &field_info, &indexed_flags);
 
     Ok(quote! {
+        impl #name {
+            /// Pre-rendered ABI JSON entry for this event. Used by the
+            /// `#[contract]` macro's `abi-gen` codepath to emit event entries
+            /// for contracts without a `.sol` interface file.
+            #[doc(hidden)]
+            pub const ABI_ENTRY: &'static str = #abi_entry_expr;
+        }
+
         impl ::pvm_contract_types::SolEvent for #name {
             const TOPIC: [u8; 32] = #topic_expr;
             const NAME: &'static str = #name_str;
@@ -60,6 +69,54 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
         }
 
     })
+}
+
+fn build_abi_entry_expr(
+    event_name: &str,
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+    indexed_flags: &[bool],
+) -> TokenStream {
+    let mut parts: Vec<TokenStream> = Vec::new();
+
+    let header = format!(
+        "{{\"type\":\"event\",\"name\":\"{}\",\"inputs\":[",
+        event_name
+    );
+    parts.push(quote! { #header });
+
+    if let Fields::Named(named) = fields {
+        for (i, field) in named.named.iter().enumerate() {
+            if i > 0 {
+                parts.push(quote! { "," });
+            }
+            let field_name = field.ident.as_ref().unwrap().to_string();
+            let prefix = format!("{{\"name\":\"{field_name}\",\"type\":\"");
+            parts.push(quote! { #prefix });
+
+            let sol_type = &field_info[i].1;
+            if sol_type.has_custom_types() {
+                let field_ty = &field.ty;
+                parts.push(quote! {
+                    <#field_ty as ::pvm_contract_types::SolEncode>::SOL_NAME
+                });
+            } else {
+                let canonical = sol_type.canonical_name();
+                parts.push(quote! { #canonical });
+            }
+
+            let suffix = if indexed_flags[i] {
+                "\",\"indexed\":true}"
+            } else {
+                "\",\"indexed\":false}"
+            };
+            parts.push(quote! { #suffix });
+        }
+    }
+
+    parts.push(quote! { "],\"anonymous\":false}" });
+
+    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
 }
 
 fn collect_indexed_flags(fields: &Fields) -> syn::Result<Vec<bool>> {

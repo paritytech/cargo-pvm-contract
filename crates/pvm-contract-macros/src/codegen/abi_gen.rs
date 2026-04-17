@@ -174,6 +174,18 @@ fn generate_abi_gen_impl(
         quote! {}
     };
 
+    // Event ABI entries from #[derive(SolEvent)] types in the module.
+    let event_entries: Vec<TokenStream> = parsed
+        .event_idents
+        .iter()
+        .map(|ident| {
+            quote! {
+                __items.push(::pvm_contract_sdk::serde_json::from_str(#ident::ABI_ENTRY)
+                    .expect("SolEvent ABI_ENTRY is valid JSON"));
+            }
+        })
+        .collect();
+
     // Framework errors are parameterless (`Name()`). Only suppress when a
     // user-defined error has the exact same signature. A user-defined
     // `error InvalidCalldata(uint256)` has a different selector and must
@@ -208,6 +220,8 @@ fn generate_abi_gen_impl(
             #(#method_entries)*
 
             #(#error_entries)*
+
+            #(#event_entries)*
 
             #(#framework_error_entries)*
 
@@ -308,6 +322,7 @@ mod tests {
             fallback_returns_result: false,
             fallback_is_payable: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[]);
