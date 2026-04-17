@@ -19,7 +19,7 @@ pub use host::{
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]
-pub use mock_host::MockHost;
+pub use mock_host::{MockHost, MockHostBuilder};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};
