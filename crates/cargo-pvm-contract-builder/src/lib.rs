@@ -14,7 +14,7 @@ pub use abi::AbiJson;
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
 
-/// The builder for building a PolkaVM binary.
+/// The builder for building a PolkaVM binary (build.rs API).
 pub struct PvmBuilder {
     /// The path to the `Cargo.toml` of the project that should be built.
     project_cargo_toml: PathBuf,
@@ -83,19 +83,33 @@ fn get_manifest_dir() -> PathBuf {
         .into()
 }
 
-/// Detect the build profile from the environment.
-#[derive(Clone, Debug)]
-struct Profile {
+/// Build profile.
+#[derive(Clone)]
+pub struct Profile {
     name: String,
 }
 
+impl std::fmt::Display for Profile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 impl Profile {
+    /// Detect the build profile from the `PROFILE` environment variable (build.rs context).
     fn detect() -> Self {
         let name = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
         Self { name }
     }
 
-    fn cargo_arg(&self) -> &str {
+    /// Create a profile from a name. Normalizes `"dev"` to `"debug"` internally.
+    pub fn from_name(name: &str) -> Self {
+        let name = if name == "dev" { "debug" } else { name }.to_string();
+        Self { name }
+    }
+
+    /// The cargo `--profile` argument value.
+    pub fn cargo_arg(&self) -> &str {
         if self.name == "debug" {
             "dev"
         } else {
@@ -103,12 +117,13 @@ impl Profile {
         }
     }
 
-    fn directory(&self) -> &str {
+    /// The directory name under `target/` for this profile.
+    pub fn directory(&self) -> &str {
         self.name.as_str()
     }
 }
 
-/// Get the workspace target directory.
+/// Get the workspace target directory (build.rs context — derives from OUT_DIR).
 fn get_target_root() -> PathBuf {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set"));
 
@@ -121,13 +136,13 @@ fn get_target_root() -> PathBuf {
     out_dir
 }
 
-/// Get the build output directory.
+/// Get the build output directory (build.rs context).
 fn get_build_dir() -> PathBuf {
     get_target_root().join("pvmbuild")
 }
 
 /// Get the list of binary targets from Cargo.toml.
-fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
+pub fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     let content = fs::read_to_string(cargo_toml)
         .with_context(|| format!("Failed to read {}", cargo_toml.display()))?;
 
@@ -155,7 +170,35 @@ fn get_bin_targets(cargo_toml: &Path) -> Result<Vec<String>> {
     Ok(bins)
 }
 
-/// Build the project.
+/// Build a contract from the CLI. Outputs to `target/<profile>/<bin>.polkavm`.
+pub fn build_contract(
+    manifest_path: &Path,
+    output_dir: &Path,
+    profile: &Profile,
+    bins: &[String],
+    message_format: Option<&str>,
+) -> Result<()> {
+    let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
+    let build_dir = output_dir.join("pvmbuild");
+
+    build_elf(manifest_path, &build_dir, profile, bins, message_format)?;
+
+    let elf_dir = build_dir
+        .join("riscv64emac-unknown-none-polkavm")
+        .join(profile.directory());
+    let profile_dir = output_dir.join(profile.directory());
+
+    process_elf_binaries(
+        &elf_dir,
+        &profile_dir,
+        bins,
+        manifest_dir,
+        Some(output_dir),
+        true,
+    )
+}
+
+/// Build the project (build.rs context). Outputs to `target/<profile>/<bin>.polkavm`.
 fn build_project(
     project_cargo_toml: &Path,
     bin_names: Option<Vec<String>>,
@@ -177,34 +220,251 @@ fn build_project(
         anyhow::bail!("No binary targets found in Cargo.toml");
     }
 
-    let target_dir = build_dir;
-    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build)?;
+    build_elf(
+        project_cargo_toml,
+        &build_dir,
+        &profile,
+        &bins_to_build,
+        None,
+    )?;
 
-    // Link each ELF to PolkaVM
-    let elf_dir = target_dir
+    let elf_dir = build_dir
         .join("riscv64emac-unknown-none-polkavm")
         .join(profile.directory());
+    let profile_dir = target_root.join(profile.directory());
 
-    for bin in &bins_to_build {
+    process_elf_binaries(
+        &elf_dir,
+        &profile_dir,
+        &bins_to_build,
+        manifest_dir,
+        None,
+        !skip_abi,
+    )
+}
+
+/// Link each ELF binary to PolkaVM bytecode and optionally generate its ABI JSON.
+/// Creates `profile_dir` if it doesn't exist.
+fn process_elf_binaries(
+    elf_dir: &Path,
+    profile_dir: &Path,
+    bins: &[String],
+    manifest_dir: &Path,
+    abi_target_root: Option<&Path>,
+    generate_abi: bool,
+) -> Result<()> {
+    fs::create_dir_all(profile_dir).with_context(|| {
+        format!(
+            "Failed to create profile directory: {}",
+            profile_dir.display()
+        )
+    })?;
+
+    for bin in bins {
         let elf_path = elf_dir.join(bin);
         if !elf_path.exists() {
             anyhow::bail!("ELF binary not found at: {}", elf_path.display());
         }
 
-        let output_path = target_root.join(format!("{}.{}.polkavm", bin, profile.directory()));
+        let output_path = profile_dir.join(format!("{bin}.polkavm"));
         link_to_polkavm(&elf_path, &output_path)?;
 
-        if !skip_abi {
-            let abi_path = target_root.join(format!("{}.{}.abi.json", bin, profile.directory()));
-            generate_abi_file(manifest_dir, bin, &abi_path)?;
+        if generate_abi {
+            let abi_path = profile_dir.join(format!("{bin}.abi.json"));
+            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root)?;
         }
     }
 
     Ok(())
 }
 
-fn generate_abi_file(manifest_dir: &Path, bin_name: &str, output_path: &Path) -> Result<()> {
-    match abi::generate_abi_for_bin(manifest_dir, bin_name) {
+/// Build the ELF binary using cargo (shared by both CLI and build.rs paths).
+fn build_elf(
+    manifest_path: &Path,
+    target_dir: &Path,
+    profile: &Profile,
+    bins: &[String],
+    message_format: Option<&str>,
+) -> Result<()> {
+    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
+
+    let work_dir = manifest_path.parent().context("Invalid manifest path")?;
+
+    // Remove RUSTUP_TOOLCHAIN only when the project has a rust-toolchain.toml that
+    // should control the toolchain. Without it, we keep the inherited toolchain
+    // (e.g. nightly passed via `cargo +nightly`).
+    let has_toolchain_file =
+        work_dir.join("rust-toolchain.toml").exists() || work_dir.join("rust-toolchain").exists();
+
+    let mut target_args = polkavm_linker::TargetJsonArgs::default();
+    target_args.is_64_bit = true;
+    target_args.rustc_version = detect_rustc_version(work_dir, has_toolchain_file);
+    let target_json = polkavm_linker::target_json_path(target_args)
+        .map_err(|e| anyhow::anyhow!("Failed to get target JSON: {e}"))?;
+
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(work_dir)
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC")
+        // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
+        // Stripping is done later by polkavm_linker after processing relocations.
+        .env("RUSTFLAGS", rustflags)
+        .env("CARGO_TARGET_DIR", target_dir)
+        .env("CARGO_PROFILE_RELEASE_STRIP", "false")
+        .env("RUSTC_BOOTSTRAP", "1")
+        .env(INTERNAL_BUILD_ENV, "1")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--profile")
+        .arg(profile.cargo_arg())
+        .arg("--target")
+        .arg(&target_json)
+        .arg("-Zbuild-std=core,alloc");
+
+    if has_toolchain_file {
+        cmd.env_remove("RUSTUP_TOOLCHAIN");
+    }
+
+    // `-Zjson-target-spec` was stabilized in newer toolchains. Pass it only when the
+    // cargo that will execute the build still recognises it as an unstable flag.
+    if cargo_supports_z_flag("json-target-spec", work_dir, has_toolchain_file) {
+        cmd.arg("-Zjson-target-spec");
+    }
+
+    for bin in bins {
+        cmd.arg("--bin").arg(bin);
+    }
+
+    if let Some(fmt) = message_format {
+        cmd.arg("--message-format").arg(fmt);
+    }
+
+    eprintln!("Building PolkaVM binary with profile: {profile}");
+
+    let output = cmd.output().context("Failed to execute cargo build")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Cargo build failed:\n{stderr}");
+    }
+
+    Ok(())
+}
+
+/// Detect the rustc version that the build subprocess will use.
+///
+/// Probes `rustc --version` with the same env treatment as `build_elf` (RUSTC removed,
+/// current_dir set to work_dir, RUSTUP_TOOLCHAIN conditionally removed) so that
+/// rustup / rust-toolchain.toml resolve identically to the actual build.
+fn detect_rustc_version(
+    work_dir: &Path,
+    remove_toolchain_env: bool,
+) -> polkavm_linker::RustcVersion {
+    let mut probe = Command::new("rustc");
+    probe
+        .current_dir(work_dir)
+        .arg("--version")
+        .env_remove("RUSTC")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if remove_toolchain_env {
+        probe.env_remove("RUSTUP_TOOLCHAIN");
+    }
+
+    let output = match probe.output() {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).into_owned(),
+        _ => return polkavm_linker::RustcVersion::Rustc_1_91,
+    };
+
+    // Parse "rustc X.Y.Z ..." or "rustc X.Y.Z-nightly (hash YYYY-MM-DD)"
+    // and check whether it meets the >=1.91 / nightly>=2025-09-01 cutoff
+    // that polkavm-linker uses for the new target JSON format.
+    // polkavm-linker's cutoff: stable >=1.91 or nightly >=2025-09-01
+    if rustc_version_at_least(&output, (1, 91), (2025, 9, 1)) {
+        polkavm_linker::RustcVersion::Rustc_1_91
+    } else {
+        polkavm_linker::RustcVersion::Legacy
+    }
+}
+
+/// Check if a `rustc --version` output meets a minimum version requirement.
+///
+/// `stable_version`: `(major, minor)` — for stable releases, checks `version >= major.minor`.
+/// `nightly_date`: `(year, month, day)` — for nightly, checks the commit date.
+///
+/// Mirrors polkavm-linker's `VersionDetector::check_feature()`.
+fn rustc_version_at_least(
+    version_output: &str,
+    stable_version: (u32, u32),
+    nightly_date: (u32, u32, u32),
+) -> bool {
+    let parts: Vec<&str> = version_output.split_whitespace().collect();
+    let Some(version_str) = parts.get(1) else {
+        return true;
+    };
+    let is_nightly = version_str.contains("-nightly");
+    let mut nums = version_str.split(['.', '-']);
+    let major: u32 = nums.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let minor: u32 = nums
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(stable_version.1);
+
+    let (req_major, req_minor) = stable_version;
+    if !is_nightly {
+        return major > req_major || (major == req_major && minor >= req_minor);
+    }
+
+    if major > req_major || (major == req_major && minor > req_minor) {
+        return true;
+    }
+
+    // Nightly with minor < req_minor is definitively below the cutoff.
+    if major == req_major && minor < req_minor {
+        return false;
+    }
+
+    // Nightly with minor == req_minor: check commit date from "(hash YYYY-MM-DD)"
+    let (req_y, req_m, req_d) = nightly_date;
+    parts
+        .last()
+        .and_then(|s| {
+            let s = s.trim_end_matches(')');
+            let mut it = s.split('-');
+            let y: u32 = it.next()?.parse().ok()?;
+            let m: u32 = it.next()?.parse().ok()?;
+            let d: u32 = it.next()?.parse().ok()?;
+            Some((y, m, d) >= (req_y, req_m, req_d))
+        })
+        .unwrap_or(true)
+}
+
+/// Check whether the cargo that will run the build still accepts `-Z<flag>`.
+/// `remove_toolchain_env` mirrors the build command's `env_remove("RUSTUP_TOOLCHAIN")`
+/// so that we probe the exact same cargo binary.
+fn cargo_supports_z_flag(flag: &str, work_dir: &Path, remove_toolchain_env: bool) -> bool {
+    let mut probe = Command::new("cargo");
+    probe
+        .current_dir(work_dir)
+        .arg(format!("-Z{flag}"))
+        .arg("version")
+        .env("RUSTC_BOOTSTRAP", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if remove_toolchain_env {
+        probe.env_remove("RUSTUP_TOOLCHAIN");
+    }
+    probe.status().map(|s| s.success()).unwrap_or(false)
+}
+
+fn generate_abi_file(
+    manifest_dir: &Path,
+    bin_name: &str,
+    output_path: &Path,
+    target_root: Option<&Path>,
+) -> Result<()> {
+    match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
         Ok(Some(abi)) => {
             let json =
                 serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
@@ -219,60 +479,6 @@ fn generate_abi_file(manifest_dir: &Path, bin_name: &str, output_path: &Path) ->
             return Err(e).context("Failed to generate ABI");
         }
     }
-    Ok(())
-}
-
-/// Build the ELF binary using cargo.
-fn build_elf(
-    manifest_path: &Path,
-    target_dir: &Path,
-    profile: &Profile,
-    bins: &[String],
-) -> Result<()> {
-    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
-
-    let mut args = polkavm_linker::TargetJsonArgs::default();
-    args.is_64_bit = true;
-    let target_json = polkavm_linker::target_json_path(args)
-        .map_err(|e| anyhow::anyhow!("Failed to get target JSON: {e}"))?;
-
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let work_dir = manifest_path.parent().context("Invalid manifest path")?;
-
-    let mut cmd = Command::new(&cargo);
-    cmd.current_dir(work_dir)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS") // We set RUSTFLAGS, but cargo prefers this one
-        .env_remove("RUSTC") // Prevent host toolchain override from build.rs
-        .env("RUSTFLAGS", rustflags)
-        .env("CARGO_TARGET_DIR", target_dir)
-        // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
-        // Stripping is done later by polkavm_linker after processing relocations.
-        .env("CARGO_PROFILE_RELEASE_STRIP", "false")
-        .env("RUSTC_BOOTSTRAP", "1")
-        .env(INTERNAL_BUILD_ENV, "1")
-        .arg("build")
-        .arg("--manifest-path")
-        .arg(manifest_path)
-        .arg("--profile")
-        .arg(profile.cargo_arg())
-        .arg("--target")
-        .arg(&target_json)
-        .arg("-Zbuild-std=core,alloc")
-        .arg("-Zjson-target-spec");
-
-    for bin in bins {
-        cmd.arg("--bin").arg(bin);
-    }
-
-    eprintln!("Building PolkaVM binary with profile: {profile:?}");
-
-    let output = cmd.output().context("Failed to execute cargo build")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Cargo build failed:\n{stderr}");
-    }
-
     Ok(())
 }
 
@@ -306,4 +512,54 @@ fn link_to_polkavm(elf_path: &Path, output_path: &Path) -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: polkavm-linker 1.91 cutoff (stable >=1.91, nightly >=2025-09-01).
+    fn check_1_91(version: &str) -> bool {
+        rustc_version_at_least(version, (1, 91), (2025, 9, 1))
+    }
+
+    #[test]
+    fn stable_at_or_above_cutoff() {
+        assert!(check_1_91("rustc 1.91.0 (abcd1234 2025-10-30)"));
+        assert!(check_1_91("rustc 1.92.0 (ded5c06cf 2025-12-08)"));
+        assert!(check_1_91("rustc 1.93.0 (254b59607 2026-01-19)"));
+    }
+
+    #[test]
+    fn stable_below_cutoff() {
+        assert!(!check_1_91("rustc 1.90.0 (abcd1234 2025-09-18)"));
+        assert!(!check_1_91("rustc 1.85.0 (abcd1234 2025-02-20)"));
+    }
+
+    #[test]
+    fn nightly_above_cutoff() {
+        assert!(check_1_91("rustc 1.96.0-nightly (f5eca4fcf 2026-04-09)"));
+        assert!(check_1_91("rustc 1.92.0-nightly (abcd1234 2025-10-15)"));
+        assert!(check_1_91("rustc 1.91.0-nightly (abcd1234 2025-09-01)"));
+    }
+
+    #[test]
+    fn nightly_below_cutoff() {
+        assert!(!check_1_91("rustc 1.91.0-nightly (abcd1234 2025-08-15)"));
+        assert!(!check_1_91("rustc 1.91.0-nightly (abcd1234 2025-08-31)"));
+        // minor < req_minor must return false even when date is after cutoff
+        assert!(!check_1_91("rustc 1.90.0-nightly (abcd1234 2025-10-15)"));
+    }
+
+    #[test]
+    fn different_cutoff() {
+        // Example: hypothetical cutoff at stable >=1.95, nightly >=2026-03-01
+        let check = |v: &str| rustc_version_at_least(v, (1, 95), (2026, 3, 1));
+        assert!(check("rustc 1.95.0 (abcd1234 2026-05-01)"));
+        assert!(check("rustc 1.96.0-nightly (abcd1234 2026-04-01)"));
+        assert!(!check("rustc 1.94.0 (abcd1234 2026-04-01)"));
+        assert!(!check("rustc 1.95.0-nightly (abcd1234 2026-02-28)"));
+        // minor < req_minor must return false even when date is after cutoff
+        assert!(!check("rustc 1.94.0-nightly (abcd1234 2026-04-01)"));
+    }
 }

@@ -11,7 +11,7 @@ Contracts use the **Ethereum ABI** (Keccak-256 selectors, Solidity-compatible en
 ```text
 cargo-pvm-contract/
 ├── cargo-pvm-contract          CLI tool — scaffolds new contract projects
-├── cargo-pvm-contract-builder  Build helper — invoked from build.rs, links PolkaVM bytecode + emits ABI JSON
+├── cargo-pvm-contract-builder  Build library — links PolkaVM bytecode + emits ABI JSON (used by CLI and optional build.rs)
 ├── pvm-contract-macros         Proc macros — #[contract], #[method], #[constructor], #[fallback], #[derive(SolType)]
 ├── pvm-contract-types          ABI traits — SolEncode / SolDecode, no_std compatible
 ├── pvm-contract-builder-dsl    Builder DSL — non-macro alternative (ContractBuilder)

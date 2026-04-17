@@ -1,5 +1,5 @@
 #![doc = include_str!("../../../specs/abi.md")]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate self as pvm_contract_types;
 
@@ -10,6 +10,16 @@ extern crate alloc;
 mod alloc_types;
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
+
+mod host;
+pub use host::{
+    CallFlags, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
+};
+
+#[cfg(feature = "std")]
+mod mock_host;
+#[cfg(feature = "std")]
+pub use mock_host::{MockHost, MockHostBuilder};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};

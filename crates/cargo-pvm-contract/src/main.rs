@@ -5,6 +5,7 @@ use inquire::{Select, Text};
 use log::debug;
 use std::path::PathBuf;
 
+mod build;
 mod encode_decode;
 mod extrinsics;
 mod scaffold;
@@ -35,6 +36,8 @@ struct PvmContractArgs {
 enum PvmContractCommand {
     /// Initialize a new contract project
     Init(InitArgs),
+    /// Build the contract project
+    Build(build::BuildArgs),
     /// Encode a function call or constructor into ABI-encoded hex calldata
     Encode(EncodeArgs),
     /// Decode ABI-encoded hex calldata back to human-readable format
@@ -366,6 +369,7 @@ fn main() -> Result<()> {
 fn handle_pvm_contract(args: PvmContractArgs) -> Result<()> {
     match args.command {
         PvmContractCommand::Init(init_args) => init_command(init_args),
+        PvmContractCommand::Build(build_args) => build::build_contracts(build_args),
         PvmContractCommand::Encode(encode_args) => encode_command(encode_args),
         PvmContractCommand::Decode(decode_args) => decode_command(decode_args),
         PvmContractCommand::Upload(a) => extrinsics::upload_command(a),

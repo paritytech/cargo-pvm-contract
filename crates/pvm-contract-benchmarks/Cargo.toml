@@ -13,7 +13,6 @@ tabled = "0.16"
 walkdir = "2.5"
 cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
 tempfile = "3.13"
-polkavm-linker.workspace = true
 
 [[bin]]
 name = "build-and-measure"

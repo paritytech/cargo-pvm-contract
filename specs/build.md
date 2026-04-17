@@ -16,8 +16,7 @@
 
 ```bash
 cargo install cargo-pvm-contract
-cargo install --path crates/cargo-pvm-contract 
-cargo pvm-contract
+cargo pvm-contract init
 ```
 
 Interactive prompts depend on the init type chosen:
@@ -40,7 +39,6 @@ This generates a ready-to-build project:
 ```text
 my_contract/
 ├── Cargo.toml            Dependencies + optimized release profile
-├── build.rs              Invokes PvmBuilder (PolkaVM linking + ABI generation)
 ├── rust-toolchain.toml   Pinned nightly (nightly-2026-02-01)
 ├── MyToken.sol           (only if .sol file was provided)
 ├── .cargo/
@@ -52,6 +50,35 @@ my_contract/
 
 ## Build
 
+Both options below are supported side by side. An existing project with a `build.rs` keeps
+working unchanged, and `cargo pvm-contract build` works on any project regardless of whether
+it has a `build.rs`.
+
+### Option 1: CLI (recommended)
+
+```bash
+cd my_contract
+cargo pvm-contract build
+```
+
+Output:
+
+```text
+target/release/my_contract.polkavm    — deployable bytecode
+target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style only)
+```
+
+### Option 2: build.rs
+
+Projects can also use `cargo-pvm-contract-builder` as a build dependency with a `build.rs` file:
+
+```rust,ignore
+// build.rs
+fn main() {
+    cargo_pvm_contract_builder::PvmBuilder::new().build();
+}
+```
+
 ```bash
 cd my_contract
 cargo build --release
@@ -60,11 +87,9 @@ cargo build --release
 Output:
 
 ```text
-target/my_contract.release.polkavm    — deployable bytecode
-target/my_contract.release.abi.json   — Ethereum-compatible ABI (macro style only)
+target/release/my_contract.polkavm    — deployable bytecode
+target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style only)
 ```
-
-That's it. The generated project includes all necessary configuration — no extra flags needed.
 
 ## What Happens Under the Hood
 
@@ -83,19 +108,19 @@ RISC-V ELF Binary
 polkavm-linker 0.31.0 (strip + optimize)
     │
     ▼
-target/<name>.<profile>.polkavm   — deployable bytecode
-target/<name>.<profile>.abi.json  — ABI metadata
+target/<profile>/<name>.polkavm   — deployable bytecode
+target/<profile>/<name>.abi.json  — ABI metadata
 ```
 
-The build is orchestrated by `cargo-pvm-contract-builder`, invoked from the generated `build.rs`.
+The build is orchestrated by `cargo-pvm-contract-builder`, invoked either from the CLI (`cargo pvm-contract build`) or from a `build.rs` file.
 
 ## Debug vs Release
 
 Both profiles produce `.polkavm` output:
 
 ```bash
-cargo build           # → target/my_contract.debug.polkavm
-cargo build --release # → target/my_contract.release.polkavm
+cargo pvm-contract build                  # release (default)
+cargo pvm-contract build --profile dev    # debug
 ```
 
-Release builds are significantly smaller due to size optimization. Always use `--release` for deployment.
+Release builds are significantly smaller due to size optimization. Always use release for deployment.

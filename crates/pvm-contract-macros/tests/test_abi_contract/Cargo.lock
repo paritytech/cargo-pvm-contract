@@ -146,6 +146,7 @@ version = "0.3.0"
 dependencies = [
  "const_format",
  "keccak-const",
+ "pallet-revive-uapi",
  "ruint",
 ]
 
