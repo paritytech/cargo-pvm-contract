@@ -133,7 +133,7 @@ pub(super) struct ParsedContract {
     pub(super) error_types: Vec<syn::Type>,
 }
 
-fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
+fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -149,11 +149,29 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
         {
             let name = s.value();
             if !name.is_empty() {
-                return Some(name);
+                if !is_valid_solidity_identifier(&name) {
+                    return Err(syn::Error::new(
+                        s.span(),
+                        format!(
+                            "Invalid Solidity identifier `{name}`. \
+                             Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
+                        ),
+                    ));
+                }
+                return Ok(Some(name));
             }
         }
     }
-    None
+    Ok(None)
+}
+
+fn is_valid_solidity_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
@@ -352,7 +370,7 @@ fn parse_contract(
 
                 let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)
+                    let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .functions
@@ -370,7 +388,7 @@ fn parse_contract(
                     let selector = compute_selector(&sol_func.signature.canonical_signature());
                     (sol_func.name.clone(), Some(selector))
                 } else {
-                    let sol_name = extract_method_rename(&func.attrs)
+                    let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
                     (sol_name, None)
                 };

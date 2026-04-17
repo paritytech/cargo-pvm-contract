@@ -14,7 +14,7 @@ pub use alloc_types::Bytes;
 #[cfg(feature = "abi-gen")]
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
-pub use abi_gen::{AbiItem, AbiJson, AbiParam, abi_to_json};
+pub use abi_gen::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
 
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]
@@ -991,6 +991,17 @@ impl<T: SolArrayElement, const N: usize> SolEncode for [T; N] {
             }
         }
     }
+
+    /// For `[T; N]`, ABI type is `T_abi_type[N]` and components come from T.
+    #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> AbiParam {
+        let inner = T::abi_param("");
+        AbiParam {
+            name: alloc::string::String::from(name),
+            param_type: alloc::format!("{}[{}]", inner.param_type, N),
+            components: inner.components,
+        }
+    }
 }
 
 impl<T: SolArrayElement + StaticEncodedLen, const N: usize> StaticEncodedLen for [T; N] {
@@ -1058,6 +1069,23 @@ macro_rules! impl_tuple_sol {
                     }
                     __ho += $T::SLOT_SIZE;
                 )+
+            }
+
+            #[cfg(feature = "abi-gen")]
+            fn abi_param(name: &str) -> AbiParam {
+                let mut __idx = 0u32;
+                AbiParam {
+                    name: alloc::string::String::from(name),
+                    param_type: alloc::string::String::from("tuple"),
+                    components: alloc::vec![
+                        $({
+                            let _ = __idx;
+                            let p = $T::abi_param("");
+                            __idx += 1;
+                            p
+                        }),+
+                    ],
+                }
             }
         }
 

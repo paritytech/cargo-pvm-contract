@@ -76,11 +76,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
                     } else {
                         __split_params(__params_str)
                             .into_iter()
-                            .map(|t| ::pvm_contract_types::AbiParam {
-                                name: ::std::string::String::new(),
-                                param_type: t.into(),
-                                components: ::std::vec::Vec::new(),
-                            })
+                            .map(|t| ::pvm_contract_types::parse_type_str("", t))
                             .collect()
                     };
                     __items.push(::pvm_contract_types::AbiItem::Error {
