@@ -1121,4 +1121,224 @@ mod tests {
         MockHost::call_data_copy(&mut buf, 10); // offset past end
         assert_eq!(buf, [0, 0, 0, 0]); // all zeroed
     }
+
+    #[test]
+    fn immutable_data_roundtrip() {
+        MockHost::reset();
+        MockHost::set_immutable_data(vec![10, 20, 30]);
+
+        let mut buf = [0u8; 8];
+        let mut out = &mut buf[..];
+        MockHost::get_immutable_data(&mut out);
+        assert_eq!(out.len(), 3);
+        assert_eq!(&buf[..3], &[10, 20, 30]);
+
+        // Overwrite via HostApi trait method
+        <MockHost as HostApi>::set_immutable_data(&[99]);
+        let mut buf2 = [0u8; 8];
+        let mut out2 = &mut buf2[..];
+        MockHost::get_immutable_data(&mut out2);
+        assert_eq!(out2.len(), 1);
+        assert_eq!(buf2[0], 99);
+    }
+
+    #[test]
+    fn balance_and_balance_of() {
+        MockHost::reset();
+        let mut bal = [0u8; 32];
+        bal[31] = 100;
+        MockHost::set_balance(bal);
+
+        let mut output = [0u8; 32];
+        MockHost::balance(&mut output);
+        assert_eq!(output[31], 100);
+
+        let addr = [0xAA; 20];
+        let mut addr_bal = [0u8; 32];
+        addr_bal[31] = 50;
+        MockHost::set_balance_of(addr, addr_bal);
+
+        let mut output2 = [0u8; 32];
+        MockHost::balance_of(&addr, &mut output2);
+        assert_eq!(output2[31], 50);
+
+        // Unknown address returns zeros
+        let mut output3 = [0xFFu8; 32];
+        MockHost::balance_of(&[0xBB; 20], &mut output3);
+        assert_eq!(output3, [0u8; 32]);
+    }
+
+    #[test]
+    fn chain_id_and_base_fee() {
+        MockHost::reset();
+        let mut cid = [0u8; 32];
+        cid[31] = 42;
+        MockHost::set_chain_id(cid);
+
+        let mut output = [0u8; 32];
+        MockHost::chain_id(&mut output);
+        assert_eq!(output[31], 42);
+
+        let mut fee = [0u8; 32];
+        fee[31] = 7;
+        MockHost::set_base_fee(fee);
+
+        let mut output2 = [0u8; 32];
+        MockHost::base_fee(&mut output2);
+        assert_eq!(output2[31], 7);
+    }
+
+    #[test]
+    fn gas_price_and_gas_left_and_gas_limit() {
+        MockHost::reset();
+        assert_eq!(MockHost::gas_price(), 0);
+        assert_eq!(MockHost::gas_left(), u64::MAX);
+        assert_eq!(MockHost::gas_limit(), u64::MAX);
+    }
+
+    #[test]
+    fn code_hash_and_code_size_return_defaults() {
+        MockHost::reset();
+        let mut hash = [0xFFu8; 32];
+        MockHost::code_hash(&[0xAA; 20], &mut hash);
+        assert_eq!(hash, [0u8; 32]);
+        assert_eq!(MockHost::code_size(&[0xAA; 20]), 0);
+    }
+
+    #[test]
+    fn call_evm_uses_call_returns() {
+        MockHost::reset();
+        let callee = [0xEE; 20];
+        MockHost::mock_call(callee, Ok(vec![5, 6, 7, 8]));
+
+        let mut buf = [0u8; 32];
+        let mut out = &mut buf[..];
+        let result = MockHost::call_evm(
+            CallFlags::empty(),
+            &callee,
+            0,
+            &[0u8; 32],
+            &[],
+            Some(&mut out),
+        );
+        assert!(result.is_ok());
+        assert_eq!(&buf[..4], &[5, 6, 7, 8]);
+        assert_eq!(MockHost::return_data_size(), 4);
+    }
+
+    #[test]
+    fn call_data_load_with_offset() {
+        MockHost::reset();
+        MockHost::set_calldata(vec![0xAA; 40]);
+
+        let mut output = [0u8; 32];
+        MockHost::call_data_load(&mut output, 8);
+        assert_eq!(output, [0xAA; 32]);
+
+        // Offset beyond length returns zeros
+        let mut output2 = [0xFF; 32];
+        MockHost::call_data_load(&mut output2, 100);
+        assert_eq!(output2, [0u8; 32]);
+    }
+
+    #[test]
+    fn instantiate_with_mock() {
+        MockHost::reset();
+        let deployed_addr = [0xDD; 20];
+        MockHost::mock_instantiate(deployed_addr, vec![1, 2]);
+
+        let mut addr = [0u8; 20];
+        let mut buf = [0u8; 8];
+        let mut out = &mut buf[..];
+        let result = MockHost::instantiate(0, 0, &[0; 32], &[0; 32], &[], Some(&mut addr), Some(&mut out), None);
+        assert!(result.is_ok());
+        assert_eq!(addr, deployed_addr);
+        assert_eq!(&buf[..2], &[1, 2]);
+        assert_eq!(MockHost::return_data_size(), 2);
+    }
+
+    #[test]
+    fn instantiate_without_mock_returns_error() {
+        MockHost::reset();
+        let result = MockHost::instantiate(0, 0, &[0; 32], &[0; 32], &[], None, None, None);
+        assert_eq!(result, Err(ReturnErrorCode::OutOfResources));
+    }
+
+    #[test]
+    fn value_transferred_roundtrip() {
+        MockHost::reset();
+        let mut val = [0u8; 32];
+        val[31] = 77;
+        MockHost::set_value_transferred(val);
+
+        let mut output = [0u8; 32];
+        MockHost::value_transferred(&mut output);
+        assert_eq!(output[31], 77);
+    }
+
+    #[test]
+    fn get_storage_or_zero_returns_zeros_for_missing_key() {
+        MockHost::reset();
+        let key = [0xAA; 32];
+        let mut output = [0xFFu8; 32];
+        MockHost::get_storage_or_zero(StorageFlags::empty(), &key, &mut output);
+        assert_eq!(output, [0u8; 32]);
+
+        // With existing key
+        MockHost::set_storage(StorageFlags::empty(), &key, &[42u8; 32]);
+        let mut output2 = [0u8; 32];
+        MockHost::get_storage_or_zero(StorageFlags::empty(), &key, &mut output2);
+        assert_eq!(output2, [42u8; 32]);
+    }
+
+    #[test]
+    fn block_author_and_block_number_and_block_hash() {
+        MockHost::reset();
+        MockHost::set_block_author([0xBB; 20]);
+        let mut author = [0u8; 20];
+        MockHost::block_author(&mut author);
+        assert_eq!(author, [0xBB; 20]);
+
+        let mut bn = [0u8; 32];
+        bn[31] = 99;
+        MockHost::set_block_number(bn);
+        let mut output = [0u8; 32];
+        MockHost::block_number(&mut output);
+        assert_eq!(output[31], 99);
+
+        let mut hash = [0xFFu8; 32];
+        MockHost::block_hash(&bn, &mut hash);
+        assert_eq!(hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn consume_all_gas_panics() {
+        MockHost::reset();
+        let result = std::panic::catch_unwind(MockHost::consume_all_gas);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn terminate_panics() {
+        MockHost::reset();
+        let result = std::panic::catch_unwind(|| MockHost::terminate(&[0u8; 20]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delegate_call_evm_updates_return_data() {
+        MockHost::reset();
+        let callee = [0xCC; 20];
+        MockHost::mock_call(callee, Ok(vec![9, 8, 7]));
+
+        let result = MockHost::delegate_call_evm(
+            CallFlags::empty(),
+            &callee,
+            0,
+            &[],
+            None,
+        );
+        assert!(result.is_ok());
+        assert_eq!(MockHost::return_data_size(), 3);
+    }
 }
