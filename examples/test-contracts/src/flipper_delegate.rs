@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+use pallet_revive_uapi::StorageFlags;
 
 pvm_contract_macros::abi_import!(alloc = true, {
 // SPDX-License-Identifier: MIT
