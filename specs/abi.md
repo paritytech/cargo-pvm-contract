@@ -413,9 +413,14 @@ Static types (≤ 32 bytes): ABI-encoded directly into a 32-byte topic slot
 (integers right-aligned big-endian, `address` right-aligned in the low 20 bytes,
 `bytesN` left-aligned).
 
-Dynamic types (`bytes`, `string`, `T[]`, dynamic structs): the topic is
-`keccak256(abi_encode(value))`. The raw value is not recoverable from the topic;
-indexed dynamic fields are for filtering only.
+Dynamic types (`bytes`, `string`): the topic is `keccak256(raw_bytes)` — the
+raw payload hashed directly, with no length prefix or ABI wrapper. The raw
+value is not recoverable from the topic; indexed dynamic fields are for
+filtering only.
+
+Arrays, fixed arrays, and tuples are rejected as indexed fields at derive
+time. Composite static structs (`HEAD_SIZE > 32`) are rejected by a
+compile-time assertion on `SolEncode`.
 
 ### Canonical Signature
 
@@ -449,7 +454,7 @@ api::deposit_event(&event.topics(), &event.data());
 
 ### ABI JSON
 
-Events emit one entry per derive:
+Each event appears in the ABI JSON as one entry:
 
 ```json
 {
