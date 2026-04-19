@@ -2596,3 +2596,12 @@ fn i256_from_str_display_round_trip() {
         assert_eq!(I256::from_str(&s).unwrap(), val, "round-trip for {val}");
     }
 }
+
+#[test]
+fn non_payable_value_received_selector() {
+    assert_eq!(
+        framework_errors::NON_PAYABLE_VALUE_RECEIVED,
+        const_selector("NonPayableValueReceived()"),
+    );
+    assert!(framework_errors::NAMES.contains(&"NonPayableValueReceived"));
+}

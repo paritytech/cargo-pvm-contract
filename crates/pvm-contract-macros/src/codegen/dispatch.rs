@@ -33,6 +33,13 @@ pub struct MethodInfo {
     pub param_types: Vec<syn::Type>,
     pub return_types: Vec<syn::Type>,
     pub returns_result: bool,
+    /// True iff this method is marked `#[payable]`. Drives dispatch-arm
+    /// emission: payable methods skip the `__has_value` guard.
+    pub is_payable: bool,
+    /// True if the method is declared `view` in the .sol interface.
+    pub is_view: bool,
+    /// True if the method is declared `pure` in the .sol interface.
+    pub is_pure: bool,
     /// When set, the selector is precomputed (e.g. from a `.sol` file).
     /// Otherwise it is derived at compile time from trait `SOL_NAME` constants.
     pub precomputed_selector: Option<[u8; 4]>,
@@ -44,6 +51,9 @@ pub(super) struct ParamDecoding {
     pub call_args: Vec<TokenStream>,
 }
 
+/// Generate parameter decoding for a method: input size check, decode
+/// statements that bind each ABI param to a local, and the `call_args` list
+/// used when invoking the user function.
 pub(super) fn generate_param_decoding(
     param_names: &[syn::Ident],
     param_types: &[syn::Type],
@@ -141,6 +151,18 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
 
     let revert_err = generate_revert_encoding(use_alloc);
 
+    let payable_guard = if method.is_payable {
+        quote! {}
+    } else {
+        quote! {
+            if __has_value {
+                pallet_revive_uapi::HostFnImpl::return_value(
+                    pallet_revive_uapi::ReturnFlags::REVERT,
+                    &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+            }
+        }
+    };
+
     let body = if method.returns_result {
         if has_return {
             quote! {
@@ -175,6 +197,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
 
     let match_arm = quote! {
         #sel_ident => {
+            #payable_guard
             #size_check
             #(#decode_statements)*
             #body
@@ -198,10 +221,16 @@ pub struct RouterImpl {
 }
 
 /// Generate the `route` function and `Router` trait impl for a contract module.
+///
+/// `value_prelude` is emitted at the top of `route()` and is in scope for all
+/// dispatch arms. When any non-payable method or fallback is present it defines
+/// `__has_value` (checked by non-payable arms as a guard); for all-payable
+/// contracts the caller passes an empty stream.
 pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
     use_alloc: bool,
+    value_prelude: TokenStream,
 ) -> (RouteItems, RouterImpl) {
     let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = methods
         .iter()
@@ -217,6 +246,8 @@ pub fn generate_router(
             #[allow(non_upper_case_globals)]
             pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
                 #(#selector_consts)*
+
+                #value_prelude
 
                 match selector {
                     #(#dispatch_arms)*
@@ -315,4 +346,61 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         pallet_revive_uapi::HostFnImpl::return_value(
             pallet_revive_uapi::ReturnFlags::empty(), &__buf);
     }}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_payable_method_arm_contains_guard() {
+        let m = MethodInfo {
+            fn_name: quote::format_ident!("transfer"),
+            sol_name: "transfer".to_string(),
+            param_names: vec![quote::format_ident!("to")],
+            param_types: vec![syn::parse_quote!(Address)],
+            return_types: vec![syn::parse_quote!(bool)],
+            returns_result: false,
+            is_payable: false,
+            is_view: false,
+            is_pure: false,
+            precomputed_selector: None,
+        };
+        let (_const_def, arm) = generate_dispatch_arm(&m, false);
+        let s = arm.to_string();
+        assert!(
+            s.contains("__has_value"),
+            "non-payable arm must reference __has_value; got:\n{s}"
+        );
+        assert!(
+            s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "non-payable arm must revert with NON_PAYABLE_VALUE_RECEIVED; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn payable_method_arm_omits_guard() {
+        let m = MethodInfo {
+            fn_name: quote::format_ident!("deposit"),
+            sol_name: "deposit".to_string(),
+            param_names: vec![quote::format_ident!("to")],
+            param_types: vec![syn::parse_quote!(Address)],
+            return_types: vec![],
+            returns_result: false,
+            is_payable: true,
+            is_view: false,
+            is_pure: false,
+            precomputed_selector: None,
+        };
+        let (_const_def, arm) = generate_dispatch_arm(&m, false);
+        let s = arm.to_string();
+        assert!(
+            !s.contains("__has_value"),
+            "payable arm must not reference __has_value; got:\n{s}"
+        );
+        assert!(
+            !s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "payable arm must not emit non-payable revert; got:\n{s}"
+        );
+    }
 }

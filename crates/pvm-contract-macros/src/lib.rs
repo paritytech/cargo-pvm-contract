@@ -187,18 +187,36 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     #[pvm_contract::method]
 ///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
 ///
+///     #[pvm_contract::method]
+///     #[pvm_contract::payable]
+///     pub fn deposit(to: Address) { /* read value via api::value_transferred */ }
+///
+///     #[pvm_contract::constructor]
+///     pub fn new() -> Result<(), Error> { Ok(()) }
+///
 ///     // --- Generated inside the module: ---
 ///
 ///     pub struct Contract;
 ///
 ///     pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///         // Value-transfer hoist — read once, used by all arms
+///         let mut __value_buf = [0u8; 32];
+///         pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
+///         let __has_value = __value_buf != [0u8; 32];
+///
 ///         // Selector consts — precomputed from .sol, or derived via SOL_NAME
 ///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
 ///         const __SEL_transfer: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
+///         const __SEL_deposit: [u8; 4] = /* keccak("deposit(address)")[..4] */;
 ///
 ///         match selector {
-///             // balanceOf(address) -> uint256
+///             // balanceOf(address) -> uint256  (non-payable)
 ///             __SEL_balance_of => {
+///                 if __has_value {
+///                     pallet_revive_uapi::HostFnImpl::return_value(
+///                         pallet_revive_uapi::ReturnFlags::REVERT,
+///                         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+///                 }
 ///                 if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
 ///                     pallet_revive_uapi::HostFnImpl::return_value(
 ///                         pallet_revive_uapi::ReturnFlags::REVERT,
@@ -219,8 +237,13 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
 ///             }
 ///
-///             // transfer(address,uint256) — fallible, no return data
+///             // transfer(address,uint256) — fallible, non-payable
 ///             __SEL_transfer => {
+///                 if __has_value {
+///                     pallet_revive_uapi::HostFnImpl::return_value(
+///                         pallet_revive_uapi::ReturnFlags::REVERT,
+///                         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+///                 }
 ///                 // ... size check + decode ...
 ///                 match transfer(
 ///                     ::core::convert::Into::into(to),
@@ -236,8 +259,29 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 }
 ///             }
 ///
+///             // deposit(address) — payable: no __has_value guard
+///             __SEL_deposit => {
+///                 // ... size check + decode `to` ...
+///                 deposit(::core::convert::Into::into(to));
+///                 return Some(());
+///             }
+///
 ///             _ => None,
 ///         }
+///     }
+///
+///     #[polkavm_derive::polkavm_export]
+///     pub extern "C" fn deploy() {
+///         // Non-payable constructor: reject value
+///         let mut __value_buf = [0u8; 32];
+///         pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
+///         let __has_value = __value_buf != [0u8; 32];
+///         if __has_value {
+///             pallet_revive_uapi::HostFnImpl::return_value(
+///                 pallet_revive_uapi::ReturnFlags::REVERT,
+///                 &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+///         }
+///         // ... read constructor calldata, decode, call new() ...
 ///     }
 ///
 ///     #[polkavm_derive::polkavm_export]
@@ -438,15 +482,37 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// The `#[method]` attribute is used by `#[contract]` to generate dispatch arms. Here are
 /// examples of the generated call handling for static and dynamic return types (alloc mode).
 ///
-/// ## Static return (U256)
+/// ## Payable enforcement
 ///
-/// Types implementing `StaticEncodedLen` use compile-time buffer sizing:
+/// At the top of `route()`, the macro hoists a single `value_transferred()` call.
+/// Non-payable arms check `__has_value` and revert; methods marked `#[payable]`
+/// skip the guard and are responsible for reading `value_transferred()` themselves
+/// if they need the amount:
+///
+/// ```ignore
+/// // Hoisted at the top of route() — shared by all arms
+/// let mut __value_buf = [0u8; 32];
+/// pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
+/// let __has_value = __value_buf != [0u8; 32];
+/// ```
+///
+/// ## Static return (U256) — non-payable
+///
+/// Types implementing `StaticEncodedLen` use compile-time buffer sizing.
+/// Non-payable methods emit a guard that reverts when value is attached:
 ///
 /// ```ignore
 /// #[pvm_contract::method]
 /// pub fn balance_of(account: Address) -> U256 { ... }
 ///
 /// // Generated dispatch arm (inside the module):
+///
+/// // 0) Non-payable guard — revert if value was transferred
+/// if __has_value {
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::REVERT,
+///         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+/// }
 ///
 /// // 1) Decode input parameters (uniform trait dispatch)
 /// let mut __decode_offset: usize = 0;
@@ -465,6 +531,41 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
 /// pallet_revive_uapi::HostFnImpl::return_value(
 ///     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// ```
+///
+/// ## Payable method — `#[payable]` attribute
+///
+/// Marking a method with `#[payable]` tells the dispatcher to skip the
+/// non-payable guard. The user reads `msg.value` themselves inside the body:
+///
+/// ```ignore
+/// #[pvm_contract::method]
+/// #[pvm_contract::payable]
+/// pub fn deposit(to: Address) {
+///     let mut buf = [0u8; 32];
+///     pallet_revive_uapi::HostFnImpl::value_transferred(&mut buf);
+///     let amount = ruint::aliases::U256::from_le_bytes(buf);
+///     // ...
+/// }
+///
+/// // Generated dispatch arm (inside the module):
+///
+/// // No __has_value guard — this method is payable
+///
+/// if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::REVERT,
+///         &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
+/// }
+/// let mut __decode_offset: usize = 0;
+/// let to = {
+///     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
+///         &input, __decode_offset);
+///     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///     __value
+/// };
+///
+/// deposit(::core::convert::Into::into(to));
 /// ```
 ///
 /// ## Return encoding (alloc mode)
@@ -555,6 +656,31 @@ pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 ///
 /// Must return `Result<(), Error>`. Commonly used to reject unknown calls.
+///
+/// # Payable Enforcement
+///
+/// By default, a fallback is non-payable and the generated code reverts if
+/// value is attached to the call:
+///
+/// ```ignore
+/// // Generated for a non-payable fallback:
+/// let mut __value_buf = [0u8; 32];
+/// pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
+/// let __has_value = __value_buf != [0u8; 32];
+/// if __has_value {
+///     pallet_revive_uapi::HostFnImpl::return_value(
+///         pallet_revive_uapi::ReturnFlags::REVERT,
+///         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+/// }
+/// ```
+///
+/// To accept value in the fallback, add `#[payable]`:
+///
+/// ```ignore
+/// #[pvm_contract::fallback]
+/// #[pvm_contract::payable]
+/// pub fn fallback() -> Result<(), Error> { Ok(()) }
+/// ```
 #[proc_macro_attribute]
 pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
@@ -563,6 +689,35 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
+}
+
+/// Marks a contract entry point as payable — it accepts non-zero `msg.value`.
+///
+/// Applies to `#[method]`, `#[constructor]`, and `#[fallback]`. Without
+/// `#[payable]`, the generated dispatch rejects any call carrying value with
+/// `NonPayableValueReceived`. The attribute is a marker scanned by `#[contract]`
+/// and produces no code on its own.
+///
+/// # Example
+///
+/// ```ignore
+/// #[pvm_contract_macros::method]
+/// #[pvm_contract_macros::payable]
+/// pub fn deposit() {
+///     let mut buf = [0u8; 32];
+///     pallet_revive_uapi::HostFnImpl::value_transferred(&mut buf);
+///     let amount = ruint::aliases::U256::from_le_bytes(buf);
+///     // ...
+/// }
+/// ```
+///
+/// When a `.sol` interface is supplied, the Rust attribute must agree with the
+/// Solidity `payable` keyword; a mismatch is a compile error.
+#[proc_macro_attribute]
+pub fn payable(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Marker attribute: `#[contract]` scans for its presence at expansion time
+    // and then strips it. Passing the function through unchanged is enough.
+    item
 }
 
 /// Derives ABI encoding/decoding methods for a struct, enabling it to be used

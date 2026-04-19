@@ -162,6 +162,8 @@ pub mod framework_errors {
     pub const NO_SELECTOR: [u8; 4] = const_selector("NoSelector()");
     /// The 4-byte selector does not match any method in the contract.
     pub const UNKNOWN_SELECTOR: [u8; 4] = const_selector("UnknownSelector()");
+    /// A non-payable entry point received a non-zero value transfer.
+    pub const NON_PAYABLE_VALUE_RECEIVED: [u8; 4] = const_selector("NonPayableValueReceived()");
 
     /// Error names for ABI JSON generation. Single source of truth used by both
     /// the proc macro (`abi_gen.rs`) and the builder (`abi.rs`).
@@ -170,6 +172,7 @@ pub mod framework_errors {
         "CalldataTooLarge",
         "NoSelector",
         "UnknownSelector",
+        "NonPayableValueReceived",
     ];
 }
 

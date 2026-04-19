@@ -5,6 +5,7 @@ use crate::signature::SolType;
 pub struct SolFunction {
     pub name: String,
     pub signature: FunctionSignature,
+    pub state_mutability: Option<String>,
 }
 
 /// A parsed Solidity `error` declaration.
@@ -176,7 +177,34 @@ fn parse_function_line(line: &str) -> Option<SolFunction> {
 
     let signature = FunctionSignature::parse(&signature_str).ok()?;
 
-    Some(SolFunction { name, signature })
+    let state_mutability = if line.contains(" view ")
+        || line.contains(" view)")
+        || line.contains(" view;")
+        || line.ends_with(" view")
+    {
+        "view"
+    } else if line.contains(" pure ")
+        || line.contains(" pure)")
+        || line.contains(" pure;")
+        || line.ends_with(" pure")
+    {
+        "pure"
+    } else if line.contains(" payable ")
+        || line.contains(" payable)")
+        || line.contains(" payable;")
+        || line.ends_with(" payable")
+    {
+        "payable"
+    } else {
+        "nonpayable"
+    }
+    .to_string();
+
+    Some(SolFunction {
+        name,
+        signature,
+        state_mutability: Some(state_mutability),
+    })
 }
 
 fn canonicalize_params(params_str: &str) -> Option<Vec<String>> {
@@ -464,6 +492,34 @@ mod tests {
         assert_eq!(iface.functions.len(), 2);
         assert_eq!(iface.functions[0].name, "transfer");
         assert_eq!(iface.functions[1].name, "totalSupply");
+    }
+
+    #[test]
+    fn test_parse_payable_method() {
+        let src = "function deposit(address to) external payable;";
+        let f = parse_function_line(src).unwrap();
+        assert_eq!(f.state_mutability.as_deref(), Some("payable"));
+    }
+
+    #[test]
+    fn test_parse_view_method() {
+        let src = "function balance() external view returns (uint256);";
+        let f = parse_function_line(src).unwrap();
+        assert_eq!(f.state_mutability.as_deref(), Some("view"));
+    }
+
+    #[test]
+    fn test_parse_pure_method() {
+        let src = "function add(uint256 a, uint256 b) external pure returns (uint256);";
+        let f = parse_function_line(src).unwrap();
+        assert_eq!(f.state_mutability.as_deref(), Some("pure"));
+    }
+
+    #[test]
+    fn test_parse_default_nonpayable() {
+        let src = "function transfer(address to, uint256 amount) external returns (bool);";
+        let f = parse_function_line(src).unwrap();
+        assert_eq!(f.state_mutability.as_deref(), Some("nonpayable"));
     }
 
     #[test]

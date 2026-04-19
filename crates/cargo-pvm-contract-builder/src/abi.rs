@@ -263,11 +263,23 @@ pub(crate) fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
         vec![]
     };
 
-    let state_mutability = if line.contains(" view ") || line.contains(" view)") {
+    let state_mutability = if line.contains(" view ")
+        || line.contains(" view)")
+        || line.contains(" view;")
+        || line.ends_with(" view")
+    {
         "view"
-    } else if line.contains(" pure ") || line.contains(" pure)") {
+    } else if line.contains(" pure ")
+        || line.contains(" pure)")
+        || line.contains(" pure;")
+        || line.ends_with(" pure")
+    {
         "pure"
-    } else if line.contains(" payable ") || line.contains(" payable)") {
+    } else if line.contains(" payable ")
+        || line.contains(" payable)")
+        || line.contains(" payable;")
+        || line.ends_with(" payable")
+    {
         "payable"
     } else {
         "nonpayable"
@@ -502,6 +514,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_function_payable_with_trailing_semicolon() {
+        let item = parse_sol_function_line("function deposit() external payable;").unwrap();
+        if let AbiItem::Function {
+            state_mutability, ..
+        } = &item
+        {
+            assert_eq!(state_mutability.as_deref(), Some("payable"));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
+    fn parse_function_view_with_trailing_semicolon() {
+        let item = parse_sol_function_line("function owner() external view;").unwrap();
+        if let AbiItem::Function {
+            state_mutability, ..
+        } = &item
+        {
+            assert_eq!(state_mutability.as_deref(), Some("view"));
+        } else {
+            panic!("expected Function");
+        }
+    }
+
+    #[test]
     fn parse_function_no_returns() {
         let item = parse_sol_function_line("function setOwner(address newOwner) external").unwrap();
         if let AbiItem::Function { outputs, .. } = &item {
@@ -536,7 +574,7 @@ interface IToken {{
         let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
         let json = serde_json::to_value(&abi).unwrap();
         let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        assert_eq!(arr.len(), 7);
         assert_eq!(arr[0]["name"], "totalSupply");
         assert_eq!(arr[1]["name"], "transfer");
         assert_eq!(arr[2]["name"], "InvalidCalldata");
@@ -547,6 +585,8 @@ interface IToken {{
         assert_eq!(arr[4]["type"], "error");
         assert_eq!(arr[5]["name"], "UnknownSelector");
         assert_eq!(arr[5]["type"], "error");
+        assert_eq!(arr[6]["name"], "NonPayableValueReceived");
+        assert_eq!(arr[6]["type"], "error");
     }
 
     #[test]
@@ -739,7 +779,7 @@ version = "0.1.0"
         let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
         let json = serde_json::to_value(&abi).unwrap();
         let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 7);
+        assert_eq!(arr.len(), 8);
         assert_eq!(arr[0]["name"], "transfer");
         assert_eq!(arr[0]["type"], "function");
         assert_eq!(arr[1]["name"], "InsufficientBalance");
@@ -754,5 +794,7 @@ version = "0.1.0"
         assert_eq!(arr[5]["type"], "error");
         assert_eq!(arr[6]["name"], "UnknownSelector");
         assert_eq!(arr[6]["type"], "error");
+        assert_eq!(arr[7]["name"], "NonPayableValueReceived");
+        assert_eq!(arr[7]["type"], "error");
     }
 }

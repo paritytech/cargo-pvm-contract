@@ -63,6 +63,11 @@ const MAX_METHODS: usize = 16;
 /// [`dispatch`](ContractBuilder::dispatch) is called, the builder reads calldata
 /// from the host, extracts the 4-byte selector, and routes to the matching handler.
 ///
+/// Methods registered via [`method`](Self::method) are non-payable: they revert
+/// with [`pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED`]
+/// when called with a non-zero value transfer. Methods registered via
+/// [`payable_method`](Self::payable_method) accept any value.
+///
 /// # Example
 ///
 /// ```ignore
@@ -89,6 +94,7 @@ const MAX_METHODS: usize = 16;
 pub struct ContractBuilder {
     methods: [(Selector, MethodHandler); MAX_METHODS],
     len: usize,
+    payable_bits: u64,
 }
 
 fn noop_handler(_: &[u8]) {}
@@ -105,10 +111,11 @@ impl ContractBuilder {
         Self {
             methods: [([0; 4], noop_handler as MethodHandler); MAX_METHODS],
             len: 0,
+            payable_bits: 0,
         }
     }
 
-    /// Register a method handler for the given selector.
+    /// Register a non-payable method handler for the given selector.
     ///
     /// # Panics
     ///
@@ -124,11 +131,33 @@ impl ContractBuilder {
         self
     }
 
+    /// Register a payable method handler for the given selector.
+    ///
+    /// Unlike [`method`](Self::method), payable handlers accept calls carrying
+    /// any value transfer (including zero).
+    ///
+    /// # Panics
+    ///
+    /// Panics if more than 16 methods are registered.
+    pub fn payable_method(mut self, selector: Selector, handler: MethodHandler) -> Self {
+        assert!(
+            self.len < MAX_METHODS,
+            "ContractBuilder: exceeded MAX_METHODS ({})",
+            MAX_METHODS
+        );
+        self.methods[self.len] = (selector, handler);
+        self.payable_bits |= 1u64 << self.len;
+        self.len += 1;
+        self
+    }
+
     /// Try to route a call by selector without reading calldata.
     ///
     /// Returns `Some(())` if a handler matched (the handler may diverge via
     /// `return_value`). Returns `None` if no selector matched, allowing the
     /// caller to try another router or fall back.
+    ///
+    /// This does not enforce payability.
     #[inline(always)]
     pub fn try_route(&self, selector: [u8; 4], input: &[u8]) -> Option<()> {
         let mut i = 0;
@@ -172,10 +201,26 @@ impl ContractBuilder {
         let selector: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
         let input = &buf[4..call_data_len];
 
-        if self.try_route(selector, input).is_some() {
-            H::return_value(ReturnFlags::empty(), &[]);
+        let mut i = 0;
+        while i < self.len {
+            let (sel, handler) = self.methods[i];
+            if sel == selector {
+                let is_payable = (self.payable_bits >> i) & 1 == 1;
+                if !is_payable {
+                    let mut value_buf = [0u8; 32];
+                    H::value_transferred(&mut value_buf);
+                    if value_buf != [0u8; 32] {
+                        H::return_value(
+                            ReturnFlags::REVERT,
+                            &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED,
+                        );
+                    }
+                }
+                handler(input);
+                H::return_value(ReturnFlags::empty(), &[]);
+            }
+            i += 1;
         }
-
         H::return_value(
             ReturnFlags::REVERT,
             &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR,
@@ -187,6 +232,9 @@ impl ContractBuilder {
 mod tests {
     use super::*;
 
+    const DEPOSIT: Selector = [0xde, 0x00, 0x00, 0x01];
+    const TRANSFER: Selector = [0x7f, 0x00, 0x00, 0x02];
+
     fn dummy_handler(_: &[u8]) {}
 
     #[test]
@@ -196,5 +244,40 @@ mod tests {
         for i in 0..=MAX_METHODS {
             builder = builder.method([i as u8, 0, 0, 0], dummy_handler);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "MAX_METHODS")]
+    fn payable_method_panics_on_overflow() {
+        let mut builder = ContractBuilder::new();
+        for i in 0..=MAX_METHODS {
+            builder = builder.payable_method([i as u8, 0, 0, 0], dummy_handler);
+        }
+    }
+
+    #[test]
+    fn payable_bit_set_correctly() {
+        let builder = ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .payable_method(DEPOSIT, dummy_handler);
+        assert_eq!(builder.payable_bits, 0b10);
+    }
+
+    #[test]
+    fn payable_bit_survives_for_high_index() {
+        let mut builder = ContractBuilder::new();
+        for i in 0..(MAX_METHODS - 1) {
+            builder = builder.method([i as u8, 0, 0, 0xaa], dummy_handler);
+        }
+        builder = builder.payable_method([(MAX_METHODS - 1) as u8, 0, 0, 0xaa], dummy_handler);
+        assert_eq!(builder.payable_bits, 1u64 << (MAX_METHODS - 1));
+    }
+
+    #[test]
+    fn non_payable_contract_has_zero_payable_bits() {
+        let builder = ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .method(DEPOSIT, dummy_handler);
+        assert_eq!(builder.payable_bits, 0);
     }
 }

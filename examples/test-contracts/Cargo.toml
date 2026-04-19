@@ -47,6 +47,10 @@ path = "src/composite-types.rs"
 name = "constructor-args"
 path = "src/constructor-args.rs"
 
+[[bin]]
+name = "payable"
+path = "src/payable.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
 pvm-contract-types = { path = "../../crates/pvm-contract-types", features = ["alloc"] }
