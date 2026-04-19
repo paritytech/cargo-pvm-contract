@@ -3,8 +3,8 @@
 After building, you get two artifacts:
 
 ```text
-target/my_contract.release.polkavm    — deployable bytecode
-target/my_contract.release.abi.json   — Ethereum-compatible ABI JSON
+target/release/my_contract.polkavm    — deployable bytecode
+target/release/my_contract.abi.json   — Ethereum-compatible ABI JSON
 ```
 
 You can deploy and interact with contracts using **two paths**.
@@ -45,7 +45,7 @@ anvil-polkadot
 Then deploy and interact against it:
 
 ```bash
-BYTECODE=0x$(xxd -p target/my_contract.release.polkavm | tr -d '\n')
+BYTECODE=0x$(xxd -p target/release/my_contract.polkavm | tr -d '\n')
 
 cast send \
   --rpc-url http://127.0.0.1:8545 \
@@ -62,7 +62,7 @@ Convert the `.polkavm` bytecode to hex and deploy with `cast`:
 RPC=http://127.0.0.1:8545
 
 # Convert binary to hex
-BYTECODE=0x$(xxd -p target/my_contract.release.polkavm | tr -d '\n')
+BYTECODE=0x$(xxd -p target/release/my_contract.polkavm | tr -d '\n')
 
 # Deploy (sends a create transaction with the bytecode)
 cast send \
@@ -157,7 +157,7 @@ Request free PAS tokens from the [Polkadot Faucet](https://faucet.polkadot.io/).
 
 ```bash
 RPC=https://eth-rpc-testnet.polkadot.io/
-BYTECODE=0x$(xxd -p target/my_contract.release.polkavm | tr -d '\n')
+BYTECODE=0x$(xxd -p target/release/my_contract.polkavm | tr -d '\n')
 
 cast send \
   --rpc-url $RPC \

@@ -31,6 +31,10 @@ path = "src/nested_custom_type.rs"
 name = "dynamic-custom-return"
 path = "src/dynamic_custom_return.rs"
 
+[[bin]]
+name = "host-api-calls"
+path = "src/host_api_calls.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-types = { path = "../../../pvm-contract-types", features = ["alloc"] }

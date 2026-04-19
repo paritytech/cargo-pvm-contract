@@ -1,0 +1,11 @@
+[
+  {"type":"constructor","inputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"readStorage","inputs":[{"name":"key","type":"uint256"}],"outputs":[{"name":"","type":"uint256"}],"stateMutability":"nonpayable"},
+  {"type":"function","name":"writeStorage","inputs":[{"name":"key","type":"uint256"},{"name":"value","type":"uint256"}],"outputs":[],"stateMutability":"nonpayable"},
+  {"type":"function","name":"getCaller","inputs":[],"outputs":[{"name":"","type":"address"}],"stateMutability":"nonpayable"},
+  {"type":"error","name":"InvalidCalldata","inputs":[]},
+  {"type":"error","name":"CalldataTooLarge","inputs":[]},
+  {"type":"error","name":"NoSelector","inputs":[]},
+  {"type":"error","name":"UnknownSelector","inputs":[]},
+  {"type":"error","name":"NonPayableValueReceived","inputs":[]}
+]

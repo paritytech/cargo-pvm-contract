@@ -1,7 +1,7 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
+use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
 use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
 
@@ -24,7 +24,7 @@ pub extern "C" fn deploy() {}
 pub extern "C" fn call() {
     ContractBuilder::new()
         .method(FIBONACCI_SELECTOR, fibonacci_handler)
-        .dispatch::<HostFnImpl, 256>()
+        .dispatch::<PolkaVmHost, 256>()
 }
 
 fn fibonacci_handler(input: &[u8]) {
@@ -32,7 +32,7 @@ fn fibonacci_handler(input: &[u8]) {
     let result = fibonacci(n);
     let mut buf = [0u8; <u32 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn fibonacci(n: u32) -> u32 {

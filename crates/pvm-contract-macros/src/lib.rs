@@ -218,8 +218,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
 ///                 }
 ///                 if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
-///                     pallet_revive_uapi::HostFnImpl::return_value(
-///                         pallet_revive_uapi::ReturnFlags::REVERT,
+///                     ::pvm_contract_types::PolkaVmHost::return_value(
+///                         ::pvm_contract_types::ReturnFlags::REVERT,
 ///                         &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
 ///                 }
 ///                 let mut __decode_offset: usize = 0;
@@ -233,8 +233,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 let mut __buf = [0u8;
 ///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
 ///                 <U256 as ::pvm_contract_types::SolEncode>::encode_body_to(&result, &mut __buf);
-///                 pallet_revive_uapi::HostFnImpl::return_value(
-///                     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+///                 ::pvm_contract_types::PolkaVmHost::return_value(
+///                     ::pvm_contract_types::ReturnFlags::empty(), &__buf);
 ///             }
 ///
 ///             // transfer(address,uint256) — fallible, non-payable
@@ -253,8 +253,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     Err(e) => {
 ///                         let mut __revert_buf = [0u8; 256];
 ///                         let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-///                         pallet_revive_uapi::HostFnImpl::return_value(
-///                             pallet_revive_uapi::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
+///                         ::pvm_contract_types::PolkaVmHost::return_value(
+///                             ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
 ///                     }
 ///                 }
 ///             }
@@ -286,19 +286,19 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn call() {
-///         let call_data_len = pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+///         let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
 ///         let mut call_data = [0u8; 512];
 ///         if call_data_len > 512 {
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::REVERT,
+///             ::pvm_contract_types::PolkaVmHost::return_value(
+///                 ::pvm_contract_types::ReturnFlags::REVERT,
 ///                 &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
 ///         }
-///         pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+///         ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
 ///         if call_data_len < 4 {
 ///             // With #[fallback]: calls fallback. Without: reverts with NoSelector.
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::REVERT,
+///             ::pvm_contract_types::PolkaVmHost::return_value(
+///                 ::pvm_contract_types::ReturnFlags::REVERT,
 ///                 &::pvm_contract_types::framework_errors::NO_SELECTOR);
 ///         }
 ///
@@ -306,12 +306,12 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         let input = &call_data[4..call_data_len];
 ///
 ///         if route(selector, input).is_some() {
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::empty(), &[]);
+///             ::pvm_contract_types::PolkaVmHost::return_value(
+///                 ::pvm_contract_types::ReturnFlags::empty(), &[]);
 ///         }
 ///         // With #[fallback]: calls fallback. Without: reverts with UnknownSelector.
-///         pallet_revive_uapi::HostFnImpl::return_value(
-///             pallet_revive_uapi::ReturnFlags::REVERT,
+///         ::pvm_contract_types::PolkaVmHost::return_value(
+///             ::pvm_contract_types::ReturnFlags::REVERT,
 ///             &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
 ///     }
 /// }
@@ -529,8 +529,8 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // 3) Encode and return via encode_to (smart top-level encoding)
 /// let mut __buf = [0u8; <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
 /// <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-/// pallet_revive_uapi::HostFnImpl::return_value(
-///     pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+/// ::pvm_contract_types::PolkaVmHost::return_value(
+///     ::pvm_contract_types::ReturnFlags::empty(), &__buf);
 /// ```
 ///
 /// ## Payable method — `#[payable]` attribute
@@ -586,13 +586,13 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// if <String as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
 ///     let mut __buf = alloc::vec![0u8; __len];
 ///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-///     pallet_revive_uapi::HostFnImpl::return_value(
-///         pallet_revive_uapi::ReturnFlags::empty(), &__buf);
+///     ::pvm_contract_types::PolkaVmHost::return_value(
+///         ::pvm_contract_types::ReturnFlags::empty(), &__buf);
 /// } else {
 ///     let mut __buf = [0u8; <String as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
 ///     <String as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-///     pallet_revive_uapi::HostFnImpl::return_value(
-///         pallet_revive_uapi::ReturnFlags::empty(), &__buf[..__len]);
+///     ::pvm_contract_types::PolkaVmHost::return_value(
+///         ::pvm_contract_types::ReturnFlags::empty(), &__buf[..__len]);
 /// }
 /// ```
 #[proc_macro_attribute]

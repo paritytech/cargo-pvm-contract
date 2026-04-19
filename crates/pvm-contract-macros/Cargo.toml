@@ -24,4 +24,5 @@ ruint = { version = "1.17", default-features = false }
 serde_json = { workspace = true }
 alloy-core = { version = "1.5", features = ["sol-types"] }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc"] }
+prettyplease = "0.2"
 trybuild = "1.0"
