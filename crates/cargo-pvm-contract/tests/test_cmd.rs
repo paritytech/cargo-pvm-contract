@@ -56,18 +56,20 @@ fn scaffold_new_contract(
 }
 
 fn build_project(project_dir: &Path, profile: &str) {
-    let mut cmd = std::process::Command::new("cargo");
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
     cmd.current_dir(project_dir)
-        .env_remove("CARGO")
-        .env_remove("RUSTUP_TOOLCHAIN")
+        .arg("pvm-contract")
         .arg("build");
 
-    if profile == "release" {
-        cmd.arg("--release");
+    if profile == "debug" {
+        cmd.arg("--profile").arg("dev");
     }
 
-    let status = cmd.status().expect("run cargo build");
-    assert!(status.success(), "cargo build ({profile}) failed");
+    let status = cmd.status().expect("run cargo pvm-contract build");
+    assert!(
+        status.success(),
+        "cargo pvm-contract build ({profile}) failed"
+    );
 }
 
 fn verify_build_artifacts(project_dir: &Path, binary_name: &str, profile: &str) {
@@ -76,8 +78,8 @@ fn verify_build_artifacts(project_dir: &Path, binary_name: &str, profile: &str) 
 }
 
 fn verify_polkavm_binary(project_dir: &Path, binary_name: &str, profile: &str) {
-    let target_dir = project_dir.join("target");
-    let polkavm_file = target_dir.join(format!("{binary_name}.{profile}.polkavm"));
+    let target_dir = project_dir.join("target").join(profile);
+    let polkavm_file = target_dir.join(format!("{binary_name}.polkavm"));
     assert!(
         polkavm_file.exists(),
         "PolkaVM binary not found: {}",
@@ -86,8 +88,8 @@ fn verify_polkavm_binary(project_dir: &Path, binary_name: &str, profile: &str) {
 }
 
 fn verify_abi_json(project_dir: &Path, binary_name: &str, profile: &str) {
-    let target_dir = project_dir.join("target");
-    let abi_file = target_dir.join(format!("{binary_name}.{profile}.abi.json"));
+    let target_dir = project_dir.join("target").join(profile);
+    let abi_file = target_dir.join(format!("{binary_name}.abi.json"));
     assert!(
         abi_file.exists(),
         "ABI JSON not found: {}",
@@ -111,6 +113,10 @@ fn verify_cargo_toml(project_dir: &Path, use_dsl: bool) {
     assert!(cargo_toml.contains("pvm-contract-types"));
     assert!(cargo_toml.contains("polkavm-derive"));
     assert!(cargo_toml.contains("ruint"));
+    assert!(
+        !cargo_toml.contains("[build-dependencies]"),
+        "Cargo.toml should not contain [build-dependencies]"
+    );
 }
 
 #[test]
@@ -240,7 +246,10 @@ fn abi_json_has_correct_structure() {
 
     build_project(&project_dir, "debug");
 
-    let abi_file = project_dir.join("target").join("abi-test.debug.abi.json");
+    let abi_file = project_dir
+        .join("target")
+        .join("debug")
+        .join("abi-test.abi.json");
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
     let abi: Vec<serde_json::Value> = serde_json::from_str(&abi_content).expect("parse ABI JSON");
 
@@ -315,7 +324,8 @@ fn polkavm_binary_is_valid() {
 
     let polkavm_file = project_dir
         .join("target")
-        .join("polkavm-test.release.polkavm");
+        .join("release")
+        .join("polkavm-test.polkavm");
     let binary = std::fs::read(&polkavm_file).expect("read polkavm file");
 
     assert!(!binary.is_empty(), "PolkaVM binary should not be empty");

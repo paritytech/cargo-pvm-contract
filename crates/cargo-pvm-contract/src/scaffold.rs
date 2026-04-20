@@ -37,12 +37,6 @@ struct ContractDslTemplate {
     functions: Vec<DslFunctionInfo>,
 }
 
-#[derive(Template)]
-#[template(path = "scaffold/build.rs.txt")]
-struct BuildRsTemplate {
-    use_dsl: bool,
-}
-
 struct MacroFunctionInfo {
     name_snake: String,
     params: String,
@@ -177,9 +171,6 @@ pub fn init_new_contract(contract_name: &str, use_dsl: bool, use_alloc: bool) ->
         lib_rs_content,
     )?;
 
-    let build_rs_content = generate_build_rs(use_dsl)?;
-    fs::write(target_dir.join("build.rs"), build_rs_content)?;
-
     let cargo_toml_content =
         generate_cargo_toml(&contract_name, &contract_name, use_dsl, use_alloc)?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
@@ -187,7 +178,7 @@ pub fn init_new_contract(contract_name: &str, use_dsl: bool, use_alloc: bool) ->
     println!("Successfully initialized contract project: {target_dir:?}");
     println!("\nNext steps:");
     println!("  cd {contract_name}");
-    println!("  cargo build");
+    println!("  cargo pvm-contract build");
     Ok(())
 }
 
@@ -327,9 +318,6 @@ fn init_from_example_files_inner(
         lib_rs_content,
     )?;
 
-    let build_rs_content = generate_build_rs(use_dsl)?;
-    fs::write(target_dir.join("build.rs"), build_rs_content)?;
-
     let cargo_toml_content =
         generate_cargo_toml(&contract_name, &actual_contract_kebab, use_dsl, use_alloc)?;
     fs::write(target_dir.join("Cargo.toml"), cargo_toml_content)?;
@@ -337,7 +325,7 @@ fn init_from_example_files_inner(
     println!("Successfully initialized contract project from {sol_file_name}: {target_dir:?}");
     println!("\nNext steps:");
     println!("  cd {contract_name}");
-    println!("  cargo build");
+    println!("  cargo pvm-contract build");
     Ok(())
 }
 
@@ -621,12 +609,6 @@ fn solidity_to_rust_type(sol_type: &str) -> String {
 /// Map Solidity types to the Rust type used for `SolDecode::decode_at` in DSL contracts.
 fn solidity_to_dsl_decode_type(sol_type: &str) -> String {
     solidity_to_rust_type(sol_type)
-}
-
-fn generate_build_rs(use_dsl: bool) -> Result<String> {
-    BuildRsTemplate { use_dsl }
-        .render()
-        .context("Failed to render build.rs template")
 }
 
 fn resolve_target_json() -> Result<(PathBuf, String)> {

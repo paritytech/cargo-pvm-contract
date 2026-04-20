@@ -2,8 +2,7 @@
 #![no_main]
 #![no_std]
 
-use pallet_revive_uapi::StorageFlags;
-use pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
+use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags, StorageFlags};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
 use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
 use ruint::aliases::U256;
@@ -26,7 +25,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-use pallet_revive_uapi::HostFnImpl as api;
+use pvm_contract_types::PolkaVmHost as api;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
@@ -53,7 +52,7 @@ pub extern "C" fn call() {
         .method(BALANCE_OF_SELECTOR, balance_of_handler)
         .method(TRANSFER_SELECTOR, transfer_handler)
         .method(MINT_SELECTOR, mint_handler)
-        .dispatch::<HostFnImpl, 256>()
+        .dispatch::<PolkaVmHost, 256>()
 }
 
 fn total_supply_handler(_input: &[u8]) {
@@ -67,7 +66,7 @@ fn total_supply_handler(_input: &[u8]) {
     };
     let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn balance_of_handler(input: &[u8]) {
@@ -82,7 +81,7 @@ fn balance_of_handler(input: &[u8]) {
     };
     let mut buf = [0u8; <U256 as StaticEncodedLen>::ENCODED_SIZE];
     result.encode_to(&mut buf);
-    HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 }
 
 fn transfer_handler(input: &[u8]) {
@@ -103,7 +102,7 @@ fn transfer_handler(input: &[u8]) {
     };
 
     if sender_balance < amount {
-        HostFnImpl::return_value(ReturnFlags::REVERT, Error::InsufficientBalance.as_ref());
+        PolkaVmHost::return_value(ReturnFlags::REVERT, Error::InsufficientBalance.as_ref());
     }
 
     let new_sender_balance = sender_balance - amount;

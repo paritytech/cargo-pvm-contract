@@ -1,3 +1,4 @@
+use assert_cmd::cargo::cargo_bin;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -34,15 +35,16 @@ impl Contract {
             self.dir.display()
         );
 
-        let status = Command::new("cargo")
+        let status = Command::new(cargo_bin("cargo-pvm-contract"))
             .current_dir(&self.dir)
-            .env_remove("CARGO")
-            .env_remove("RUSTUP_TOOLCHAIN")
-            .args(["build", "--release"])
+            .args(["pvm-contract", "build"])
             .status()
-            .unwrap_or_else(|_| panic!("Failed to run cargo build on {name}"));
+            .unwrap_or_else(|_| panic!("Failed to run cargo pvm-contract build on {name}"));
 
-        assert!(status.success(), "cargo build --release failed for {name}");
+        assert!(
+            status.success(),
+            "cargo pvm-contract build failed for {name}"
+        );
 
         built.insert(self.dir.clone());
     }
@@ -54,7 +56,8 @@ impl Contract {
     pub fn polkavm_binary(&self, binary_name: &str, profile: &str) -> PathBuf {
         let path = self
             .target()
-            .join(format!("{binary_name}.{profile}.polkavm"));
+            .join(profile)
+            .join(format!("{binary_name}.polkavm"));
         assert!(
             path.exists(),
             "PolkaVM binary not found: {}",
@@ -66,7 +69,8 @@ impl Contract {
     pub fn abi_json_path(&self, binary_name: &str, profile: &str) -> PathBuf {
         let path = self
             .target()
-            .join(format!("{binary_name}.{profile}.abi.json"));
+            .join(profile)
+            .join(format!("{binary_name}.abi.json"));
         assert!(path.exists(), "ABI JSON not found: {}", path.display());
         path
     }

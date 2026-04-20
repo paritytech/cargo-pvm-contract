@@ -49,11 +49,17 @@ This launches an interactive prompt that walks you through:
 3. **Allocator** -- Bump allocator (for dynamic types) or no allocator (stack-only, smaller binary)
 4. **Solidity interface** -- optionally point to a `.sol` file to auto-generate method stubs
 
-The generated project builds with a plain `cargo build`. The PolkaVM bytecode and ABI JSON are written to:
+Build the generated project with the CLI:
 
+```bash
+cargo pvm-contract build
 ```
-target/<binary-name>.<profile>.polkavm
-target/<binary-name>.<profile>.abi.json
+
+The PolkaVM bytecode and ABI JSON are written to:
+
+```text
+target/<profile>/<binary-name>.polkavm
+target/<profile>/<binary-name>.abi.json
 ```
 
 ## API Styles
@@ -99,7 +105,7 @@ pub extern "C" fn call() {
 | Crate | Description |
 |-------|-------------|
 | `cargo-pvm-contract` | CLI -- scaffolds contract projects from `.sol` files |
-| `cargo-pvm-contract-builder` | Build helper -- `build.rs` integration that links PolkaVM bytecode and generates ABI JSON |
+| `cargo-pvm-contract-builder` | Build library -- links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-macros` | Proc macros -- `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`) -- `no_std` compatible |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -123,7 +129,7 @@ Build all variants:
 
 ```bash
 cd examples/example-mytoken
-env -u CARGO -u RUSTUP_TOOLCHAIN cargo build --release
+cargo pvm-contract build
 ```
 
 ## License

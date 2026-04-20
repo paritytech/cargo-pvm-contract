@@ -5,7 +5,6 @@ name = "example-mytoken"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
-build = "build.rs"
 
 [[bin]]
 name = "example-mytoken-macro-pico-alloc"
@@ -44,9 +43,6 @@ pvm-bump-allocator = { path = "../../crates/pvm-bump-allocator" }
 
 [features]
 abi-gen = []
-
-[build-dependencies]
-cargo-pvm-contract-builder = { path = "../../crates/cargo-pvm-contract-builder" }
 
 [profile.release]
 codegen-units = 1

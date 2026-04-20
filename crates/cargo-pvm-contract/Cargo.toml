@@ -28,6 +28,7 @@ inquire = { workspace = true }
 askama = { workspace = true }
 polkavm-linker = { workspace = true }
 convert_case = { workspace = true }
+cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
 tiny-keccak = { workspace = true }
 hex = "0.4"
 alloy-core = { version = "1.5", features = ["dyn-abi"] }

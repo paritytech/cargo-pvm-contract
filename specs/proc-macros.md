@@ -240,8 +240,8 @@ This generates `SolEncode`, `SolDecode`, and `StaticEncodedLen` implementations.
 When using the proc macro style, the build system automatically generates a `.abi.json` file:
 
 ```text
-target/counter.release.polkavm      — deployable bytecode
-target/counter.release.abi.json     — Ethereum-compatible ABI JSON
+target/release/counter.polkavm      — deployable bytecode
+target/release/counter.abi.json     — Ethereum-compatible ABI JSON
 ```
 
 The ABI JSON follows the standard Ethereum ABI format, so it can be used with viem, ethers.js, or any tool that consumes Solidity ABIs.

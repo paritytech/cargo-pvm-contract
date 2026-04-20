@@ -1,5 +1,5 @@
 #![doc = include_str!("../../../specs/abi.md")]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate self as pvm_contract_types;
 
@@ -19,6 +19,16 @@ pub use abi_gen::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]
 pub use serde_json;
+
+mod host;
+pub use host::{
+    CallFlags, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
+};
+
+#[cfg(feature = "std")]
+mod mock_host;
+#[cfg(feature = "std")]
+pub use mock_host::{MockHost, MockHostBuilder};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};

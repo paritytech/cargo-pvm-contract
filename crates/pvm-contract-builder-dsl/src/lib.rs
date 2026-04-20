@@ -22,7 +22,7 @@ pub type Selector = [u8; 4];
 /// ```ignore
 /// let mut buf = RevertBuffer::<64>::new();
 /// let payload = buf.encode(&error);
-/// HostFnImpl::return_value(ReturnFlags::REVERT, payload);
+/// PolkaVmHost::return_value(ReturnFlags::REVERT, payload);
 /// ```
 pub struct RevertBuffer<const N: usize> {
     buf: [u8; N],
@@ -48,7 +48,7 @@ impl<const N: usize> RevertBuffer<N> {
 /// A method handler receives the calldata bytes after the 4-byte selector.
 ///
 /// The handler is responsible for decoding inputs, executing logic, and calling
-/// [`pallet_revive_uapi::HostFn::return_value`] to return encoded output.
+/// [`pvm_contract_types::HostApi::return_value`] to return encoded output.
 /// If the handler returns normally (without diverging), the dispatcher treats
 /// it as a successful call with no return data.
 pub type MethodHandler = fn(&[u8]);
@@ -72,18 +72,18 @@ const MAX_METHODS: usize = 16;
 ///     const FIBONACCI_SELECTOR: [u8; 4] = solidity_selector("fibonacci(uint32)");
 ///     ContractBuilder::new()
 ///         .method(FIBONACCI_SELECTOR, fibonacci_handler)
-///         .dispatch::<HostFnImpl, 256>()
+///         .dispatch::<PolkaVmHost, 256>()
 /// }
 ///
 /// fn fibonacci_handler(input: &[u8]) {
-///     use pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags};
+///     use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags};
 ///     use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
 ///
 ///     let n = u32::decode_at(input, 0);
 ///     let result = fibonacci(n);
 ///     let mut buf = [0u8; <u32 as StaticEncodedLen>::ENCODED_SIZE];
 ///     result.encode_to(&mut buf);
-///     HostFnImpl::return_value(ReturnFlags::empty(), &buf);
+///     PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
 /// }
 /// ```
 pub struct ContractBuilder {
@@ -146,10 +146,10 @@ impl ContractBuilder {
     /// Read calldata from the host, match the selector, and dispatch.
     ///
     /// `BUF_SIZE` is the fixed stack buffer size for calldata (e.g. 256).
-    /// `H` is the host function implementation (use `HostFnImpl`).
+    /// `H` is the host backend implementation (use `PolkaVmHost` or `MockHost`).
     /// Reverts if calldata exceeds the buffer or no selector matches.
-    pub fn dispatch<H: pallet_revive_uapi::HostFn, const BUF_SIZE: usize>(self) -> ! {
-        use pallet_revive_uapi::ReturnFlags;
+    pub fn dispatch<H: pvm_contract_types::HostApi, const BUF_SIZE: usize>(self) -> ! {
+        use pvm_contract_types::ReturnFlags;
 
         let call_data_len = H::call_data_size() as usize;
 
