@@ -26,7 +26,7 @@ pub use i256::{I256, ParseI256Error};
 
 #[doc(hidden)]
 pub use const_format;
-use ruint::aliases::U256;
+pub use ruint::aliases::U256;
 
 /// Fixed-size buffer for compile-time string concatenation.
 ///
