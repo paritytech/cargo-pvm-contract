@@ -20,6 +20,7 @@ rows = [
     ("example-mytoken-dsl-no-alloc", "dsl-no-alloc"),
     ("example-mytoken-macro-bump-alloc", "macro-bump-alloc"),
     ("example-mytoken-macro-no-alloc", "macro-no-alloc"),
+    ("example-mytoken-macro-no-sol", "macro-no-sol"),
     ("example-mytoken-macro-pico-alloc", "macro-pico-alloc"),
 ]
 

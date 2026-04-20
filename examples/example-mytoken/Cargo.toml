@@ -35,7 +35,7 @@ pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
 pvm-contract-types = { path = "../../crates/pvm-contract-types" }
 pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
 alloy-core = { version = "1.5", default-features = false, features = ["sol-types"] }
-pallet-revive-uapi = { version = "0.10", default-features = false }
+pallet-revive-uapi = { version = "0.11", default-features = false }
 polkavm-derive = { version = "0.31.0" }
 ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }

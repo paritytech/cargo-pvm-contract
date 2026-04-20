@@ -38,7 +38,7 @@ path = "src/host_api_calls.rs"
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-types = { path = "../../../pvm-contract-types", features = ["alloc"] }
-pallet-revive-uapi = { version = "0.10", default-features = false }
+pallet-revive-uapi = { version = "0.11", default-features = false }
 ruint = { version = "1.17", default-features = false }
 
 [features]

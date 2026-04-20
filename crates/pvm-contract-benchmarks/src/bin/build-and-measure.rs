@@ -46,7 +46,7 @@ path = "src/{}.rs"
 [dependencies]
 pvm-contract-macros = {{ path = "{}" }}
 pvm-contract-types = {{ path = "{}" }}
-pallet-revive-uapi = {{ version = "0.10", default-features = false }}
+pallet-revive-uapi = {{ version = "0.11", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
 ruint = {{ version = "1.17", default-features = false }}
 
@@ -88,7 +88,7 @@ path = "src/{}.rs"
 pvm-contract-macros = {{ path = "{}" }}
 pvm-contract-types = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
-pallet-revive-uapi = {{ version = "0.10", default-features = false }}
+pallet-revive-uapi = {{ version = "0.11", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
 ruint = {{ version = "1.17", default-features = false }}
 
@@ -129,7 +129,7 @@ path = "src/{}.rs"
 [dependencies]
 pvm-contract-builder-dsl = {{ path = "{}" }}
 pvm-contract-types = {{ path = "{}" }}
-pallet-revive-uapi = {{ version = "0.10", default-features = false }}
+pallet-revive-uapi = {{ version = "0.11", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
 ruint = {{ version = "1.17", default-features = false }}
 

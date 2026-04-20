@@ -8,6 +8,18 @@ rust-version = "1.92"
 build = "build.rs"
 
 [[bin]]
+name = "flipper_call"
+path = "src/flipper_call.rs"
+
+[[bin]]
+name = "flipper_delegate"
+path = "src/flipper_delegate.rs"
+
+[[bin]]
+name = "flipper_instantiate"
+path = "src/flipper_instantiate.rs"
+
+[[bin]]
 name = "flipper"
 path = "src/flipper.rs"
 
@@ -49,8 +61,15 @@ path = "src/constructor-args.rs"
 
 [dependencies]
 pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
-pvm-contract-types = { path = "../../crates/pvm-contract-types", features = ["alloc"] }
-pallet-revive-uapi = { version = "0.10", default-features = false }
+pvm-contract-types = { path = "../../crates/pvm-contract-types", features = [
+    "alloc",
+] }
+pvm-contract-core = { path = "../../crates/pvm-contract-core" }
+alloy-core = { version = "1.5.7", default-features = false, features = [
+    "sol-types",
+    "json",
+] }
+pallet-revive-uapi = { version = "0.11", default-features = false }
 polkavm-derive = { version = "0.31.0" }
 ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }
