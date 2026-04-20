@@ -269,6 +269,22 @@ pub fn generate_encode_params(
                             }
                         });
                     }
+                    SolType::Array(_) => {
+                        // Dynamic array (`T[]`). Delegate to the runtime
+                        // `SolAbi` impl on `Vec<T>` (crates/pvm_contract/src/abi.rs),
+                        // which already handles both static-element arrays
+                        // (length-prefixed + concatenated) and dynamic-element
+                        // arrays (length-prefixed + head-of-pointers + tails).
+                        writes.push(quote! {
+                            {
+                                let __dyn_offset = (#head_size + __tail.len()) as u64;
+                                let mut __off = [0u8; 32];
+                                __off[24..32].copy_from_slice(&__dyn_offset.to_be_bytes());
+                                __head[#offset..#end].copy_from_slice(&__off);
+                                pvm_contract::SolAbi::abi_encode(&#name, &mut __tail);
+                            }
+                        });
+                    }
                     _ => panic!("Unsupported dynamic type in cross-contract call encoding"),
                 }
             } else {
