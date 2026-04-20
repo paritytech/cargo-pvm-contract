@@ -1070,10 +1070,14 @@ mod test {
                 > Dynamic_custom_return<Mutability, Inputs, Outputs, false> {
                     pub fn get_named(
                         mut self,
-                    ) -> Dynamic_custom_return<Payable, (), ((u64, alloc::alloc::String)), true> {
-                        Dynamic_custom_return::<Payable, (), ((u64, alloc::alloc::String)), true> {
+                    ) -> Dynamic_custom_return<Payable, (), ((u64, alloc::string::String)), true> {
+                        Dynamic_custom_return::<Payable, (), ((u64, alloc::string::String)), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, (), ((u64, alloc::alloc::String))> {
+                            call_builder: CallBuilder::<
+                                Payable,
+                                (),
+                                ((u64, alloc::string::String)),
+                            > {
                                 payload: (),
                                 selector: [233u8, 148u8, 217u8, 223u8],
                                 witness: Payable::default(),
@@ -1084,24 +1088,24 @@ mod test {
                     }
                     pub fn process(
                         mut self,
-                        data: (u64, alloc::alloc::String),
+                        data: (u64, alloc::string::String),
                         flag: bool,
                     ) -> Dynamic_custom_return<
                         Payable,
-                        ((u64, alloc::alloc::String), bool),
+                        ((u64, alloc::string::String), bool),
                         (u64),
                         true,
                     > {
                         Dynamic_custom_return::<
                             Payable,
-                            ((u64, alloc::alloc::String), bool),
+                            ((u64, alloc::string::String), bool),
                             (u64),
                             true,
                         > {
                             address: self.address,
                             call_builder: CallBuilder::<
                                 Payable,
-                                ((u64, alloc::alloc::String), bool),
+                                ((u64, alloc::string::String), bool),
                                 (u64),
                             > {
                                 payload: (data, flag),
