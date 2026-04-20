@@ -131,12 +131,12 @@ pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
     if let Some(start) = source.find(marker) {
         let after_paren = &source[start + marker.len()..];
         let trimmed = after_paren.trim_start();
-        if let Some(rest) = trimmed.strip_prefix('"') {
-            if let Some(end) = rest.find('"') {
-                let path = &rest[..end];
-                if path.ends_with(".sol") {
-                    return Some(path.to_string());
-                }
+        if let Some(rest) = trimmed.strip_prefix('"')
+            && let Some(end) = rest.find('"')
+        {
+            let path = &rest[..end];
+            if path.ends_with(".sol") {
+                return Some(path.to_string());
             }
         }
     }
