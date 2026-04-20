@@ -242,8 +242,8 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         value: u128,
         code_hash: &[u8; 32],
         salt: Option<&[u8; 32]>,
-        input_buf: &mut [u8],
         address_buf: &mut [u8; 20],
+        input_buf: &mut [u8],
     ) -> Result<(), CallError> {
         if input_buf.len() < 32 + self.payload.encode_len() {
             return Err(CallError::InputBufTooSmall);
@@ -275,7 +275,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        self.instantiate_raw(limits, value, code_hash, salt, input_buf, address_buf)
+        self.instantiate_raw(limits, value, code_hash, salt, address_buf, input_buf)
             .and_then(|_| self.extract_output(output_buf))
     }
     /// Call a given contract
