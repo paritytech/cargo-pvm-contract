@@ -418,7 +418,6 @@ pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
