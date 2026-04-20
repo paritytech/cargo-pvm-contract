@@ -641,8 +641,8 @@ mod test {
                 error NoSelector();
                 error UnknownSelector();
                 constructor() payable;
-                function origin() external payable returns ((uint64,uint64));
-                function reflect(((uint64,uint64),(uint64,uint64)) line) external payable returns (((uint64,uint64),(uint64,uint64)));
+                function origin() external payable returns ((uint64,uint64) memory);
+                function reflect(((uint64,uint64),(uint64,uint64)) memory line) external payable returns (((uint64,uint64),(uint64,uint64)) memory);
             }
             ```*/
                 ///
@@ -855,7 +855,7 @@ mod test {
                 error NoSelector();
                 error UnknownSelector();
                 constructor() payable;
-                function touch((uint256,uint256) value) external payable returns ((uint256,uint256));
+                function touch((uint256,uint256) memory value) external payable returns ((uint256,uint256) memory);
             }
             ```*/
                 ///
@@ -1042,8 +1042,8 @@ mod test {
                 error NoSelector();
                 error UnknownSelector();
                 constructor() payable;
-                function getNamed() external payable returns ((uint64,string));
-                function process((uint64,string) data, bool flag) external payable returns (uint64);
+                function getNamed() external payable returns ((uint64,string) memory);
+                function process((uint64,string) memory data, bool flag) external payable returns (uint64);
             }
             ```*/
                 ///
