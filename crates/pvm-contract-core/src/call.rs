@@ -8,6 +8,7 @@ use ruint::aliases::U256;
 
 /// Errors returned by host_api::call()/host_api::instantiate()
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
 pub enum CallError {
     /// The called function trapped and has its state changes reverted.
     CalleeTrapped,
@@ -36,16 +37,7 @@ impl SolError for CallError {
     const SIGNATURE: &'static str = "CallError(uint256)";
 
     fn encode_params(&self, buf: &mut [u8]) -> usize {
-        let res = match self {
-            CallError::CalleeTrapped => U256::from(0),
-            CallError::TransferFailed => U256::from(1),
-            CallError::OutOfResources => U256::from(2),
-            CallError::InputBufTooSmall => U256::from(3),
-            CallError::OutputBufTooSmall => U256::from(4),
-            CallError::DuplicateContractAddress => U256::from(5),
-            CallError::Unknown => U256::from(6),
-            CallError::CalleeReverted => U256::from(7),
-        };
+        let res = U256::from(*self as u8);
         res.encode_to(buf);
         res.encode_len()
     }
