@@ -32,12 +32,12 @@ pub fn expand_function(
     let args = if func.parameters.is_empty() {
         quote! {}
     } else {
-        let args = func.parameters.iter().map(|param| {
+        let args = func.parameters.iter().enumerate().map(|(index, param)| {
             let typ = to_rust_type(&param.ty, alloc);
             let name = &param
                 .name
                 .as_ref()
-                .unwrap_or(&SolIdent::new("s"))
+                .unwrap_or(&SolIdent::new(&format!("s{}", index)))
                 .to_string();
             let name = format_ident!("{}", to_snake_case(name));
             quote! {#name: #typ}
