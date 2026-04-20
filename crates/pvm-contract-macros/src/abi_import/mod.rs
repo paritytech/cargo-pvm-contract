@@ -4,7 +4,7 @@ use syn::{self};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
-use crate::solidity::{capitalize, to_snake_case};
+use crate::solidity::{capitalize, to_pascal_case, to_snake_case};
 
 pub fn expand_function(
     contract_name: syn::Ident,
@@ -202,7 +202,7 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
 pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
-            let contract_name = format_ident!("{}", capitalize(&item_contract.name.to_string()));
+            let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));
             let contract_module = format_ident!("{}", to_snake_case(&item_contract.name.to_string()));
 
             let repr = format!("```solidity\n{}\n```", item_contract);
@@ -432,7 +432,7 @@ mod test {
             }
             ```*/
                 ///
-                pub struct Multi_method<
+                pub struct MultiMethod<
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
@@ -445,9 +445,9 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Multi_method<Mutability, Inputs, Outputs, false> {
-                    pub fn get_count(mut self) -> Multi_method<Payable, (), (u64), true> {
-                        Multi_method::<Payable, (), (u64), true> {
+                > MultiMethod<Mutability, Inputs, Outputs, false> {
+                    pub fn get_count(mut self) -> MultiMethod<Payable, (), (u64), true> {
+                        MultiMethod::<Payable, (), (u64), true> {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (), (u64)> {
                                 payload: (),
@@ -458,11 +458,8 @@ mod test {
                             },
                         }
                     }
-                    pub fn set_flag(
-                        mut self,
-                        flag: bool,
-                    ) -> Multi_method<Payable, (bool), (), true> {
-                        Multi_method::<Payable, (bool), (), true> {
+                    pub fn set_flag(mut self, flag: bool) -> MultiMethod<Payable, (bool), (), true> {
+                        MultiMethod::<Payable, (bool), (), true> {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (bool), ()> {
                                 payload: (flag),
@@ -478,8 +475,8 @@ mod test {
                         to: Address,
                         amount: U256,
                         nonce: u32,
-                    ) -> Multi_method<Payable, (Address, U256, u32), (bool), true> {
-                        Multi_method::<Payable, (Address, U256, u32), (bool), true> {
+                    ) -> MultiMethod<Payable, (Address, U256, u32), (bool), true> {
+                        MultiMethod::<Payable, (Address, U256, u32), (bool), true> {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (Address, U256, u32), (bool)> {
                                 payload: (to, amount, nonce),
@@ -491,17 +488,17 @@ mod test {
                         }
                     }
                 }
-                impl Multi_method<Pure, (), (), false> {
+                impl MultiMethod<Pure, (), (), false> {
                     /// Create api for the contract from an address
-                    pub fn from_address(address: Address) -> Multi_method<Pure, (), (), false> {
+                    pub fn from_address(address: Address) -> MultiMethod<Pure, (), (), false> {
                         Self {
                             address,
                             call_builder: CallBuilder::<Pure, (), ()>::default(),
                         }
                     }
                 }
-                pub fn new_multi_method() -> Multi_method<Payable, (), (), true> {
-                    Multi_method::<Payable, (), (), true> {
+                pub fn new_multi_method() -> MultiMethod<Payable, (), (), true> {
+                    MultiMethod::<Payable, (), (), true> {
                         address: [0u8; 20].into(),
                         call_builder: CallBuilder::<Payable, (), ()> {
                             payload: (),
@@ -516,7 +513,7 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Multi_method<Mutability, Inputs, Outputs, true> {
+                > MultiMethod<Mutability, Inputs, Outputs, true> {
                     /// Set call limits for the given call
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
@@ -564,7 +561,7 @@ mod test {
                 impl<
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Multi_method<Payable, Inputs, Outputs, true> {
+                > MultiMethod<Payable, Inputs, Outputs, true> {
                     /// Instantiate another contract by it's code_hash
                     pub fn instantiate_raw(
                         &self,
@@ -649,7 +646,7 @@ mod test {
             }
             ```*/
                 ///
-                pub struct Nested_custom_type<
+                pub struct NestedCustomType<
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
@@ -662,9 +659,9 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Nested_custom_type<Mutability, Inputs, Outputs, false> {
-                    pub fn origin(mut self) -> Nested_custom_type<Payable, (), ((u64, u64)), true> {
-                        Nested_custom_type::<Payable, (), ((u64, u64)), true> {
+                > NestedCustomType<Mutability, Inputs, Outputs, false> {
+                    pub fn origin(mut self) -> NestedCustomType<Payable, (), ((u64, u64)), true> {
+                        NestedCustomType::<Payable, (), ((u64, u64)), true> {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (), ((u64, u64))> {
                                 payload: (),
@@ -678,13 +675,13 @@ mod test {
                     pub fn reflect(
                         mut self,
                         line: ((u64, u64), (u64, u64)),
-                    ) -> Nested_custom_type<
+                    ) -> NestedCustomType<
                         Payable,
                         (((u64, u64), (u64, u64))),
                         (((u64, u64), (u64, u64))),
                         true,
                     > {
-                        Nested_custom_type::<
+                        NestedCustomType::<
                             Payable,
                             (((u64, u64), (u64, u64))),
                             (((u64, u64), (u64, u64))),
@@ -705,19 +702,17 @@ mod test {
                         }
                     }
                 }
-                impl Nested_custom_type<Pure, (), (), false> {
+                impl NestedCustomType<Pure, (), (), false> {
                     /// Create api for the contract from an address
-                    pub fn from_address(
-                        address: Address,
-                    ) -> Nested_custom_type<Pure, (), (), false> {
+                    pub fn from_address(address: Address) -> NestedCustomType<Pure, (), (), false> {
                         Self {
                             address,
                             call_builder: CallBuilder::<Pure, (), ()>::default(),
                         }
                     }
                 }
-                pub fn new_nested_custom_type() -> Nested_custom_type<Payable, (), (), true> {
-                    Nested_custom_type::<Payable, (), (), true> {
+                pub fn new_nested_custom_type() -> NestedCustomType<Payable, (), (), true> {
+                    NestedCustomType::<Payable, (), (), true> {
                         address: [0u8; 20].into(),
                         call_builder: CallBuilder::<Payable, (), ()> {
                             payload: (),
@@ -732,7 +727,7 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Nested_custom_type<Mutability, Inputs, Outputs, true> {
+                > NestedCustomType<Mutability, Inputs, Outputs, true> {
                     /// Set call limits for the given call
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
@@ -780,7 +775,7 @@ mod test {
                 impl<
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Nested_custom_type<Payable, Inputs, Outputs, true> {
+                > NestedCustomType<Payable, Inputs, Outputs, true> {
                     /// Instantiate another contract by it's code_hash
                     pub fn instantiate_raw(
                         &self,
@@ -864,7 +859,7 @@ mod test {
             }
             ```*/
                 ///
-                pub struct Custom_type_method<
+                pub struct CustomTypeMethod<
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
@@ -877,12 +872,12 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Custom_type_method<Mutability, Inputs, Outputs, false> {
+                > CustomTypeMethod<Mutability, Inputs, Outputs, false> {
                     pub fn touch(
                         mut self,
                         value: (U256, U256),
-                    ) -> Custom_type_method<Payable, ((U256, U256)), ((U256, U256)), true> {
-                        Custom_type_method::<Payable, ((U256, U256)), ((U256, U256)), true> {
+                    ) -> CustomTypeMethod<Payable, ((U256, U256)), ((U256, U256)), true> {
+                        CustomTypeMethod::<Payable, ((U256, U256)), ((U256, U256)), true> {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, ((U256, U256)), ((U256, U256))> {
                                 payload: (value),
@@ -894,19 +889,17 @@ mod test {
                         }
                     }
                 }
-                impl Custom_type_method<Pure, (), (), false> {
+                impl CustomTypeMethod<Pure, (), (), false> {
                     /// Create api for the contract from an address
-                    pub fn from_address(
-                        address: Address,
-                    ) -> Custom_type_method<Pure, (), (), false> {
+                    pub fn from_address(address: Address) -> CustomTypeMethod<Pure, (), (), false> {
                         Self {
                             address,
                             call_builder: CallBuilder::<Pure, (), ()>::default(),
                         }
                     }
                 }
-                pub fn new_custom_type_method() -> Custom_type_method<Payable, (), (), true> {
-                    Custom_type_method::<Payable, (), (), true> {
+                pub fn new_custom_type_method() -> CustomTypeMethod<Payable, (), (), true> {
+                    CustomTypeMethod::<Payable, (), (), true> {
                         address: [0u8; 20].into(),
                         call_builder: CallBuilder::<Payable, (), ()> {
                             payload: (),
@@ -921,7 +914,7 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Custom_type_method<Mutability, Inputs, Outputs, true> {
+                > CustomTypeMethod<Mutability, Inputs, Outputs, true> {
                     /// Set call limits for the given call
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
@@ -969,7 +962,7 @@ mod test {
                 impl<
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Custom_type_method<Payable, Inputs, Outputs, true> {
+                > CustomTypeMethod<Payable, Inputs, Outputs, true> {
                     /// Instantiate another contract by it's code_hash
                     pub fn instantiate_raw(
                         &self,
@@ -1054,7 +1047,7 @@ mod test {
             }
             ```*/
                 ///
-                pub struct Dynamic_custom_return<
+                pub struct DynamicCustomReturn<
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
@@ -1067,11 +1060,11 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Dynamic_custom_return<Mutability, Inputs, Outputs, false> {
+                > DynamicCustomReturn<Mutability, Inputs, Outputs, false> {
                     pub fn get_named(
                         mut self,
-                    ) -> Dynamic_custom_return<Payable, (), ((u64, alloc::string::String)), true> {
-                        Dynamic_custom_return::<Payable, (), ((u64, alloc::string::String)), true> {
+                    ) -> DynamicCustomReturn<Payable, (), ((u64, alloc::string::String)), true> {
+                        DynamicCustomReturn::<Payable, (), ((u64, alloc::string::String)), true> {
                             address: self.address,
                             call_builder: CallBuilder::<
                                 Payable,
@@ -1090,13 +1083,13 @@ mod test {
                         mut self,
                         data: (u64, alloc::string::String),
                         flag: bool,
-                    ) -> Dynamic_custom_return<
+                    ) -> DynamicCustomReturn<
                         Payable,
                         ((u64, alloc::string::String), bool),
                         (u64),
                         true,
                     > {
-                        Dynamic_custom_return::<
+                        DynamicCustomReturn::<
                             Payable,
                             ((u64, alloc::string::String), bool),
                             (u64),
@@ -1117,19 +1110,19 @@ mod test {
                         }
                     }
                 }
-                impl Dynamic_custom_return<Pure, (), (), false> {
+                impl DynamicCustomReturn<Pure, (), (), false> {
                     /// Create api for the contract from an address
                     pub fn from_address(
                         address: Address,
-                    ) -> Dynamic_custom_return<Pure, (), (), false> {
+                    ) -> DynamicCustomReturn<Pure, (), (), false> {
                         Self {
                             address,
                             call_builder: CallBuilder::<Pure, (), ()>::default(),
                         }
                     }
                 }
-                pub fn new_dynamic_custom_return() -> Dynamic_custom_return<Payable, (), (), true> {
-                    Dynamic_custom_return::<Payable, (), (), true> {
+                pub fn new_dynamic_custom_return() -> DynamicCustomReturn<Payable, (), (), true> {
+                    DynamicCustomReturn::<Payable, (), (), true> {
                         address: [0u8; 20].into(),
                         call_builder: CallBuilder::<Payable, (), ()> {
                             payload: (),
@@ -1144,7 +1137,7 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Dynamic_custom_return<Mutability, Inputs, Outputs, true> {
+                > DynamicCustomReturn<Mutability, Inputs, Outputs, true> {
                     /// Set call limits for the given call
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
@@ -1192,7 +1185,7 @@ mod test {
                 impl<
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Dynamic_custom_return<Payable, Inputs, Outputs, true> {
+                > DynamicCustomReturn<Payable, Inputs, Outputs, true> {
                     /// Instantiate another contract by it's code_hash
                     pub fn instantiate_raw(
                         &self,
@@ -1276,7 +1269,7 @@ mod test {
             }
             ```*/
                 ///
-                pub struct Constructor_with_params<
+                pub struct ConstructorWithParams<
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
@@ -1289,12 +1282,12 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Constructor_with_params<Mutability, Inputs, Outputs, false> {
+                > ConstructorWithParams<Mutability, Inputs, Outputs, false> {
                     pub fn balance_of(
                         mut self,
                         account: Address,
-                    ) -> Constructor_with_params<Payable, (Address), (U256), true> {
-                        Constructor_with_params::<Payable, (Address), (U256), true> {
+                    ) -> ConstructorWithParams<Payable, (Address), (U256), true> {
+                        ConstructorWithParams::<Payable, (Address), (U256), true> {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (Address), (U256)> {
                                 payload: (account),
@@ -1306,11 +1299,11 @@ mod test {
                         }
                     }
                 }
-                impl Constructor_with_params<Pure, (), (), false> {
+                impl ConstructorWithParams<Pure, (), (), false> {
                     /// Create api for the contract from an address
                     pub fn from_address(
                         address: Address,
-                    ) -> Constructor_with_params<Pure, (), (), false> {
+                    ) -> ConstructorWithParams<Pure, (), (), false> {
                         Self {
                             address,
                             call_builder: CallBuilder::<Pure, (), ()>::default(),
@@ -1320,8 +1313,8 @@ mod test {
                 pub fn new_constructor_with_params(
                     owner: Address,
                     supply: U256,
-                ) -> Constructor_with_params<Payable, (Address, U256), (), true> {
-                    Constructor_with_params::<Payable, (Address, U256), (), true> {
+                ) -> ConstructorWithParams<Payable, (Address, U256), (), true> {
+                    ConstructorWithParams::<Payable, (Address, U256), (), true> {
                         address: [0u8; 20].into(),
                         call_builder: CallBuilder::<Payable, (Address, U256), ()> {
                             payload: (owner, supply),
@@ -1336,7 +1329,7 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Constructor_with_params<Mutability, Inputs, Outputs, true> {
+                > ConstructorWithParams<Mutability, Inputs, Outputs, true> {
                     /// Set call limits for the given call
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
@@ -1384,7 +1377,7 @@ mod test {
                 impl<
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Constructor_with_params<Payable, Inputs, Outputs, true> {
+                > ConstructorWithParams<Payable, Inputs, Outputs, true> {
                     /// Instantiate another contract by it's code_hash
                     pub fn instantiate_raw(
                         &self,
