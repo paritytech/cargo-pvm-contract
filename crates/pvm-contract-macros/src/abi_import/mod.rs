@@ -823,8 +823,8 @@ mod test {
                                 value,
                                 code_hash,
                                 salt,
-                                input_buf.as_mut_slice(),
                                 &mut address_buf,
+                                input_buf.as_mut_slice(),
                             )?;
                         let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
                             0; self.call_builder.output_size().max(512)
@@ -1012,8 +1012,8 @@ mod test {
                                 value,
                                 code_hash,
                                 salt,
-                                input_buf.as_mut_slice(),
                                 &mut address_buf,
+                                input_buf.as_mut_slice(),
                             )?;
                         let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
                             0; self.call_builder.output_size().max(512)
@@ -1235,8 +1235,8 @@ mod test {
                                 value,
                                 code_hash,
                                 salt,
-                                input_buf.as_mut_slice(),
                                 &mut address_buf,
+                                input_buf.as_mut_slice(),
                             )?;
                         let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
                             0; self.call_builder.output_size().max(512)
@@ -1427,8 +1427,8 @@ mod test {
                                 value,
                                 code_hash,
                                 salt,
-                                input_buf.as_mut_slice(),
                                 &mut address_buf,
+                                input_buf.as_mut_slice(),
                             )?;
                         let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
                             0; self.call_builder.output_size().max(512)
