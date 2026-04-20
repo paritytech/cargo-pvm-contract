@@ -111,7 +111,7 @@ fn split_top_level_params(s: &str) -> Vec<&str> {
     for (i, ch) in s.char_indices() {
         match ch {
             '(' => depth += 1,
-            ')' => depth -= 1,
+            ')' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 let p = s[start..i].trim();
                 if !p.is_empty() {

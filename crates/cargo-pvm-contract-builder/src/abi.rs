@@ -3,7 +3,7 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
-pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam};
+pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, parse_type_str};
 
 pub fn generate_abi_for_bin(manifest_dir: &Path, bin_name: &str) -> Result<Option<AbiJson>> {
     generate_abi_via_feature(manifest_dir, bin_name)
@@ -68,12 +68,18 @@ fn generate_abi_via_feature(manifest_dir: &Path, bin_name: &str) -> Result<Optio
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
-    if let Some(start) = source.find("contract(\"") {
-        let after_quote = &source[start + 10..];
-        if let Some(end) = after_quote.find('"') {
-            let path = &after_quote[..end];
-            if path.ends_with(".sol") {
-                return Some(path.to_string());
+    // Find "contract(" then skip optional whitespace before the opening quote.
+    // This tolerates formatting like #[contract( "Foo.sol" )] which syn accepts.
+    let marker = "contract(";
+    if let Some(start) = source.find(marker) {
+        let after_paren = &source[start + marker.len()..];
+        let trimmed = after_paren.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('"') {
+            if let Some(end) = rest.find('"') {
+                let path = &rest[..end];
+                if path.ends_with(".sol") {
+                    return Some(path.to_string());
+                }
             }
         }
     }
@@ -350,57 +356,11 @@ pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
                 .find(|s| !matches!(**s, "memory" | "calldata" | "storage"))
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            Some(parse_type_to_abi_param(&name, &raw_type))
+            Some(parse_type_str(&name, &raw_type))
         })
         .collect()
 }
 
-/// Convert a Solidity type string into an `AbiParam`, expanding tuple types
-/// into `type: "tuple"` with nested `components`.
-fn parse_type_to_abi_param(name: &str, raw_type: &str) -> AbiParam {
-    // Check for array suffix: `T[]` or `T[N]`
-    if let Some(base) = raw_type.strip_suffix("[]") {
-        let inner = parse_type_to_abi_param("", base);
-        return AbiParam {
-            name: name.to_string(),
-            param_type: format!("{}[]", inner.param_type),
-            components: inner.components,
-        };
-    }
-    if raw_type.ends_with(']')
-        && let Some(bracket_start) = raw_type.rfind('[')
-    {
-        let base = &raw_type[..bracket_start];
-        let suffix = &raw_type[bracket_start..];
-        let inner = parse_type_to_abi_param("", base);
-        return AbiParam {
-            name: name.to_string(),
-            param_type: format!("{}{}", inner.param_type, suffix),
-            components: inner.components,
-        };
-    }
-
-    // Check for inline tuple: `(type1,type2,...)`
-    if raw_type.starts_with('(') && raw_type.ends_with(')') {
-        let inner_str = &raw_type[1..raw_type.len() - 1];
-        let components: Vec<AbiParam> = split_top_level(inner_str)
-            .into_iter()
-            .map(|t| parse_type_to_abi_param("", t.trim()))
-            .collect();
-        return AbiParam {
-            name: name.to_string(),
-            param_type: "tuple".to_string(),
-            components,
-        };
-    }
-
-    // Primitive type
-    AbiParam {
-        name: name.to_string(),
-        param_type: raw_type.to_string(),
-        components: vec![],
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -437,6 +397,24 @@ mod tests {
     fn extract_sol_path_non_sol_extension() {
         let source = r#"#[contract("MyToken.json")]"#;
         assert_eq!(extract_sol_path_from_source(source), None);
+    }
+
+    #[test]
+    fn extract_sol_path_with_whitespace_after_paren() {
+        let source = r#"#[contract( "MyToken.sol" )]"#;
+        assert_eq!(
+            extract_sol_path_from_source(source),
+            Some("MyToken.sol".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_sol_path_with_newline_formatting() {
+        let source = "#[contract(\n    \"MyToken.sol\"\n)]";
+        assert_eq!(
+            extract_sol_path_from_source(source),
+            Some("MyToken.sol".to_string())
+        );
     }
 
     #[test]

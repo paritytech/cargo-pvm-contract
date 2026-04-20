@@ -97,7 +97,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
                 for (i, ch) in s.char_indices() {
                     match ch {
                         '(' => depth += 1,
-                        ')' => depth -= 1,
+                        ')' => depth = depth.saturating_sub(1),
                         ',' if depth == 0 => {
                             params.push(s[start..i].trim());
                             start = i + 1;

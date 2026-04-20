@@ -39,7 +39,7 @@ dependencies = [
  "anyhow",
  "log",
  "polkavm-linker",
- "serde",
+ "pvm-contract-types",
  "serde_json",
  "toml_edit",
 ]
@@ -391,6 +391,8 @@ dependencies = [
  "const_format",
  "keccak-const",
  "ruint",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
