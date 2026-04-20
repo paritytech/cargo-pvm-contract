@@ -33,7 +33,7 @@ pub enum CallError {
 impl SolError for CallError {
     const SELECTOR: [u8; 4] = const_selector("CallError(uint256)");
 
-    const SIGNATURE: &'static str = "CallError(uint256 code)";
+    const SIGNATURE: &'static str = "CallError(uint256)";
 
     fn encode_params(&self, buf: &mut [u8]) -> usize {
         match self {
@@ -91,6 +91,7 @@ fn convert_error(value: ReturnErrorCode) -> CallError {
         ReturnErrorCode::CalleeReverted => CallError::GenericError,
         ReturnErrorCode::TransferFailed => CallError::TransferFailed,
         ReturnErrorCode::OutOfResources => CallError::OutOfResources,
+        ReturnErrorCode::DuplicateContractAddress => CallError::DuplicateContractAddress,
         _ => CallError::Unknown,
     }
 }
