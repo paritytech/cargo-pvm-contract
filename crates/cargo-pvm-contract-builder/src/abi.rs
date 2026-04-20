@@ -1067,4 +1067,40 @@ interface Token {{
             }
         );
     }
+
+    #[test]
+    fn generate_abi_from_sol_multiline_constructor() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Token.sol");
+        std::fs::write(
+            &sol_path,
+            "interface Token {\n    constructor(\n        address owner,\n        uint256 supply\n    ) payable;\n    function totalSupply() external view returns (uint256);\n}",
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let ctor = abi
+            .0
+            .iter()
+            .find(|item| matches!(item, AbiItem::Constructor { .. }))
+            .expect("ABI should include multiline constructor");
+        assert_eq!(
+            *ctor,
+            AbiItem::Constructor {
+                inputs: vec![
+                    AbiParam {
+                        name: "owner".into(),
+                        param_type: "address".into(),
+                        components: vec![],
+                    },
+                    AbiParam {
+                        name: "supply".into(),
+                        param_type: "uint256".into(),
+                        components: vec![],
+                    },
+                ],
+                state_mutability: Some("payable".into()),
+            }
+        );
+    }
 }

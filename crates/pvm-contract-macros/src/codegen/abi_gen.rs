@@ -116,18 +116,17 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         quote! {}
     };
 
-    // Framework errors are emitted unless a user-defined error already covers
-    // the same name (regardless of parameters). We match by name prefix ("Name(")
-    // rather than exact signature so that e.g. a user-defined
-    // `error InvalidCalldata(uint256)` suppresses the framework's parameterless
-    // `error InvalidCalldata()`.
+    // Framework errors are parameterless (`Name()`). Only suppress when a
+    // user-defined error has the exact same signature. A user-defined
+    // `error InvalidCalldata(uint256)` has a different selector and must
+    // coexist in the ABI so tools can decode both reverts.
     let framework_error_entries: Vec<TokenStream> = pvm_contract_types::framework_errors::NAMES
         .iter()
         .map(|name| {
-            let prefix = format!("{name}(");
+            let sig = format!("{name}()");
             let name_str = name.to_string();
             quote! {
-                if !__seen_errors.iter().any(|s| s.starts_with(#prefix)) {
+                if !__seen_errors.iter().any(|s| *s == #sig) {
                     __items.push(::pvm_contract_types::AbiItem::Error {
                         name: #name_str.into(),
                         inputs: ::std::vec::Vec::new(),
