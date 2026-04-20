@@ -130,10 +130,10 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
         syn_solidity::Type::Address(_span, _payable) => quote! { Address },
         syn_solidity::Type::Bool(_) => quote! { bool },
         syn_solidity::Type::String(_) => quote! {
-            alloc::alloc::String
+            alloc::string::String
         },
         syn_solidity::Type::Bytes(_) => quote! {
-            pvm_contract_types::alloc::Bytes
+            pvm_contract_types::Bytes
         },
         syn_solidity::Type::FixedBytes(_, size) => {
             let size: usize = size.get().into();

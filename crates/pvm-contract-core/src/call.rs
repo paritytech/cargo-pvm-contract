@@ -25,7 +25,7 @@ pub enum CallError {
     OutputBufTooSmall,
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
-    GenericError,
+    CalleeReverted,
     /// Unknown error occured
     Unknown,
 }
@@ -36,59 +36,29 @@ impl SolError for CallError {
     const SIGNATURE: &'static str = "CallError(uint256)";
 
     fn encode_params(&self, buf: &mut [u8]) -> usize {
-        match self {
-            CallError::CalleeTrapped => {
-                let res = U256::from(0);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::TransferFailed => {
-                let res = U256::from(1);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::OutOfResources => {
-                let res = U256::from(2);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::InputBufTooSmall => {
-                let res = U256::from(3);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::OutputBufTooSmall => {
-                let res = U256::from(4);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::DuplicateContractAddress => {
-                let res = U256::from(5);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::Unknown => {
-                let res = U256::from(6);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-            CallError::GenericError => {
-                let res = U256::from(7);
-                res.encode_to(buf);
-                res.encode_len()
-            }
-        }
+        let res = match self {
+            CallError::CalleeTrapped => U256::from(0),
+            CallError::TransferFailed => U256::from(1),
+            CallError::OutOfResources => U256::from(2),
+            CallError::InputBufTooSmall => U256::from(3),
+            CallError::OutputBufTooSmall => U256::from(4),
+            CallError::DuplicateContractAddress => U256::from(5),
+            CallError::Unknown => U256::from(6),
+            CallError::CalleeReverted => U256::from(7),
+        };
+        res.encode_to(buf);
+        res.encode_len()
     }
 
     fn encoded_size(&self) -> usize {
-        4 + U256::ZERO.encode_len()
+        36
     }
 }
 
 fn convert_error(value: ReturnErrorCode) -> CallError {
     match value {
         ReturnErrorCode::CalleeTrapped => CallError::CalleeTrapped,
-        ReturnErrorCode::CalleeReverted => CallError::GenericError,
+        ReturnErrorCode::CalleeReverted => CallError::CalleeReverted,
         ReturnErrorCode::TransferFailed => CallError::TransferFailed,
         ReturnErrorCode::OutOfResources => CallError::OutOfResources,
         ReturnErrorCode::DuplicateContractAddress => CallError::DuplicateContractAddress,
