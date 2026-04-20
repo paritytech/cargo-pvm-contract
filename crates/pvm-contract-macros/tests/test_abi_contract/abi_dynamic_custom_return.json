@@ -9,8 +9,18 @@
     "name": "getNamed",
     "outputs": [
       {
+        "components": [
+          {
+            "name": "id",
+            "type": "uint64"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
         "name": "",
-        "type": "(uint64,string)"
+        "type": "tuple"
       }
     ],
     "stateMutability": "payable",
@@ -19,8 +29,18 @@
   {
     "inputs": [
       {
+        "components": [
+          {
+            "name": "id",
+            "type": "uint64"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
         "name": "data",
-        "type": "(uint64,string)"
+        "type": "tuple"
       },
       {
         "name": "flag",

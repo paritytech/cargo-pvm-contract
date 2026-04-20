@@ -1218,6 +1218,8 @@ dependencies = [
  "keccak-const",
  "pallet-revive-uapi",
  "ruint",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

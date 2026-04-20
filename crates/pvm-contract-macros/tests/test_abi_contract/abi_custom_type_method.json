@@ -7,15 +7,35 @@
   {
     "inputs": [
       {
+        "components": [
+          {
+            "name": "x",
+            "type": "uint256"
+          },
+          {
+            "name": "y",
+            "type": "uint256"
+          }
+        ],
         "name": "value",
-        "type": "(uint256,uint256)"
+        "type": "tuple"
       }
     ],
     "name": "touch",
     "outputs": [
       {
+        "components": [
+          {
+            "name": "x",
+            "type": "uint256"
+          },
+          {
+            "name": "y",
+            "type": "uint256"
+          }
+        ],
         "name": "",
-        "type": "(uint256,uint256)"
+        "type": "tuple"
       }
     ],
     "stateMutability": "payable",

@@ -49,7 +49,7 @@ pub struct AbiJson(pub Vec<AbiItem>);
 
 /// Serialize a list of ABI items to a JSON string.
 pub fn abi_to_json(items: &[AbiItem]) -> String {
-    serde_json::to_string(items).expect("ABI serialization failed")
+    serde_json::to_string_pretty(items).expect("ABI serialization failed")
 }
 
 /// Parse a Solidity type string (e.g. from an error signature) into an [`AbiParam`],

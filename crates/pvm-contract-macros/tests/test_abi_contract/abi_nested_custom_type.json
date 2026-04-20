@@ -7,15 +7,75 @@
   {
     "inputs": [
       {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          }
+        ],
         "name": "line",
-        "type": "((uint64,uint64),(uint64,uint64))"
+        "type": "tuple"
       }
     ],
     "name": "reflect",
     "outputs": [
       {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          }
+        ],
         "name": "",
-        "type": "((uint64,uint64),(uint64,uint64))"
+        "type": "tuple"
       }
     ],
     "stateMutability": "payable",
@@ -26,8 +86,18 @@
     "name": "origin",
     "outputs": [
       {
+        "components": [
+          {
+            "name": "x",
+            "type": "uint64"
+          },
+          {
+            "name": "y",
+            "type": "uint64"
+          }
+        ],
         "name": "",
-        "type": "(uint64,uint64)"
+        "type": "tuple"
       }
     ],
     "stateMutability": "payable",
