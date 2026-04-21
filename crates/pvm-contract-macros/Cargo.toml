@@ -11,17 +11,24 @@ proc-macro = true
 
 [features]
 default = []
+abi-gen = []
 
 [dependencies]
 proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
+syn-solidity = { version = "1.5" }
+alloy-json-abi = { version = "1.5" }
 keccak-const.workspace = true
 pvm-contract-types = { path = "../pvm-contract-types" }
+pvm-contract-core = { path = "../pvm-contract-core" }
+serde_json = { workspace = true }
+macro-string = { version = "0.2" }
 
 [dev-dependencies]
-ruint = { version = "1.17", default-features = false }
+ruint = { workspace = true, default-features = false }
 serde_json = { workspace = true }
 alloy-core = { version = "1.5", features = ["sol-types"] }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc"] }
-prettyplease = "0.2"
+expect-test = { version = "1.5.1" }
+prettyplease = { version = "0.2" }

@@ -27,36 +27,22 @@ pub fn generate_abi_gen(parsed: &ParsedContract, has_sol_path: bool) -> (TokenSt
 
 fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, TokenStream)> {
     let constructor_entry = if parsed.has_constructor {
-        let constructor_input_entries: Vec<TokenStream> = parsed
+        let ctor_params: Vec<TokenStream> = parsed
             .constructor_inputs
             .iter()
             .map(|(name, ty)| {
                 let name_str = name.to_string();
-                Ok(quote! {
-                    if !__first_ctor_input {
-                        __abi.push(',');
-                    } else {
-                        __first_ctor_input = false;
-                    }
-                    __abi.push_str("{\"name\":\"");
-                    __abi.push_str(#name_str);
-                    __abi.push_str("\",\"type\":\"");
-                    __abi.push_str(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME);
-                    __abi.push_str("\"}");
-                })
+                quote! {
+                    <#ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+                }
             })
-            .collect::<syn::Result<Vec<_>>>()?;
+            .collect();
 
         quote! {
-            if !__first_item {
-                __abi.push(',');
-            } else {
-                __first_item = false;
-            }
-            __abi.push_str("{\"type\":\"constructor\",\"inputs\":[");
-            let mut __first_ctor_input = true;
-            #(#constructor_input_entries)*
-            __abi.push_str("],\"stateMutability\":\"payable\"}");
+            __items.push(::pvm_contract_types::AbiItem::Constructor {
+                inputs: vec![#(#ctor_params),*],
+                state_mutability: Some("payable".into()),
+            });
         }
     } else {
         quote! {}
@@ -69,6 +55,8 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         .collect::<syn::Result<Vec<_>>>()?;
 
     // Emit error ABI entries by calling error_signatures() on each error type.
+    // Deduplication uses exact-match on the full signature ("Name(type1,type2)")
+    // so that overloaded errors with different params are all emitted.
     let error_entries: Vec<TokenStream> = parsed
         .error_types
         .iter()
@@ -81,30 +69,20 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
                         continue;
                     }
                     __seen_errors.push(__sig);
-                    if !__first_item {
-                        __abi.push(',');
-                    } else {
-                        __first_item = false;
-                    }
                     let __err_name = &__sig[..__paren];
                     let __params_str = &__sig[__paren + 1..__sig.len() - 1];
-                    __abi.push_str("{\"type\":\"error\",\"name\":\"");
-                    __abi.push_str(__err_name);
-                    __abi.push_str("\",\"inputs\":[");
-                    if !__params_str.is_empty() {
-                        let mut __first_param = true;
-                        for __param_type in __split_params(__params_str) {
-                            if !__first_param {
-                                __abi.push(',');
-                            } else {
-                                __first_param = false;
-                            }
-                            __abi.push_str("{\"name\":\"\",\"type\":\"");
-                            __abi.push_str(__param_type);
-                            __abi.push_str("\"}");
-                        }
-                    }
-                    __abi.push_str("]}");
+                    let __inputs: ::std::vec::Vec<::pvm_contract_types::AbiParam> = if __params_str.is_empty() {
+                        ::std::vec::Vec::new()
+                    } else {
+                        __split_params(__params_str)
+                            .into_iter()
+                            .map(|t| ::pvm_contract_types::parse_type_str("", t))
+                            .collect()
+                    };
+                    __items.push(::pvm_contract_types::AbiItem::Error {
+                        name: __err_name.into(),
+                        inputs: __inputs,
+                    });
                 }
             }
         })
@@ -119,7 +97,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
                 for (i, ch) in s.char_indices() {
                     match ch {
                         '(' => depth += 1,
-                        ')' => depth -= 1,
+                        ')' => depth = depth.saturating_sub(1),
                         ',' if depth == 0 => {
                             params.push(s[start..i].trim());
                             start = i + 1;
@@ -138,19 +116,21 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         quote! {}
     };
 
+    // Framework errors are parameterless (`Name()`). Only suppress when a
+    // user-defined error has the exact same signature. A user-defined
+    // `error InvalidCalldata(uint256)` has a different selector and must
+    // coexist in the ABI so tools can decode both reverts.
     let framework_error_entries: Vec<TokenStream> = pvm_contract_types::framework_errors::NAMES
         .iter()
         .map(|name| {
-            let prefix = format!("{name}(");
-            let entry = format!("{{\"type\":\"error\",\"name\":\"{name}\",\"inputs\":[]}}");
+            let sig = format!("{name}()");
+            let name_str = name.to_string();
             quote! {
-                if !__seen_errors.iter().any(|s| s.starts_with(#prefix)) {
-                    if !__first_item {
-                        __abi.push(',');
-                    } else {
-                        __first_item = false;
-                    }
-                    __abi.push_str(#entry);
+                if !__seen_errors.iter().any(|s| *s == #sig) {
+                    __items.push(::pvm_contract_types::AbiItem::Error {
+                        name: #name_str.into(),
+                        inputs: ::std::vec::Vec::new(),
+                    });
                 }
             }
         })
@@ -162,8 +142,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         pub fn __abi_json() -> ::std::string::String {
             #split_params_helper
 
-            let mut __abi = ::std::string::String::from("[");
-            let mut __first_item = true;
+            let mut __items: ::std::vec::Vec<::pvm_contract_types::AbiItem> = ::std::vec::Vec::new();
             let mut __seen_errors = ::std::vec::Vec::<&str>::new();
 
             #constructor_entry
@@ -174,8 +153,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
 
             #(#framework_error_entries)*
 
-            __abi.push(']');
-            __abi
+            ::pvm_contract_types::abi_to_json(&__items)
         }
     };
 
@@ -190,71 +168,42 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
     Ok((helper, main_fn))
 }
 
-// NOTE: All methods and constructors are emitted with `"stateMutability":"payable"`
-// because we don't yet support `payable`/`nonpayable`/`view`/`pure` attributes.
-// Once state mutability attributes are added, this should be derived from the method
-// annotation instead of hardcoded.
 fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
     let method_name = &method.sol_name;
 
-    let input_entries: Vec<TokenStream> = method
+    let input_params: Vec<TokenStream> = method
         .param_types
         .iter()
         .zip(method.param_names.iter())
         .map(|(ty, name)| {
             let name_str = name.to_string();
-            Ok(quote! {
-                if !__first_input {
-                    __abi.push(',');
-                } else {
-                    __first_input = false;
-                }
-                __abi.push_str("{\"name\":\"");
-                __abi.push_str(#name_str);
-                __abi.push_str("\",\"type\":\"");
-                __abi.push_str(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME);
-                __abi.push_str("\"}");
-            })
+            quote! {
+                <#ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+            }
         })
-        .collect::<syn::Result<Vec<_>>>()?;
+        .collect();
 
-    let output_entries: Vec<TokenStream> = method
+    let output_params: Vec<TokenStream> = method
         .return_types
         .iter()
         .map(|ty| {
-            Ok(quote! {
-                if !__first_output {
-                    __abi.push(',');
-                } else {
-                    __first_output = false;
-                }
-                __abi.push_str("{\"name\":\"\",\"type\":\"");
-                __abi.push_str(<#ty as ::pvm_contract_types::SolEncode>::SOL_NAME);
-                __abi.push_str("\"}");
-            })
+            quote! {
+                <#ty as ::pvm_contract_types::SolEncode>::abi_param("")
+            }
         })
-        .collect::<syn::Result<Vec<_>>>()?;
+        .collect();
 
+    // All methods are emitted with `"stateMutability":"payable"` because we don't yet
+    // support `payable`/`nonpayable`/`view`/`pure` attributes on Rust methods.
+    // Once state mutability attributes are added, this should be derived from the
+    // method annotation instead of hardcoded.
     Ok(quote! {
-        if !__first_item {
-            __abi.push(',');
-        } else {
-            __first_item = false;
-        }
-
-        __abi.push_str("{\"type\":\"function\",\"name\":\"");
-        __abi.push_str(#method_name);
-        __abi.push_str("\",\"inputs\":[");
-
-        let mut __first_input = true;
-        #(#input_entries)*
-
-        __abi.push_str("],\"outputs\":[");
-
-        let mut __first_output = true;
-        #(#output_entries)*
-
-        __abi.push_str("],\"stateMutability\":\"payable\"}");
+        __items.push(::pvm_contract_types::AbiItem::Function {
+            name: #method_name.into(),
+            inputs: vec![#(#input_params),*],
+            outputs: vec![#(#output_params),*],
+            state_mutability: Some("payable".into()),
+        });
     })
 }
 

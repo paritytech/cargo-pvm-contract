@@ -13,6 +13,68 @@ fn deploy(binary_name: &str) -> (AnvilPolkadot, CastClient, String) {
 }
 
 #[test]
+fn flipper_call_toggle_state() {
+    let (_anvil, cast, addr) = deploy("flipper");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("flipper_call", "release");
+    let caller_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+    cast.send(
+        &caller_addr,
+        "callFlipper(address)",
+        &[&addr],
+        DEFAULT_PRIVATE_KEY,
+    );
+
+    cast.send(&addr, "flip()", &[], DEFAULT_PRIVATE_KEY);
+    let val = cast.call(&addr, "get()(bool)", &[]);
+    assert_eq!(val, "false", "After calling flip state should be false");
+}
+
+#[test]
+fn flipper_delegate_call_toggle_state() {
+    let (_anvil, cast, addr) = deploy("flipper");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("flipper_delegate", "release");
+    let caller_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+    cast.send(
+        &caller_addr,
+        "delegateFlipper(address)",
+        &[&addr],
+        DEFAULT_PRIVATE_KEY,
+    );
+
+    let val = cast.call(&caller_addr, "get()(bool)", &[]);
+    assert_eq!(
+        val, "true",
+        "After delegate_call flip state should be true in proxy"
+    );
+
+    cast.send(&addr, "flip()", &[], DEFAULT_PRIVATE_KEY);
+    let val = cast.call(&addr, "get()(bool)", &[]);
+    assert_eq!(
+        val, "true",
+        "After calling flip state should be true in original"
+    );
+}
+#[test]
+fn flipper_instantiate_call_toggle_state() {
+    let (_anvil, cast, addr) = deploy("flipper");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("flipper_instantiate", "release");
+    let caller_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+    cast.send(
+        &caller_addr,
+        "callFlipper(address)",
+        &[&addr],
+        DEFAULT_PRIVATE_KEY,
+    );
+
+    cast.send(&addr, "flip()", &[], DEFAULT_PRIVATE_KEY);
+    let val = cast.call(&addr, "get()(bool)", &[]);
+    assert_eq!(val, "false", "After calling flip state should be false");
+}
+
+#[test]
 fn flipper_toggle_state() {
     let (_anvil, cast, addr) = deploy("flipper");
 

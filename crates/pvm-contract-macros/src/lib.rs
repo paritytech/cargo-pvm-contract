@@ -1,11 +1,11 @@
 #![doc = include_str!("../../../specs/proc-macros.md")]
 
-extern crate proc_macro;
+extern crate proc_macro2;
 
+mod abi_import;
 mod codegen;
 mod signature;
 mod solidity;
-
 use proc_macro::TokenStream;
 use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 
@@ -214,7 +214,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 let result = balance_of(::core::convert::Into::into(account));
 ///                 let mut __buf = [0u8;
 ///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///                 <U256 as ::pvm_contract_types::SolEncode>::encode_body_to(&result, &mut __buf);
+///                 <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
 ///                 ::pvm_contract_types::PolkaVmHost::return_value(
 ///                     ::pvm_contract_types::ReturnFlags::empty(), &__buf);
 ///             }
@@ -775,4 +775,11 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
+}
+
+#[proc_macro]
+pub fn abi_import(input: TokenStream) -> TokenStream {
+    let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
+
+    abi_import::expand_to_module(&file, alloc).into()
 }

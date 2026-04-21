@@ -1,0 +1,15 @@
+[package]
+name = "pvm-contract-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core structures for PVM smart contracts sdk"
+
+[dependencies]
+ruint = { workspace = true, default-features = false }
+pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+
+
+[features]
+default = []

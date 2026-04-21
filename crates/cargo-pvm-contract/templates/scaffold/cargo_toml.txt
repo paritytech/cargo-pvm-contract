@@ -41,7 +41,7 @@ ruint = { version = "1.17", default-features = false }
 
 {% if !use_dsl -%}
 [features]
-abi-gen = []
+abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]
 
 {% endif -%}
 [profile.release]

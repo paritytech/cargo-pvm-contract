@@ -1,9 +1,126 @@
 [
-  {"type":"constructor","inputs":[],"stateMutability":"payable"},
-  {"type":"function","name":"reflect","inputs":[{"name":"line","type":"((uint64,uint64),(uint64,uint64))"}],"outputs":[{"name":"","type":"((uint64,uint64),(uint64,uint64))"}],"stateMutability":"payable"},
-  {"type":"function","name":"origin","inputs":[],"outputs":[{"name":"","type":"(uint64,uint64)"}],"stateMutability":"payable"},
-  {"type":"error","name":"InvalidCalldata","inputs":[]},
-  {"type":"error","name":"CalldataTooLarge","inputs":[]},
-  {"type":"error","name":"NoSelector","inputs":[]},
-  {"type":"error","name":"UnknownSelector","inputs":[]}
+  {
+    "inputs": [],
+    "stateMutability": "payable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          }
+        ],
+        "name": "line",
+        "type": "tuple"
+      }
+    ],
+    "name": "reflect",
+    "outputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          }
+        ],
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "origin",
+    "outputs": [
+      {
+        "components": [
+          {
+            "name": "x",
+            "type": "uint64"
+          },
+          {
+            "name": "y",
+            "type": "uint64"
+          }
+        ],
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  }
 ]

@@ -178,7 +178,7 @@ fn check_signature_compatibility(
     Ok(())
 }
 
-fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
+fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -189,10 +189,28 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
             && let Some(name) = args.rename
             && !name.is_empty()
         {
-            return Some(name);
+            if !is_valid_solidity_identifier(&name) {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    format!(
+                        "Invalid Solidity identifier `{name}`. \
+                         Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
+                    ),
+                ));
+            }
+            return Ok(Some(name));
         }
     }
-    None
+    Ok(None)
+}
+
+fn is_valid_solidity_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
@@ -415,7 +433,7 @@ fn parse_contract(
 
                 let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)
+                    let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .functions
@@ -439,7 +457,7 @@ fn parse_contract(
                     let selector = compute_selector(&sol_func.signature.canonical_signature());
                     (sol_func.name.clone(), Some(selector))
                 } else {
-                    let sol_name = extract_method_rename(&func.attrs)
+                    let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
                     (sol_name, None)
                 };
@@ -895,5 +913,216 @@ mod tests {
         };
         let err = expand_contract(ContractArgs::default(), input).unwrap_err();
         assert!(err.to_string().contains("must contain a struct"));
+    }
+
+    #[test]
+    fn accepts_allocator_size_with_bump() {
+        let args = syn::parse_str::<ContractArgs>("allocator = \"bump\", allocator_size = 2048")
+            .expect("allocator_size should be accepted with bump allocator");
+        assert_eq!(args.allocator_size, 2048);
+    }
+
+    #[test]
+    fn rejects_allocator_size_without_allocator() {
+        let error = syn::parse_str::<ContractArgs>("allocator_size = 2048")
+            .expect_err("allocator_size should require an allocator");
+
+        assert!(error.to_string().contains("`allocator_size` requires"));
+    }
+
+    #[test]
+    fn constructor_with_params_generates_deploy_decoding() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, owner: Address, supply: U256) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(output.contains("deploy"));
+        assert!(output.contains("\"owner\""));
+        assert!(output.contains("\"supply\""));
+        assert!(output.contains("fn route"));
+    }
+
+    #[test]
+    fn generates_router_impl_and_route_fn() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn balance_of(&self, account: Address) -> U256 {
+                        U256::ZERO
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Generated route() takes a `&mut Contract<PolkaVmHost>` instance
+        assert!(
+            output.contains("fn route"),
+            "route() function should be generated"
+        );
+        // The Router trait is implemented for the user's struct, not a stand-in
+        assert!(
+            output.contains("Router for my_contract :: MyContract"),
+            "Router impl should target the user's struct"
+        );
+        // call() delegates to route() with the constructed `this`
+        assert!(output.contains("route (& mut this , selector , input)"));
+    }
+
+    #[test]
+    fn constructor_with_result_and_inputs_generates_match_and_decode() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, owner: Address) -> Result<(), Error> {
+                        Ok(())
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(output.contains("\"owner\""));
+        assert!(output.contains("Err (e)"));
+        assert!(output.contains("REVERT"));
+    }
+
+    #[test]
+    fn user_impl_is_cfg_gated_for_abi_gen() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn do_something(&self, value: U256) -> U256 {
+                        value
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let tokens = expand_contract(ContractArgs::default(), item).unwrap();
+        let output = tokens.to_string();
+
+        // User impl blocks are gated behind not(abi-gen) so method bodies
+        // (which may call host APIs) are excluded from host-target ABI builds.
+        assert!(
+            output.contains("not (feature = \"abi-gen\")"),
+            "user impl must be cfg-gated for abi-gen"
+        );
+
+        // The abi-gen helper still references the type for SOL_NAME
+        assert!(
+            output.contains("SOL_NAME"),
+            "abi-gen helper must reference SOL_NAME"
+        );
+    }
+
+    #[test]
+    fn error_paths_do_not_emit_raw_bytes() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) -> Result<(), MyError> {
+                        Ok(())
+                    }
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: u64) -> Result<(), MyError> {
+                        Ok(())
+                    }
+
+                    #[pvm_contract_macros::fallback]
+                    pub fn fallback(&mut self) -> Result<(), MyError> {
+                        Ok(())
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("as_ref"),
+            "Generated dispatch should not use as_ref for error encoding"
+        );
+    }
+
+    #[test]
+    fn fallback_with_unit_return_generates_plain_call() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    pub fn fallback(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Unit-return fallback should generate a plain method call
+        assert!(
+            output.contains("this . fallback ()"),
+            "Unit-return fallback should generate a direct method call on `this`"
+        );
+        assert!(
+            !output.contains("match this . fallback"),
+            "Unit-return fallback should not generate a match expression"
+        );
     }
 }

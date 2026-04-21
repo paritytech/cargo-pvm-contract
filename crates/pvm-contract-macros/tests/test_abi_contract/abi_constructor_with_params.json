@@ -1,15 +1,53 @@
 [
-  {"type":"constructor","inputs":[
-    {"name":"owner","type":"address"},
-    {"name":"supply","type":"uint256"}
-  ],"stateMutability":"payable"},
-  {"type":"function","name":"balanceOf","inputs":[
-    {"name":"account","type":"address"}
-  ],"outputs":[
-    {"name":"","type":"uint256"}
-  ],"stateMutability":"payable"},
-  {"type":"error","name":"InvalidCalldata","inputs":[]},
-  {"type":"error","name":"CalldataTooLarge","inputs":[]},
-  {"type":"error","name":"NoSelector","inputs":[]},
-  {"type":"error","name":"UnknownSelector","inputs":[]}
+  {
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "name": "supply",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "balanceOf",
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  }
 ]

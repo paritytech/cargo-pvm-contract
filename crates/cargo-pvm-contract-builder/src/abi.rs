@@ -1,40 +1,9 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct AbiJson(Vec<AbiItem>);
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum AbiItem {
-    Function {
-        name: String,
-        inputs: Vec<AbiParam>,
-        outputs: Vec<AbiParam>,
-        #[serde(rename = "stateMutability")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        state_mutability: Option<String>,
-    },
-    Constructor {
-        inputs: Vec<AbiParam>,
-        #[serde(rename = "stateMutability")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        state_mutability: Option<String>,
-    },
-    Error {
-        name: String,
-        inputs: Vec<AbiParam>,
-    },
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-pub struct AbiParam {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub param_type: String,
-}
+// Re-export ABI types from the canonical definitions in pvm-contract-types.
+pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, parse_type_str};
 
 pub fn generate_abi_for_bin(
     manifest_dir: &Path,
@@ -156,10 +125,16 @@ pub(crate) fn has_contract_macro(source: &str) -> bool {
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
-    if let Some(start) = source.find("contract(\"") {
-        let after_quote = &source[start + 10..];
-        if let Some(end) = after_quote.find('"') {
-            let path = &after_quote[..end];
+    // Find "contract(" then skip optional whitespace before the opening quote.
+    // This tolerates formatting like #[contract( "Foo.sol" )] which syn accepts.
+    let marker = "contract(";
+    if let Some(start) = source.find(marker) {
+        let after_paren = &source[start + marker.len()..];
+        let trimmed = after_paren.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('"')
+            && let Some(end) = rest.find('"')
+        {
+            let path = &rest[..end];
             if path.ends_with(".sol") {
                 return Some(path.to_string());
             }
@@ -207,18 +182,32 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         .with_context(|| format!("Failed to read sol file: {}", sol_path.display()))?;
 
     let mut items = Vec::new();
+    // Accumulate multiline declarations using balanced-paren detection,
+    // matching the approach in pvm-contract-macros/src/solidity.rs.
+    let mut pending: Option<String> = None;
 
     for line in content.lines() {
         let line = line.trim();
-        if line.starts_with("function ")
-            && let Some(func) = parse_sol_function_line(line)
-        {
-            items.push(func);
+        if line.is_empty() || line.starts_with("//") {
+            continue;
         }
-        if line.starts_with("error ")
-            && let Some(err) = parse_sol_error_line(line)
+
+        if let Some(ref mut acc) = pending {
+            acc.push(' ');
+            acc.push_str(line);
+            if has_balanced_parens(acc) {
+                try_parse_decl(acc, &mut items);
+                pending = None;
+            }
+        } else if line.starts_with("function ")
+            || line.starts_with("constructor")
+            || line.starts_with("error ")
         {
-            items.push(err);
+            if has_balanced_parens(line) {
+                try_parse_decl(line, &mut items);
+            } else {
+                pending = Some(line.to_string());
+            }
         }
     }
 
@@ -241,6 +230,39 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     }
 
     Ok(Some(AbiJson(items)))
+}
+
+/// Try to parse a complete declaration line as function, constructor, or error.
+fn try_parse_decl(line: &str, items: &mut Vec<AbiItem>) {
+    if line.starts_with("function ")
+        && let Some(func) = parse_sol_function_line(line)
+    {
+        items.push(func);
+    } else if line.starts_with("constructor")
+        && let Some(ctor) = parse_sol_constructor_line(line)
+    {
+        items.push(ctor);
+    } else if line.starts_with("error ")
+        && let Some(err) = parse_sol_error_line(line)
+    {
+        items.push(err);
+    }
+}
+
+/// Check whether all parentheses in `s` are balanced.
+fn has_balanced_parens(s: &str) -> bool {
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+        if depth < 0 {
+            return false;
+        }
+    }
+    depth == 0
 }
 
 /// Find the index of the closing `)` that matches the `(` at `start`.
@@ -339,6 +361,26 @@ pub(crate) fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
     })
 }
 
+fn parse_sol_constructor_line(line: &str) -> Option<AbiItem> {
+    let line = line.strip_prefix("constructor")?.trim();
+    let paren_start = line.find('(')?;
+    let paren_end = find_matching_paren(line, paren_start)?;
+    let params_str = &line[paren_start + 1..paren_end];
+    let inputs = parse_sol_params(params_str);
+
+    let state_mutability = if line.contains(" payable") {
+        "payable"
+    } else {
+        "nonpayable"
+    }
+    .to_string();
+
+    Some(AbiItem::Constructor {
+        inputs,
+        state_mutability: Some(state_mutability),
+    })
+}
+
 fn parse_sol_error_line(line: &str) -> Option<AbiItem> {
     let line = line.strip_prefix("error ")?.trim();
 
@@ -365,13 +407,13 @@ pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
             if parts.is_empty() {
                 return None;
             }
-            let param_type = parts[0].to_string();
+            let raw_type = parts[0].to_string();
             let name = parts[1..]
                 .iter()
                 .find(|s| !matches!(**s, "memory" | "calldata" | "storage"))
                 .map(|s| s.to_string())
                 .unwrap_or_default();
-            Some(AbiParam { name, param_type })
+            Some(parse_type_str(&name, &raw_type))
         })
         .collect()
 }
@@ -411,6 +453,24 @@ mod tests {
     fn extract_sol_path_non_sol_extension() {
         let source = r#"#[contract("MyToken.json")]"#;
         assert_eq!(extract_sol_path_from_source(source), None);
+    }
+
+    #[test]
+    fn extract_sol_path_with_whitespace_after_paren() {
+        let source = r#"#[contract( "MyToken.sol" )]"#;
+        assert_eq!(
+            extract_sol_path_from_source(source),
+            Some("MyToken.sol".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_sol_path_with_newline_formatting() {
+        let source = "#[contract(\n    \"MyToken.sol\"\n)]";
+        assert_eq!(
+            extract_sol_path_from_source(source),
+            Some("MyToken.sol".to_string())
+        );
     }
 
     #[test]
@@ -500,11 +560,13 @@ mod tests {
                 inputs: vec![
                     AbiParam {
                         name: "to".to_string(),
-                        param_type: "address".to_string()
+                        param_type: "address".to_string(),
+                        components: vec![],
                     },
                     AbiParam {
                         name: "amount".to_string(),
-                        param_type: "uint256".to_string()
+                        param_type: "uint256".to_string(),
+                        components: vec![],
                     },
                 ],
                 outputs: vec![],
@@ -525,11 +587,13 @@ mod tests {
                 name: "balanceOf".to_string(),
                 inputs: vec![AbiParam {
                     name: "account".to_string(),
-                    param_type: "address".to_string()
+                    param_type: "address".to_string(),
+                    components: vec![],
                 }],
                 outputs: vec![AbiParam {
                     name: "".to_string(),
-                    param_type: "uint256".to_string()
+                    param_type: "uint256".to_string(),
+                    components: vec![],
                 }],
                 state_mutability: Some("view".to_string()),
             }
@@ -548,7 +612,8 @@ mod tests {
                 inputs: vec![],
                 outputs: vec![AbiParam {
                     name: "".to_string(),
-                    param_type: "uint256".to_string()
+                    param_type: "uint256".to_string(),
+                    components: vec![],
                 }],
                 state_mutability: Some("view".to_string()),
             }
@@ -756,7 +821,10 @@ version = "0.1.0"
         {
             assert_eq!(name, "foo");
             assert_eq!(inputs.len(), 1);
-            assert_eq!(inputs[0].param_type, "(address,uint256)");
+            assert_eq!(inputs[0].param_type, "tuple");
+            assert_eq!(inputs[0].components.len(), 2);
+            assert_eq!(inputs[0].components[0].param_type, "address");
+            assert_eq!(inputs[0].components[1].param_type, "uint256");
             assert_eq!(outputs.len(), 1);
             assert_eq!(outputs[0].param_type, "bool");
         } else {
@@ -778,15 +846,18 @@ version = "0.1.0"
                 inputs: vec![
                     AbiParam {
                         name: "account".to_string(),
-                        param_type: "address".to_string()
+                        param_type: "address".to_string(),
+                        components: vec![],
                     },
                     AbiParam {
                         name: "required".to_string(),
-                        param_type: "uint256".to_string()
+                        param_type: "uint256".to_string(),
+                        components: vec![],
                     },
                     AbiParam {
                         name: "available".to_string(),
-                        param_type: "uint256".to_string()
+                        param_type: "uint256".to_string(),
+                        components: vec![],
                     },
                 ],
             }
@@ -837,5 +908,199 @@ version = "0.1.0"
         assert_eq!(arr[5]["type"], "error");
         assert_eq!(arr[6]["name"], "UnknownSelector");
         assert_eq!(arr[6]["type"], "error");
+    }
+
+    // --- Multiline declaration support ---
+
+    #[test]
+    fn generate_abi_from_sol_multiline_function() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Multi.sol");
+        std::fs::write(
+            &sol_path,
+            "interface Multi {\n    function transfer(\n        address to,\n        uint256 amount\n    ) external;\n}",
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let func = abi
+            .0
+            .iter()
+            .find(|item| matches!(item, AbiItem::Function { name, .. } if name == "transfer"))
+            .expect("should parse multiline function");
+        if let AbiItem::Function { inputs, .. } = func {
+            assert_eq!(inputs.len(), 2);
+            assert_eq!(inputs[0].param_type, "address");
+            assert_eq!(inputs[0].name, "to");
+            assert_eq!(inputs[1].param_type, "uint256");
+            assert_eq!(inputs[1].name, "amount");
+        }
+    }
+
+    // --- Constructor parsing ---
+
+    #[test]
+    fn parse_constructor_no_params() {
+        let item = parse_sol_constructor_line("constructor() public").unwrap();
+        assert_eq!(
+            item,
+            AbiItem::Constructor {
+                inputs: vec![],
+                state_mutability: Some("nonpayable".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_constructor_with_params() {
+        let item =
+            parse_sol_constructor_line("constructor(address owner, uint256 supply) public payable")
+                .unwrap();
+        if let AbiItem::Constructor {
+            inputs,
+            state_mutability,
+        } = &item
+        {
+            assert_eq!(inputs.len(), 2);
+            assert_eq!(inputs[0].param_type, "address");
+            assert_eq!(inputs[0].name, "owner");
+            assert_eq!(inputs[1].param_type, "uint256");
+            assert_eq!(inputs[1].name, "supply");
+            assert_eq!(state_mutability.as_deref(), Some("payable"));
+        } else {
+            panic!("expected Constructor");
+        }
+    }
+
+    // --- Tuple type expansion in parse_sol_params ---
+
+    #[test]
+    fn parse_params_tuple_becomes_components() {
+        let params = parse_sol_params("(uint256,address) value");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].param_type, "tuple");
+        assert_eq!(params[0].name, "value");
+        assert_eq!(params[0].components.len(), 2);
+        assert_eq!(params[0].components[0].param_type, "uint256");
+        assert_eq!(params[0].components[1].param_type, "address");
+    }
+
+    #[test]
+    fn parse_params_tuple_array() {
+        let params = parse_sol_params("(uint256,address)[] items");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].param_type, "tuple[]");
+        assert_eq!(params[0].components.len(), 2);
+    }
+
+    #[test]
+    fn parse_params_nested_tuple() {
+        let params = parse_sol_params("((uint64,uint64),(uint64,uint64)) line");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].param_type, "tuple");
+        assert_eq!(params[0].components.len(), 2);
+        assert_eq!(params[0].components[0].param_type, "tuple");
+        assert_eq!(params[0].components[0].components.len(), 2);
+    }
+
+    // --- Constructor in generate_abi_from_sol ---
+
+    #[test]
+    fn generate_abi_from_sol_includes_constructor() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Token.sol");
+        let mut f = std::fs::File::create(&sol_path).unwrap();
+        writeln!(
+            f,
+            r#"// SPDX-License-Identifier: MIT
+interface Token {{
+    constructor(address owner, uint256 supply);
+    function totalSupply() external view returns (uint256);
+}}"#
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+
+        // Find constructor entry
+        let ctor = abi
+            .0
+            .iter()
+            .find(|item| matches!(item, AbiItem::Constructor { .. }))
+            .expect("ABI should include constructor");
+        assert_eq!(
+            *ctor,
+            AbiItem::Constructor {
+                inputs: vec![
+                    AbiParam {
+                        name: "owner".into(),
+                        param_type: "address".into(),
+                        components: vec![],
+                    },
+                    AbiParam {
+                        name: "supply".into(),
+                        param_type: "uint256".into(),
+                        components: vec![],
+                    },
+                ],
+                state_mutability: Some("nonpayable".into()),
+            }
+        );
+
+        // Find function entry
+        let func = abi
+            .0
+            .iter()
+            .find(|item| matches!(item, AbiItem::Function { name, .. } if name == "totalSupply"))
+            .expect("ABI should include totalSupply");
+        assert_eq!(
+            *func,
+            AbiItem::Function {
+                name: "totalSupply".into(),
+                inputs: vec![],
+                outputs: vec![AbiParam {
+                    name: "".into(),
+                    param_type: "uint256".into(),
+                    components: vec![],
+                }],
+                state_mutability: Some("view".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_multiline_constructor() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Token.sol");
+        std::fs::write(
+            &sol_path,
+            "interface Token {\n    constructor(\n        address owner,\n        uint256 supply\n    ) payable;\n    function totalSupply() external view returns (uint256);\n}",
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let ctor = abi
+            .0
+            .iter()
+            .find(|item| matches!(item, AbiItem::Constructor { .. }))
+            .expect("ABI should include multiline constructor");
+        assert_eq!(
+            *ctor,
+            AbiItem::Constructor {
+                inputs: vec![
+                    AbiParam {
+                        name: "owner".into(),
+                        param_type: "address".into(),
+                        components: vec![],
+                    },
+                    AbiParam {
+                        name: "supply".into(),
+                        param_type: "uint256".into(),
+                        components: vec![],
+                    },
+                ],
+                state_mutability: Some("payable".into()),
+            }
+        );
     }
 }

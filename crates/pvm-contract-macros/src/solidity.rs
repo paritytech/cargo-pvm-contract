@@ -294,6 +294,33 @@ pub fn to_snake_case(s: &str) -> String {
     result
 }
 
+pub fn to_pascal_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut post_lower = false;
+    for (i, c) in s.chars().enumerate() {
+        if c == '_' {
+            post_lower = true;
+        } else {
+            let c = if post_lower || i == 0 {
+                c.to_ascii_uppercase()
+            } else {
+                c
+            };
+            post_lower = false;
+            result.push(c);
+        }
+    }
+    result
+}
+
+pub fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

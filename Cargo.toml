@@ -4,6 +4,7 @@ members = [
     "crates/cargo-pvm-contract-builder",
     "crates/pvm-contract-macros",
     "crates/pvm-contract-types",
+    "crates/pvm-contract-core",
     "crates/pvm-bump-allocator",
     "crates/pvm-contract-benchmarks",
     "crates/pvm-contract-builder-dsl",
@@ -27,6 +28,13 @@ include_dir = "0.7"
 log = "0.4"
 polkavm-linker = "0.31.0"
 polkavm-derive = "0.31.0"
+ruint = { version = "1.17", default-features = false }
+alloy-core = { version = "1.5", default-features = false, features = [
+    "sol-types",
+    "json",
+] }
+pallet-revive-uapi = { version = "0.11", default-features = false }
+
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 const_format = { version = "0.2", default-features = false }

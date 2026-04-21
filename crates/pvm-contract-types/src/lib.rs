@@ -11,6 +11,15 @@ mod alloc_types;
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
 
+#[cfg(feature = "abi-gen")]
+mod abi_gen;
+#[cfg(feature = "abi-gen")]
+pub use abi_gen::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
+
+#[cfg(feature = "abi-gen")]
+#[doc(hidden)]
+pub use serde_json;
+
 mod host;
 pub use host::{
     CallFlags, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
@@ -38,7 +47,7 @@ pub use i256::{I256, ParseI256Error};
 
 #[doc(hidden)]
 pub use const_format;
-use ruint::aliases::U256;
+pub use ruint::aliases::U256;
 
 /// Fixed-size buffer for compile-time string concatenation.
 ///
@@ -252,6 +261,18 @@ pub trait SolEncode {
         Self::HEAD_SIZE
     };
 
+    /// Build an ABI parameter description for this type.
+    /// Only available when the `abi-gen` feature is enabled.
+    /// Structs override this to return `"type": "tuple"` with `components`.
+    #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> AbiParam {
+        AbiParam {
+            name: name.into(),
+            param_type: Self::SOL_NAME.into(),
+            components: alloc::vec![],
+        }
+    }
+
     /// Whether this type is a Rust tuple `(T1, T2, ...)`.
     /// Tuples represent multiple return values and skip the `enc((T))` wrapping
     /// in [`encode_to`](SolEncode::encode_to). Only set to `true` by tuple impls.
@@ -399,11 +420,12 @@ pub trait SolRevert {
     ///
     /// For single `SolError` types, returns the one signature.
     /// For error enums (`sol_revert_enum!`), returns all inner error signatures.
-    fn error_signatures() -> &'static [&'static str]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str>
     where
         Self: Sized,
     {
-        &[]
+        let arr: &'static [&'static str] = &[];
+        arr.iter()
     }
 }
 
@@ -421,8 +443,9 @@ impl<E: SolError> SolRevert for E {
         self.encoded_size()
     }
 
-    fn error_signatures() -> &'static [&'static str] {
-        &[E::SIGNATURE]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
+        let arr = &[E::SIGNATURE];
+        arr.iter()
     }
 }
 
@@ -542,8 +565,9 @@ impl SolRevert for SolDefaultError {
         }
     }
 
-    fn error_signatures() -> &'static [&'static str] {
-        &[Panic::SIGNATURE, RevertString::SIGNATURE]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
+        let arr = &[Panic::SIGNATURE, RevertString::SIGNATURE];
+        arr.iter()
     }
 }
 
@@ -640,12 +664,14 @@ macro_rules! sol_revert_enum {
                 }
             }
 
-            fn error_signatures() -> &'static [&'static str] {
-                &[
-                    $(<$inner as $crate::SolError>::SIGNATURE,)+
+            fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
+               let arr =  &[
                     <$crate::Panic as $crate::SolError>::SIGNATURE,
                     <$crate::RevertString<'static> as $crate::SolError>::SIGNATURE,
-                ]
+                ];
+                let arr = arr.into_iter();
+                let arr = arr$(.chain(<$inner as $crate::SolRevert>::error_signatures()))+;
+                arr.into_iter()
             }
         }
 
@@ -905,6 +931,21 @@ impl SolEncode for &str {
     }
 }
 
+impl SolEncode for () {
+    const IS_DYNAMIC: bool = false;
+    const SOL_NAME: &'static str = "unit";
+
+    fn encode_body_len(&self) -> usize {
+        0
+    }
+
+    fn encode_body_to(&self, _buf: &mut [u8]) {}
+}
+
+impl SolDecode for () {
+    fn decode_at(_input: &[u8], _offset: usize) -> Self {}
+}
+
 // ---------------------------------------------------------------------------
 // [u8; N] impl — encodes as Solidity `bytesN` (left-aligned in one word),
 // matching alloy's behavior. For `T[N]` array semantics, see the
@@ -992,6 +1033,17 @@ impl<T: SolArrayElement, const N: usize> SolEncode for [T; N] {
             }
         }
     }
+
+    /// For `[T; N]`, ABI type is `T_abi_type[N]` and components come from T.
+    #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> AbiParam {
+        let inner = T::abi_param("");
+        AbiParam {
+            name: alloc::string::String::from(name),
+            param_type: alloc::format!("{}[{}]", inner.param_type, N),
+            components: inner.components,
+        }
+    }
 }
 
 impl<T: SolArrayElement + StaticEncodedLen, const N: usize> StaticEncodedLen for [T; N] {
@@ -1059,6 +1111,23 @@ macro_rules! impl_tuple_sol {
                     }
                     __ho += $T::SLOT_SIZE;
                 )+
+            }
+
+            #[cfg(feature = "abi-gen")]
+            fn abi_param(name: &str) -> AbiParam {
+                let mut __idx = 0u32;
+                AbiParam {
+                    name: alloc::string::String::from(name),
+                    param_type: alloc::string::String::from("tuple"),
+                    components: alloc::vec![
+                        $({
+                            let _ = __idx;
+                            let p = $T::abi_param("");
+                            __idx += 1;
+                            p
+                        }),+
+                    ],
+                }
             }
         }
 
