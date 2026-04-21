@@ -748,7 +748,7 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 ///
 /// Generates `SELECTOR` (compile-time keccak256), `SIGNATURE`, and
 /// `encode_params` from the struct fields. Each field must implement
-/// [`SolEncode`].
+/// [`pvm_contract_types::SolEncode`].
 ///
 /// # Example
 ///
@@ -777,6 +777,99 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Generates bindings to interact with a contract interface using either a:
+/// - solidity literal that has the defined inteface of said contract.
+/// - json abi file as a path and a name for said contract.
+///
+/// # Supported methods
+///
+/// - delegate call
+/// - call
+/// - instantiation via `new` function.
+///
+/// # Supported attributes
+///
+/// - #[abi_import(alloc = <true/false>)] - higher level bindings and dynamic type support, default value is [false].
+///
+/// # Example of usage
+/// - `solidity` literal
+///
+/// ```ignore
+/// pvm_contract_macros::abi_import! {
+///     #![abi_import(alloc = true)]
+///     // SPDX-License-Identifier: MIT
+///     pragma solidity ^0.8.0;
+///     interface Flipper {
+///         function flip() external;
+///         function get() external view returns (bool);
+///     }
+/// }
+/// ```
+///
+/// - `json` api
+/// ```text
+/// abi_import! {
+///     #![abi_import(alloc = true)]
+///     Contract,
+///     concat!(env!("CARGO_MANIFEST_DIR"), "/path/to/MyJsonContract.abi.json"))
+/// }
+/// ```
+///
+/// # Name Matching
+///
+/// Solidity function names are converted to snake_case for compatibility:
+/// - `totalSupply` → `total_supply`
+/// - `balanceOf` → `balance_of`
+/// 
+/// # Function overloading inside abi
+/// 
+/// in case of function overloading inside abi a-la: 
+/// ```solidity
+///    function flip() external;
+///    function flip(bool a) external;
+/// ```
+/// the folowing methods will be generated: 
+/// ```text 
+///    fn flip(&mut self) -> ...
+///    fn flip_1(&mut self, a: bool) -> ...
+/// ```
+/// 
+/// # Alloc enabled api examples
+///
+/// #![abi_import(alloc = true)] enables a higher level api.
+/// example below:
+///
+/// ```text
+/// pvm_contract_macros::abi_import! {
+///     #![abi_import(alloc = true)]
+///     // SPDX-License-Identifier: MIT
+///     pragma solidity ^0.8.0;
+///     interface Flipper {
+///         constructor();
+///         function flip() payable external;
+///         function get() external view returns (bool);
+///     }
+/// }
+///
+/// ...
+///
+/// fn example() {
+///     use flipper::*;
+///     // call a contract
+///     let bool: bool = Flipper::from_address(<addr>).get().call()?;
+///     // set a `value` this method is only present if the method is `payable`.
+///     // also its possible to set a limit for the call.
+///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call()?;
+///     
+///     // instantiate a contract
+///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(<code_hash>, <value>, <limits>, <optional salt>)?;
+/// }
+/// ```
+///
+/// # Further Documentation
+/// Please refer to:
+/// - [`pvm_contract_core::call::CallError`] for errors
+/// - [`pvm_contract_core::call::CallLimits`] for call limits
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
     let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
