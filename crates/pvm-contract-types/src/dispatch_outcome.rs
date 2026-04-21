@@ -72,6 +72,7 @@ pub fn finalize(outcome: DispatchOutcome) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn ok_and_revert_flags() {
