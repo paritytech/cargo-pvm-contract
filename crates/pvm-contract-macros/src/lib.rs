@@ -820,20 +820,20 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 /// Solidity function names are converted to snake_case for compatibility:
 /// - `totalSupply` → `total_supply`
 /// - `balanceOf` → `balance_of`
-/// 
+///
 /// # Function overloading inside abi
-/// 
-/// in case of function overloading inside abi a-la: 
+///
+/// in case of function overloading inside abi a-la:
 /// ```solidity
 ///    function flip() external;
 ///    function flip(bool a) external;
 /// ```
-/// the folowing methods will be generated: 
-/// ```text 
+/// the folowing methods will be generated:
+/// ```text
 ///    fn flip(&mut self) -> ...
 ///    fn flip_1(&mut self, a: bool) -> ...
 /// ```
-/// 
+///
 /// # Alloc enabled api examples
 ///
 /// #![abi_import(alloc = true)] enables a higher level api.
