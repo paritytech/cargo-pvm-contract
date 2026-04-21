@@ -85,7 +85,12 @@ impl<const N: usize> DispatchOutcome<N> {
 ///
 /// **riscv64-only**. The only diverging function in the DSL surface; host
 /// test builds cannot link to this symbol (cfg-gated, no fallback stub).
+///
+/// `#[inline(always)]`: encourages LLVM to fold the outcome struct into the
+/// caller, eliding the second stack buffer and matching the pre-receiver
+/// bytecode size.
 #[cfg(target_arch = "riscv64")]
+#[inline(always)]
 pub fn finalize<const N: usize>(outcome: DispatchOutcome<N>) -> ! {
     use pallet_revive_uapi::HostFn as _;
     pallet_revive_uapi::HostFnImpl::return_value(outcome.flags, &outcome.buf[..outcome.len])
@@ -197,6 +202,11 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
     ///
     /// Pure function — does not diverge, does not touch `return_value`.
     /// Production code hands the result to [`finalize`]; tests assert on it.
+    ///
+    /// `#[inline]`: when paired with an inline-always [`finalize`], LLVM folds
+    /// the outcome struct into the caller frame so the dispatch + finalize
+    /// combo compiles to the same instructions as the pre-receiver design.
+    #[inline]
     pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &H) -> DispatchOutcome<BUF_SIZE> {
         let call_data_len = host.call_data_size() as usize;
 
