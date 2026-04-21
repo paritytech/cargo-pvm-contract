@@ -41,6 +41,11 @@ impl<const N: usize> RevertBuffer<N> {
 /// `Ok(n)` — success; `n` bytes were written to the caller-supplied output buffer.
 /// `Revert(n)` — revert with the `n` bytes written to the output buffer.
 ///
+/// `n` **must** be `<= output.len()`. The dispatcher clamps to the buffer size
+/// as a defensive measure, but handlers should slice the output buffer
+/// explicitly (`output[..len]`) to avoid Rust's bounds-check panic when
+/// encoding into it.
+///
 /// Using an enum of `usize` instead of a `Vec` keeps the DSL fully `no_std` /
 /// no-alloc — the output buffer is owned by the dispatcher's stack frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +59,12 @@ pub enum HandlerResult {
 /// Writes its encoded ABI output into `output`, returning how many bytes were
 /// written and whether the call reverted. Does **not** call `return_value` —
 /// the dispatcher owns the transition to the runtime.
+///
+/// **Invariants**:
+/// - Handlers must not write past `output.len()` (Rust panics otherwise).
+/// - The returned `HandlerResult::Ok(n)` / `Revert(n)` must satisfy
+///   `n <= output.len()`; the dispatcher clamps but will not re-read the
+///   buffer past `n` bytes.
 pub type MethodHandler<H> = fn(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult;
 
 /// Outcome of a dispatcher run, with the output buffer inline.
@@ -83,8 +94,20 @@ impl<const N: usize> DispatchOutcome<N> {
 
 /// Terminate the contract by handing the outcome to the runtime.
 ///
-/// **riscv64-only**. The only diverging function in the DSL surface; host
-/// test builds cannot link to this symbol (cfg-gated, no fallback stub).
+/// # `#[cfg(target_arch = "riscv64")]`
+///
+/// **Deliberately only present on riscv64**. This function diverges via
+/// `pallet_revive_uapi::HostFnImpl::return_value`, which only has a real
+/// implementation in the PolkaVM runtime. On host targets the underlying
+/// `HostFnImpl::return_value` is an `unimplemented!()` stub that would panic
+/// at runtime — making `finalize` a silent footgun.
+///
+/// The missing-symbol compile error is the intended safety net: host test
+/// builds that try to call `finalize` get a clear "function not found in
+/// this scope" error at compile time. Tests should call
+/// [`ContractBuilder::dispatch_impl`] directly and assert on the returned
+/// [`DispatchOutcome`] (it's a plain value, no panic or `catch_unwind`
+/// required).
 ///
 /// `#[inline(always)]`: encourages LLVM to fold the outcome struct into the
 /// caller, eliding the second stack buffer and matching the pre-receiver
@@ -239,9 +262,16 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
         let input = &calldata[4..call_data_len];
 
         if let Some(result) = self.try_route(host, selector, input, &mut output) {
-            let (flags, len) = match result {
+            let (flags, raw_len) = match result {
                 HandlerResult::Ok(n) => (ReturnFlags::empty(), n),
                 HandlerResult::Revert(n) => (ReturnFlags::REVERT, n),
+            };
+            // Clamp to BUF_SIZE so a handler returning a bogus length can't
+            // panic later when `DispatchOutcome::data()` slices `buf[..len]`.
+            let len = if raw_len > BUF_SIZE {
+                BUF_SIZE
+            } else {
+                raw_len
             };
             return DispatchOutcome {
                 flags,

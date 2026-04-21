@@ -94,6 +94,56 @@ fn short_calldata_reverts() {
 }
 
 #[test]
+fn handler_revert_is_reflected_in_outcome() {
+    // A handler that returns `HandlerResult::Revert(n)` must surface as
+    // `DispatchOutcome::is_revert()` with the handler-written payload intact.
+    const FAIL_SELECTOR: [u8; 4] = solidity_selector("fail()");
+
+    fn always_fails<H: HostApi>(_host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+        let msg = b"not allowed";
+        output[..msg.len()].copy_from_slice(msg);
+        HandlerResult::Revert(msg.len())
+    }
+
+    let host = MockHostBuilder::new()
+        .calldata(FAIL_SELECTOR.to_vec())
+        .build();
+
+    let outcome = ContractBuilder::<MockHost>::new()
+        .method(FAIL_SELECTOR, always_fails::<MockHost>)
+        .dispatch_impl::<256>(&host);
+
+    assert_revert(&outcome);
+    assert_eq!(outcome.data(), b"not allowed");
+}
+
+#[test]
+fn handler_returning_oversize_len_is_clamped() {
+    // A buggy handler that returns `Ok(n)` where `n` exceeds the buffer must
+    // be clamped by the dispatcher rather than panicking on slice access.
+    const BAD_SELECTOR: [u8; 4] = solidity_selector("bad()");
+
+    fn bogus_len<H: HostApi>(_host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+        // Only wrote 4 bytes but claims 9999.
+        output[..4].copy_from_slice(&[1, 2, 3, 4]);
+        HandlerResult::Ok(9999)
+    }
+
+    let host = MockHostBuilder::new()
+        .calldata(BAD_SELECTOR.to_vec())
+        .build();
+
+    let outcome = ContractBuilder::<MockHost>::new()
+        .method(BAD_SELECTOR, bogus_len::<MockHost>)
+        .dispatch_impl::<256>(&host);
+
+    assert_ok(&outcome);
+    // Must not panic; len is clamped to BUF_SIZE (256).
+    assert_eq!(outcome.data().len(), 256);
+    assert_eq!(&outcome.data()[..4], &[1, 2, 3, 4]);
+}
+
+#[test]
 fn storage_is_observable_from_handler() {
     // Register a handler that reads from storage and returns the value.
     fn read_slot<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {

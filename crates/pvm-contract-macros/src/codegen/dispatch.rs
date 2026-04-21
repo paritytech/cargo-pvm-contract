@@ -208,11 +208,14 @@ pub fn generate_router(
         .map(|m| generate_dispatch_arm(m, use_alloc))
         .unzip();
 
+    // Generic over H so tests can dispatch with a `MockHost` instance —
+    // `let mut this = MyContract { host: mock }; route(&mut this, sel, input)`.
+    // Monomorphization into .polkavm produces exactly one copy (PolkaVmHost).
     let route_items = RouteItems {
         route_fn: quote! {
             #[allow(non_upper_case_globals)]
-            pub fn route(
-                this: &mut #struct_name<::pvm_contract_types::PolkaVmHost>,
+            pub fn route<H: ::pvm_contract_types::HostApi>(
+                this: &mut #struct_name<H>,
                 selector: [u8; 4],
                 input: &[u8],
             ) -> Option<()> {
@@ -227,6 +230,10 @@ pub fn generate_router(
         },
     };
 
+    // Static-dispatch `Router` trait impl remains riscv64-only because its
+    // signature takes no host instance — it must construct a `PolkaVmHost`
+    // and would silently hit `unimplemented!()` stubs on non-riscv64 targets.
+    // For tests, use the module-level generic `route(&mut this, ...)` instead.
     let router_impl = RouterImpl {
         tokens: quote! {
             #[cfg(target_arch = "riscv64")]

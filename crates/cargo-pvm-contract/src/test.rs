@@ -32,6 +32,9 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
     // Contracts ship a `.cargo/config.toml` that forces the polkavm target;
     // unit tests must run on the host. We override by passing `--target`
     // explicitly, plus unset `CARGO_BUILD_TARGET` in case an env picked it up.
+    // `RUSTFLAGS` is left alone — users may need it for coverage, sanitizers,
+    // `--cap-lints`, or similar. If a user sets `RUSTFLAGS=-Ctarget-feature=...`
+    // targeting polkavm, passing `--target <host>` still takes precedence.
     let host_target = host_target_triple()?;
 
     let mut cmd = Command::new(env!("CARGO"));
@@ -40,8 +43,7 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
         .arg(&manifest_path)
         .arg("--target")
         .arg(&host_target)
-        .env_remove("CARGO_BUILD_TARGET")
-        .env_remove("RUSTFLAGS");
+        .env_remove("CARGO_BUILD_TARGET");
 
     if !args.features.is_empty() {
         cmd.arg("--features").arg(args.features.join(","));

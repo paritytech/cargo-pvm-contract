@@ -11,19 +11,13 @@ mod my_token {
     #[derive(Debug, pvm_contract_macros::SolError)]
     pub struct InsufficientBalance;
 
-    pvm_contract_types::sol_revert_enum! {
-        pub enum TokenError {
-            InsufficientBalance(InsufficientBalance),
-        }
-    }
-
     pub struct MyToken<H: HostApi = PolkaVmHost> {
         pub host: H,
     }
 
     impl<H: HostApi> MyToken<H> {
         #[pvm_contract_macros::constructor]
-        pub fn new(&mut self) -> Result<(), TokenError> {
+        pub fn new(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
             Ok(())
         }
 
@@ -59,12 +53,12 @@ mod my_token {
         }
 
         #[pvm_contract_macros::method]
-        pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
+        pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let caller = self.get_caller();
             let sender_balance = self.balance_of(caller.into());
 
             if sender_balance < amount {
-                return Err(InsufficientBalance.into());
+                return Err(InsufficientBalance);
             }
 
             let new_sender_balance = sender_balance - amount;
@@ -80,7 +74,7 @@ mod my_token {
         }
 
         #[pvm_contract_macros::method]
-        pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
+        pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let new_recipient_balance = self.balance_of(to).saturating_add(amount);
 
             let to: [u8; 20] = to.into();
@@ -94,7 +88,7 @@ mod my_token {
         }
 
         #[pvm_contract_macros::fallback]
-        pub fn fallback(&mut self) -> Result<(), TokenError> {
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
             Ok(())
         }
 

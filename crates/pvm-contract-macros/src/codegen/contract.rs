@@ -329,27 +329,57 @@ fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
     None
 }
 
-/// Extract typed params from an impl-method's `FnArg` list, skipping any
-/// leading `self` receiver.
+/// Extract typed params from an impl-method's `FnArg` list.
+///
+/// Requires the first parameter to be a `self` receiver (`&self`, `&mut self`,
+/// or owned `self`) — without one, dispatch can't call `this.method(...)` on
+/// the generated contract struct, so we error loudly here instead of producing
+/// a cryptic "method not found" error from expanded code.
 fn extract_typed_params_impl(
+    func: &syn::ImplItemFn,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
 ) -> syn::Result<Vec<(Ident, syn::Type)>> {
+    let Some(first) = inputs.first() else {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "Contract methods must take `&self` or `&mut self` as the first parameter",
+        ));
+    };
+    match first {
+        syn::FnArg::Receiver(r) if r.reference.is_none() => {
+            return Err(syn::Error::new_spanned(
+                r,
+                "Contract methods must take a borrowed self (`&self` / `&mut self`); owning `self` would consume the contract instance",
+            ));
+        }
+        syn::FnArg::Receiver(_) => {}
+        syn::FnArg::Typed(_) => {
+            return Err(syn::Error::new_spanned(
+                first,
+                "Contract methods must take `&self` or `&mut self` as the first parameter",
+            ));
+        }
+    }
+
     inputs
         .iter()
-        .filter_map(|arg| match arg {
-            syn::FnArg::Receiver(_) => None,
-            syn::FnArg::Typed(pat_type) => Some(pat_type),
-        })
-        .map(|pat_type| {
-            let ident = if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                pat_ident.ident.clone()
-            } else {
-                return Err(syn::Error::new_spanned(
-                    &pat_type.pat,
-                    "Parameters must be simple identifiers",
-                ));
-            };
-            Ok((ident, (*pat_type.ty).clone()))
+        .skip(1)
+        .map(|arg| match arg {
+            syn::FnArg::Receiver(r) => Err(syn::Error::new_spanned(
+                r,
+                "Only the first parameter may be a `self` receiver",
+            )),
+            syn::FnArg::Typed(pat_type) => {
+                let ident = if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                    pat_ident.ident.clone()
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        &pat_type.pat,
+                        "Parameters must be simple identifiers",
+                    ));
+                };
+                Ok((ident, (*pat_type.ty).clone()))
+            }
         })
         .collect()
 }
@@ -415,7 +445,7 @@ fn parse_contract(
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
-                constructor_inputs = extract_typed_params_impl(&func.sig.inputs)?;
+                constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
@@ -423,7 +453,7 @@ fn parse_contract(
                 fallback_returns_result = is_result_return_type(&func.sig.output);
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
-                let typed_params = extract_typed_params_impl(&func.sig.inputs)?;
+                let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
                 let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
                     typed_params.into_iter().map(|(_, t)| t).collect();
@@ -913,6 +943,48 @@ mod tests {
         };
         let err = expand_contract(ContractArgs::default(), input).unwrap_err();
         assert!(err.to_string().contains("must contain a struct"));
+    }
+
+    #[test]
+    fn errors_when_method_missing_self() {
+        // A `#[method]` without a `self` receiver would expand into
+        // `this.foo(args)` where `foo` is a free associated function — producing
+        // a cryptic "no method named" error. Catch it at parse time instead.
+        let input: ItemMod = syn::parse_quote! {
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::method]
+                    pub fn foo(value: u32) -> u32 { value }
+                }
+            }
+        };
+        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        assert!(
+            err.to_string().contains("&self"),
+            "error should mention &self: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_method_takes_owning_self() {
+        // Owning `self` would consume the contract; dispatch must be able to
+        // call multiple methods on the same instance, so only borrowing
+        // receivers are allowed.
+        let input: ItemMod = syn::parse_quote! {
+            mod my_contract {
+                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
+                impl<H: HostApi> MyContract<H> {
+                    #[pvm_contract_macros::method]
+                    pub fn foo(self) -> u32 { 0 }
+                }
+            }
+        };
+        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        assert!(
+            err.to_string().contains("borrowed self"),
+            "error should mention borrowed self: {err}"
+        );
     }
 
     #[test]
