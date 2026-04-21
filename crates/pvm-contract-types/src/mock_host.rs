@@ -46,6 +46,9 @@ use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, StorageFlags}
 /// `Err(())` — call reverts with `ReturnErrorCode::CalleeReverted`.
 pub type MockCallReturn = Result<Vec<u8>, ()>;
 
+/// One captured event: `(topics, data)`.
+pub type EventRecord = (Vec<[u8; 32]>, Vec<u8>);
+
 #[derive(Clone)]
 struct MockInstantiateReturn {
     address: [u8; 20],
@@ -79,7 +82,7 @@ pub struct MockHost {
 
     // --- Mutable state during execution (needs interior mutability under &self) ---
     storage: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
-    events: RefCell<Vec<(Vec<[u8; 32]>, Vec<u8>)>>,
+    events: RefCell<Vec<EventRecord>>,
     immutable_data: RefCell<Vec<u8>>,
     return_data: RefCell<Vec<u8>>,
 
@@ -100,7 +103,7 @@ impl MockHost {
     }
 
     /// All events emitted via [`HostApi::deposit_event`].
-    pub fn events(&self) -> Vec<(Vec<[u8; 32]>, Vec<u8>)> {
+    pub fn events(&self) -> Vec<EventRecord> {
         self.events.borrow().clone()
     }
 
