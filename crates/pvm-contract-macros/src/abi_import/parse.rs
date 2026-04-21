@@ -6,7 +6,7 @@ use syn::{
 };
 
 pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File, bool)> {
-    let attrs = Attribute::parse_inner(&input)?;
+    let attrs = Attribute::parse_inner(input)?;
     let fork = input.fork();
 
     // Include macro calls like `concat!(env!())`;
