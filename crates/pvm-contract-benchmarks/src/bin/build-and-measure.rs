@@ -29,7 +29,7 @@ impl Variant {
 }
 
 fn cargo_toml_no_alloc(contract: &str, base_path: &Path) -> String {
-    let macros_path = base_path.join("crates/pvm-contract-macros");
+    let sdk_path = base_path.join("crates/pvm-contract-sdk");
     let types_path = base_path.join("crates/pvm-contract-types");
 
     format!(
@@ -44,11 +44,9 @@ name = "{}"
 path = "src/{}.rs"
 
 [dependencies]
-pvm-contract-macros = {{ path = "{}" }}
+pvm-contract-sdk = {{ path = "{}" }}
 pvm-contract-types = {{ path = "{}" }}
-pallet-revive-uapi = {{ version = "0.11", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
-ruint = {{ version = "1.17", default-features = false }}
 
 [profile.dev]
 panic = "abort"
@@ -63,13 +61,13 @@ overflow-checks = false
         contract,
         contract,
         contract,
-        macros_path.display(),
+        sdk_path.display(),
         types_path.display(),
     )
 }
 
 fn cargo_toml_with_alloc(contract: &str, base_path: &Path) -> String {
-    let macros_path = base_path.join("crates/pvm-contract-macros");
+    let sdk_path = base_path.join("crates/pvm-contract-sdk");
     let types_path = base_path.join("crates/pvm-contract-types");
     let bump_alloc_path = base_path.join("crates/pvm-bump-allocator");
 
@@ -85,12 +83,10 @@ name = "{}"
 path = "src/{}.rs"
 
 [dependencies]
-pvm-contract-macros = {{ path = "{}" }}
+pvm-contract-sdk = {{ path = "{}" }}
 pvm-contract-types = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
-pallet-revive-uapi = {{ version = "0.11", default-features = false }}
 polkavm-derive = {{ version = "0.31.0" }}
-ruint = {{ version = "1.17", default-features = false }}
 
 [profile.dev]
 panic = "abort"
@@ -105,7 +101,7 @@ overflow-checks = false
         contract,
         contract,
         contract,
-        macros_path.display(),
+        sdk_path.display(),
         types_path.display(),
         bump_alloc_path.display(),
     )
@@ -113,7 +109,7 @@ overflow-checks = false
 
 fn cargo_toml_builder_dsl(contract: &str, base_path: &Path) -> String {
     let dsl_path = base_path.join("crates/pvm-contract-builder-dsl");
-    let types_path = base_path.join("crates/pvm-contract-types");
+    let macros_path = base_path.join("crates/pvm-contract-macros");
 
     format!(
         r#"[package]
@@ -128,10 +124,8 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-builder-dsl = {{ path = "{}" }}
-pvm-contract-types = {{ path = "{}" }}
-pallet-revive-uapi = {{ version = "0.11", default-features = false }}
+pvm-contract-macros = {{ path = "{}" }}
 polkavm-derive = {{ version = "0.31.0" }}
-ruint = {{ version = "1.17", default-features = false }}
 
 [profile.dev]
 panic = "abort"
@@ -147,7 +141,7 @@ overflow-checks = false
         contract,
         contract,
         dsl_path.display(),
-        types_path.display(),
+        macros_path.display(),
     )
 }
 
