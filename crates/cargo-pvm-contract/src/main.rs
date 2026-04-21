@@ -9,6 +9,7 @@ mod build;
 mod encode_decode;
 mod extrinsics;
 mod scaffold;
+mod test;
 
 // Embed the templates directory into the binary
 static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
@@ -38,6 +39,8 @@ enum PvmContractCommand {
     Init(InitArgs),
     /// Build the contract project
     Build(build::BuildArgs),
+    /// Run unit tests on the host target against the MockHost backend
+    Test(test::TestArgs),
     /// Encode a function call or constructor into ABI-encoded hex calldata
     Encode(EncodeArgs),
     /// Decode ABI-encoded hex calldata back to human-readable format
@@ -370,6 +373,7 @@ fn handle_pvm_contract(args: PvmContractArgs) -> Result<()> {
     match args.command {
         PvmContractCommand::Init(init_args) => init_command(init_args),
         PvmContractCommand::Build(build_args) => build::build_contracts(build_args),
+        PvmContractCommand::Test(test_args) => test::run_tests(test_args),
         PvmContractCommand::Encode(encode_args) => encode_command(encode_args),
         PvmContractCommand::Decode(decode_args) => decode_command(decode_args),
         PvmContractCommand::Upload(a) => extrinsics::upload_command(a),

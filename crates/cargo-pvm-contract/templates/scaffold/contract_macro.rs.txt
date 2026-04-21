@@ -1,6 +1,5 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_types::{PolkaVmHost as api, ReturnFlags, StorageFlags};
 use ruint::aliases::U256;
 
 {% if let Some(sol_file_name) = sol_file_name %}
@@ -18,31 +17,38 @@ use ruint::aliases::U256;
 {% endif %}
 mod contract {
     use super::*;
+    use pvm_contract_types::{HostApi, PolkaVmHost};
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
-        Ok(())
+    pub struct Contract<H: HostApi = PolkaVmHost> {
+        pub host: H,
     }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
-        Ok(())
-    }
+    impl<H: HostApi> Contract<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+            Ok(())
+        }
+
+        #[pvm_contract_macros::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+            Ok(())
+        }
 
 {% if let Some(sol_file_name) = sol_file_name %}
-     // TODO: Implement the following methods from {{ sol_file_name }}:
+         // TODO: Implement the following methods from {{ sol_file_name }}:
 {% for func in functions %}
-     #[pvm_contract_macros::method]
-     pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
-         todo!()
-     }
+         #[pvm_contract_macros::method]
+         pub fn {{ func.name_snake }}(&self, {{ func.params }}) -> {{ func.return_type }} {
+             todo!()
+         }
 {% endfor %}
 {% else %}
-    // Add your contract methods here
-    // Example:
-    // #[pvm_contract_macros::method]
-    // pub fn my_method(param: U256) -> Result<U256, pvm_contract_types::EmptyError> {
-    //     Ok(param)
-    // }
+        // Add your contract methods here
+        // Example:
+        // #[pvm_contract_macros::method]
+        // pub fn my_method(&self, param: U256) -> Result<U256, pvm_contract_types::EmptyError> {
+        //     Ok(param)
+        // }
 {% endif %}
+    }
 }

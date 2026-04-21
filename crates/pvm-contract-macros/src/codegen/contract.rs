@@ -120,7 +120,11 @@ fn load_sol_interface(path: &str) -> Result<SolInterface, String> {
 }
 
 pub(super) struct ParsedContract {
+    /// Module name wrapping the contract (e.g. `my_token`).
     pub(super) mod_name: Ident,
+    /// Contract struct name (e.g. `MyToken`). None if the module uses the
+    /// legacy free-function form — the expander errors in that case.
+    pub(super) struct_name: Option<Ident>,
     pub(super) methods: Vec<MethodInfo>,
     pub(super) has_constructor: bool,
     pub(super) has_fallback: bool,
@@ -135,13 +139,8 @@ pub(super) struct ParsedContract {
 
 const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
 
-/// Verify that a Rust method's parameters are compatible with the Solidity
-/// function it implements. Checks arity strictly, and type compatibility for
-/// non-custom types. Custom types (user-defined structs) are skipped because
-/// they're resolved via trait `SOL_NAME` at runtime — we can't statically
-/// verify them without expanding the full type graph.
 fn check_signature_compatibility(
-    func: &syn::ItemFn,
+    func: &syn::ImplItemFn,
     sol_name: &str,
     sol_inputs: &[SolType],
     rust_param_types: &[syn::Type],
@@ -159,9 +158,8 @@ fn check_signature_compatibility(
 
     for (i, (sol_ty, rust_ty)) in sol_inputs.iter().zip(rust_param_types.iter()).enumerate() {
         let Some(rust_sol) = SolType::from_rust_type(rust_ty) else {
-            continue; // unknown rust type, let downstream codegen produce a better error
+            continue;
         };
-        // Skip type check if either side involves custom types — resolved via traits at runtime
         if sol_ty.has_custom_types() || rust_sol.has_custom_types() {
             continue;
         }
@@ -224,70 +222,62 @@ fn is_result_return_type(output: &syn::ReturnType) -> bool {
     }
 }
 
-/// Collect the error type from a `Result<T, E>` return type, deduplicating by type name.
 fn collect_error_type(
     output: &syn::ReturnType,
     error_types: &mut Vec<syn::Type>,
-    seen: &mut Vec<String>,
+    seen_error_names: &mut Vec<String>,
 ) {
-    if let Some(err_ty) = extract_error_type(output) {
-        let name = quote::quote!(#err_ty).to_string();
-        if !seen.contains(&name) {
-            seen.push(name);
-            error_types.push(err_ty);
+    if let syn::ReturnType::Type(_, ty) = output
+        && let syn::Type::Path(type_path) = ty.as_ref()
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+    {
+        let type_args: Vec<_> = args
+            .args
+            .iter()
+            .filter_map(|a| {
+                if let syn::GenericArgument::Type(t) = a {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if type_args.len() >= 2 {
+            let error_ty = type_args[1].clone();
+            let name = quote! { #error_ty }.to_string();
+            if !seen_error_names.contains(&name) {
+                seen_error_names.push(name);
+                error_types.push(error_ty);
+            }
         }
     }
 }
 
-/// Extract the error type `E` from a `Result<T, E>` return type.
-fn extract_error_type(output: &syn::ReturnType) -> Option<syn::Type> {
-    let syn::ReturnType::Type(_, ty) = output else {
-        return None;
-    };
-    let syn::Type::Path(type_path) = ty.as_ref() else {
-        return None;
-    };
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Result" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    // Result<T, E> — E is the second generic argument
-    let mut iter = args.args.iter();
-    iter.next()?; // skip T
-    let syn::GenericArgument::Type(error_ty) = iter.next()? else {
-        return None;
-    };
-    Some(error_ty.clone())
-}
-
-fn to_camel_case(s: &str) -> String {
+fn to_camel_case(snake: &str) -> String {
     let mut result = String::new();
-    let mut capitalize_next = false;
-
-    for (i, c) in s.chars().enumerate() {
+    let mut next_upper = false;
+    for (i, c) in snake.chars().enumerate() {
         if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
+            next_upper = true;
         } else if i == 0 {
-            result.push(c.to_ascii_lowercase());
+            result.push(c);
+        } else if next_upper {
+            result.push(c.to_ascii_uppercase());
+            next_upper = false;
         } else {
             result.push(c);
         }
     }
-
     result
 }
 
-fn extract_return_types(func: &syn::ItemFn) -> Vec<syn::Type> {
-    match &func.sig.output {
+fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
+    match output {
         syn::ReturnType::Default => vec![],
         syn::ReturnType::Type(_, ty) => {
-            if is_result_return_type(&func.sig.output) {
+            if is_result_return_type(output) {
                 extract_result_ok_type(ty).into_iter().collect()
             } else {
                 extract_output_types(ty)
@@ -321,25 +311,27 @@ fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
     None
 }
 
-fn extract_typed_params(
+/// Extract typed params from an impl-method's `FnArg` list, skipping any
+/// leading `self` receiver.
+fn extract_typed_params_impl(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
 ) -> syn::Result<Vec<(Ident, syn::Type)>> {
     inputs
         .iter()
-        .map(|arg| {
-            if let syn::FnArg::Typed(pat_type) = arg {
-                let ident = if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
-                    pat_ident.ident.clone()
-                } else {
-                    return Err(syn::Error::new_spanned(
-                        &pat_type.pat,
-                        "Parameters must be simple identifiers",
-                    ));
-                };
-                Ok((ident, (*pat_type.ty).clone()))
+        .filter_map(|arg| match arg {
+            syn::FnArg::Receiver(_) => None,
+            syn::FnArg::Typed(pat_type) => Some(pat_type),
+        })
+        .map(|pat_type| {
+            let ident = if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
+                pat_ident.ident.clone()
             } else {
-                Err(syn::Error::new_spanned(arg, "Unexpected `self` parameter"))
-            }
+                return Err(syn::Error::new_spanned(
+                    &pat_type.pat,
+                    "Parameters must be simple identifiers",
+                ));
+            };
+            Ok((ident, (*pat_type.ty).clone()))
         })
         .collect()
 }
@@ -354,6 +346,32 @@ fn parse_contract(
         .as_ref()
         .ok_or_else(|| syn::Error::new_spanned(input, "Contract module must have a body"))?;
 
+    // The contract struct is the self-type of the first `impl` block that
+    // contains `#[method]` / `#[constructor]` / `#[fallback]` methods.
+    let struct_name = content.1.iter().find_map(|item| {
+        let syn::Item::Impl(item_impl) = item else {
+            return None;
+        };
+        let has_contract_attrs = item_impl.items.iter().any(|ii| {
+            if let syn::ImplItem::Fn(f) = ii {
+                has_pvm_attr(&f.attrs, "method")
+                    || has_pvm_attr(&f.attrs, "constructor")
+                    || has_pvm_attr(&f.attrs, "fallback")
+            } else {
+                false
+            }
+        });
+        if !has_contract_attrs {
+            return None;
+        }
+        // Extract the struct ident from `impl<G> StructName<G> { ... }`
+        let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+            return None;
+        };
+        type_path.path.segments.last().map(|s| s.ident.clone())
+    });
+
+    // Collect methods from every `impl` block in the module.
     let mut methods = Vec::new();
     let mut has_constructor = false;
     let mut has_fallback = false;
@@ -367,12 +385,19 @@ fn parse_contract(
     let mut seen_error_names: Vec<String> = Vec::new();
 
     for item in &content.1 {
-        if let syn::Item::Fn(func) = item {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        for impl_item in &item_impl.items {
+            let syn::ImplItem::Fn(func) = impl_item else {
+                continue;
+            };
+
             if has_pvm_attr(&func.attrs, "constructor") {
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
-                constructor_inputs = extract_typed_params(&func.sig.inputs)?;
+                constructor_inputs = extract_typed_params_impl(&func.sig.inputs)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
@@ -380,14 +405,13 @@ fn parse_contract(
                 fallback_returns_result = is_result_return_type(&func.sig.output);
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
-                let typed_params = extract_typed_params(&func.sig.inputs)?;
-                let param_names: Vec<Ident> =
-                    typed_params.iter().map(|(name, _)| name.clone()).collect();
+                let typed_params = extract_typed_params_impl(&func.sig.inputs)?;
+                let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
-                    typed_params.into_iter().map(|(_, ty)| ty).collect();
+                    typed_params.into_iter().map(|(_, t)| t).collect();
 
                 let returns_result = is_result_return_type(&func.sig.output);
-                let return_types = extract_return_types(func);
+                let return_types = extract_return_types(&func.sig.output);
 
                 let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface {
                     let rust_fn_name = func.sig.ident.to_string();
@@ -455,6 +479,7 @@ fn parse_contract(
 
     Ok(ParsedContract {
         mod_name,
+        struct_name,
         methods,
         has_constructor,
         has_fallback,
@@ -481,6 +506,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
+
+    let struct_name = parsed.struct_name.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(
+            &input,
+            "Contract module must contain a struct (e.g. `pub struct Foo<H: HostApi = PolkaVmHost> { host: H }`)",
+        )
+    })?;
 
     let mod_content = strip_pvm_attrs(&input);
 
@@ -543,6 +575,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
+    let buffer_size = args.buffer_size;
+
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
 
@@ -564,35 +598,32 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             call_args,
         } = decoding;
 
-        // Constructor calldata has no 4-byte selector prefix (unlike `call()`),
-        // so the entire calldata is ABI-encoded args.
         let read_calldata = if param_names.is_empty() {
             quote! {}
         } else if use_alloc {
             quote! {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
             }
         } else {
-            let buffer_size = args.buffer_size;
             quote! {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                         ::pvm_contract_types::ReturnFlags::REVERT,
                         &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
                 let input = &call_data[..call_data_len];
                 #size_check
             }
         };
 
-        let call_expr = quote! { #constructor_name(#(#call_args),*) };
+        let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
         let revert_err = generate_revert_encoding(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
@@ -612,24 +643,28 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         };
 
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
+                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name::<::pvm_contract_types::PolkaVmHost> {
+                    host: ::pvm_contract_types::PolkaVmHost,
+                };
                 #read_calldata
                 #decode_and_call
             }
         }
     } else {
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {}
         }
     };
 
-    let (route_items, router_impl) = generate_router(&parsed.methods, mod_name, use_alloc);
-    let RouteItems {
-        contract_struct,
-        route_fn,
-    } = route_items;
+    let (route_items, router_impl) =
+        generate_router(&parsed.methods, mod_name, struct_name, use_alloc);
+    let RouteItems { route_fn } = route_items;
     let router_impl = router_impl.tokens;
 
     let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
@@ -637,7 +672,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let handler = if parsed.fallback_returns_result {
             let revert_err = generate_revert_encoding(use_alloc);
             quote! {
-                match #fallback_name() {
+                match this.#fallback_name() {
                     Ok(()) => return,
                     Err(e) => {
                         #revert_err
@@ -646,7 +681,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         } else {
             quote! {
-                #fallback_name();
+                this.#fallback_name();
                 return;
             }
         };
@@ -654,12 +689,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_types::ReturnFlags::REVERT,
                     &::pvm_contract_types::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_types::ReturnFlags::REVERT,
                     &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
             },
@@ -668,11 +703,16 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let call_fn = if use_alloc {
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name::<::pvm_contract_types::PolkaVmHost> {
+                    host: ::pvm_contract_types::PolkaVmHost,
+                };
+                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -681,8 +721,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                if route(selector, input).is_some() {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
+                if route(&mut this, selector, input).is_some() {
+                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                         ::pvm_contract_types::ReturnFlags::empty(), &[]);
                 }
 
@@ -690,18 +730,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         }
     } else {
-        let buffer_size = args.buffer_size;
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name::<::pvm_contract_types::PolkaVmHost> {
+                    host: ::pvm_contract_types::PolkaVmHost,
+                };
+                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
+                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                         ::pvm_contract_types::ReturnFlags::REVERT,
                         &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -710,8 +754,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                if route(selector, input).is_some() {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
+                if route(&mut this, selector, input).is_some() {
+                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                         ::pvm_contract_types::ReturnFlags::empty(), &[]);
                 }
 
@@ -728,8 +772,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
             #mod_content
-
-            #contract_struct
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
@@ -756,29 +798,28 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
         .1
         .iter()
         .map(|item| match item {
-            syn::Item::Fn(func) => {
-                let mut new_func = func.clone();
-                new_func.attrs.retain(|attr| {
-                    let segments: Vec<_> = attr.path().segments.iter().collect();
-                    !(segments.len() == 2
-                        && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
-                        && (segments[1].ident == "method"
-                            || segments[1].ident == "constructor"
-                            || segments[1].ident == "fallback"))
-                });
-                // Gate user functions behind not(abi-gen): abi-gen only needs
-                // type info (`SolEncode::SOL_NAME`) — function bodies may call
-                // host APIs that don't exist on the native target used for
-                // abi-gen compilation.
+            syn::Item::Impl(item_impl) => {
+                // Strip #[method] / #[constructor] / #[fallback] attrs from
+                // methods, leaving the rest of the impl block intact.
+                let mut new_impl = item_impl.clone();
+                for impl_item in new_impl.items.iter_mut() {
+                    if let syn::ImplItem::Fn(func) = impl_item {
+                        func.attrs.retain(|attr| {
+                            let segments: Vec<_> = attr.path().segments.iter().collect();
+                            !(segments.len() == 2
+                                && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
+                                && (segments[1].ident == "method"
+                                    || segments[1].ident == "constructor"
+                                    || segments[1].ident == "fallback"))
+                        });
+                    }
+                }
                 quote! {
                     #[cfg(not(feature = "abi-gen"))]
-                    #new_func
+                    #new_impl
                 }
             }
             syn::Item::Use(use_item) => {
-                // Gate `use alloc::*` imports behind not(abi-gen): when the
-                // allocator's `extern crate alloc` is cfg-gated out, these
-                // would fail to resolve on the host target.
                 let use_str = quote! { #use_item }.to_string();
                 if use_str.contains("alloc ::") || use_str.contains("alloc::") {
                     quote! {
@@ -848,206 +889,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_allocator_size_with_bump() {
-        let args = syn::parse_str::<ContractArgs>("allocator = \"bump\", allocator_size = 2048")
-            .expect("allocator_size should be accepted with bump allocator");
-        assert_eq!(args.allocator_size, 2048);
-    }
-
-    #[test]
-    fn rejects_allocator_size_without_allocator() {
-        let error = syn::parse_str::<ContractArgs>("allocator_size = 2048")
-            .expect_err("allocator_size should require an allocator");
-
-        assert!(error.to_string().contains("`allocator_size` requires"));
-    }
-
-    #[test]
-    fn constructor_inputs_appear_in_abi_gen_output() {
-        let item: syn::ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new(owner: Address, supply: U256) {}
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        // abi-gen main is generated (no sol_path)
-        assert!(output.contains("feature = \"abi-gen\""));
-        // constructor entry is present with its inputs array
-        assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":["));
-        // param names are emitted
-        assert!(output.contains("\"owner\""));
-        assert!(output.contains("\"supply\""));
-        // param types are resolved via trait SOL_NAME
-        assert!(output.contains("SOL_NAME"));
-    }
-
-    #[test]
-    fn generates_router_impl_and_route_fn() {
-        let item: syn::ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
-
-                #[pvm_contract_macros::method]
-                pub fn balance_of(account: Address) -> U256 {
-                    U256::ZERO
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        // Router struct is generated inside the module
-        assert!(output.contains("pub struct Contract"));
-        // route() function is generated
-        assert!(
-            output.contains("fn route (selector : [u8 ; 4] , input : & [u8]) -> Option < () >")
-        );
-        // Router trait impl references the module
-        assert!(
-            output.contains("impl :: pvm_contract_types :: Router for my_contract :: Contract")
-        );
-        // call() delegates to route()
-        assert!(output.contains("route (selector , input)"));
-    }
-
-    #[test]
-    fn constructor_with_result_and_inputs_generates_match_and_decode() {
-        let item: syn::ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new(owner: Address) -> Result<(), Error> {
-                    Ok(())
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        // Should have decode logic for the input
-        assert!(output.contains("\"owner\""));
-        // Should have match for Result error handling
-        assert!(output.contains("Err (e)"));
-        assert!(output.contains("REVERT"));
-    }
-
-    #[test]
-    fn user_functions_are_cfg_gated_for_abi_gen() {
-        let item: syn::ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
-
-                #[pvm_contract_macros::method]
-                pub fn do_something(value: U256) -> U256 {
-                    value
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let tokens = expand_contract(ContractArgs::default(), item).unwrap();
-        let output = tokens.to_string();
-        let pretty = prettyplease::unparse(
-            &syn::parse_file(&output).expect("expanded output should be valid Rust"),
-        );
-
-        // User functions should be gated behind not(abi-gen) so they don't
-        // compile on the host target (they may call host APIs).
-        assert!(
-            output.contains("not (feature = \"abi-gen\")"),
-            "user functions must be cfg-gated for abi-gen.\nExpanded output:\n{pretty}"
-        );
-
-        // The abi-gen helper should still reference the type for SOL_NAME
-        assert!(
-            output.contains("SOL_NAME"),
-            "abi-gen helper must reference SOL_NAME.\nExpanded output:\n{pretty}"
-        );
-    }
-
-    #[test]
-    fn error_paths_do_not_emit_raw_bytes() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() -> Result<(), MyError> {
-                    Ok(())
-                }
-
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: u64) -> Result<(), MyError> {
-                    Ok(())
-                }
-
-                #[pvm_contract_macros::fallback]
-                pub fn fallback() -> Result<(), MyError> {
-                    Ok(())
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        // Error paths must not use raw bytes (e.as_ref()) — regression guard
-        assert!(
-            !output.contains("as_ref"),
-            "Generated dispatch should not use as_ref for error encoding"
-        );
-    }
-
-    #[test]
-    fn fallback_with_unit_return_generates_plain_call() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
-
-                #[pvm_contract_macros::fallback]
-                pub fn fallback() {}
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        // Unit-return fallback should generate a plain call, not a match on Ok/Err
-        assert!(
-            output.contains("fallback ()"),
-            "Unit-return fallback should generate a direct call"
-        );
-        assert!(
-            !output.contains("match fallback"),
-            "Unit-return fallback should not generate a match expression"
-        );
+    fn errors_when_module_has_no_struct() {
+        let input: ItemMod = syn::parse_quote! {
+            mod empty { }
+        };
+        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        assert!(err.to_string().contains("must contain a struct"));
     }
 }

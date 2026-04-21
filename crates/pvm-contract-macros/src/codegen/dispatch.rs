@@ -4,23 +4,20 @@ use quote::quote;
 use super::decode::{calculate_min_input_size, generate_decode_params};
 
 /// Generate the error revert encoding for an `Err(e)` arm.
-/// In alloc mode, uses a dynamically-sized `Vec<u8>` so dynamic error fields
-/// are safe regardless of payload size.
-/// In stack mode, uses a fixed 256-byte buffer.
 pub(super) fn generate_revert_encoding(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
             let __revert_len = ::pvm_contract_types::SolRevert::revert_data_len(&e);
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
             ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            ::pvm_contract_types::PolkaVmHost::return_value(
+            ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                 ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf);
         }
     } else {
         quote! {
             let mut __revert_buf = [0u8; 256];
             let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            ::pvm_contract_types::PolkaVmHost::return_value(
+            ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                 ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
         }
     }
@@ -34,7 +31,6 @@ pub struct MethodInfo {
     pub return_types: Vec<syn::Type>,
     pub returns_result: bool,
     /// When set, the selector is precomputed (e.g. from a `.sol` file).
-    /// Otherwise it is derived at compile time from trait `SOL_NAME` constants.
     pub precomputed_selector: Option<[u8; 4]>,
 }
 
@@ -54,7 +50,7 @@ pub(super) fn generate_param_decoding(
     let size_check = if !param_types.is_empty() {
         quote! {
             if input.len() < (#min_size_expr) {
-                ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_types::ReturnFlags::REVERT,
                     &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
             }
@@ -144,7 +140,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     let body = if method.returns_result {
         if has_return {
             quote! {
-                match #fn_name(#(#call_args),*) {
+                match this.#fn_name(#(#call_args),*) {
                     Ok(result) => { #encode_and_return }
                     Err(e) => {
                         #revert_err
@@ -153,7 +149,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
             }
         } else {
             quote! {
-                match #fn_name(#(#call_args),*) {
+                match this.#fn_name(#(#call_args),*) {
                     Ok(()) => return Some(()),
                     Err(e) => {
                         #revert_err
@@ -163,12 +159,12 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
         }
     } else if has_return {
         quote! {
-            let result = #fn_name(#(#call_args),*);
+            let result = this.#fn_name(#(#call_args),*);
             #encode_and_return
         }
     } else {
         quote! {
-            #fn_name(#(#call_args),*);
+            this.#fn_name(#(#call_args),*);
             return Some(());
         }
     };
@@ -186,21 +182,25 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
 
 /// Items generated inside the contract module for routing.
 pub struct RouteItems {
-    /// Unit struct used as the `Router` trait target.
-    pub contract_struct: TokenStream,
-    /// The `route(selector, input) -> Option<()>` function.
+    /// The `route(this, selector, input) -> Option<()>` function.
     pub route_fn: TokenStream,
 }
 
-/// `impl Router for mod_name::Contract` block, placed outside the module.
+/// `impl Router for mod_name::<StructName>` block, placed outside the module.
 pub struct RouterImpl {
     pub tokens: TokenStream,
 }
 
 /// Generate the `route` function and `Router` trait impl for a contract module.
+///
+/// `route` takes a `&mut Contract<PolkaVmHost>` and dispatches methods via
+/// `this.method(...)`. The trait impl exists so contracts can be composed
+/// through the `Router` trait — signatures unchanged from the pre-receiver
+/// design, but routing goes through a fresh `PolkaVmHost`-backed instance.
 pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
+    struct_name: &syn::Ident,
     use_alloc: bool,
 ) -> (RouteItems, RouterImpl) {
     let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = methods
@@ -209,13 +209,14 @@ pub fn generate_router(
         .unzip();
 
     let route_items = RouteItems {
-        contract_struct: quote! {
-            /// Unit struct that implements [`::pvm_contract_types::Router`] for this contract.
-            pub struct Contract;
-        },
         route_fn: quote! {
             #[allow(non_upper_case_globals)]
-            pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+            pub fn route(
+                this: &mut #struct_name<::pvm_contract_types::PolkaVmHost>,
+                selector: [u8; 4],
+                input: &[u8],
+            ) -> Option<()> {
+                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
                 #(#selector_consts)*
 
                 match selector {
@@ -228,9 +229,13 @@ pub fn generate_router(
 
     let router_impl = RouterImpl {
         tokens: quote! {
-            impl ::pvm_contract_types::Router for #mod_name::Contract {
+            #[cfg(target_arch = "riscv64")]
+            impl ::pvm_contract_types::Router for #mod_name::#struct_name<::pvm_contract_types::PolkaVmHost> {
                 fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
-                    #mod_name::route(selector, input)
+                    let mut this = #mod_name::#struct_name::<::pvm_contract_types::PolkaVmHost> {
+                        host: ::pvm_contract_types::PolkaVmHost,
+                    };
+                    #mod_name::route(&mut this, selector, input)
                 }
             }
         },
@@ -254,8 +259,6 @@ fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenSt
 fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        // Single static return: encode_to handles wrapping (no-op for static).
-        // Use StaticEncodedLen for stack buffer since IS_DYNAMIC is const-false.
         return quote! {{
             const { assert!(
                 !<#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
@@ -263,12 +266,11 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
             ) };
             let mut __buf = [0u8; <#ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
             <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-            ::pvm_contract_types::PolkaVmHost::return_value(
+            ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                 ::pvm_contract_types::ReturnFlags::empty(), &__buf);
         }};
     }
 
-    // Multi-return: result is a tuple. Use the tuple's encode_to (IS_TUPLE=true → flat body).
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
         const { assert!(
@@ -277,7 +279,7 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         ) };
         let mut __buf = [0u8; <#tuple_ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
         <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-        ::pvm_contract_types::PolkaVmHost::return_value(
+        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
             ::pvm_contract_types::ReturnFlags::empty(), &__buf);
     }}
 }
@@ -285,34 +287,28 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
 fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
-        // IS_DYNAMIC is a const bool — the compiler eliminates the dead branch.
-        // Static types use a stack buffer; dynamic types use a heap buffer.
-        // The else branch includes a runtime guard to prevent buffer overflow
-        // for the (unreachable) case where a dynamic type reaches the static path.
-        // Single return: encode_to handles smart wrapping (IS_TUPLE + IS_DYNAMIC).
         return quote! {{
             let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
             if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
                 let mut __buf = alloc::vec![0u8; __len];
                 <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-                ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_types::ReturnFlags::empty(), &__buf);
             } else {
                 let mut __buf = [0u8; <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
                 <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-                ::pvm_contract_types::PolkaVmHost::return_value(
+                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_types::ReturnFlags::empty(), &__buf[..__len]);
             }
         }};
     }
 
-    // Multi-return: result is a tuple. Use the tuple's encode_to (IS_TUPLE=true → flat body).
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
         let __len = <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
         let mut __buf = alloc::vec![0u8; __len];
         <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-        ::pvm_contract_types::PolkaVmHost::return_value(
+        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
             ::pvm_contract_types::ReturnFlags::empty(), &__buf);
     }}
 }

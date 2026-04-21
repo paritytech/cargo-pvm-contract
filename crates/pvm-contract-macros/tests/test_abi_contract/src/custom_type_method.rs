@@ -13,12 +13,19 @@ pub struct MyPoint {
 #[pvm_contract_macros::contract]
 mod my_contract {
     use super::MyPoint;
+    use pvm_contract_types::{HostApi, PolkaVmHost};
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() {}
+    pub struct MyContract<H: HostApi = PolkaVmHost> {
+        pub host: H,
+    }
 
-    #[pvm_contract_macros::method]
-    pub fn touch(value: MyPoint) -> MyPoint {
-        value
+    impl<H: HostApi> MyContract<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+
+        #[pvm_contract_macros::method]
+        pub fn touch(&self, value: MyPoint) -> MyPoint {
+            value
+        }
     }
 }

@@ -266,6 +266,7 @@ mod tests {
     fn returns_empty_for_sol_path_contract() {
         let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
             methods: vec![],
             has_constructor: false,
             has_fallback: false,

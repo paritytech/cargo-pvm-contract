@@ -17,19 +17,24 @@ pub struct Line {
 #[pvm_contract_macros::contract]
 mod my_contract {
     use super::{Line, Point};
+    use pvm_contract_types::{HostApi, PolkaVmHost};
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() {}
-
-    /// Input and output are nested custom types
-    #[pvm_contract_macros::method]
-    pub fn reflect(line: Line) -> Line {
-        line
+    pub struct MyContract<H: HostApi = PolkaVmHost> {
+        pub host: H,
     }
 
-    /// Input is a flat custom type
-    #[pvm_contract_macros::method]
-    pub fn origin() -> Point {
-        Point { x: 0, y: 0 }
+    impl<H: HostApi> MyContract<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+
+        #[pvm_contract_macros::method]
+        pub fn reflect(&self, line: Line) -> Line {
+            line
+        }
+
+        #[pvm_contract_macros::method]
+        pub fn origin(&self) -> Point {
+            Point { x: 0, y: 0 }
+        }
     }
 }

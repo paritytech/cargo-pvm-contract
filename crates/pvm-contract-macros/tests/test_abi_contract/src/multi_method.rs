@@ -2,25 +2,28 @@
 
 #[pvm_contract_macros::contract]
 mod my_contract {
-    use pvm_contract_types::Address;
+    use pvm_contract_types::{Address, HostApi, PolkaVmHost};
     use ruint::aliases::U256;
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() {}
-
-    /// Method with no return type
-    #[pvm_contract_macros::method]
-    pub fn set_flag(flag: bool) {}
-
-    /// Method with multiple params of different sizes
-    #[pvm_contract_macros::method]
-    pub fn transfer(to: Address, amount: U256, nonce: u32) -> bool {
-        true
+    pub struct MyContract<H: HostApi = PolkaVmHost> {
+        pub host: H,
     }
 
-    /// Method with no params but a return
-    #[pvm_contract_macros::method]
-    pub fn get_count() -> u64 {
-        0
+    impl<H: HostApi> MyContract<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+
+        #[pvm_contract_macros::method]
+        pub fn set_flag(&mut self, flag: bool) {}
+
+        #[pvm_contract_macros::method]
+        pub fn transfer(&mut self, to: Address, amount: U256, nonce: u32) -> bool {
+            true
+        }
+
+        #[pvm_contract_macros::method]
+        pub fn get_count(&self) -> u64 {
+            0
+        }
     }
 }

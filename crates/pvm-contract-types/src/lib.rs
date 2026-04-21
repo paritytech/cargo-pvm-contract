@@ -16,6 +16,18 @@ pub use host::{
     CallFlags, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
 };
 
+/// Re-exported so macro-generated `call()` / `deploy()` wrappers can reach it
+/// without the user's `Cargo.toml` depending on `pallet-revive-uapi` directly.
+#[doc(hidden)]
+pub use pallet_revive_uapi;
+
+#[cfg(feature = "alloc")]
+mod dispatch_outcome;
+#[cfg(feature = "alloc")]
+pub use dispatch_outcome::DispatchOutcome;
+#[cfg(all(feature = "alloc", target_arch = "riscv64"))]
+pub use dispatch_outcome::finalize;
+
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]

@@ -2,6 +2,14 @@
 
 #[pvm_contract_macros::contract]
 mod my_contract {
-    #[pvm_contract_macros::constructor]
-    pub fn new() {}
+    use pvm_contract_types::{HostApi, PolkaVmHost};
+
+    pub struct MyContract<H: HostApi = PolkaVmHost> {
+        pub host: H,
+    }
+
+    impl<H: HostApi> MyContract<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+    }
 }

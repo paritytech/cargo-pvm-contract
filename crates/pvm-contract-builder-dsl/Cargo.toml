@@ -15,3 +15,6 @@ ruint = { version = "1.17", default-features = false }
 [features]
 default = []
 alloc = ["pvm-contract-types/alloc"]
+
+[dev-dependencies]
+pvm-contract-types = { path = "../pvm-contract-types", features = ["std"] }
