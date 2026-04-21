@@ -250,17 +250,18 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         }
         input_buf[..32].copy_from_slice(&code_hash[..]);
         self.payload.encode_to(&mut input_buf[32..]);
-        PolkaVmHost.instantiate(
-            limits.ref_time_limit,
-            limits.proof_size_limit,
-            &limits.deposit_limit,
-            &U256::from(value).to_be_bytes(),
-            input_buf,
-            Some(address_buf),
-            None,
-            salt,
-        )
-        .map_err(convert_error)
+        PolkaVmHost
+            .instantiate(
+                limits.ref_time_limit,
+                limits.proof_size_limit,
+                &limits.deposit_limit,
+                &U256::from(value).to_be_bytes(),
+                input_buf,
+                Some(address_buf),
+                None,
+                salt,
+            )
+            .map_err(convert_error)
     }
 
     #[allow(clippy::too_many_arguments)]
