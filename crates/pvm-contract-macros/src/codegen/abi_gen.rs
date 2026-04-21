@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::contract::ParsedContract;
-use super::dispatch::MethodInfo;
+use super::dispatch::{MethodInfo, StateMutability};
 
 /// Generate both the in-module ABI helper and the top-level `main()`.
 ///
@@ -47,7 +47,12 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
             })
             .collect::<syn::Result<Vec<_>>>()?;
 
-        let mutability = state_mutability_literal(parsed.constructor_is_payable, false, false);
+        let mutability = if parsed.constructor_is_payable {
+            StateMutability::Payable
+        } else {
+            StateMutability::NonPayable
+        }
+        .as_abi_str();
         let closing = format!("],\"stateMutability\":\"{mutability}\"}}");
         quote! {
             if !__first_item {
@@ -192,23 +197,6 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
     Ok((helper, main_fn))
 }
 
-/// Return the ABI `stateMutability` literal for a method.
-///
-/// Precedence: `payable > pure > view > nonpayable`. `view` and `pure` come
-/// from the `.sol` interface only; Rust methods without a `.sol` file always
-/// report `nonpayable` (or `payable` when `#[payable]` is applied).
-fn state_mutability_literal(is_payable: bool, is_view: bool, is_pure: bool) -> &'static str {
-    if is_payable {
-        "payable"
-    } else if is_pure {
-        "pure"
-    } else if is_view {
-        "view"
-    } else {
-        "nonpayable"
-    }
-}
-
 fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
     let method_name = &method.sol_name;
 
@@ -250,7 +238,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         })
         .collect::<syn::Result<Vec<_>>>()?;
 
-    let mutability = state_mutability_literal(method.is_payable, method.is_view, method.is_pure);
+    let mutability = method.mutability.as_abi_str();
     let closing = format!("],\"stateMutability\":\"{mutability}\"}}");
 
     Ok(quote! {
@@ -367,15 +355,11 @@ mod tests {
     }
 
     #[test]
-    fn state_mutability_literal_precedence() {
-        assert_eq!(state_mutability_literal(false, false, false), "nonpayable");
-        assert_eq!(state_mutability_literal(false, true, false), "view");
-        assert_eq!(state_mutability_literal(false, false, true), "pure");
-        assert_eq!(state_mutability_literal(true, false, false), "payable");
-        // payable beats everything else
-        assert_eq!(state_mutability_literal(true, true, true), "payable");
-        // pure beats view when both set
-        assert_eq!(state_mutability_literal(false, true, true), "pure");
+    fn state_mutability_abi_str() {
+        assert_eq!(StateMutability::NonPayable.as_abi_str(), "nonpayable");
+        assert_eq!(StateMutability::View.as_abi_str(), "view");
+        assert_eq!(StateMutability::Pure.as_abi_str(), "pure");
+        assert_eq!(StateMutability::Payable.as_abi_str(), "payable");
     }
 
     fn parsed_contract_with_method(method: MethodInfo) -> ParsedContract {
@@ -404,9 +388,7 @@ mod tests {
             param_types: vec![],
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
-            is_payable: false,
-            is_view: true,
-            is_pure: false,
+            mutability: StateMutability::View,
             precomputed_selector: None,
         };
         let parsed = parsed_contract_with_method(method);
@@ -427,9 +409,7 @@ mod tests {
             param_types: vec![syn::parse_quote!(U256), syn::parse_quote!(U256)],
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
-            is_payable: false,
-            is_view: false,
-            is_pure: true,
+            mutability: StateMutability::Pure,
             precomputed_selector: None,
         };
         let parsed = parsed_contract_with_method(method);

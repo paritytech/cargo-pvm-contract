@@ -4,7 +4,8 @@ use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse:
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, generate_param_decoding, generate_revert_encoding, generate_router,
+    MethodInfo, RouteItems, StateMutability, generate_param_decoding, generate_revert_encoding,
+    generate_router,
 };
 use crate::signature::{SolType, compute_selector};
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
@@ -426,7 +427,7 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(func);
 
-                let (sol_name, precomputed_selector, is_view, is_pure) = if let Some(sol_iface) =
+                let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
                     sol_interface
                 {
                     let rust_fn_name = func.sig.ident.to_string();
@@ -452,9 +453,13 @@ fn parse_contract(
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
                     let selector = compute_selector(&sol_func.signature.canonical_signature());
-                    let is_view = sol_func.state_mutability.as_deref() == Some("view");
-                    let is_pure = sol_func.state_mutability.as_deref() == Some("pure");
-                    let sol_is_payable = sol_func.state_mutability.as_deref() == Some("payable");
+                    let sol_mutability = match sol_func.state_mutability.as_deref() {
+                        Some("view") => StateMutability::View,
+                        Some("pure") => StateMutability::Pure,
+                        Some("payable") => StateMutability::Payable,
+                        _ => StateMutability::NonPayable,
+                    };
+                    let sol_is_payable = sol_mutability == StateMutability::Payable;
                     let fn_name = func.sig.ident.to_string();
                     if sol_is_payable && !is_payable {
                         return Err(syn::Error::new_spanned(
@@ -472,11 +477,16 @@ fn parse_contract(
                             ),
                         ));
                     }
-                    (sol_func.name.clone(), Some(selector), is_view, is_pure)
+                    (sol_func.name.clone(), Some(selector), sol_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    (sol_name, None, false, false)
+                    let mutability = if is_payable {
+                        StateMutability::Payable
+                    } else {
+                        StateMutability::NonPayable
+                    };
+                    (sol_name, None, mutability)
                 };
 
                 methods.push(MethodInfo {
@@ -486,9 +496,7 @@ fn parse_contract(
                     param_types,
                     return_types,
                     returns_result,
-                    is_payable,
-                    is_view,
-                    is_pure,
+                    mutability,
                     precomputed_selector,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
@@ -701,7 +709,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let any_non_payable_method = parsed.methods.iter().any(|m| !m.is_payable);
+    let any_non_payable_method = parsed
+        .methods
+        .iter()
+        .any(|m| m.mutability != StateMutability::Payable);
     let any_non_payable =
         any_non_payable_method || (parsed.has_fallback && !parsed.fallback_is_payable);
     let value_prelude = build_value_prelude(any_non_payable);
@@ -895,6 +906,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
 
 #[cfg(test)]
 mod tests {
+    use super::super::dispatch::StateMutability;
     use super::{ContractArgs, expand_contract, parse_contract};
     use syn::ItemMod;
 
@@ -921,11 +933,8 @@ mod tests {
             .iter()
             .find(|m| m.fn_name == "transfer")
             .unwrap();
-        assert!(deposit.is_payable, "method with #[payable] must be payable");
-        assert!(
-            !transfer.is_payable,
-            "method without #[payable] must be non-payable"
-        );
+        assert_eq!(deposit.mutability, StateMutability::Payable);
+        assert_eq!(transfer.mutability, StateMutability::NonPayable);
     }
 
     #[test]
@@ -1008,9 +1017,7 @@ mod tests {
             .iter()
             .find(|m| m.fn_name == "balance")
             .unwrap();
-        assert!(method.is_view, "view in .sol should set is_view");
-        assert!(!method.is_pure);
-        assert!(!method.is_payable);
+        assert_eq!(method.mutability, StateMutability::View);
     }
 
     #[test]
@@ -1029,9 +1036,7 @@ mod tests {
         };
         let parsed = parse_contract(&input, Some(&iface)).unwrap();
         let method = parsed.methods.iter().find(|m| m.fn_name == "add").unwrap();
-        assert!(method.is_pure, "pure in .sol should set is_pure");
-        assert!(!method.is_view);
-        assert!(!method.is_payable);
+        assert_eq!(method.mutability, StateMutability::Pure);
     }
 
     #[test]
@@ -1054,9 +1059,7 @@ mod tests {
             .iter()
             .find(|m| m.fn_name == "transfer")
             .unwrap();
-        assert!(!method.is_view);
-        assert!(!method.is_pure);
-        assert!(!method.is_payable);
+        assert_eq!(method.mutability, StateMutability::NonPayable);
     }
 
     #[test]
@@ -1073,8 +1076,7 @@ mod tests {
             .iter()
             .find(|m| m.fn_name == "balance")
             .unwrap();
-        assert!(!method.is_view);
-        assert!(!method.is_pure);
+        assert_eq!(method.mutability, StateMutability::NonPayable);
     }
 
     #[test]

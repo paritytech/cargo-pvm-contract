@@ -26,6 +26,26 @@ pub(super) fn generate_revert_encoding(use_alloc: bool) -> TokenStream {
     }
 }
 
+/// Solidity's state mutability classifications. Mutually exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateMutability {
+    Pure,
+    View,
+    NonPayable,
+    Payable,
+}
+
+impl StateMutability {
+    pub fn as_abi_str(self) -> &'static str {
+        match self {
+            StateMutability::Pure => "pure",
+            StateMutability::View => "view",
+            StateMutability::NonPayable => "nonpayable",
+            StateMutability::Payable => "payable",
+        }
+    }
+}
+
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
     pub sol_name: String,
@@ -33,13 +53,7 @@ pub struct MethodInfo {
     pub param_types: Vec<syn::Type>,
     pub return_types: Vec<syn::Type>,
     pub returns_result: bool,
-    /// True iff this method is marked `#[payable]`. Drives dispatch-arm
-    /// emission: payable methods skip the `__has_value` guard.
-    pub is_payable: bool,
-    /// True if the method is declared `view` in the .sol interface.
-    pub is_view: bool,
-    /// True if the method is declared `pure` in the .sol interface.
-    pub is_pure: bool,
+    pub mutability: StateMutability,
     /// When set, the selector is precomputed (e.g. from a `.sol` file).
     /// Otherwise it is derived at compile time from trait `SOL_NAME` constants.
     pub precomputed_selector: Option<[u8; 4]>,
@@ -151,7 +165,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
 
     let revert_err = generate_revert_encoding(use_alloc);
 
-    let payable_guard = if method.is_payable {
+    let payable_guard = if method.mutability == StateMutability::Payable {
         quote! {}
     } else {
         quote! {
@@ -361,9 +375,7 @@ mod tests {
             param_types: vec![syn::parse_quote!(Address)],
             return_types: vec![syn::parse_quote!(bool)],
             returns_result: false,
-            is_payable: false,
-            is_view: false,
-            is_pure: false,
+            mutability: StateMutability::NonPayable,
             precomputed_selector: None,
         };
         let (_const_def, arm) = generate_dispatch_arm(&m, false);
@@ -387,9 +399,7 @@ mod tests {
             param_types: vec![syn::parse_quote!(Address)],
             return_types: vec![],
             returns_result: false,
-            is_payable: true,
-            is_view: false,
-            is_pure: false,
+            mutability: StateMutability::Payable,
             precomputed_selector: None,
         };
         let (_const_def, arm) = generate_dispatch_arm(&m, false);
