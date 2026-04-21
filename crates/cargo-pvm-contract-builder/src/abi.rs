@@ -320,28 +320,11 @@ pub(crate) fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
         vec![]
     };
 
-    let state_mutability = if line.contains(" view ")
-        || line.contains(" view)")
-        || line.contains(" view;")
-        || line.ends_with(" view")
-    {
-        "view"
-    } else if line.contains(" pure ")
-        || line.contains(" pure)")
-        || line.contains(" pure;")
-        || line.ends_with(" pure")
-    {
-        "pure"
-    } else if line.contains(" payable ")
-        || line.contains(" payable)")
-        || line.contains(" payable;")
-        || line.ends_with(" payable")
-    {
-        "payable"
-    } else {
-        "nonpayable"
-    }
-    .to_string();
+    let state_mutability = line
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .find(|tok| matches!(*tok, "view" | "pure" | "payable"))
+        .unwrap_or("nonpayable")
+        .to_string();
 
     Some(AbiItem::Function {
         name,
