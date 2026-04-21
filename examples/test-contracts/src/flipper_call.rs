@@ -17,32 +17,40 @@ mod flipper_call_alloy {
 
     use super::*;
     use flipper::{self, Flipper};
+
     sol_revert_enum! {
         pub enum Error {
             CallError(CallError)
         }
     }
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
-        Ok(())
+
+    pub struct FlipperCallAlloy<H: HostApi = PolkaVmHost> {
+        pub host: H,
     }
 
-    #[pvm_contract_macros::method]
-    pub fn call_flipper(addr: Address) -> Result<(), Error> {
-        let flipper = Flipper::from_address(addr);
-        let get = flipper.get();
-        let flip = flipper.flip();
+    impl<H: HostApi> FlipperCallAlloy<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
 
-        let res = get.call()?;
-        assert_eq!(res, false);
-        let _ = flip.call()?;
-        let res = get.call()?;
-        assert_eq!(res, true);
-        Ok(())
-    }
+        #[pvm_contract_macros::method]
+        pub fn call_flipper(&mut self, addr: Address) -> Result<(), Error> {
+            let flipper = Flipper::from_address(addr);
+            let get = flipper.get();
+            let flip = flipper.flip();
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
-        Ok(())
+            let res = get.call()?;
+            assert_eq!(res, false);
+            let _ = flip.call()?;
+            let res = get.call()?;
+            assert_eq!(res, true);
+            Ok(())
+        }
+
+        #[pvm_contract_macros::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
     }
 }

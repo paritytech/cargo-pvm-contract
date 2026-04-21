@@ -16,7 +16,7 @@ interface Flipper {
 mod flipper_delegate {
     use super::*;
     use pvm_contract_core::call::CallError;
-    use pvm_contract_types::PolkaVmHost as api;
+    use pvm_contract_types::{HostApi, PolkaVmHost};
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
     use flipper::{self, Flipper};
@@ -27,35 +27,40 @@ mod flipper_delegate {
         }
     }
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> {
-        // Initialize to false (0)
-        api::set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
-        Ok(())
+    pub struct FlipperDelegate<H: HostApi = PolkaVmHost> {
+        pub host: H,
     }
 
-    #[pvm_contract_macros::method]
-    pub fn delegate_flipper(addr: Address) -> Result<(), Error> {
-        let flip = Flipper::from_address(addr).flip();
-        Ok(flip.delegate_call()?)
-    }
+    impl<H: HostApi> FlipperDelegate<H> {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) -> Result<(), Error> {
+            self.host.set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
+            Ok(())
+        }
 
-    #[pvm_contract_macros::method]
-    pub fn get() -> bool {
-        read_value()
-    }
+        #[pvm_contract_macros::method]
+        pub fn delegate_flipper(&mut self, addr: Address) -> Result<(), Error> {
+            let flip = Flipper::from_address(addr).flip();
+            Ok(flip.delegate_call()?)
+        }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> {
-        Ok(())
-    }
+        #[pvm_contract_macros::method]
+        pub fn get(&self) -> bool {
+            self.read_value()
+        }
 
-    fn read_value() -> bool {
-        let mut buf = [0u8; 32];
-        let mut out = &mut buf[..];
-        match api::get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
-            Ok(_) => buf[31] != 0,
-            Err(_) => false,
+        #[pvm_contract_macros::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
+
+        fn read_value(&self) -> bool {
+            let mut buf = [0u8; 32];
+            let mut out = &mut buf[..];
+            match self.host.get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
+                Ok(_) => buf[31] != 0,
+                Err(_) => false,
+            }
         }
     }
 }
