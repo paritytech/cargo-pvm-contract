@@ -2,10 +2,11 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags, StorageFlags};
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    HostApi as _, PolkaVmHost, ReturnFlags, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
+    U256,
+};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
-use pvm_contract_builder_dsl::pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
-use pvm_contract_builder_dsl::pvm_contract_types::U256;
 
 const TOTAL_SUPPLY_SELECTOR: [u8; 4] = solidity_selector("totalSupply()");
 const BALANCE_OF_SELECTOR: [u8; 4] = solidity_selector("balanceOf(address)");
@@ -24,8 +25,6 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
         core::hint::unreachable_unchecked()
     }
 }
-
-use pvm_contract_builder_dsl::pvm_contract_types::PolkaVmHost;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {
