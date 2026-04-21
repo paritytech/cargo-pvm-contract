@@ -133,7 +133,12 @@ pub(super) struct ParsedContract {
     pub(super) error_types: Vec<syn::Type>,
 }
 
-const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
+const VALID_PREFIXES: &[&str] = &[
+    "pvm",
+    "pvm_contract",
+    "pvm_contract_macros",
+    "pvm_contract_sdk",
+];
 
 /// Verify that a Rust method's parameters are compatible with the Solidity
 /// function it implements. Checks arity strictly, and type compatibility for

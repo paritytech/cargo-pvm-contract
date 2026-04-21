@@ -6,7 +6,7 @@ extern crate alloc;
 use alloc::vec;
 use alloy_core::primitives::U256;
 use alloy_core::sol_types::{SolType, sol_data};
-use pvm_contract_types::{HostApi as _, PolkaVmHost as api, ReturnFlags, StorageFlags};
+use pvm_contract_sdk::{HostApi as _, PolkaVmHost, ReturnFlags, StorageFlags};
 
 #[global_allocator]
 static ALLOC: pvm_bump_allocator::BumpAllocator<1024> = pvm_bump_allocator::BumpAllocator::new();
@@ -40,23 +40,23 @@ fn balance_key(addr: &[u8; 20]) -> [u8; 32] {
     input[63] = 1;
 
     let mut key = [0u8; 32];
-    api::hash_keccak_256(&input, &mut key);
+    PolkaVmHost::hash_keccak_256(&input, &mut key);
     key
 }
 
 fn set_total_supply(amount: U256) {
     let key = total_supply_key();
-    api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
+    PolkaVmHost::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
 fn set_balance(addr: &[u8; 20], amount: U256) {
     let key = balance_key(addr);
-    api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
+    PolkaVmHost::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
 fn get_caller() -> [u8; 20] {
     let mut caller = [0u8; 20];
-    api::caller(&mut caller);
+    PolkaVmHost::caller(&mut caller);
     caller
 }
 
@@ -69,17 +69,17 @@ fn emit_transfer(from: &[u8; 20], to: &[u8; 20], value: U256) {
 
     let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
     let data = value.to_be_bytes::<32>();
-    api::deposit_event(&topics, &data);
+    PolkaVmHost::deposit_event(&topics, &data);
 }
 
-#[polkavm_derive::polkavm_export]
+#[pvm_contract_sdk::polkavm_export]
 extern "C" fn deploy() {}
 
-#[polkavm_derive::polkavm_export]
+#[pvm_contract_sdk::polkavm_export]
 extern "C" fn call() {
-    let call_data_len = api::call_data_size() as usize;
+    let call_data_len = PolkaVmHost::call_data_size() as usize;
     let mut call_data = vec![0u8; call_data_len];
-    api::call_data_copy(&mut call_data, 0);
+    PolkaVmHost::call_data_copy(&mut call_data, 0);
 
     if call_data_len < 4 {
         return;
@@ -94,12 +94,12 @@ extern "C" fn call() {
             let mut supply_bytes = vec![0u8; 32];
             let mut supply_output = supply_bytes.as_mut_slice();
 
-            let result = match api::get_storage(StorageFlags::empty(), &key, &mut supply_output) {
+            let result = match PolkaVmHost::get_storage(StorageFlags::empty(), &key, &mut supply_output) {
                 Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
                 Err(_) => U256::ZERO,
             };
             let encoded = <sol_data::Uint<256> as SolType>::abi_encode(&result);
-            api::return_value(ReturnFlags::empty(), &encoded);
+            PolkaVmHost::return_value(ReturnFlags::empty(), &encoded);
         }
         BALANCE_OF_SELECTOR => {
             let addr = <sol_data::Address as SolType>::abi_decode(input).unwrap();
@@ -107,12 +107,12 @@ extern "C" fn call() {
             let mut balance_bytes = vec![0u8; 32];
             let mut balance_output = balance_bytes.as_mut_slice();
 
-            let result = match api::get_storage(StorageFlags::empty(), &key, &mut balance_output) {
+            let result = match PolkaVmHost::get_storage(StorageFlags::empty(), &key, &mut balance_output) {
                 Ok(_) => U256::from_be_bytes::<32>(balance_output[0..32].try_into().unwrap()),
                 Err(_) => U256::ZERO,
             };
             let encoded = <sol_data::Uint<256> as SolType>::abi_encode(&result);
-            api::return_value(ReturnFlags::empty(), &encoded);
+            PolkaVmHost::return_value(ReturnFlags::empty(), &encoded);
         }
         TRANSFER_SELECTOR => {
             type TransferArgs = (sol_data::Address, sol_data::Uint<256>);
@@ -124,7 +124,7 @@ extern "C" fn call() {
             let mut sender_balance_bytes = vec![0u8; 32];
             let mut sender_balance_output = sender_balance_bytes.as_mut_slice();
             let sender_balance =
-                match api::get_storage(StorageFlags::empty(), &sender_key, &mut sender_balance_output)
+                match PolkaVmHost::get_storage(StorageFlags::empty(), &sender_key, &mut sender_balance_output)
                 {
                     Ok(_) => {
                         U256::from_be_bytes::<32>(sender_balance_output[0..32].try_into().unwrap())
@@ -133,7 +133,7 @@ extern "C" fn call() {
                 };
 
             if sender_balance < amount {
-                api::return_value(
+                PolkaVmHost::return_value(
                     ReturnFlags::REVERT,
                     b"InsufficientBalance",
                 );
@@ -143,7 +143,7 @@ extern "C" fn call() {
             let recipient_key = balance_key(&to);
             let mut recipient_balance_bytes = vec![0u8; 32];
             let mut recipient_balance_output = recipient_balance_bytes.as_mut_slice();
-            let recipient_balance = match api::get_storage(
+            let recipient_balance = match PolkaVmHost::get_storage(
                 StorageFlags::empty(),
                 &recipient_key,
                 &mut recipient_balance_output,
@@ -165,7 +165,7 @@ extern "C" fn call() {
             let recipient_key = balance_key(&to);
             let mut recipient_balance_bytes = vec![0u8; 32];
             let mut recipient_balance_output = recipient_balance_bytes.as_mut_slice();
-            let recipient_balance = match api::get_storage(
+            let recipient_balance = match PolkaVmHost::get_storage(
                 StorageFlags::empty(),
                 &recipient_key,
                 &mut recipient_balance_output,
@@ -179,7 +179,7 @@ extern "C" fn call() {
             let supply_key = total_supply_key();
             let mut supply_bytes = vec![0u8; 32];
             let mut supply_output = supply_bytes.as_mut_slice();
-            let supply = match api::get_storage(StorageFlags::empty(), &supply_key, &mut supply_output)
+            let supply = match PolkaVmHost::get_storage(StorageFlags::empty(), &supply_key, &mut supply_output)
             {
                 Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
                 Err(_) => U256::ZERO,

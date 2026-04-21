@@ -4396,6 +4396,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pvm-contract-sdk"
+version = "0.3.0"
+dependencies = [
+ "polkavm-derive 0.31.0",
+ "pvm-contract-macros",
+ "pvm-contract-types",
+ "ruint",
+]
+
+[[package]]
 name = "pvm-contract-types"
 version = "0.3.0"
 dependencies = [
