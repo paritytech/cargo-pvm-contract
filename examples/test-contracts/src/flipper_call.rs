@@ -12,7 +12,6 @@ interface Flipper {
 
 #[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_call_alloy {
-    use pvm_contract_core::call::CallError;
     use pvm_contract_sdk::*;
 
     use super::*;

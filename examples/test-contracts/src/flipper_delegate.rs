@@ -15,7 +15,7 @@ interface Flipper {
 #[pvm_contract_sdk::contract("DelegateFlipper.sol", allocator = "pico")]
 mod flipper_delegate {
     use super::*;
-    use pvm_contract_core::call::CallError;
+    use pvm_contract_sdk::CallError;
     use pvm_contract_sdk::PolkaVmHost;
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];

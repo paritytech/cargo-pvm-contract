@@ -97,7 +97,10 @@ pub use pvm_contract_types::{
 };
 
 // Cross-contract calls
-pub use pvm_contract_core::call::{CallBuilder, CallError, CallLimits};
+pub use pvm_contract_core::call::{
+    CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
+    StateMutability, View,
+};
 
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
@@ -138,10 +141,8 @@ pub use pvm_contract_types::serde_json;
 pub mod prelude {
     pub use crate::{
         Address,
-        // Cross-contract calls
-        CallBuilder,
-        CallError,
-        CallLimits,
+        // Errors
+        EmptyError,
         // Host
         HostApi,
         I256,
@@ -150,7 +151,7 @@ pub mod prelude {
         // Encoding
         SolDecode,
         SolEncode,
-        // Errors
+        // Error traits
         SolError,
         SolRevert,
         StaticEncodedLen,

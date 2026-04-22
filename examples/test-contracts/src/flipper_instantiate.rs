@@ -14,7 +14,7 @@ interface Flipper {
 #[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_instantiate {
 
-    use pvm_contract_core::call::{CallError, RefTimeAndProofSizeLimits};
+    use pvm_contract_sdk::{CallError, RefTimeAndProofSizeLimits};
     use pvm_contract_sdk::PolkaVmHost;
     use pvm_contract_sdk::*;
 

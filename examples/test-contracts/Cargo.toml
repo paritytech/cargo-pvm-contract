@@ -61,7 +61,6 @@ path = "src/constructor-args.rs"
 
 [dependencies]
 pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = ["alloc"] }
-pvm-contract-core = { path = "../../crates/pvm-contract-core" }
 polkavm-derive = { version = "0.31.0" }  # required by proc macro generated code
 picoalloc = { version = "5", default-features = false }
 
