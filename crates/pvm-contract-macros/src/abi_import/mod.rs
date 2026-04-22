@@ -1,5 +1,4 @@
-use std::collections::BTreeMap;
-
+use ctxt::{Ctxt, compute_function_signature};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{self};
@@ -7,9 +6,10 @@ use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
 use crate::solidity::{capitalize, to_pascal_case, to_snake_case};
+mod ctxt;
 
 pub fn expand_function(
-    count_map: &mut BTreeMap<String, usize>,
+    ctxt: &mut Ctxt,
     contract_name: syn::Ident,
     func: &ItemFunction,
     is_constructor: bool,
@@ -18,25 +18,12 @@ pub fn expand_function(
     let func_name = if is_constructor {
         format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
-        let name = to_snake_case(&func.name().to_string());
-        let value = count_map.entry(name.clone()).or_default();
-        let ident = if *value == 0 {
-            format_ident!("{}", name)
-        } else {
-            format_ident!("{}_{}", name, value)
-        };
-        *value += 1;
-
-        ident
+        format_ident!("{}", ctxt.function_name(func))
     };
     let selector: Vec<TokenStream> = if is_constructor {
         [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
     } else {
-        let mut name = format!("{}{}", func.name(), func.call_type());
-        if name.rfind(",").is_some_and(|x| x == name.len() - 2) {
-            name.remove(name.len() - 2);
-        }
-        compute_selector(&name)
+        compute_selector(&compute_function_signature(func))
             .into_iter()
             .map(|x| quote! { #x })
             .collect()
@@ -212,13 +199,14 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
 }
 
 pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+    let mut ctxt = Ctxt::default();
+    ctxt.visit_file(file);
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));
             let contract_module = format_ident!("{}", to_snake_case(&item_contract.name.to_string()));
-
+            ctxt.set_ns(item_contract.name.clone());
             let repr = format!("```solidity\n{}\n```", item_contract);
-            let mut count_map: BTreeMap<String, usize> = BTreeMap::new();
             let funcs = item_contract
                 .body
                 .iter()
@@ -234,7 +222,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     },
                     _ => None,
                 })
-                .map(|(x, is_constructor)| expand_function(&mut count_map, contract_name.clone(), x, is_constructor, alloc));
+                .map(|(x, is_constructor)| expand_function(&mut ctxt, contract_name.clone(), x, is_constructor, alloc));
             type Funcs = Vec<(bool, TokenStream)>;
             let (constructor, funcs): (Funcs, Funcs) = funcs.partition(|(is_constructor, _)| *is_constructor);
             let funcs = funcs.into_iter().map(|x| x.1);
@@ -1522,7 +1510,7 @@ mod test {
                     Inputs: SolEncode,
                     Outputs: SolDecode,
                 > Flipper<Mutability, Inputs, Outputs, false> {
-                    pub fn flip(mut self) -> Flipper<NonPayable, (), (), true> {
+                    pub fn flip_cde4efa9(mut self) -> Flipper<NonPayable, (), (), true> {
                         Flipper::<NonPayable, (), (), true> {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (), ()> {
@@ -1534,7 +1522,7 @@ mod test {
                             },
                         }
                     }
-                    pub fn flip_1(
+                    pub fn flip_c353ca2b(
                         mut self,
                         data: (u64, alloc::string::String),
                     ) -> Flipper<NonPayable, ((u64, alloc::string::String)), (), true> {
