@@ -271,7 +271,8 @@ fn process_elf_binaries(
 
         if generate_abi {
             let abi_path = profile_dir.join(format!("{bin}.abi.json"));
-            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root)?;
+            let cdm_path = profile_dir.join(format!("{bin}.cdm.json"));
+            generate_metadata_files(manifest_dir, bin, &abi_path, &cdm_path, abi_target_root)?;
         }
     }
 
@@ -458,27 +459,37 @@ fn cargo_supports_z_flag(flag: &str, work_dir: &Path, remove_toolchain_env: bool
     probe.status().map(|s| s.success()).unwrap_or(false)
 }
 
-fn generate_abi_file(
+fn generate_metadata_files(
     manifest_dir: &Path,
     bin_name: &str,
-    output_path: &Path,
+    abi_path: &Path,
+    cdm_path: &Path,
     target_root: Option<&Path>,
 ) -> Result<()> {
-    match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
-        Ok(Some(abi)) => {
+    let metadata = abi::generate_metadata_for_bin(manifest_dir, bin_name, target_root)
+        .context("Failed to generate contract metadata")?;
+
+    match &metadata.abi {
+        Some(abi) => {
             let json =
-                serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
-            fs::write(output_path, json)
-                .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
-            eprintln!("Created ABI: {}", output_path.display());
+                serde_json::to_string_pretty(abi).context("Failed to serialize ABI to JSON")?;
+            fs::write(abi_path, json)
+                .with_context(|| format!("Failed to write ABI to {}", abi_path.display()))?;
+            eprintln!("Created ABI: {}", abi_path.display());
         }
-        Ok(None) => {
+        None => {
             eprintln!("No pvm_contract found, skipping ABI generation");
         }
-        Err(e) => {
-            return Err(e).context("Failed to generate ABI");
-        }
     }
+
+    if let Some(cdm) = &metadata.cdm {
+        let json = serde_json::to_string_pretty(&serde_json::json!({ "cdmPackage": cdm }))
+            .context("Failed to serialize CDM metadata")?;
+        fs::write(cdm_path, json)
+            .with_context(|| format!("Failed to write CDM metadata to {}", cdm_path.display()))?;
+        eprintln!("Created CDM metadata: {}", cdm_path.display());
+    }
+
     Ok(())
 }
 

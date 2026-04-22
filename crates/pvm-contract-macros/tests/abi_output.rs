@@ -27,10 +27,15 @@ fn cargo_run_abi(bin_name: &str) -> String {
     );
 
     let stdout = String::from_utf8(output.stdout).expect("invalid utf8 in stdout");
-    serde_json::to_string_pretty(
-        &serde_json::from_str::<serde_json::Value>(&stdout).expect("failed to parse ABI JSON"),
-    )
-    .expect("failed to serialzie json abi")
+    // abi-gen stdout is a wrapper `{"abi":[...],"cdm":"..."}`. Extract the
+    // `abi` field so fixtures remain about ABI only.
+    let wrapper: serde_json::Value =
+        serde_json::from_str(&stdout).expect("failed to parse abi-gen wrapper JSON");
+    let abi = wrapper
+        .get("abi")
+        .cloned()
+        .expect("abi-gen wrapper missing `abi` field");
+    serde_json::to_string_pretty(&abi).expect("failed to serialize json abi")
 }
 
 #[test]

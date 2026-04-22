@@ -5,7 +5,15 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
-pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File, bool)> {
+/// Parsed `abi_import!` arguments.
+pub struct AbiImportArgs {
+    pub file: syn_solidity::File,
+    pub alloc: bool,
+    /// CDM package name if `cdm = "@ns/name"` was passed.
+    pub cdm: Option<String>,
+}
+
+pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<AbiImportArgs> {
     let fork = input.fork();
     let (alloc_present, is_alloc) =
         if let Ok(syn::MetaNameValue { path, value, .. }) = fork.parse::<syn::MetaNameValue>() {
@@ -44,18 +52,33 @@ pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File,
             is_litstr_like(&fork)
         })
     {
-        parse_json(input).map(|x| (x, is_alloc))
+        let (file, cdm) = parse_json(input)?;
+        Ok(AbiImportArgs {
+            file,
+            alloc: is_alloc,
+            cdm,
+        })
     } else if alloc_present {
         let content;
 
         syn::braced!(content in input);
-        syn_solidity::File::parse(&content).map(|x| (x, is_alloc))
+        let file = syn_solidity::File::parse(&content)?;
+        Ok(AbiImportArgs {
+            file,
+            alloc: is_alloc,
+            cdm: None,
+        })
     } else {
-        syn_solidity::File::parse(input).map(|x| (x, is_alloc))
+        let file = syn_solidity::File::parse(input)?;
+        Ok(AbiImportArgs {
+            file,
+            alloc: is_alloc,
+            cdm: None,
+        })
     }
 }
 
-fn parse_json(input: ParseStream<'_>) -> Result<syn_solidity::File> {
+fn parse_json(input: ParseStream<'_>) -> Result<(syn_solidity::File, Option<String>)> {
     let name = input.parse::<Option<Ident>>()?;
     if name.is_some() {
         input.parse::<Token![,]>()?;
@@ -65,6 +88,24 @@ fn parse_json(input: ParseStream<'_>) -> Result<syn_solidity::File> {
     let mut value = macro_string.eval()?;
 
     let _ = input.parse::<Option<Token![,]>>()?;
+
+    // Optional trailing `cdm = "@ns/name"`.
+    let mut cdm: Option<String> = None;
+    if input.peek(Ident) {
+        let ident: Ident = input.parse()?;
+        if ident == "cdm" {
+            input.parse::<Token![=]>()?;
+            let name: LitStr = input.parse()?;
+            cdm = Some(name.value());
+            let _ = input.parse::<Option<Token![,]>>()?;
+        } else {
+            return Err(Error::new(
+                ident.span(),
+                format!("unexpected argument `{ident}`; expected `cdm = \"...\"`"),
+            ));
+        }
+    }
+
     if !input.is_empty() {
         let msg = "unexpected token, expected end of input";
         return Err(Error::new(input.span(), msg));
@@ -89,11 +130,12 @@ fn parse_json(input: ParseStream<'_>) -> Result<syn_solidity::File> {
         return Err(Error::new(span, msg));
     }
     let span = input.span();
-    load_json_abi(
+    let file = load_json_abi(
         name.map_or("contract".to_owned(), |x| x.to_string()),
         span,
         &path,
-    )
+    )?;
+    Ok((file, cdm))
 }
 
 pub(crate) fn load_json_abi(

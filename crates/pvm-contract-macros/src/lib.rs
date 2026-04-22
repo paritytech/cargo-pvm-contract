@@ -18,6 +18,9 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// - `allocator = "pico"` - Enables allocator mode using picoalloc
 /// - `allocator = "bump"` - Enables allocator mode using pvm-bump-allocator
 /// - `allocator_size = N` - Sets allocator heap size (with `allocator = "pico"` or `allocator = "bump"`, default: 1024)
+/// - `cdm = "@ns/name"` - Contract Dependency Manager (CDM) package identity.
+///   The builder emits `<bin>.cdm.json` alongside `<bin>.polkavm`; `cdm deploy`
+///   reads that sidecar to register this contract under the given name.
 ///
 /// # Usage with Solidity Interface
 ///
@@ -777,9 +780,49 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Imports an external contract's ABI and generates a typed call interface.
+///
+/// # Forms
+///
+/// ```ignore
+/// // Inline Solidity (bare):
+/// pvm_contract_sdk::abi_import! {
+///     interface Counter {
+///         function get() external view returns (uint64);
+///         function inc() external;
+///     }
+/// }
+///
+/// // Inline Solidity with alloc:
+/// pvm_contract_sdk::abi_import!(alloc = true, { interface Foo { ... } });
+///
+/// // JSON ABI file:
+/// pvm_contract_sdk::abi_import!(counter, "abi/counter.abi.json");
+/// ```
+///
+/// # CDM integration
+///
+/// When the JSON-path form is used, an optional `cdm = "@ns/name"` can be
+/// appended. This generates a `cdm_reference()` function inside the imported
+/// module that looks up the deployed contract address at runtime from the
+/// on-chain CDM registry:
+///
+/// ```ignore
+/// pvm_contract_sdk::abi_import!(
+///     reputation,
+///     "abi/reputation.abi.json",
+///     cdm = "@polkadot/reputation",
+/// );
+///
+/// // Later in your contract:
+/// reputation::cdm_reference().get_average_rating(subject)?;
+/// ```
+///
+/// The registry address is baked in at compile time from the
+/// `CONTRACTS_REGISTRY_ADDR` environment variable.
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
-    let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
+    let args = parse_macro_input!(input with abi_import::parse::parse_macro);
 
-    abi_import::expand_to_module(&file, alloc).into()
+    abi_import::expand_to_module(&args.file, args.alloc, args.cdm.as_deref()).into()
 }

@@ -15,6 +15,7 @@ pub struct ContractArgs {
     pub sol_path: Option<String>,
     pub allocator: Option<AllocatorKind>,
     pub allocator_size: usize,
+    pub cdm: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +31,7 @@ impl Default for ContractArgs {
             sol_path: None,
             allocator: None,
             allocator_size: 1024,
+            cdm: None,
         }
     }
 }
@@ -80,6 +82,11 @@ impl Parse for ContractArgs {
                     let size: LitInt = input.parse()?;
                     args.allocator_size = size.base10_parse()?;
                     allocator_size_set = true;
+                }
+                "cdm" => {
+                    input.parse::<Token![=]>()?;
+                    let name: LitStr = input.parse()?;
+                    args.cdm = Some(name.value());
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -499,7 +506,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(&parsed, args.sol_path.is_some());
+    let (abi_gen_helper, abi_gen_main) =
+        generate_abi_gen(&parsed, args.sol_path.is_some(), args.cdm.as_deref());
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -842,6 +850,7 @@ mod tests {
                 sol_path: Some("MyToken.sol".to_string()),
                 allocator: None,
                 allocator_size: 1024,
+                cdm: None,
             }
         );
     }
@@ -858,8 +867,27 @@ mod tests {
                 sol_path: None,
                 allocator: Some(super::AllocatorKind::Pico),
                 allocator_size: 2048,
+                cdm: None,
             }
         );
+    }
+
+    #[test]
+    fn parses_cdm_package_name() {
+        let args = syn::parse_str::<ContractArgs>("cdm = \"@polkadot/reputation\"")
+            .expect("cdm arg should parse");
+        assert_eq!(args.cdm.as_deref(), Some("@polkadot/reputation"));
+    }
+
+    #[test]
+    fn parses_cdm_alongside_sol_and_allocator() {
+        let args = syn::parse_str::<ContractArgs>(
+            "\"MyToken.sol\", allocator = \"pico\", cdm = \"@ns/tok\"",
+        )
+        .expect("cdm should parse alongside other args");
+        assert_eq!(args.sol_path.as_deref(), Some("MyToken.sol"));
+        assert_eq!(args.allocator, Some(super::AllocatorKind::Pico));
+        assert_eq!(args.cdm.as_deref(), Some("@ns/tok"));
     }
 
     #[test]

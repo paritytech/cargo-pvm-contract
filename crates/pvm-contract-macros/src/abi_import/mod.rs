@@ -199,7 +199,7 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
     }
 }
 
-pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+pub fn expand_to_module(file: &File, alloc: bool, cdm: Option<&str>) -> TokenStream {
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));
@@ -277,6 +277,8 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
             } else {
                 quote! {}
             };
+            let cdm_helper = generate_cdm_reference(&contract_name, cdm);
+
             Some(quote! {
                 pub mod #contract_module {
                     use super::*;
@@ -289,6 +291,8 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                         address: Address,
                         call_builder: CallBuilder<Mutability, Inputs, Outputs>
                     }
+
+                    #cdm_helper
 
                     impl<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> #contract_name<Mutability, Inputs, Outputs, false> {
                         #( #funcs )*
@@ -370,6 +374,116 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     }
 }
 
+/// Emit the `cdm_reference()` helper inside an imported-interface module when
+/// the `abi_import!` call specifies `cdm = "@ns/name"`. The helper resolves
+/// the contract's deployed address at runtime by calling
+/// `ContractRegistry.getAddress(string)` and returns an initialized interface
+/// handle. The registry address is baked in from the `CONTRACTS_REGISTRY_ADDR`
+/// env var at compile time.
+///
+/// # Panics (in generated code)
+///
+/// Panics if the registry call fails or the name isn't registered. A
+/// follow-up can lift this to `Result` once we decide the error surface.
+fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> TokenStream {
+    let Some(cdm_name) = cdm else {
+        return quote! {};
+    };
+    let selector = crate::signature::compute_selector("getAddress(string)");
+    let [s0, s1, s2, s3] = selector;
+
+    quote! {
+        /// Address of the CDM contract registry, baked in from the
+        /// `CONTRACTS_REGISTRY_ADDR` env var at compile time.
+        const __CDM_REGISTRY_ADDR: [u8; 20] = {
+            const fn hex(c: u8) -> u8 {
+                match c {
+                    b'0'..=b'9' => c - b'0',
+                    b'a'..=b'f' => c - b'a' + 10,
+                    b'A'..=b'F' => c - b'A' + 10,
+                    _ => panic!("CONTRACTS_REGISTRY_ADDR contains an invalid hex character"),
+                }
+            }
+            match option_env!("CONTRACTS_REGISTRY_ADDR") {
+                Some(s) => {
+                    let b = s.as_bytes();
+                    let off = if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
+                        2
+                    } else {
+                        0
+                    };
+                    assert!(
+                        b.len() - off == 40,
+                        "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (optional 0x prefix)"
+                    );
+                    let mut r = [0u8; 20];
+                    let mut i = 0;
+                    while i < 20 {
+                        r[i] = hex(b[off + i * 2]) << 4 | hex(b[off + i * 2 + 1]);
+                        i += 1;
+                    }
+                    r
+                }
+                None => panic!(
+                    "CONTRACTS_REGISTRY_ADDR must be set at compile time for contracts using `cdm`"
+                ),
+            }
+        };
+
+        /// Get a runtime-resolved interface to the CDM-registered contract.
+        ///
+        /// Looks up the deployed address from the contract registry using the
+        /// CDM package name baked in at compile time. Panics if the registry
+        /// call fails or the contract is not registered.
+        pub fn cdm_reference() -> #contract_name<Pure, (), (), false> {
+            extern crate alloc;
+
+            let cdm_name: &str = #cdm_name;
+            let name_len = cdm_name.len();
+            let padded_len = name_len.div_ceil(32) * 32;
+
+            // Calldata: 4-byte selector + ABI-encoded string
+            //   offset (32) + length (32) + data (padded to 32)
+            let mut calldata = alloc::vec![0u8; 4 + 32 + 32 + padded_len];
+            calldata[0] = #s0;
+            calldata[1] = #s1;
+            calldata[2] = #s2;
+            calldata[3] = #s3;
+            // String head: offset to tail (always 0x20)
+            calldata[4 + 24..4 + 32].copy_from_slice(&(32u64).to_be_bytes());
+            // String tail: length + bytes
+            calldata[4 + 32 + 24..4 + 32 + 32].copy_from_slice(&(name_len as u64).to_be_bytes());
+            calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
+
+            // Registry returns `(bool isSome, address value)` — 64 bytes.
+            let mut output_buf = [0u8; 64];
+            let mut output_ref: &mut [u8] = &mut output_buf[..];
+
+            let result = PolkaVmHost::call_evm(
+                CallFlags::ALLOW_REENTRY,
+                &__CDM_REGISTRY_ADDR,
+                u64::MAX,
+                &[0u8; 32],
+                &calldata,
+                Some(&mut output_ref),
+            );
+
+            match result {
+                Ok(()) => {
+                    let is_some = output_buf[31] != 0;
+                    if !is_some {
+                        panic!("CDM: contract not found in registry");
+                    }
+                    let mut addr = [0u8; 20];
+                    addr.copy_from_slice(&output_buf[44..64]);
+                    #contract_name::<Pure, (), (), false>::from_address(addr.into())
+                }
+                Err(_) => panic!("CDM: registry call failed"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::abi_import::expand_to_module;
@@ -404,7 +518,7 @@ mod test {
             #tts
         })
         .unwrap();
-        let tokens = expand_to_module(&file, true).to_token_stream();
+        let tokens = expand_to_module(&file, true, None).to_token_stream();
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
     }
 
