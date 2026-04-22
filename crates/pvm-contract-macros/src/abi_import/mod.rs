@@ -133,7 +133,7 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
             alloc::string::String
         },
         syn_solidity::Type::Bytes(_) => quote! {
-            pvm_contract_types::Bytes
+            pvm_contract_sdk::Bytes
         },
         syn_solidity::Type::FixedBytes(_, size) => {
             let size: usize = size.get().into();
@@ -364,7 +364,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
         | syn_solidity::Item::Variable(_) => None,
     });
     quote! {
-        use pvm_contract_types::*;
+        use pvm_contract_sdk::*;
         use pvm_contract_core::call::*;
 
         #(#modules)*
@@ -413,7 +413,7 @@ mod test {
     fn multi_method() {
         let file = load("multi-method");
         expect_test::expect![[r#"
-            use pvm_contract_types::*;
+            use pvm_contract_sdk::*;
             use pvm_contract_core::call::*;
             pub mod multi_method {
                 use super::*;
@@ -628,7 +628,7 @@ mod test {
     fn nested_custom_type() {
         let file = load("nested-custom-type");
         expect_test::expect![[r#"
-            use pvm_contract_types::*;
+            use pvm_contract_sdk::*;
             use pvm_contract_core::call::*;
             pub mod nested_custom_type {
                 use super::*;
@@ -842,7 +842,7 @@ mod test {
     fn composite_type_method() {
         let file = load("custom-type-method");
         expect_test::expect![[r#"
-            use pvm_contract_types::*;
+            use pvm_contract_sdk::*;
             use pvm_contract_core::call::*;
             pub mod custom_type_method {
                 use super::*;
@@ -1029,7 +1029,7 @@ mod test {
     fn dynamic_custom_return() {
         let file = load("dynamic-custom-return");
         expect_test::expect![[r#"
-            use pvm_contract_types::*;
+            use pvm_contract_sdk::*;
             use pvm_contract_core::call::*;
             pub mod dynamic_custom_return {
                 use super::*;
@@ -1252,7 +1252,7 @@ mod test {
     fn constructor_args() {
         let file = load("constructor-with-params");
         expect_test::expect![[r#"
-            use pvm_contract_types::*;
+            use pvm_contract_sdk::*;
             use pvm_contract_core::call::*;
             pub mod constructor_with_params {
                 use super::*;

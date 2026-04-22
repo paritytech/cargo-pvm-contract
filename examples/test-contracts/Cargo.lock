@@ -1852,7 +1852,6 @@ dependencies = [
  "polkavm-derive 0.31.0",
  "pvm-contract-core",
  "pvm-contract-sdk",
- "pvm-contract-types",
 ]
 
 [[package]]
