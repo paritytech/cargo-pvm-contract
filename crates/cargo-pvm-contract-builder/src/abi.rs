@@ -129,8 +129,8 @@ fn generate_abi_via_feature(
         String::from_utf8(output.stdout).context("ABI generation output is not valid UTF-8")?;
 
     // abi-gen stdout is a wrapper `{"abi":<array|null>,"cdm":<string?>}`.
-    let wrapper: serde_json::Value = serde_json::from_str(&stdout_str)
-        .context("Failed to parse abi-gen wrapper JSON")?;
+    let wrapper: serde_json::Value =
+        serde_json::from_str(&stdout_str).context("Failed to parse abi-gen wrapper JSON")?;
 
     let abi_value = wrapper
         .get("abi")

@@ -300,7 +300,9 @@ mod tests {
     fn emits_cdm_package_none_when_unset() {
         let (helper, _) = generate_abi_gen(&empty_parsed(), false, None);
         assert!(
-            helper.to_string().contains(":: core :: option :: Option :: None"),
+            helper
+                .to_string()
+                .contains(":: core :: option :: Option :: None"),
             "helper must return Option::None when cdm is unset"
         );
     }
