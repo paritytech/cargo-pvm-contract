@@ -1,38 +1,37 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_types::{PolkaVmHost as api, ReturnFlags, StorageFlags};
-use ruint::aliases::U256;
+use pvm_contract_sdk::{PolkaVmHost, ReturnFlags, StorageFlags, U256};
 
 {% if let Some(sol_file_name) = sol_file_name %}
 {% if use_alloc -%}
-#[pvm_contract_macros::contract("{{ sol_file_name }}", allocator = "bump")]
+#[pvm_contract_sdk::contract("{{ sol_file_name }}", allocator = "bump")]
 {% else -%}
-#[pvm_contract_macros::contract("{{ sol_file_name }}")]
+#[pvm_contract_sdk::contract("{{ sol_file_name }}")]
 {% endif -%}
 {% else %}
 {% if use_alloc -%}
-#[pvm_contract_macros::contract(allocator = "bump")]
+#[pvm_contract_sdk::contract(allocator = "bump")]
 {% else -%}
-#[pvm_contract_macros::contract]
+#[pvm_contract_sdk::contract]
 {% endif -%}
 {% endif %}
 mod contract {
     use super::*;
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
+    #[pvm_contract_sdk::constructor]
+    pub fn new() -> Result<(), pvm_contract_sdk::EmptyError> {
         Ok(())
     }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
+    #[pvm_contract_sdk::fallback]
+    pub fn fallback() -> Result<(), pvm_contract_sdk::EmptyError> {
         Ok(())
     }
 
 {% if let Some(sol_file_name) = sol_file_name %}
      // TODO: Implement the following methods from {{ sol_file_name }}:
 {% for func in functions %}
-     #[pvm_contract_macros::method]
+     #[pvm_contract_sdk::method]
      pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
          todo!()
      }
@@ -40,8 +39,8 @@ mod contract {
 {% else %}
     // Add your contract methods here
     // Example:
-    // #[pvm_contract_macros::method]
-    // pub fn my_method(param: U256) -> Result<U256, pvm_contract_types::EmptyError> {
+    // #[pvm_contract_sdk::method]
+    // pub fn my_method(param: U256) -> Result<U256, pvm_contract_sdk::EmptyError> {
     //     Ok(param)
     // }
 {% endif %}

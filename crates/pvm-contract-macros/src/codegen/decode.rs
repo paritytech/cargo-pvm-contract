@@ -11,8 +11,8 @@ pub fn generate_decode_params(types: &[syn::Type]) -> Vec<TokenStream> {
         .iter()
         .map(|ty| {
             quote! {{
-                let __value = <#ty as ::pvm_contract_types::SolDecode>::decode_at(&input, __decode_offset);
-                __decode_offset += <#ty as ::pvm_contract_types::SolEncode>::SLOT_SIZE;
+                let __value = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(&input, __decode_offset);
+                __decode_offset += <#ty as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                 __value
             }}
         })
@@ -27,7 +27,7 @@ pub fn calculate_min_input_size(types: &[syn::Type]) -> TokenStream {
     let size_exprs: Vec<TokenStream> = types
         .iter()
         .map(|ty| {
-            quote! { <#ty as ::pvm_contract_types::SolEncode>::SLOT_SIZE }
+            quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE }
         })
         .collect();
     quote! { 0 #(+ #size_exprs)* }

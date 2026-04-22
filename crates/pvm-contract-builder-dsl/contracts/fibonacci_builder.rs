@@ -2,10 +2,10 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags};
-use pvm_contract_builder_dsl::ContractBuilder;
-use pvm_contract_builder_dsl::solidity_selector;
-use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    HostApi as _, PolkaVmHost, ReturnFlags, SolDecode, SolEncode, StaticEncodedLen,
+};
+use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
 
 const FIBONACCI_SELECTOR: [u8; 4] = solidity_selector("fibonacci(uint32)");
 

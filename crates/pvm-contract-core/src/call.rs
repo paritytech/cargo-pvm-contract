@@ -1,12 +1,12 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pvm_contract_types::{
-    Address, CallFlags, HostApi, PolkaVmHost as api, ReturnErrorCode, SolDecode, SolEncode,
-    SolError, const_selector,
+    Address, CallFlags, HostApi, PolkaVmHost, ReturnErrorCode, SolDecode, SolEncode, SolError,
+    const_selector,
 };
 use ruint::aliases::U256;
 
-/// Errors returned by host_api::call()/host_api::instantiate()
+/// Errors returned by `PolkaVmHost::call()` / `PolkaVmHost::instantiate()`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum CallError {
@@ -192,13 +192,13 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => {
-                api::delegate_call_evm(call_flags, &address.0, limit, input_buf, None)
+                PolkaVmHost::delegate_call_evm(call_flags, &address.0, limit, input_buf, None)
             }
             CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
                 proof_size_limit,
                 deposit_limit,
-            }) => api::delegate_call(
+            }) => PolkaVmHost::delegate_call(
                 call_flags,
                 &address.0,
                 ref_time_limit,
@@ -215,13 +215,13 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         if self.output_size() > output_buf.len() {
             return Err(CallError::OutputBufTooSmall);
         }
-        api::return_data_copy(&mut output_buf, 0);
+        PolkaVmHost::return_data_copy(&mut output_buf, 0);
         Ok(R::decode(output_buf))
     }
 
     pub fn output_size(&self) -> usize {
         // safe as we always run on 64bit arches
-        api::return_data_size() as usize
+        PolkaVmHost::return_data_size() as usize
     }
 
     /// Execute code in the context (storage, caller, value) of the current contract.
@@ -250,7 +250,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         }
         input_buf[..32].copy_from_slice(&code_hash[..]);
         self.payload.encode_to(&mut input_buf[32..]);
-        api::instantiate(
+        PolkaVmHost::instantiate(
             limits.ref_time_limit,
             limits.proof_size_limit,
             &limits.deposit_limit,
@@ -288,7 +288,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf[..4].copy_from_slice(&self.selector[..]);
         self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
-            CallLimits::GasLimit(limit) => api::call_evm(
+            CallLimits::GasLimit(limit) => PolkaVmHost::call_evm(
                 call_flags,
                 &address.0,
                 limit,
@@ -300,7 +300,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 ref_time_limit,
                 proof_size_limit,
                 deposit_limit,
-            }) => api::call(
+            }) => PolkaVmHost::call(
                 call_flags,
                 &address.0,
                 ref_time_limit,

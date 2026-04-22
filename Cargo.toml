@@ -5,6 +5,7 @@ members = [
     "crates/pvm-contract-macros",
     "crates/pvm-contract-types",
     "crates/pvm-contract-core",
+    "crates/pvm-contract-sdk",
     "crates/pvm-bump-allocator",
     "crates/pvm-contract-benchmarks",
     "crates/pvm-contract-builder-dsl",

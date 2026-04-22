@@ -31,18 +31,16 @@ name = "example-mytoken-alloy-alloc"
 path = "src/example-mytoken-alloy-alloc.rs"
 
 [dependencies]
-pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
-pvm-contract-types = { path = "../../crates/pvm-contract-types" }
+pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk" }
+polkavm-derive = { version = "0.31.0" }  # required by proc macro generated code
+pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }  # SolErrorType derive used by DSL binary
 pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
 alloy-core = { version = "1.5", default-features = false, features = ["sol-types"] }
-pallet-revive-uapi = { version = "0.11", default-features = false }
-polkavm-derive = { version = "0.31.0" }
-ruint = { version = "1.17", default-features = false }
 picoalloc = { version = "5", default-features = false }
 pvm-bump-allocator = { path = "../../crates/pvm-bump-allocator" }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]
+abi-gen = ["pvm-contract-sdk/abi-gen"]
 
 [profile.release]
 codegen-units = 1

@@ -60,7 +60,7 @@ fn expand_static_sol_type(
     let abi_param_fn = quote::quote! {};
 
     Ok(quote! {
-        impl ::pvm_contract_types::SolEncode for #name {
+        impl ::pvm_contract_sdk::SolEncode for #name {
             const IS_DYNAMIC: bool = false;
             const SOL_NAME: &'static str = #sol_name_expr;
             const HEAD_SIZE: usize = #total_size_expr;
@@ -77,17 +77,17 @@ fn expand_static_sol_type(
             #abi_param_fn
         }
 
-        impl ::pvm_contract_types::StaticEncodedLen for #name {
+        impl ::pvm_contract_sdk::StaticEncodedLen for #name {
             const ENCODED_SIZE: usize = #total_size_expr;
         }
 
-        impl ::pvm_contract_types::SolDecode for #name {
+        impl ::pvm_contract_sdk::SolDecode for #name {
             fn decode_at(input: &[u8], offset: usize) -> Self {
                 #decode_body
             }
         }
 
-        impl ::pvm_contract_types::SolArrayElement for #name {}
+        impl ::pvm_contract_sdk::SolArrayElement for #name {}
     })
 }
 
@@ -109,7 +109,7 @@ fn expand_dynamic_sol_type(
     let abi_param_fn = quote::quote! {};
 
     Ok(quote! {
-        impl ::pvm_contract_types::SolEncode for #name {
+        impl ::pvm_contract_sdk::SolEncode for #name {
             const IS_DYNAMIC: bool = #is_dynamic_expr;
             const SOL_NAME: &'static str = #sol_name_expr;
             const HEAD_SIZE: usize = #head_size_expr;
@@ -125,7 +125,7 @@ fn expand_dynamic_sol_type(
             #abi_param_fn
         }
 
-        impl ::pvm_contract_types::SolDecode for #name {
+        impl ::pvm_contract_sdk::SolDecode for #name {
             fn decode_at(input: &[u8], offset: usize) -> Self {
                 #decode_body
             }
@@ -135,7 +135,7 @@ fn expand_dynamic_sol_type(
             }
         }
 
-        impl ::pvm_contract_types::SolArrayElement for #name {}
+        impl ::pvm_contract_sdk::SolArrayElement for #name {}
     })
 }
 
@@ -157,15 +157,15 @@ fn generate_abi_param_fn(
                 None => String::new(),
             };
             quote! {
-                <#field_ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+                <#field_ty as ::pvm_contract_sdk::SolEncode>::abi_param(#name_str)
             }
         })
         .collect();
 
     quote! {
-        fn abi_param(name: &str) -> ::pvm_contract_types::AbiParam {
+        fn abi_param(name: &str) -> ::pvm_contract_sdk::AbiParam {
             extern crate alloc;
-            ::pvm_contract_types::AbiParam {
+            ::pvm_contract_sdk::AbiParam {
                 name: alloc::string::String::from(name),
                 param_type: alloc::string::String::from("tuple"),
                 components: alloc::vec![#(#component_exprs),*],
@@ -190,7 +190,7 @@ fn build_is_dynamic_expr(
         .zip(field_types.iter())
         .map(|((_, t), ty)| match t.is_dynamic() {
             Some(is_dyn) => quote! { #is_dyn },
-            None => quote! { <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC },
+            None => quote! { <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC },
         })
         .collect();
 
@@ -201,7 +201,7 @@ pub(crate) fn sol_type_name_parts(ty: &SolType, parts: &mut Vec<TokenStream>) {
     match ty {
         SolType::Custom(name) => match syn::parse_str::<syn::Path>(name) {
             Ok(type_path) => {
-                parts.push(quote! { <#type_path as ::pvm_contract_types::SolEncode>::SOL_NAME });
+                parts.push(quote! { <#type_path as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
             }
             Err(err) => {
                 let msg =
@@ -262,7 +262,7 @@ fn build_sol_name_expr(field_info: &[(Option<syn::Ident>, SolType)]) -> TokenStr
     }
 
     parts.push(quote! { ")" });
-    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 fn build_total_size_expr(field_info: &[(Option<syn::Ident>, SolType)]) -> TokenStream {
@@ -291,7 +291,7 @@ fn sol_type_head_size_expr(ty: &SolType) -> TokenStream {
     match ty {
         SolType::Custom(name) => match syn::parse_str::<syn::Path>(name) {
             Ok(type_path) => {
-                quote! { <#type_path as ::pvm_contract_types::SolEncode>::HEAD_SIZE }
+                quote! { <#type_path as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE }
             }
             Err(err) => {
                 let msg =
@@ -351,8 +351,8 @@ fn generate_static_encode_body(fields: &Fields) -> TokenStream {
         };
 
         stmts.push(quote! {
-            let __hs = <#field_ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
-            ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__offset..__offset + __hs]);
+            let __hs = <#field_ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
+            ::pvm_contract_sdk::SolEncode::encode_body_to(&#field_access, &mut buf[__offset..__offset + __hs]);
             __offset += __hs;
         });
     }
@@ -373,8 +373,8 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
                 pre_stmts.push(quote! {
                     let #tmp = {
-                        let __val = <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + __offset);
-                        __offset += <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset);
+                        __offset += <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
                         __val
                     };
                 });
@@ -396,8 +396,8 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
                 pre_stmts.push(quote! {
                     let #tmp = {
-                        let __val = <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + __offset);
-                        __offset += <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset);
+                        __offset += <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
                         __val
                     };
                 });
@@ -469,7 +469,7 @@ fn build_dynamic_head_sum_expr(
                 quote! { #size }
             }
             None => quote! {
-                <#ty as ::pvm_contract_types::SolEncode>::SLOT_SIZE
+                <#ty as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE
             },
         })
         .collect();
@@ -502,12 +502,12 @@ pub(crate) fn generate_dynamic_encode_len(
 
             match sol_type.is_dynamic() {
                 Some(true) => Some(quote! {
-                    ::pvm_contract_types::SolEncode::encode_body_len(&#field_access)
+                    ::pvm_contract_sdk::SolEncode::encode_body_len(&#field_access)
                 }),
                 Some(false) => None,
                 None => Some(quote! {
-                    if <#field_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                        ::pvm_contract_types::SolEncode::encode_body_len(&#field_access)
+                    if <#field_ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
+                        ::pvm_contract_sdk::SolEncode::encode_body_len(&#field_access)
                     } else {
                         0usize
                     }
@@ -552,8 +552,8 @@ pub(crate) fn generate_dynamic_encode_body(
                         let __ho = #head_offset_expr;
                         buf[__ho..__ho + 24].fill(0);
                         buf[__ho + 24..__ho + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-                        let __tail_len = ::pvm_contract_types::SolEncode::encode_body_len(&#field_access);
-                        ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                        let __tail_len = ::pvm_contract_sdk::SolEncode::encode_body_len(&#field_access);
+                        ::pvm_contract_sdk::SolEncode::encode_body_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
                         __tail_offset += __tail_len;
                     }
                 });
@@ -562,7 +562,7 @@ pub(crate) fn generate_dynamic_encode_body(
                 stmts.push(quote! {
                     {
                         let __ho = #head_offset_expr;
-                        ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__ho..]);
+                        ::pvm_contract_sdk::SolEncode::encode_body_to(&#field_access, &mut buf[__ho..]);
                     }
                 });
             }
@@ -570,14 +570,14 @@ pub(crate) fn generate_dynamic_encode_body(
                 stmts.push(quote! {
                     {
                         let __ho = #head_offset_expr;
-                        if <#field_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+                        if <#field_ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
                             buf[__ho..__ho + 24].fill(0);
                             buf[__ho + 24..__ho + 32].copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-                            let __tail_len = ::pvm_contract_types::SolEncode::encode_body_len(&#field_access);
-                            ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
+                            let __tail_len = ::pvm_contract_sdk::SolEncode::encode_body_len(&#field_access);
+                            ::pvm_contract_sdk::SolEncode::encode_body_to(&#field_access, &mut buf[__tail_offset..__tail_offset + __tail_len]);
                             __tail_offset += __tail_len;
                         } else {
-                            ::pvm_contract_types::SolEncode::encode_body_to(&#field_access, &mut buf[__ho..]);
+                            ::pvm_contract_sdk::SolEncode::encode_body_to(&#field_access, &mut buf[__ho..]);
                         }
                     }
                 });
@@ -652,21 +652,21 @@ fn generate_dynamic_field_decode(
             let __field_offset =
                 u64::from_be_bytes(input[offset + __ho + 24..offset + __ho + 32].try_into().unwrap())
                     as usize;
-            <#ty as ::pvm_contract_types::SolDecode>::decode_tail(input, offset + __field_offset)
+            <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)
         }},
         Some(false) => quote! {{
             let __ho = #head_offset_expr;
-            <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + __ho)
+            <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)
         }},
         None => quote! {{
             let __ho = #head_offset_expr;
-            if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+            if <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
                 let __field_offset =
                     u64::from_be_bytes(input[offset + __ho + 24..offset + __ho + 32].try_into().unwrap())
                         as usize;
-                <#ty as ::pvm_contract_types::SolDecode>::decode_tail(input, offset + __field_offset)
+                <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)
             } else {
-                <#ty as ::pvm_contract_types::SolDecode>::decode_at(input, offset + __ho)
+                <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)
             }
         }},
     }
@@ -731,8 +731,7 @@ mod tests {
             ),
         ];
         let expr = build_total_size_expr(&field_info);
-        let expected =
-            quote! { 0 + 32usize + <Count as ::pvm_contract_types::SolEncode>::HEAD_SIZE };
+        let expected = quote! { 0 + 32usize + <Count as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE };
         assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
     }
 
@@ -744,9 +743,9 @@ mod tests {
         )];
         let expr = build_sol_name_expr(&field_info);
         let expected = quote! {
-            ::pvm_contract_types::const_format::concatcp!(
+            ::pvm_contract_sdk::const_format::concatcp!(
                 "(",
-                <Count as ::pvm_contract_types::SolEncode>::SOL_NAME,
+                <Count as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
                 ")"
             )
         };
@@ -798,7 +797,7 @@ mod tests {
         let expr = build_dynamic_head_size_expr(fields, &field_info);
         let expected = quote! {
             (0 +
-                <Count as ::pvm_contract_types::SolEncode>::SLOT_SIZE
+                <Count as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE
                 + 32usize)
         };
         assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
@@ -838,7 +837,7 @@ mod tests {
         let expr = build_dynamic_field_offset_expr(&field_info, &field_types, 2);
         let expected = quote! {
             (0 +
-                <Count as ::pvm_contract_types::SolEncode>::SLOT_SIZE
+                <Count as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE
                 + 32usize)
         };
         assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
@@ -871,7 +870,7 @@ mod tests {
 
         let expr = build_is_dynamic_expr(fields, &field_info);
         let expected = quote! {
-            false || <Point as ::pvm_contract_types::SolEncode>::IS_DYNAMIC || false
+            false || <Point as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC || false
         };
         assert_eq!(normalize_tokens(expr), normalize_tokens(expected));
     }
@@ -888,8 +887,8 @@ mod tests {
         let expanded = normalize_tokens(expand_sol_type(input).unwrap());
         let expected_is_dynamic = normalize_tokens(quote! {
             const IS_DYNAMIC: bool = false
-                || <Point as ::pvm_contract_types::SolEncode>::IS_DYNAMIC
-                || <Point as ::pvm_contract_types::SolEncode>::IS_DYNAMIC;
+                || <Point as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC
+                || <Point as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC;
         });
         assert!(expanded.contains(&expected_is_dynamic));
     }
@@ -906,7 +905,7 @@ mod tests {
         let expanded = normalize_tokens(expand_sol_type(input).unwrap());
         let expected_is_dynamic = normalize_tokens(quote! {
             const IS_DYNAMIC: bool = false
-                || <Point as ::pvm_contract_types::SolEncode>::IS_DYNAMIC
+                || <Point as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC
                 || true;
         });
         assert!(expanded.contains(&expected_is_dynamic));

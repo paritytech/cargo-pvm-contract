@@ -12,11 +12,12 @@ interface Flipper {
 }
 }
 
-#[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_instantiate {
 
-    use pvm_contract_core::call::{CallError, RefTimeAndProofSizeLimits};
-    use pvm_contract_types::{PolkaVmHost as api, *};
+    use pvm_contract_sdk::PolkaVmHost;
+    use pvm_contract_sdk::*;
+    use pvm_contract_sdk::{CallError, RefTimeAndProofSizeLimits};
 
     use super::*;
     use flipper::{self, Flipper};
@@ -27,12 +28,12 @@ mod flipper_instantiate {
         }
     }
 
-    #[pvm_contract_macros::constructor]
+    #[pvm_contract_sdk::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn call_flipper(addr: Address) -> Result<(), Error> {
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
@@ -45,9 +46,9 @@ mod flipper_instantiate {
         assert_eq!(res, true);
         // test deployed
         let mut code_hash = [0; 32];
-        let _ = api::code_hash(&addr.0, &mut code_hash);
+        let _ = PolkaVmHost::code_hash(&addr.0, &mut code_hash);
         let f = flipper::new_flipper();
-        let deposit_limit = ruint::aliases::U256::from(u128::MAX);
+        let deposit_limit = pvm_contract_sdk::U256::from(u128::MAX);
         let deposit_limit = deposit_limit.to_be_bytes();
         let (addr, _) = f.instantiate(
             &code_hash,
@@ -71,7 +72,7 @@ mod flipper_instantiate {
         Ok(())
     }
 
-    #[pvm_contract_macros::fallback]
+    #[pvm_contract_sdk::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }

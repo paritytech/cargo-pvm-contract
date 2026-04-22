@@ -1,7 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_types::{PolkaVmHost as api, StorageFlags};
-use ruint::aliases::U256;
+use pvm_contract_sdk::{PolkaVmHost, StorageFlags, U256};
 
 #[cfg(not(feature = "abi-gen"))]
 #[global_allocator]
@@ -13,51 +12,51 @@ static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<
     }))
 };
 
-#[pvm_contract_macros::contract("MyToken.sol", buffer = 256)]
+#[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;
-    use pvm_contract_types::Address;
+    use pvm_contract_sdk::Address;
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct InsufficientBalance;
 
-    pvm_contract_types::sol_revert_enum! {
+    pvm_contract_sdk::sol_revert_enum! {
         pub enum TokenError {
             InsufficientBalance(InsufficientBalance),
         }
     }
 
-    #[pvm_contract_macros::constructor]
+    #[pvm_contract_sdk::constructor]
     pub fn new() -> Result<(), TokenError> {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn total_supply() -> U256 {
         let key = total_supply_key();
         let mut supply_bytes = [0u8; 32];
         let mut supply_slice = &mut supply_bytes[..];
 
-        match api::get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
+        match PolkaVmHost::get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
             Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
             Err(_) => U256::ZERO,
         }
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn balance_of(account: Address) -> U256 {
         let account: [u8; 20] = account.into();
         let key = balance_key(&account);
         let mut balance_bytes = [0u8; 32];
         let mut balance_slice = &mut balance_bytes[..];
 
-        match api::get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
+        match PolkaVmHost::get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
             Ok(_) => U256::from_be_bytes::<32>(balance_bytes),
             Err(_) => U256::ZERO,
         }
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> {
         let caller = get_caller();
         let sender_balance = balance_of(caller.into());
@@ -78,7 +77,7 @@ mod my_token {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn mint(to: Address, amount: U256) -> Result<(), TokenError> {
         let new_recipient_balance = balance_of(to).saturating_add(amount);
 
@@ -93,7 +92,7 @@ mod my_token {
         Ok(())
     }
 
-    #[pvm_contract_macros::fallback]
+    #[pvm_contract_sdk::fallback]
     pub fn fallback() -> Result<(), TokenError> {
         Ok(())
     }
@@ -108,23 +107,23 @@ mod my_token {
         input[63] = 1;
 
         let mut key = [0u8; 32];
-        api::hash_keccak_256(&input, &mut key);
+        PolkaVmHost::hash_keccak_256(&input, &mut key);
         key
     }
 
     fn set_total_supply(amount: U256) {
         let key = total_supply_key();
-        api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
+        PolkaVmHost::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
     }
 
     fn set_balance(addr: &[u8; 20], amount: U256) {
         let key = balance_key(addr);
-        api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
+        PolkaVmHost::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
     }
 
     fn get_caller() -> [u8; 20] {
         let mut caller = [0u8; 20];
-        api::caller(&mut caller);
+        PolkaVmHost::caller(&mut caller);
         caller
     }
 
@@ -143,6 +142,6 @@ mod my_token {
 
         let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
         let data = value.to_be_bytes::<32>();
-        api::deposit_event(&topics, &data);
+        PolkaVmHost::deposit_event(&topics, &data);
     }
 }

@@ -1,10 +1,11 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags};
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    HostApi as _, PolkaVmHost, ReturnFlags, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
+    U256,
+};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
-use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen};
-use ruint::aliases::U256;
 
 const ADD_SELECTOR: [u8; 4] = solidity_selector("add(uint32,uint32)");
 const MULTIPLY_SELECTOR: [u8; 4] = solidity_selector("multiply(uint64,uint64)");

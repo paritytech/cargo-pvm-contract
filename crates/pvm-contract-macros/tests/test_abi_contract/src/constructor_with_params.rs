@@ -2,8 +2,8 @@
 
 #[pvm_contract_macros::contract]
 mod my_contract {
-    use pvm_contract_types::Address;
-    use ruint::aliases::U256;
+    use pvm_contract_sdk::Address;
+    use pvm_contract_sdk::U256;
 
     #[pvm_contract_macros::constructor]
     pub fn new(owner: Address, supply: U256) {}

@@ -10,18 +10,18 @@ use super::decode::{calculate_min_input_size, generate_decode_params};
 pub(super) fn generate_revert_encoding(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
-            let __revert_len = ::pvm_contract_types::SolRevert::revert_data_len(&e);
+            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data_len(&e);
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
-            ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            ::pvm_contract_types::PolkaVmHost::return_value(
-                ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf);
+            ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            ::pvm_contract_sdk::PolkaVmHost::return_value(
+                ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf);
         }
     } else {
         quote! {
             let mut __revert_buf = [0u8; 256];
-            let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            ::pvm_contract_types::PolkaVmHost::return_value(
-                ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
+            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            ::pvm_contract_sdk::PolkaVmHost::return_value(
+                ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
         }
     }
 }
@@ -54,9 +54,9 @@ pub(super) fn generate_param_decoding(
     let size_check = if !param_types.is_empty() {
         quote! {
             if input.len() < (#min_size_expr) {
-                ::pvm_contract_types::PolkaVmHost::return_value(
-                    ::pvm_contract_types::ReturnFlags::REVERT,
-                    &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
             }
         }
     } else {
@@ -103,7 +103,7 @@ fn build_selector_const(method: &MethodInfo) -> TokenStream {
     } else {
         let sig_expr = build_const_signature_expr(method);
         quote! {
-            const #sel_ident: [u8; 4] = ::pvm_contract_types::const_selector(#sig_expr);
+            const #sel_ident: [u8; 4] = ::pvm_contract_sdk::const_selector(#sig_expr);
         }
     }
 }
@@ -118,11 +118,11 @@ fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
         if i > 0 {
             parts.push(quote! { "," });
         }
-        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::SOL_NAME });
+        parts.push(quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
     }
 
     parts.push(quote! { ")" });
-    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStream, TokenStream) {
@@ -210,7 +210,7 @@ pub fn generate_router(
 
     let route_items = RouteItems {
         contract_struct: quote! {
-            /// Unit struct that implements [`::pvm_contract_types::Router`] for this contract.
+            /// Unit struct that implements [`::pvm_contract_sdk::Router`] for this contract.
             pub struct Contract;
         },
         route_fn: quote! {
@@ -228,7 +228,7 @@ pub fn generate_router(
 
     let router_impl = RouterImpl {
         tokens: quote! {
-            impl ::pvm_contract_types::Router for #mod_name::Contract {
+            impl ::pvm_contract_sdk::Router for #mod_name::Contract {
                 fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
                     #mod_name::route(selector, input)
                 }
@@ -258,13 +258,13 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         // Use StaticEncodedLen for stack buffer since IS_DYNAMIC is const-false.
         return quote! {{
             const { assert!(
-                !<#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
+                !<#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC,
                 "dynamic types (String, Vec, Bytes) require allocator = \"pico\" or \"bump\""
             ) };
-            let mut __buf = [0u8; <#ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-            <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-            ::pvm_contract_types::PolkaVmHost::return_value(
-                ::pvm_contract_types::ReturnFlags::empty(), &__buf);
+            let mut __buf = [0u8; <#ty as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE];
+            <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
+            ::pvm_contract_sdk::PolkaVmHost::return_value(
+                ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
         }};
     }
 
@@ -272,13 +272,13 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
         const { assert!(
-            !<#tuple_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
+            !<#tuple_ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC,
             "dynamic return types require allocator = \"pico\" or \"bump\""
         ) };
-        let mut __buf = [0u8; <#tuple_ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-        <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-        ::pvm_contract_types::PolkaVmHost::return_value(
-            ::pvm_contract_types::ReturnFlags::empty(), &__buf);
+        let mut __buf = [0u8; <#tuple_ty as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE];
+        <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
+        ::pvm_contract_sdk::PolkaVmHost::return_value(
+            ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
     }}
 }
 
@@ -291,17 +291,17 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         // for the (unreachable) case where a dynamic type reaches the static path.
         // Single return: encode_to handles smart wrapping (IS_TUPLE + IS_DYNAMIC).
         return quote! {{
-            let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
-            if <#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+            let __len = <#ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
+            if <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
                 let mut __buf = alloc::vec![0u8; __len];
-                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-                ::pvm_contract_types::PolkaVmHost::return_value(
-                    ::pvm_contract_types::ReturnFlags::empty(), &__buf);
+                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
             } else {
-                let mut __buf = [0u8; <#ty as ::pvm_contract_types::SolEncode>::HEAD_SIZE];
-                <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-                ::pvm_contract_types::PolkaVmHost::return_value(
-                    ::pvm_contract_types::ReturnFlags::empty(), &__buf[..__len]);
+                let mut __buf = [0u8; <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
+                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf[..__len]);
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::empty(), &__buf[..__len]);
             }
         }};
     }
@@ -309,10 +309,10 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     // Multi-return: result is a tuple. Use the tuple's encode_to (IS_TUPLE=true → flat body).
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
-        let __len = <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+        let __len = <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
         let mut __buf = alloc::vec![0u8; __len];
-        <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-        ::pvm_contract_types::PolkaVmHost::return_value(
-            ::pvm_contract_types::ReturnFlags::empty(), &__buf);
+        <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
+        ::pvm_contract_sdk::PolkaVmHost::return_value(
+            ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
     }}
 }

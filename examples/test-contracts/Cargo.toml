@@ -60,22 +60,12 @@ name = "constructor-args"
 path = "src/constructor-args.rs"
 
 [dependencies]
-pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
-pvm-contract-types = { path = "../../crates/pvm-contract-types", features = [
-    "alloc",
-] }
-pvm-contract-core = { path = "../../crates/pvm-contract-core" }
-alloy-core = { version = "1.5.7", default-features = false, features = [
-    "sol-types",
-    "json",
-] }
-pallet-revive-uapi = { version = "0.11", default-features = false }
-polkavm-derive = { version = "0.31.0" }
-ruint = { version = "1.17", default-features = false }
+pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = ["alloc"] }
+polkavm-derive = { version = "0.31.0" }  # required by proc macro generated code
 picoalloc = { version = "5", default-features = false }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]
+abi-gen = ["pvm-contract-sdk/abi-gen"]
 
 [build-dependencies]
 cargo-pvm-contract-builder = { path = "../../crates/cargo-pvm-contract-builder" }

@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use ruint::aliases::U256;
+use pvm_contract_sdk::U256;
 
 #[derive(pvm_contract_macros::SolType)]
 pub struct MyPoint {
