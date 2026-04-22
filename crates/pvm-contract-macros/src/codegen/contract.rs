@@ -419,6 +419,48 @@ fn parse_contract(
         type_path.path.segments.last().map(|s| s.ident.clone())
     });
 
+    // A contract is a single type — the dispatcher constructs one `this` and
+    // calls every method on it. Methods scattered across different structs
+    // would either fail with a confusing "no method" error from macro-generated
+    // code, or silently dispatch to a same-named method on the wrong type.
+    if let Some(expected) = &struct_name {
+        for item in &content.1 {
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            let has_contract_attrs = item_impl.items.iter().any(|ii| {
+                if let syn::ImplItem::Fn(f) = ii {
+                    has_pvm_attr(&f.attrs, "method")
+                        || has_pvm_attr(&f.attrs, "constructor")
+                        || has_pvm_attr(&f.attrs, "fallback")
+                } else {
+                    false
+                }
+            });
+            if !has_contract_attrs {
+                continue;
+            }
+            let ident = match item_impl.self_ty.as_ref() {
+                syn::Type::Path(type_path) => type_path.path.segments.last().map(|s| &s.ident),
+                _ => None,
+            };
+            let Some(ident) = ident else {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    "Contract `impl` target must be a named struct type",
+                ));
+            };
+            if ident != expected {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    format!(
+                        "All contract `impl` blocks must target the same struct; expected `{expected}`, found `{ident}`"
+                    ),
+                ));
+            }
+        }
+    }
+
     // Collect methods from every `impl` block in the module.
     let mut methods = Vec::new();
     let mut has_constructor = false;
