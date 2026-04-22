@@ -1,14 +1,19 @@
 //! SDK for building Rust smart contracts targeting PolkaVM.
 //!
-//! This is the single user-facing dependency for the macro-based contract API.
+//! This is the primary user-facing entry point for the macro-based contract API.
 //! It re-exports proc macros, ABI encoding traits, host API wrappers, and
-//! primitive types so contract authors only need one crate in their `Cargo.toml`.
+//! primitive types. Note, however, that the current proc-macro expansion still
+//! references `pvm-contract-types` and `polkavm-derive` by absolute crate path,
+//! so contract crates must currently include those dependencies directly in
+//! `Cargo.toml` as well.
 //!
 //! # Quick start
 //!
 //! ```toml
 //! [dependencies]
 //! pvm-contract-sdk = "0.3"
+//! pvm-contract-types = "0.3"
+//! polkavm-derive = "0.31"
 //! ```
 //!
 //! ```ignore

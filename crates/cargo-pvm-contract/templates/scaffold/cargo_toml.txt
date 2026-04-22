@@ -14,11 +14,9 @@ path = "src/{{ bin_source }}.rs"
 {% if use_dsl -%}
 {% if let Some(path) = local_path -%}
 pvm-contract-builder-dsl = { path = "{{ path }}/crates/pvm-contract-builder-dsl" }
-pvm-contract-macros = { path = "{{ path }}/crates/pvm-contract-macros" }
 polkavm-derive = { version = "0.31.0" }
 {% else -%}
 pvm-contract-builder-dsl = "{{ builder_version }}"
-pvm-contract-macros = "{{ builder_version }}"
 polkavm-derive = { version = "0.31.0" }
 {% endif -%}
 {% else -%}

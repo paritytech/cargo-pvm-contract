@@ -6,7 +6,7 @@ use pvm_contract_types::{
 };
 use ruint::aliases::U256;
 
-/// Errors returned by host_PolkaVmHost::call()/host_PolkaVmHost::instantiate()
+/// Errors returned by `PolkaVmHost::call()` / `PolkaVmHost::instantiate()`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum CallError {

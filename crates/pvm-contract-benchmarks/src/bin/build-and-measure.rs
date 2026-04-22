@@ -109,7 +109,6 @@ overflow-checks = false
 
 fn cargo_toml_builder_dsl(contract: &str, base_path: &Path) -> String {
     let dsl_path = base_path.join("crates/pvm-contract-builder-dsl");
-    let macros_path = base_path.join("crates/pvm-contract-macros");
 
     format!(
         r#"[package]
@@ -124,7 +123,6 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-builder-dsl = {{ path = "{}" }}
-pvm-contract-macros = {{ path = "{}" }}
 polkavm-derive = {{ version = "0.31.0" }}
 
 [profile.dev]
@@ -141,7 +139,6 @@ overflow-checks = false
         contract,
         contract,
         dsl_path.display(),
-        macros_path.display(),
     )
 }
 
