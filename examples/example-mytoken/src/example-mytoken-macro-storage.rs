@@ -1,7 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_types::PolkaVmHost as api;
-use ruint::aliases::U256;
+use pvm_contract_sdk::{PolkaVmHost, U256};
 
 #[cfg(not(feature = "abi-gen"))]
 #[global_allocator]
@@ -13,13 +12,13 @@ static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<
     }))
 };
 
-#[pvm_contract_macros::contract("MyToken.sol", buffer = 256)]
+#[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;
-    use pvm_contract_types::Address;
+    use pvm_contract_sdk::Address;
     use pvm_storage::{Lazy, Mapping};
 
-    #[derive(pvm_contract_macros::SolStorage)]
+    #[derive(pvm_contract_sdk::SolStorage)]
     struct Storage {
         #[slot(0)]
         total_supply: Lazy<U256>,
@@ -27,31 +26,31 @@ mod my_token {
         balances: Mapping<Address, U256>,
     }
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct InsufficientBalance;
 
-    pvm_contract_types::sol_revert_enum! {
+    pvm_contract_sdk::sol_revert_enum! {
         pub enum TokenError {
             InsufficientBalance(InsufficientBalance),
         }
     }
 
-    #[pvm_contract_macros::constructor]
+    #[pvm_contract_sdk::constructor]
     pub fn new() -> Result<(), TokenError> {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn total_supply() -> U256 {
         storage.total_supply.get()
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn balance_of(account: Address) -> U256 {
         storage.balances.get(&account)
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> {
         let caller = get_caller();
 
@@ -73,7 +72,7 @@ mod my_token {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn mint(to: Address, amount: U256) -> Result<(), TokenError> {
         let mut recipient_cell = storage.balances.entry(&to);
         let new_balance = recipient_cell.get().saturating_add(amount);
@@ -88,14 +87,14 @@ mod my_token {
         Ok(())
     }
 
-    #[pvm_contract_macros::fallback]
+    #[pvm_contract_sdk::fallback]
     pub fn fallback() -> Result<(), TokenError> {
         Ok(())
     }
 
     fn get_caller() -> Address {
         let mut caller = [0u8; 20];
-        api::caller(&mut caller);
+        PolkaVmHost::caller(&mut caller);
         Address(caller)
     }
 
@@ -114,6 +113,6 @@ mod my_token {
 
         let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
         let data = value.to_be_bytes::<32>();
-        api::deposit_event(&topics, &data);
+        PolkaVmHost::deposit_event(&topics, &data);
     }
 }

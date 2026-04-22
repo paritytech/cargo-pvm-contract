@@ -1016,7 +1016,7 @@ dependencies = [
  "const-crypto",
  "hex-literal",
  "pallet-revive-proc-macro",
- "polkavm-derive",
+ "polkavm-derive 0.30.0",
 ]
 
 [[package]]
@@ -1089,12 +1089,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "polkavm-common"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0a3e43fa1a54b955a2f9422b1690c3cc29252ac8828c02a99d2370b9f2a188e"
+dependencies = [
+ "picosimd",
+]
+
+[[package]]
 name = "polkavm-derive"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "acb4463fb0b9dbfafdc1d1a1183df4bf7afa3350d124f29d5700c6bee54556b5"
 dependencies = [
- "polkavm-derive-impl-macro",
+ "polkavm-derive-impl-macro 0.30.0",
+]
+
+[[package]]
+name = "polkavm-derive"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d944b6b4e792c2a120232b52bd6f2c9dd3071d3f48462afb2b5d00cb9f7ac9"
+dependencies = [
+ "polkavm-derive-impl-macro 0.31.0",
 ]
 
 [[package]]
@@ -1103,7 +1121,19 @@ version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "993ff45b972e09babe68adce7062c3c38a84b9f50f07b7caf393a023eaa6c74a"
 dependencies = [
- "polkavm-common",
+ "polkavm-common 0.30.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "polkavm-derive-impl"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c14b030150f81dfde110997b6fafc19741998130908fdab85f1a66bb735025"
+dependencies = [
+ "polkavm-common 0.31.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1115,7 +1145,17 @@ version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a4f5352e13c1ca5f0e4d7b4a804fbb85b0e02c45cae435d101fe71081bc8ed8"
 dependencies = [
- "polkavm-derive-impl",
+ "polkavm-derive-impl 0.30.0",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "polkavm-derive-impl-macro"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3fcadb13edfcc3b4046fcd2d292597782f5b7a2af140e6363fbf71fe196b425"
+dependencies = [
+ "polkavm-derive-impl 0.31.0",
  "syn 2.0.117",
 ]
 
@@ -1208,6 +1248,16 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "syn-solidity",
+]
+
+[[package]]
+name = "pvm-contract-sdk"
+version = "0.3.0"
+dependencies = [
+ "polkavm-derive 0.31.0",
+ "pvm-contract-macros",
+ "pvm-contract-types",
+ "ruint",
 ]
 
 [[package]]
@@ -1670,7 +1720,7 @@ version = "0.1.0"
 dependencies = [
  "pallet-revive-uapi",
  "pvm-contract-macros",
- "pvm-contract-types",
+ "pvm-contract-sdk",
  "ruint",
 ]
 

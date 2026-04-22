@@ -30,5 +30,7 @@ ruint = { workspace = true, default-features = false }
 serde_json = { workspace = true }
 alloy-core = { version = "1.5", features = ["sol-types"] }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc"] }
+pvm-contract-sdk = { path = "../pvm-contract-sdk", features = ["alloc"] }
+proptest = "1"
 expect-test = { version = "1.5.1" }
 prettyplease = { version = "0.2" }

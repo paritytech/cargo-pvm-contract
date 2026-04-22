@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-pvm_contract_macros::abi_import!(alloc = true, {
+pvm_contract_sdk::abi_import!(alloc = true, {
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -10,10 +10,9 @@ interface Flipper {
 }
 });
 
-#[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_call_alloy {
-    use pvm_contract_core::call::CallError;
-    use pvm_contract_types::*;
+    use pvm_contract_sdk::*;
 
     use super::*;
     use flipper::{self, Flipper};
@@ -22,12 +21,12 @@ mod flipper_call_alloy {
             CallError(CallError)
         }
     }
-    #[pvm_contract_macros::constructor]
+    #[pvm_contract_sdk::constructor]
     pub fn new() -> Result<(), Error> {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn call_flipper(addr: Address) -> Result<(), Error> {
         let flipper = Flipper::from_address(addr);
         let get = flipper.get();
@@ -41,7 +40,7 @@ mod flipper_call_alloy {
         Ok(())
     }
 
-    #[pvm_contract_macros::fallback]
+    #[pvm_contract_sdk::fallback]
     pub fn fallback() -> Result<(), Error> {
         Ok(())
     }

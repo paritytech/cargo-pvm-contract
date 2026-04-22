@@ -701,15 +701,13 @@ name = "example-mytoken"
 version = "0.1.0"
 dependencies = [
  "alloy-core",
- "pallet-revive-uapi",
  "picoalloc",
  "polkavm-derive 0.31.0",
  "pvm-bump-allocator",
  "pvm-contract-builder-dsl",
  "pvm-contract-macros",
- "pvm-contract-types",
+ "pvm-contract-sdk",
  "pvm-storage",
- "ruint",
 ]
 
 [[package]]
@@ -1391,6 +1389,17 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "syn-solidity",
+]
+
+[[package]]
+name = "pvm-contract-sdk"
+version = "0.3.0"
+dependencies = [
+ "polkavm-derive 0.31.0",
+ "pvm-contract-core",
+ "pvm-contract-macros",
+ "pvm-contract-types",
+ "ruint",
 ]
 
 [[package]]

@@ -1,8 +1,8 @@
-use pvm_contract_macros::SolError;
-use pvm_contract_types::{Address, SolError as SolErrorTrait, SolRevert};
-use ruint::aliases::U256;
+use pvm_contract_sdk::SolErrorType;
+use pvm_contract_sdk::U256;
+use pvm_contract_sdk::{Address, SolError, SolRevert};
 
-#[derive(SolError)]
+#[derive(SolErrorType)]
 struct InsufficientBalance {
     account: Address,
     required: U256,
@@ -12,8 +12,7 @@ struct InsufficientBalance {
 #[test]
 fn selector_matches_keccak() {
     // keccak256("InsufficientBalance(address,uint256,uint256)")[0:4]
-    let expected =
-        pvm_contract_types::const_selector("InsufficientBalance(address,uint256,uint256)");
+    let expected = pvm_contract_sdk::const_selector("InsufficientBalance(address,uint256,uint256)");
     assert_eq!(InsufficientBalance::SELECTOR, expected);
 }
 
@@ -43,10 +42,10 @@ mod alloy_cross_check {
     #[test]
     fn encoding_matches_alloy() {
         use alloy_core::sol_types::SolError as AlloySolError;
-        use pvm_contract_types::{Address, SolRevert};
-        use ruint::aliases::U256;
+        use pvm_contract_sdk::U256;
+        use pvm_contract_sdk::{Address, SolRevert};
 
-        // Encode with our SolError derive
+        // Encode with our SolErrorType derive
         let error = crate::InsufficientBalance {
             account: Address([0xAB; 20]),
             required: U256::from(1000u64),
@@ -91,7 +90,7 @@ fn revert_data_includes_selector_and_params() {
 }
 
 // Zero-field error
-#[derive(SolError)]
+#[derive(SolErrorType)]
 struct Unauthorized;
 
 #[test]
@@ -120,7 +119,7 @@ fn zero_field_error_revert_data() {
 // Type alias resolution
 type Amount = U256;
 
-#[derive(SolError)]
+#[derive(SolErrorType)]
 struct OverLimit {
     limit: Amount,
 }
@@ -133,7 +132,7 @@ fn type_alias_resolves_in_signature() {
 
 #[test]
 fn type_alias_resolves_in_selector() {
-    let expected = pvm_contract_types::const_selector("OverLimit(uint256)");
+    let expected = pvm_contract_sdk::const_selector("OverLimit(uint256)");
     assert_eq!(OverLimit::SELECTOR, expected);
 }
 
@@ -145,7 +144,7 @@ struct Point {
     y: u64,
 }
 
-#[derive(SolError)]
+#[derive(SolErrorType)]
 struct PointError {
     origin: Point,
     value: U256,
@@ -159,7 +158,7 @@ fn nested_custom_type_signature() {
 
 #[test]
 fn nested_custom_type_selector() {
-    let expected = pvm_contract_types::const_selector("PointError((uint64,uint64),uint256)");
+    let expected = pvm_contract_sdk::const_selector("PointError((uint64,uint64),uint256)");
     assert_eq!(PointError::SELECTOR, expected);
 }
 
