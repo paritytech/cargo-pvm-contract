@@ -96,6 +96,9 @@ pub use pvm_contract_types::{
     sol_revert_enum,
 };
 
+// Cross-contract calls
+pub use pvm_contract_core::call::{CallBuilder, CallError, CallLimits};
+
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
 
@@ -135,6 +138,10 @@ pub use pvm_contract_types::serde_json;
 pub mod prelude {
     pub use crate::{
         Address,
+        // Cross-contract calls
+        CallBuilder,
+        CallError,
+        CallLimits,
         // Host
         HostApi,
         I256,
@@ -143,6 +150,9 @@ pub mod prelude {
         // Encoding
         SolDecode,
         SolEncode,
+        // Errors
+        SolError,
+        SolRevert,
         StaticEncodedLen,
         StorageFlags,
         U256,

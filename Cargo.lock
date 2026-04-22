@@ -4402,6 +4402,7 @@ name = "pvm-contract-sdk"
 version = "0.3.0"
 dependencies = [
  "polkavm-derive 0.31.0",
+ "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",
  "ruint",

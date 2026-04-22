@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 pvm-contract-macros = { path = "../pvm-contract-macros" }
 pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+pvm-contract-core = { path = "../pvm-contract-core" }
 polkavm-derive = { workspace = true }
 ruint = { workspace = true, default-features = false }
 
