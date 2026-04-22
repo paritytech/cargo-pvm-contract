@@ -777,6 +777,33 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Derive macro for storage declaration.
+///
+/// Implements the [`SolStorage`] trait, generating a constructor that creates
+/// each field at its declared `#[slot(N)]`. Also generates `__storage_layout_json()`
+/// behind `cfg(feature = "abi-gen")` for Solidity tooling compatibility.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(SolStorage)]
+/// struct Storage {
+///     #[slot(0)]
+///     total_supply: Lazy<U256>,
+///     #[slot(1)]
+///     balances: Mapping<Address, U256>,
+/// }
+/// ```
+#[proc_macro_derive(SolStorage, attributes(slot))]
+pub fn sol_storage(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_storage(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
     let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);

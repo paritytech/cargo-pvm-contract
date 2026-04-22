@@ -23,6 +23,10 @@ name = "example-mytoken-macro-no-sol"
 path = "src/example-mytoken-macro-no-sol.rs"
 
 [[bin]]
+name = "example-mytoken-macro-storage"
+path = "src/example-mytoken-macro-storage.rs"
+
+[[bin]]
 name = "example-mytoken-dsl-no-alloc"
 path = "src/example-mytoken-dsl-no-alloc.rs"
 
@@ -34,6 +38,7 @@ path = "src/example-mytoken-alloy-alloc.rs"
 pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }
 pvm-contract-types = { path = "../../crates/pvm-contract-types" }
 pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
+pvm-storage = { path = "../../crates/pvm-storage" }
 alloy-core = { version = "1.5", default-features = false, features = ["sol-types"] }
 pallet-revive-uapi = { version = "0.11", default-features = false }
 polkavm-derive = { version = "0.31.0" }
@@ -42,7 +47,7 @@ picoalloc = { version = "5", default-features = false }
 pvm-bump-allocator = { path = "../../crates/pvm-bump-allocator" }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]
+abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen", "pvm-storage/abi-gen"]
 
 [profile.release]
 codegen-units = 1

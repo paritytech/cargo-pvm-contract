@@ -8,8 +8,9 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 |-------|-------------|
 | `cargo-pvm-contract` | CLI tool — scaffolds contract projects from `.sol` files |
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolError)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolError)]`, `#[derive(SolStorage)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error traits (`SolError`, `SolRevert`) — `no_std` compatible |
+| `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
 
@@ -202,16 +203,70 @@ The derive macro detects whether a struct is static or dynamic:
 
 ## Storage
 
-Contracts use `pallet_revive_uapi::HostFnImpl` for persistent storage:
+The `pvm-storage` crate provides typed storage helpers with Solidity-compatible slot layout.
+
+### Storage Types
+
+| Type | Description |
+|------|-------------|
+| `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
+| `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
+
+- Currently supports 32-byte types only (U256, Address, bool, `[u8; 32]`); variable-size values are future work
+- Solidity-compatible key derivation: `keccak256(pad32(key) ++ pad32(slot))`
+- `set(&mut self)` / `insert(&mut self)` / `entry(&mut self)` take `&mut self` for future view enforcement
+- `Mapping::entry()` returns a `Lazy<V>` handle for the derived slot, allowing read-then-write on the same key with a single keccak derivation instead of two
+- Nested mappings via chaining: `storage.allowances.get(&owner).get(&spender)`
+
+### `#[derive(SolStorage)]`
+
+Declares storage inside a `#[contract]` module. The `#[contract]` macro detects it and injects an implicit `storage` variable into each method body:
 
 ```rust
-api::get_storage(StorageFlags::empty(), &key, &mut output)  // read 32 bytes
-api::set_storage(StorageFlags::empty(), &key, &data)         // write 32 bytes
+#[contract("MyToken.sol")]
+mod my_token {
+    #[derive(SolStorage)]
+    struct MyTokenStorage {
+        #[slot(0)]
+        total_supply: Lazy<U256>,
+        #[slot(1)]
+        balances: Mapping<Address, U256>,
+        #[slot(2)]
+        allowances: Mapping<Address, Mapping<Address, U256>>,
+    }
+
+    #[method]
+    pub fn balance_of(account: Address) -> U256 {
+        storage.balances.get(&account)
+    }
+
+    #[method]
+    pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> {
+        let caller = env::caller();
+        let mut cell = storage.balances.entry(&caller);
+        let bal = cell.get();
+        if bal < amount {
+            return Err(InsufficientBalance { required: amount, available: bal }.into());
+        }
+        cell.set(&(bal - amount));
+        storage.balances.insert(&to, &(storage.balances.get(&to) + amount));
+        Ok(())
+    }
+}
 ```
 
-Keys are `[u8; 32]` arrays. Common patterns:
-- **Single slot**: `const KEY: [u8; 32] = [0u8; 32]` with slot index at byte 31
-- **Mappings**: Keccak-256 hash of (address + salt) to derive storage keys
+### Bytecode Optimization
+
+Storage uses type-erased inner functions that operate on raw `[u8; 32]` arrays so the host-call logic is shared across all `Lazy`/`Mapping` instantiations. Benchmarked with/without `#[inline(never)]`: letting the compiler decide produced smaller `.polkavm` output (4,523 vs 4,978 bytes for mytoken), so `#[inline(never)]` is omitted. Contracts that don't use `pvm-storage` pay zero bytes.
+
+### Raw Host Calls
+
+For advanced use cases, raw host calls are still available through `PolkaVmHost`:
+
+```rust
+PolkaVmHost::get_storage_or_zero(StorageFlags::empty(), &key, &mut output)
+PolkaVmHost::set_storage_or_clear(StorageFlags::empty(), &key, &data)
+```
 
 ## Host APIs
 
@@ -304,6 +359,7 @@ Six MyToken variants as separate binaries:
 - `example-mytoken-macro-bump-alloc` — `pvm_contract_macros` with `allocator = "bump"`
 - `example-mytoken-macro-no-alloc` — `pvm_contract_macros` default stack mode
 - `example-mytoken-macro-no-sol` — `pvm_contract_macros` without Solidity interface path
+- `example-mytoken-macro-storage` — `pvm_contract_macros` with `pvm-storage` (`Lazy`, `Mapping`, `#[derive(SolStorage)]`)
 - `example-mytoken-dsl-no-alloc` — `pvm-contract-builder-dsl` variant
 - `example-mytoken-alloy-alloc` — alloy-based alloc variant
 
@@ -355,6 +411,7 @@ crates/
   pvm-contract-types/           ABI encoding/decoding traits
     src/lib.rs                  SolEncode, SolDecode, StaticEncodedLen + primitive impls
     src/alloc_types.rs          String, Vec<T> impls (alloc feature)
+  pvm-storage/                  Typed storage helpers (Lazy, Mapping)
   pvm-contract-builder-dsl/     Runtime dispatch DSL
   pvm-contract-benchmarks/      Binary size CI regression tool
   pvm-contract-e2e-tests/       E2E + integration test harness

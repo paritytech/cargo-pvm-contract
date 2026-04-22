@@ -708,6 +708,7 @@ dependencies = [
  "pvm-contract-builder-dsl",
  "pvm-contract-macros",
  "pvm-contract-types",
+ "pvm-storage",
  "ruint",
 ]
 
@@ -1400,6 +1401,15 @@ dependencies = [
  "keccak-const",
  "pallet-revive-uapi",
  "ruint",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "pvm-storage"
+version = "0.3.0"
+dependencies = [
+ "pvm-contract-types",
 ]
 
 [[package]]
