@@ -1479,7 +1479,7 @@ mod test {
         ]
         "#;
         let file = {
-            let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(&file).unwrap();
+            let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(file).unwrap();
             let config = ToSolConfig::new()
                 .print_constructors(true)
                 .for_sol_macro(true);
