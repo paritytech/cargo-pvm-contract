@@ -413,7 +413,7 @@ mod test {
         let file = load("multi-method");
         expect_test::expect![[r#"
             use pvm_contract_sdk::*;
-                        pub mod multi_method {
+            pub mod multi_method {
                 use super::*;
                 #[derive(Clone, Copy)]
                 /// the code is derived from this interface
@@ -627,7 +627,7 @@ mod test {
         let file = load("nested-custom-type");
         expect_test::expect![[r#"
             use pvm_contract_sdk::*;
-                        pub mod nested_custom_type {
+            pub mod nested_custom_type {
                 use super::*;
                 #[derive(Clone, Copy)]
                 /// the code is derived from this interface
@@ -840,7 +840,7 @@ mod test {
         let file = load("custom-type-method");
         expect_test::expect![[r#"
             use pvm_contract_sdk::*;
-                        pub mod custom_type_method {
+            pub mod custom_type_method {
                 use super::*;
                 #[derive(Clone, Copy)]
                 /// the code is derived from this interface
@@ -1026,7 +1026,7 @@ mod test {
         let file = load("dynamic-custom-return");
         expect_test::expect![[r#"
             use pvm_contract_sdk::*;
-                        pub mod dynamic_custom_return {
+            pub mod dynamic_custom_return {
                 use super::*;
                 #[derive(Clone, Copy)]
                 /// the code is derived from this interface
@@ -1248,7 +1248,7 @@ mod test {
         let file = load("constructor-with-params");
         expect_test::expect![[r#"
             use pvm_contract_sdk::*;
-                        pub mod constructor_with_params {
+            pub mod constructor_with_params {
                 use super::*;
                 #[derive(Clone, Copy)]
                 /// the code is derived from this interface
