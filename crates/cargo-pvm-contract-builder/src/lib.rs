@@ -28,6 +28,8 @@ pub struct PvmBuilder {
     project_cargo_toml: PathBuf,
     /// Specific binaries to build (None = all binaries).
     bin_names: Option<Vec<String>>,
+    /// Cargo features to activate on the inner build.
+    features: Vec<String>,
 }
 
 impl Default for PvmBuilder {
@@ -42,6 +44,7 @@ impl PvmBuilder {
         Self {
             project_cargo_toml: get_manifest_dir().join("Cargo.toml"),
             bin_names: None,
+            features: Vec::new(),
         }
     }
 
@@ -61,6 +64,18 @@ impl PvmBuilder {
         self
     }
 
+    /// Activate the given cargo features on the inner build. Each element is
+    /// forwarded as a separate `--features <value>`, so both the repeated-flag
+    /// form and comma/space-separated values inside a single entry work.
+    pub fn with_features<I, S>(mut self, features: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.features = features.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Build the PolkaVM binary.
     pub fn build(self) {
         // Check if we're in a recursive build
@@ -68,7 +83,7 @@ impl PvmBuilder {
             return;
         }
 
-        if let Err(e) = build_project(&self.project_cargo_toml, self.bin_names) {
+        if let Err(e) = build_project(&self.project_cargo_toml, self.bin_names, &self.features) {
             eprintln!("PolkaVM build failed: {e}");
             std::process::exit(1);
         }
@@ -180,6 +195,7 @@ pub fn build_contract(
     pkg_name: &str,
     bin_names: Vec<String>,
     message_format: Option<&str>,
+    features: &[String],
 ) -> Result<()> {
     let profile = Profile { name: profile_name.to_string() };
     let target_dir = output_dir.join("pvmbuild");
@@ -188,7 +204,7 @@ pub fn build_contract(
         anyhow::bail!("No binary targets to build");
     }
 
-    build_elf(project_cargo_toml, &target_dir, &profile, &bin_names, pkg_name, message_format)?;
+    build_elf(project_cargo_toml, &target_dir, &profile, &bin_names, pkg_name, message_format, features)?;
 
     let elf_dir = target_dir
         .join("riscv64emac-unknown-none-polkavm")
@@ -214,7 +230,11 @@ pub fn build_contract(
 }
 
 /// Build the project (called from build.rs context).
-fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> Result<()> {
+fn build_project(
+    project_cargo_toml: &Path,
+    bin_names: Option<Vec<String>>,
+    features: &[String],
+) -> Result<()> {
     let profile = Profile::detect();
     let build_dir = get_build_dir();
     let target_root = get_target_root();
@@ -230,7 +250,7 @@ fn build_project(project_cargo_toml: &Path, bin_names: Option<Vec<String>>) -> R
 
     let target_dir = build_dir;
     let pkg_name = get_package_name(project_cargo_toml)?;
-    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build, &pkg_name, None)?;
+    build_elf(project_cargo_toml, &target_dir, &profile, &bins_to_build, &pkg_name, None, features)?;
 
     // Link each ELF to PolkaVM
     let elf_dir = target_dir
@@ -296,6 +316,7 @@ fn build_elf(
     bins: &[String],
     pkg_name: &str,
     message_format: Option<&str>,
+    features: &[String],
 ) -> Result<()> {
     // Include pkg_name in RUSTFLAGS to force cargo cache invalidation when
     // switching between contracts. Without this, cached proc macro expansions
@@ -342,6 +363,10 @@ fn build_elf(
 
     if let Some(fmt) = message_format {
         cmd.arg("--message-format").arg(fmt);
+    }
+
+    for feat in features {
+        cmd.arg("--features").arg(feat);
     }
 
     eprintln!("Building PolkaVM binary with profile: {profile:?}");
