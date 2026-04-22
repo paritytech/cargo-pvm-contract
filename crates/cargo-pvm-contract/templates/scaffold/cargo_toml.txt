@@ -22,11 +22,9 @@ polkavm-derive = { version = "0.31.0" }
 {% else -%}
 {% if let Some(path) = local_path -%}
 pvm-contract-sdk = { path = "{{ path }}/crates/pvm-contract-sdk" }
-pvm-contract-types = { path = "{{ path }}/crates/pvm-contract-types" }
 polkavm-derive = { version = "0.31.0" }
 {% else -%}
 pvm-contract-sdk = "{{ builder_version }}"
-pvm-contract-types = "{{ builder_version }}"
 polkavm-derive = { version = "0.31.0" }
 {% endif -%}
 {% endif -%}

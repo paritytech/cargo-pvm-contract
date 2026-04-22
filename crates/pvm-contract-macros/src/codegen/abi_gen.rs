@@ -33,13 +33,13 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
             .map(|(name, ty)| {
                 let name_str = name.to_string();
                 quote! {
-                    <#ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+                    <#ty as ::pvm_contract_sdk::SolEncode>::abi_param(#name_str)
                 }
             })
             .collect();
 
         quote! {
-            __items.push(::pvm_contract_types::AbiItem::Constructor {
+            __items.push(::pvm_contract_sdk::AbiItem::Constructor {
                 inputs: vec![#(#ctor_params),*],
                 state_mutability: Some("payable".into()),
             });
@@ -62,7 +62,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         .iter()
         .map(|err_ty| {
             quote! {
-                for __sig in <#err_ty as ::pvm_contract_types::SolRevert>::error_signatures() {
+                for __sig in <#err_ty as ::pvm_contract_sdk::SolRevert>::error_signatures() {
                     let Some(__paren) = __sig.find('(') else { continue; };
                     if !__sig.ends_with(')') { continue; }
                     if __seen_errors.contains(__sig) {
@@ -71,15 +71,15 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
                     __seen_errors.push(__sig);
                     let __err_name = &__sig[..__paren];
                     let __params_str = &__sig[__paren + 1..__sig.len() - 1];
-                    let __inputs: ::std::vec::Vec<::pvm_contract_types::AbiParam> = if __params_str.is_empty() {
+                    let __inputs: ::std::vec::Vec<::pvm_contract_sdk::AbiParam> = if __params_str.is_empty() {
                         ::std::vec::Vec::new()
                     } else {
                         __split_params(__params_str)
                             .into_iter()
-                            .map(|t| ::pvm_contract_types::parse_type_str("", t))
+                            .map(|t| ::pvm_contract_sdk::parse_type_str("", t))
                             .collect()
                     };
-                    __items.push(::pvm_contract_types::AbiItem::Error {
+                    __items.push(::pvm_contract_sdk::AbiItem::Error {
                         name: __err_name.into(),
                         inputs: __inputs,
                     });
@@ -127,7 +127,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
             let name_str = name.to_string();
             quote! {
                 if !__seen_errors.iter().any(|s| *s == #sig) {
-                    __items.push(::pvm_contract_types::AbiItem::Error {
+                    __items.push(::pvm_contract_sdk::AbiItem::Error {
                         name: #name_str.into(),
                         inputs: ::std::vec::Vec::new(),
                     });
@@ -142,7 +142,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
         pub fn __abi_json() -> ::std::string::String {
             #split_params_helper
 
-            let mut __items: ::std::vec::Vec<::pvm_contract_types::AbiItem> = ::std::vec::Vec::new();
+            let mut __items: ::std::vec::Vec<::pvm_contract_sdk::AbiItem> = ::std::vec::Vec::new();
             let mut __seen_errors = ::std::vec::Vec::<&str>::new();
 
             #constructor_entry
@@ -153,7 +153,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
 
             #(#framework_error_entries)*
 
-            ::pvm_contract_types::abi_to_json(&__items)
+            ::pvm_contract_sdk::abi_to_json(&__items)
         }
     };
 
@@ -178,7 +178,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         .map(|(ty, name)| {
             let name_str = name.to_string();
             quote! {
-                <#ty as ::pvm_contract_types::SolEncode>::abi_param(#name_str)
+                <#ty as ::pvm_contract_sdk::SolEncode>::abi_param(#name_str)
             }
         })
         .collect();
@@ -188,7 +188,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         .iter()
         .map(|ty| {
             quote! {
-                <#ty as ::pvm_contract_types::SolEncode>::abi_param("")
+                <#ty as ::pvm_contract_sdk::SolEncode>::abi_param("")
             }
         })
         .collect();
@@ -198,7 +198,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
     // Once state mutability attributes are added, this should be derived from the
     // method annotation instead of hardcoded.
     Ok(quote! {
-        __items.push(::pvm_contract_types::AbiItem::Function {
+        __items.push(::pvm_contract_sdk::AbiItem::Function {
             name: #method_name.into(),
             inputs: vec![#(#input_params),*],
             outputs: vec![#(#output_params),*],

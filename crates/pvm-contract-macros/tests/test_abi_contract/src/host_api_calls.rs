@@ -1,7 +1,7 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_types::Address;
-use ruint::aliases::U256;
+use pvm_contract_sdk::Address;
+use pvm_contract_sdk::U256;
 
 /// Test contract that calls host APIs in method bodies.
 /// Verifies that abi-gen cfg-gating correctly excludes function bodies

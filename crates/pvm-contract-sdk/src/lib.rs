@@ -2,17 +2,19 @@
 //!
 //! This is the primary user-facing entry point for the macro-based contract API.
 //! It re-exports proc macros, ABI encoding traits, host API wrappers, and
-//! primitive types. Note, however, that the current proc-macro expansion still
-//! references `pvm-contract-types` and `polkavm-derive` by absolute crate path,
-//! so contract crates must currently include those dependencies directly in
-//! `Cargo.toml` as well.
+//! primitive types so that `pvm-contract-types` does not need to appear in the
+//! consumer's `Cargo.toml`. The proc-macro expansion routes all generated code
+//! through `::pvm_contract_sdk::` (the same pattern as ink!).
+//!
+//! `polkavm-derive` is still required as a direct dependency because the
+//! `#[polkavm_export]` attribute macro generates code that references its
+//! own crate internally.
 //!
 //! # Quick start
 //!
 //! ```toml
 //! [dependencies]
 //! pvm-contract-sdk = "0.3"
-//! pvm-contract-types = "0.3"
 //! polkavm-derive = "0.31"
 //! ```
 //!
@@ -32,12 +34,16 @@
 //! ```
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// Ensure `::pvm_contract_sdk` resolves everywhere — including inside this
+// crate's own doc-tests.  Same pattern as ink!'s `extern crate self as ink;`.
+extern crate self as pvm_contract_sdk;
+
 // ---------------------------------------------------------------------------
 // Proc macro re-exports
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolType, abi_import, constructor, contract, fallback, method,
+    SolErrorType, SolType, abi_import, constructor, contract, fallback, method,
 };
 
 // ---------------------------------------------------------------------------
@@ -79,7 +85,7 @@ pub use pvm_contract_types::{
     SolDecode,
     SolDefaultError,
     SolEncode,
-    SolError as SolErrorTrait,
+    SolError,
     SolRevert,
     StaticEncodedLen,
     StorageFlags,
@@ -101,6 +107,10 @@ pub use pvm_contract_types::{MockHost, MockHostBuilder};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;
+
+// ---------------------------------------------------------------------------
+// Hidden re-exports for macro-generated code
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Hidden re-exports used by generated code

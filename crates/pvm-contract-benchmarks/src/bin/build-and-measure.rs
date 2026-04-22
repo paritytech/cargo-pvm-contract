@@ -30,7 +30,6 @@ impl Variant {
 
 fn cargo_toml_no_alloc(contract: &str, base_path: &Path) -> String {
     let sdk_path = base_path.join("crates/pvm-contract-sdk");
-    let types_path = base_path.join("crates/pvm-contract-types");
 
     format!(
         r#"[package]
@@ -45,7 +44,6 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
-pvm-contract-types = {{ path = "{}" }}
 polkavm-derive = {{ version = "0.31.0" }}
 
 [profile.dev]
@@ -62,13 +60,11 @@ overflow-checks = false
         contract,
         contract,
         sdk_path.display(),
-        types_path.display(),
     )
 }
 
 fn cargo_toml_with_alloc(contract: &str, base_path: &Path) -> String {
     let sdk_path = base_path.join("crates/pvm-contract-sdk");
-    let types_path = base_path.join("crates/pvm-contract-types");
     let bump_alloc_path = base_path.join("crates/pvm-bump-allocator");
 
     format!(
@@ -84,7 +80,6 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
-pvm-contract-types = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
 polkavm-derive = {{ version = "0.31.0" }}
 
@@ -102,7 +97,6 @@ overflow-checks = false
         contract,
         contract,
         sdk_path.display(),
-        types_path.display(),
         bump_alloc_path.display(),
     )
 }

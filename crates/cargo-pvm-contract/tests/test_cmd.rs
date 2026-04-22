@@ -109,7 +109,6 @@ fn verify_cargo_toml(project_dir: &Path, use_dsl: bool) {
         assert!(cargo_toml.contains("pvm-contract-builder-dsl"));
     } else {
         assert!(cargo_toml.contains("pvm-contract-sdk"));
-        assert!(cargo_toml.contains("pvm-contract-types"));
     }
     assert!(cargo_toml.contains("polkavm-derive"));
     assert!(

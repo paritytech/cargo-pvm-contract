@@ -37,9 +37,9 @@ path = "src/host_api_calls.rs"
 
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
-pvm-contract-types = { path = "../../../pvm-contract-types", features = ["alloc"] }
+pvm-contract-sdk = { path = "../../../pvm-contract-sdk", features = ["alloc"] }
 pallet-revive-uapi = { version = "0.11", default-features = false }
 ruint = { version = "1.17", default-features = false }
 
 [features]
-abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]
+abi-gen = ["pvm-contract-sdk/abi-gen", "pvm-contract-macros/abi-gen"]
