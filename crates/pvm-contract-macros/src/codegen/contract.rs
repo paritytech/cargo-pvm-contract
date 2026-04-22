@@ -495,8 +495,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
     let storage_struct_name = find_sol_storage_struct(&input)?;
-    let (abi_gen_helper, abi_gen_main) =
-        generate_abi_gen(&parsed, args.sol_path.is_some(), storage_struct_name.clone());
+    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(
+        &parsed,
+        args.sol_path.is_some(),
+        storage_struct_name.clone(),
+    );
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -1320,7 +1323,10 @@ mod tests {
         .unwrap();
 
         let result = expand_contract(ContractArgs::default(), item);
-        assert!(result.is_err(), "Should reject modules with multiple non-cfg-gated SolStorage structs");
+        assert!(
+            result.is_err(),
+            "Should reject modules with multiple non-cfg-gated SolStorage structs"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("only one #[derive(SolStorage)]"),

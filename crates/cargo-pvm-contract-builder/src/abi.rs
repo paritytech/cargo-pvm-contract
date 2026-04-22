@@ -28,10 +28,12 @@ pub fn generate_storage_layout_for_bin(
     target_root: Option<&Path>,
 ) -> Result<Option<serde_json::Value>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
-    if !source_path.exists() || !has_sol_storage_derive(
-        &fs::read_to_string(&source_path)
-            .with_context(|| format!("Failed to read {}", source_path.display()))?,
-    ) {
+    if !source_path.exists()
+        || !has_sol_storage_derive(
+            &fs::read_to_string(&source_path)
+                .with_context(|| format!("Failed to read {}", source_path.display()))?,
+        )
+    {
         return Ok(None);
     }
 
@@ -45,8 +47,7 @@ pub fn generate_storage_layout_for_bin(
             // Treat that specific error as "no storage layout"; propagate
             // everything else.
             let msg = format!("{e:?}");
-            if msg.contains("main function not found") || msg.contains("main` function not found")
-            {
+            if msg.contains("main function not found") || msg.contains("main` function not found") {
                 return Ok(None);
             }
             return Err(e).context("Failed to generate storage layout via abi-gen");

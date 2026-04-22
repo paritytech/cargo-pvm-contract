@@ -475,8 +475,7 @@ fn generate_abi_file(
         }
     };
 
-    let storage_layout =
-        abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root)?;
+    let storage_layout = abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root)?;
 
     let json = if let Some(layout) = storage_layout {
         let abi_value = serde_json::to_value(&abi).context("Failed to serialize ABI")?;

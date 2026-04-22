@@ -41,9 +41,10 @@ pub fn expand_sol_storage(input: DeriveInput) -> syn::Result<TokenStream> {
     // Parse #[slot(N)] attributes from each field
     let mut field_entries = Vec::new();
     for field in &named_fields.named {
-        let field_name = field.ident.as_ref().ok_or_else(|| {
-            syn::Error::new_spanned(field, "SolStorage fields must be named")
-        })?;
+        let field_name = field
+            .ident
+            .as_ref()
+            .ok_or_else(|| syn::Error::new_spanned(field, "SolStorage fields must be named"))?;
         let field_ty = &field.ty;
         let slot = extract_slot_attr(field)?;
         field_entries.push((field_name.clone(), field_ty.clone(), slot));
@@ -197,7 +198,10 @@ mod tests {
         .unwrap();
 
         let result = expand_sol_storage(input);
-        assert!(result.is_err(), "should reject fields with multiple #[slot] attributes");
+        assert!(
+            result.is_err(),
+            "should reject fields with multiple #[slot] attributes"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("duplicate #[slot]"),
@@ -273,7 +277,10 @@ mod tests {
             ("non-integer", "struct S { #[slot(foo)] a: Lazy<U256> }"),
             ("negative", "struct S { #[slot(-1)] a: Lazy<U256> }"),
             ("empty", "struct S { #[slot()] a: Lazy<U256> }"),
-            ("overflow", "struct S { #[slot(99999999999999999999999)] a: Lazy<U256> }"),
+            (
+                "overflow",
+                "struct S { #[slot(99999999999999999999999)] a: Lazy<U256> }",
+            ),
         ];
         for (label, src) in cases {
             let input: DeriveInput = syn::parse_str(src).unwrap();
@@ -299,6 +306,10 @@ mod tests {
         .unwrap();
 
         let result = expand_sol_storage(input);
-        assert!(result.is_ok(), "should accept valid storage struct: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "should accept valid storage struct: {:?}",
+            result.err()
+        );
     }
 }
