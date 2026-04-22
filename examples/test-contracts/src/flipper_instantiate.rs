@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-pvm_contract_macros::abi_import! {
+pvm_contract_sdk::abi_import! {
 #![abi_import(alloc = true)]
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;

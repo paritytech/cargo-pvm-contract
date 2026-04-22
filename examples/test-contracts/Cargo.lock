@@ -1320,6 +1320,7 @@ name = "pvm-contract-macros"
 version = "0.3.0"
 dependencies = [
  "alloy-json-abi",
+ "const-hex",
  "keccak-const",
  "macro-string",
  "proc-macro2",
@@ -1336,6 +1337,7 @@ name = "pvm-contract-sdk"
 version = "0.3.0"
 dependencies = [
  "polkavm-derive 0.31.0",
+ "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",
  "ruint",
@@ -1850,7 +1852,6 @@ dependencies = [
  "cargo-pvm-contract-builder",
  "picoalloc",
  "polkavm-derive 0.31.0",
- "pvm-contract-core",
  "pvm-contract-sdk",
 ]
 
