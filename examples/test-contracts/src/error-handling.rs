@@ -7,10 +7,10 @@ mod error_handling {
     use super::*;
     use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct AlwaysReverts;
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct ZeroNotAllowed;
 
     pvm_contract_sdk::sol_revert_enum! {

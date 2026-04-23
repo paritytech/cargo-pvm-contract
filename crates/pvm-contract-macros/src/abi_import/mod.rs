@@ -1,3 +1,4 @@
+use ctxt::{Ctxt, compute_function_signature};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{self};
@@ -5,8 +6,10 @@ use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
 use crate::solidity::{capitalize, to_pascal_case, to_snake_case};
+mod ctxt;
 
 pub fn expand_function(
+    ctxt: &mut Ctxt,
     contract_name: syn::Ident,
     func: &ItemFunction,
     is_constructor: bool,
@@ -15,16 +18,12 @@ pub fn expand_function(
     let func_name = if is_constructor {
         format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
-        format_ident!("{}", to_snake_case(&func.name().to_string()))
+        format_ident!("{}", ctxt.function_name(func))
     };
     let selector: Vec<TokenStream> = if is_constructor {
         [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
     } else {
-        let mut name = format!("{}{}", func.name(), func.call_type());
-        if name.rfind(",").is_some_and(|x| x == name.len() - 2) {
-            name.remove(name.len() - 2);
-        }
-        compute_selector(&name)
+        compute_selector(&compute_function_signature(func))
             .into_iter()
             .map(|x| quote! { #x })
             .collect()
@@ -200,11 +199,13 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
 }
 
 pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+    let mut ctxt = Ctxt::default();
+    ctxt.visit_file(file);
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));
             let contract_module = format_ident!("{}", to_snake_case(&item_contract.name.to_string()));
-
+            ctxt.set_ns(item_contract.name.clone());
             let repr = format!("```solidity\n{}\n```", item_contract);
             let funcs = item_contract
                 .body
@@ -221,7 +222,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     },
                     _ => None,
                 })
-                .map(|(x, is_constructor)| expand_function(contract_name.clone(), x, is_constructor, alloc));
+                .map(|(x, is_constructor)| expand_function(&mut ctxt, contract_name.clone(), x, is_constructor, alloc));
             type Funcs = Vec<(bool, TokenStream)>;
             let (constructor, funcs): (Funcs, Funcs) = funcs.partition(|(is_constructor, _)| *is_constructor);
             let funcs = funcs.into_iter().map(|x| x.1);
@@ -1432,5 +1433,225 @@ mod test {
             }
         "#]]
         .assert_eq(&file);
+    }
+
+    #[test]
+    fn overload() {
+        let file = r#"
+        [
+            {
+              "type": "function",
+              "name": "flip",
+              "inputs": [],
+              "outputs": [],
+              "stateMutability": "nonpayable"
+            },
+            {
+              "type": "function",
+              "name": "flip",
+              "inputs": [
+                {
+                  "name": "data",
+                  "type": "(uint64,string)"
+                }
+              ],
+              "outputs": [],
+              "stateMutability": "nonpayable"
+            }
+        ]
+        "#;
+        let file = {
+            let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(file).unwrap();
+            let config = ToSolConfig::new()
+                .print_constructors(true)
+                .for_sol_macro(true);
+
+            let unparsed = &parsed.to_sol("flipper", Some(config));
+            let tts = syn::parse_str::<proc_macro2::TokenStream>(unparsed).unwrap();
+
+            let file = syn_solidity::parse2(quote::quote! {
+                #tts
+            })
+            .unwrap();
+            let tokens = expand_to_module(&file, true).to_token_stream();
+            prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+        };
+        expect_test::expect![[r#"
+            use pvm_contract_sdk::*;
+            pub mod flipper {
+                use super::*;
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
+            interface flipper {
+                function flip() external;
+                function flip((uint64,string) data) external;
+            }
+            ```*/
+                ///
+                pub struct Flipper<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Flipper<Mutability, Inputs, Outputs, false> {
+                    pub fn flip_cde4efa9(mut self) -> Flipper<NonPayable, (), (), true> {
+                        Flipper::<NonPayable, (), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (), ()> {
+                                payload: (),
+                                selector: [205u8, 228u8, 239u8, 169u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn flip_c353ca2b(
+                        mut self,
+                        data: (u64, alloc::string::String),
+                    ) -> Flipper<NonPayable, ((u64, alloc::string::String)), (), true> {
+                        Flipper::<NonPayable, ((u64, alloc::string::String)), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<
+                                NonPayable,
+                                ((u64, alloc::string::String)),
+                                (),
+                            > {
+                                payload: (data),
+                                selector: [195u8, 83u8, 202u8, 43u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                }
+                impl Flipper<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Flipper<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
+                    }
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Flipper<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a call to another contract
+                    pub fn call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call_raw(
+                        &self,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract
+                    pub fn call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                    /// Perform a delegated call to another contract
+                    pub fn delegate_call(&self) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.delegate_call_raw(self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        self.call_builder.extract_output(output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> Flipper<Payable, Inputs, Outputs, true> {
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate_raw(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate(
+                        &self,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        self.call_builder
+                            .instantiate_raw(
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf.as_mut_slice(),
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size().max(512)
+                        ];
+                        let output = self.call_builder.extract_output(output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
+                }
+            }
+        "#]].assert_eq(&file);
     }
 }

@@ -8,7 +8,7 @@ mod my_token {
     use alloc::vec;
     use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, StorageFlags};
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
     pub struct MyToken<H: HostApi = PolkaVmHost> {

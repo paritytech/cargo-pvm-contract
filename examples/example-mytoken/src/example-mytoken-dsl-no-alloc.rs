@@ -34,7 +34,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-#[derive(Debug, pvm_contract_sdk::SolErrorType)]
+#[derive(Debug, pvm_contract_sdk::SolError)]
 pub struct InsufficientBalance;
 
 pvm_contract_sdk::sol_revert_enum! {

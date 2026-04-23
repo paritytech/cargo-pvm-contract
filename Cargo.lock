@@ -4381,6 +4381,7 @@ version = "0.3.0"
 dependencies = [
  "alloy-core",
  "alloy-json-abi",
+ "const-hex",
  "expect-test",
  "keccak-const",
  "macro-string 0.2.0",

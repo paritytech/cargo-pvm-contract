@@ -114,7 +114,7 @@ buffer via `SolRevert::revert_data`, then return `HandlerResult::Revert(n)`:
 use pvm_contract_builder_dsl::HandlerResult;
 use pvm_contract_sdk::{HostApi, SolRevert};
 
-#[derive(pvm_contract_macros::SolErrorType)]
+#[derive(pvm_contract_macros::SolError)]
 struct InsufficientBalance;
 
 fn transfer_handler<H: HostApi>(
