@@ -248,27 +248,30 @@ pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
     use_alloc: bool,
-    value_prelude: TokenStream,
 ) -> (RouteItems, RouterImpl) {
-    // When every method is non-payable, the per-arm `if __has_value { revert }`
-    // collapses into a single guard before the match.
+    // When every method is non-payable the guard collapses into a single call
+    // to `__pvm_assert_non_payable()` before the match. Mixed payability needs
+    // per-arm `__has_value` checks, so we read the value transferred once.
     let all_non_payable = !methods.is_empty()
         && methods
             .iter()
             .all(|m| m.mutability != StateMutability::Payable);
+    let any_non_payable = methods
+        .iter()
+        .any(|m| m.mutability != StateMutability::Payable);
 
     let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = methods
         .iter()
         .map(|m| generate_dispatch_arm(m, use_alloc, all_non_payable))
         .unzip();
 
-    let hoisted_guard = if all_non_payable {
+    let prelude = if all_non_payable {
+        quote! { __pvm_assert_non_payable(); }
+    } else if any_non_payable {
         quote! {
-            if __has_value {
-                ::pvm_contract_sdk::PolkaVmHost::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
-                    &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-            }
+            let mut __value_buf = [0u8; 32];
+            ::pvm_contract_sdk::PolkaVmHost::value_transferred(&mut __value_buf);
+            let __has_value = __value_buf != [0u8; 32];
         }
     } else {
         quote! {}
@@ -284,8 +287,7 @@ pub fn generate_router(
             pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
                 #(#selector_consts)*
 
-                #value_prelude
-                #hoisted_guard
+                #prelude
 
                 match selector {
                     #(#dispatch_arms)*

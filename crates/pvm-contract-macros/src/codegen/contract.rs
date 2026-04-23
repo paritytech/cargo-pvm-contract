@@ -372,32 +372,30 @@ fn extract_typed_params(
         .collect()
 }
 
-/// Emit the `__value_buf` fetch and `__has_value` comparison used by the
-/// non-payable guard. Returns empty when no non-payable entry point needs
-/// the guard (e.g. all-payable contract).
-fn build_value_prelude(needs_has_value: bool) -> TokenStream {
-    if !needs_has_value {
-        return quote! {};
-    }
+/// Shared helper that reads `value_transferred` and reverts if nonzero.
+/// Emitted once per contract module; call sites reduce to a single function
+/// call instead of duplicating the read + compare + revert sequence.
+fn build_assert_non_payable_fn() -> TokenStream {
     quote! {
-        let mut __value_buf = [0u8; 32];
-        ::pvm_contract_sdk::PolkaVmHost::value_transferred(&mut __value_buf);
-        let __has_value = __value_buf != [0u8; 32];
+        #[inline(never)]
+        fn __pvm_assert_non_payable() {
+            let mut __value_buf = [0u8; 32];
+            ::pvm_contract_sdk::PolkaVmHost::value_transferred(&mut __value_buf);
+            if __value_buf != [0u8; 32] {
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+            }
+        }
     }
 }
 
-/// Emit the non-payable value guard. Expects `__has_value` to be in scope.
-fn build_non_payable_guard(emit: bool) -> TokenStream {
+/// Emit a call to the shared non-payable assertion helper.
+fn build_assert_non_payable_call(emit: bool) -> TokenStream {
     if !emit {
         return quote! {};
     }
-    quote! {
-        if __has_value {
-            ::pvm_contract_sdk::PolkaVmHost::return_value(
-                ::pvm_contract_sdk::ReturnFlags::REVERT,
-                &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-        }
-    }
+    quote! { __pvm_assert_non_payable(); }
 }
 
 fn parse_contract(
@@ -687,8 +685,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         };
 
-        let deploy_value_prelude = build_value_prelude(!parsed.constructor_is_payable);
-        let deploy_guard = build_non_payable_guard(!parsed.constructor_is_payable);
+        let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
 
         let call_expr = quote! { #constructor_name(#(#call_args),*) };
         let revert_err = generate_revert_encoding(use_alloc);
@@ -712,8 +709,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
-                #deploy_value_prelude
-                #deploy_guard
+                #deploy_assert
                 #read_calldata
                 #decode_and_call
             }
@@ -721,27 +717,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         // No user-declared constructor — emit a default payable-guarded deploy so
         // deployments with value revert, matching Solidity's default behaviour.
-        let deploy_value_prelude = build_value_prelude(true);
-        let deploy_guard = build_non_payable_guard(true);
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
-                #deploy_value_prelude
-                #deploy_guard
+                __pvm_assert_non_payable();
             }
         }
     };
 
-    let any_non_payable_method = parsed
-        .methods
-        .iter()
-        .any(|m| m.mutability != StateMutability::Payable);
-    let any_non_payable =
-        any_non_payable_method || (parsed.has_fallback && !parsed.fallback_is_payable);
-    let value_prelude = build_value_prelude(any_non_payable);
-
-    let (route_items, router_impl) =
-        generate_router(&parsed.methods, mod_name, use_alloc, value_prelude);
+    let (route_items, router_impl) = generate_router(&parsed.methods, mod_name, use_alloc);
     let RouteItems {
         contract_struct,
         route_fn,
@@ -751,14 +735,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
 
-        let fallback_value_prelude = build_value_prelude(!parsed.fallback_is_payable);
-        let fallback_guard = build_non_payable_guard(!parsed.fallback_is_payable);
+        let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
 
         let handler = if parsed.fallback_returns_result {
             let revert_err = generate_revert_encoding(use_alloc);
             quote! {
-                #fallback_value_prelude
-                #fallback_guard
+                #fallback_assert
                 match #fallback_name() {
                     Ok(()) => return,
                     Err(e) => {
@@ -768,8 +750,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         } else {
             quote! {
-                #fallback_value_prelude
-                #fallback_guard
+                #fallback_assert
                 #fallback_name();
                 return;
             }
@@ -844,6 +825,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
+    let assert_non_payable_fn = build_assert_non_payable_fn();
+
     Ok(quote! {
         #alloc_setup
 
@@ -854,6 +837,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             #contract_struct
+
+            #[cfg(not(feature = "abi-gen"))]
+            #assert_non_payable_fn
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
@@ -1335,20 +1321,16 @@ mod tests {
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
         let s = tokens.to_string();
         assert!(
-            s.contains("__value_buf"),
-            "non-payable method must read value_transferred into __value_buf"
+            s.contains("__pvm_assert_non_payable"),
+            "non-payable contract must emit the shared value-assertion helper"
         );
         assert!(
             s.contains("value_transferred"),
-            "non-payable method must call value_transferred to enforce rejection"
-        );
-        assert!(
-            s.contains("__has_value"),
-            "non-payable method must emit __has_value guard"
+            "non-payable helper must call value_transferred to enforce rejection"
         );
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
-            "non-payable method must revert with NON_PAYABLE_VALUE_RECEIVED when value attached"
+            "non-payable helper must revert with NON_PAYABLE_VALUE_RECEIVED when value attached"
         );
     }
 
@@ -1375,8 +1357,8 @@ mod tests {
             "all-payable route must not emit __has_value; got:\n{route_body}"
         );
         assert!(
-            !route_body.contains("NON_PAYABLE_VALUE_RECEIVED"),
-            "all-payable route must not emit non-payable guard; got:\n{route_body}"
+            !route_body.contains("__pvm_assert_non_payable"),
+            "all-payable route must not invoke the non-payable helper; got:\n{route_body}"
         );
     }
 
@@ -1423,12 +1405,8 @@ mod tests {
             .unwrap_or(after_deploy.len());
         let deploy_body = &after_deploy[..deploy_end];
         assert!(
-            deploy_body.contains("__has_value"),
-            "non-payable constructor must reference __has_value; got:\n{deploy_body}"
-        );
-        assert!(
-            deploy_body.contains("NON_PAYABLE_VALUE_RECEIVED"),
-            "non-payable constructor must emit guard; got:\n{deploy_body}"
+            deploy_body.contains("__pvm_assert_non_payable"),
+            "non-payable constructor must invoke the shared value-assertion helper; got:\n{deploy_body}"
         );
     }
 
@@ -1450,12 +1428,8 @@ mod tests {
             .unwrap_or(after_deploy.len());
         let deploy_body = &after_deploy[..deploy_end];
         assert!(
-            !deploy_body.contains("__has_value"),
-            "payable constructor must not reference __has_value; got:\n{deploy_body}"
-        );
-        assert!(
-            !deploy_body.contains("NON_PAYABLE_VALUE_RECEIVED"),
-            "payable constructor must not emit guard; got:\n{deploy_body}"
+            !deploy_body.contains("__pvm_assert_non_payable"),
+            "payable constructor must not invoke the non-payable helper; got:\n{deploy_body}"
         );
     }
 
@@ -1494,8 +1468,8 @@ mod tests {
             .unwrap_or(call_after.len());
         let call_body = &call_after[..call_end];
         assert!(
-            !call_body.contains("NON_PAYABLE_VALUE_RECEIVED"),
-            "payable fallback must not emit non-payable guard in call(); got:\n{call_body}"
+            !call_body.contains("__pvm_assert_non_payable"),
+            "payable fallback must not invoke the non-payable helper in call(); got:\n{call_body}"
         );
     }
 
@@ -1513,12 +1487,12 @@ mod tests {
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
         let s = tokens.to_string();
         assert!(
-            s.contains("__value_buf"),
-            "non-payable contract must read value_transferred into __value_buf"
+            s.contains("__pvm_assert_non_payable"),
+            "non-payable contract must invoke the shared value-assertion helper"
         );
         assert!(
-            s.contains("__has_value"),
-            "non-payable contract must compute __has_value"
+            s.contains("value_transferred"),
+            "non-payable contract must call value_transferred through the helper"
         );
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
