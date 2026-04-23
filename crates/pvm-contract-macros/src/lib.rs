@@ -803,23 +803,25 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 /// # CDM integration
 ///
 /// When the JSON-path form is used, an optional `cdm = "@ns/name"` can be
-/// appended. This generates a `cdm_reference()` function inside the imported
-/// module that looks up the deployed contract address at runtime from the
-/// on-chain CDM registry:
+/// appended. This generates a `reference` submodule on the imported
+/// interface with two ways to build a typed handle:
 ///
 /// ```ignore
 /// pvm_contract_sdk::abi_import!(
+///     alloc = true,
 ///     reputation,
 ///     "abi/reputation.abi.json",
 ///     cdm = "@polkadot/reputation",
 /// );
 ///
-/// // Later in your contract:
-/// reputation::cdm_reference().get_average_rating(subject)?;
-/// ```
+/// // Runtime registry lookup via `ContractRegistry.getAddress(string)`.
+/// // Address of the registry is baked from `CONTRACTS_REGISTRY_ADDR`.
+/// reputation::reference::lookup().get_average_rating(subject)?;
 ///
-/// The registry address is baked in at compile time from the
-/// `CONTRACTS_REGISTRY_ADDR` environment variable.
+/// // Compile-time address baked from `CDM_REGISTRY` env var, which is a
+/// // semicolon-delimited `name=hexaddress;...` mapping. No runtime lookup.
+/// reputation::reference::from_env().get_average_rating(subject)?;
+/// ```
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input with abi_import::parse::parse_macro);

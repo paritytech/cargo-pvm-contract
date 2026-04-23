@@ -374,17 +374,21 @@ pub fn expand_to_module(file: &File, alloc: bool, cdm: Option<&str>) -> TokenStr
     }
 }
 
-/// Emit the `cdm_reference()` helper inside an imported-interface module when
-/// the `abi_import!` call specifies `cdm = "@ns/name"`. The helper resolves
-/// the contract's deployed address at runtime by calling
-/// `ContractRegistry.getAddress(string)` and returns an initialized interface
-/// handle. The registry address is baked in from the `CONTRACTS_REGISTRY_ADDR`
-/// env var at compile time.
+/// Emit a `reference` submodule on the imported interface when `abi_import!`
+/// specifies `cdm = "@ns/name"`. The submodule exposes two ways to build a
+/// typed handle to the CDM-registered contract:
 ///
-/// # Panics (in generated code)
+/// - `reference::lookup()` — resolves the address **at runtime** by calling
+///   `ContractRegistry.getAddress(string)` on the registry deployed at
+///   `CONTRACTS_REGISTRY_ADDR` (env var, baked at compile time). Late
+///   binding; pays the registry roundtrip on every call.
 ///
-/// Panics if the registry call fails or the name isn't registered. A
-/// follow-up can lift this to `Result` once we decide the error surface.
+/// - `reference::from_env()` — resolves the address **at compile time** by
+///   looking up the CDM name in the `CDM_REGISTRY` env var, which is a
+///   semicolon-delimited list of `name=hexaddress` pairs. The address is
+///   baked into the binary as a literal — same end result as
+///   `from_address(addr)`, but the address comes from the env instead of
+///   being passed in at call sites.
 fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> TokenStream {
     let Some(cdm_name) = cdm else {
         return quote! {};
@@ -393,92 +397,181 @@ fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> Toke
     let [s0, s1, s2, s3] = selector;
 
     quote! {
-        /// Address of the CDM contract registry, baked in from the
-        /// `CONTRACTS_REGISTRY_ADDR` env var at compile time.
-        const __CDM_REGISTRY_ADDR: [u8; 20] = {
-            const fn hex(c: u8) -> u8 {
-                match c {
-                    b'0'..=b'9' => c - b'0',
-                    b'a'..=b'f' => c - b'a' + 10,
-                    b'A'..=b'F' => c - b'A' + 10,
-                    _ => panic!("CONTRACTS_REGISTRY_ADDR contains an invalid hex character"),
+        pub mod reference {
+            use super::*;
+
+            /// Address of the CDM contract registry, baked in from the
+            /// `CONTRACTS_REGISTRY_ADDR` env var at compile time. Used by
+            /// `lookup()`. Zero-address sentinel when unset — `lookup()`
+            /// callers get a runtime revert rather than a build-time error,
+            /// so contracts that only use `from_env()` still compile.
+            const __CDM_REGISTRY_ADDR: [u8; 20] = {
+                const fn hex(c: u8) -> u8 {
+                    match c {
+                        b'0'..=b'9' => c - b'0',
+                        b'a'..=b'f' => c - b'a' + 10,
+                        b'A'..=b'F' => c - b'A' + 10,
+                        _ => panic!(
+                            "CONTRACTS_REGISTRY_ADDR contains an invalid hex character"
+                        ),
+                    }
                 }
-            }
-            match option_env!("CONTRACTS_REGISTRY_ADDR") {
-                Some(s) => {
-                    let b = s.as_bytes();
-                    let off = if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
-                        2
-                    } else {
-                        0
-                    };
-                    assert!(
-                        b.len() - off == 40,
-                        "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (optional 0x prefix)"
-                    );
-                    let mut r = [0u8; 20];
+                match option_env!("CONTRACTS_REGISTRY_ADDR") {
+                    Some(s) => {
+                        let b = s.as_bytes();
+                        let off = if b.len() > 1
+                            && b[0] == b'0'
+                            && (b[1] == b'x' || b[1] == b'X')
+                        {
+                            2
+                        } else {
+                            0
+                        };
+                        assert!(
+                            b.len() - off == 40,
+                            "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (optional 0x prefix)"
+                        );
+                        let mut r = [0u8; 20];
+                        let mut i = 0;
+                        while i < 20 {
+                            r[i] = hex(b[off + i * 2]) << 4 | hex(b[off + i * 2 + 1]);
+                            i += 1;
+                        }
+                        r
+                    }
+                    None => [0u8; 20],
+                }
+            };
+
+            /// Address resolved at compile time from the `CDM_REGISTRY` env
+            /// var. Zero-address sentinel when unset or the CDM name isn't
+            /// present — `from_env()` panics at runtime in that case so
+            /// contracts that only use `lookup()` still compile.
+            const __CDM_FROM_ENV_ADDR: [u8; 20] = {
+                const fn hex(c: u8) -> u8 {
+                    match c {
+                        b'0'..=b'9' => c - b'0',
+                        b'a'..=b'f' => c - b'a' + 10,
+                        b'A'..=b'F' => c - b'A' + 10,
+                        _ => panic!("CDM_REGISTRY contains an invalid hex character"),
+                    }
+                }
+                // Locate `<name>=` preceded by ';' or at the start of the
+                // mapping. Returns the byte index of '=' on match.
+                const fn find_entry(entries: &[u8], name: &[u8]) -> Option<usize> {
                     let mut i = 0;
-                    while i < 20 {
-                        r[i] = hex(b[off + i * 2]) << 4 | hex(b[off + i * 2 + 1]);
+                    while i + name.len() < entries.len() {
+                        let at_start = i == 0 || entries[i - 1] == b';';
+                        if at_start {
+                            let mut j = 0;
+                            while j < name.len() && entries[i + j] == name[j] {
+                                j += 1;
+                            }
+                            if j == name.len() && entries[i + j] == b'=' {
+                                return Some(i + j);
+                            }
+                        }
                         i += 1;
                     }
-                    r
+                    None
                 }
-                None => panic!(
-                    "CONTRACTS_REGISTRY_ADDR must be set at compile time for contracts using `cdm`"
-                ),
-            }
-        };
-
-        /// Get a runtime-resolved interface to the CDM-registered contract.
-        ///
-        /// Looks up the deployed address from the contract registry using the
-        /// CDM package name baked in at compile time. Panics if the registry
-        /// call fails or the contract is not registered.
-        pub fn cdm_reference() -> #contract_name<Pure, (), (), false> {
-            extern crate alloc;
-
-            let cdm_name: &str = #cdm_name;
-            let name_len = cdm_name.len();
-            let padded_len = name_len.div_ceil(32) * 32;
-
-            // Calldata: 4-byte selector + ABI-encoded string
-            //   offset (32) + length (32) + data (padded to 32)
-            let mut calldata = alloc::vec![0u8; 4 + 32 + 32 + padded_len];
-            calldata[0] = #s0;
-            calldata[1] = #s1;
-            calldata[2] = #s2;
-            calldata[3] = #s3;
-            // String head: offset to tail (always 0x20)
-            calldata[4 + 24..4 + 32].copy_from_slice(&(32u64).to_be_bytes());
-            // String tail: length + bytes
-            calldata[4 + 32 + 24..4 + 32 + 32].copy_from_slice(&(name_len as u64).to_be_bytes());
-            calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
-
-            // Registry returns `(bool isSome, address value)` — 64 bytes.
-            let mut output_buf = [0u8; 64];
-            let mut output_ref: &mut [u8] = &mut output_buf[..];
-
-            let result = PolkaVmHost::call_evm(
-                CallFlags::ALLOW_REENTRY,
-                &__CDM_REGISTRY_ADDR,
-                u64::MAX,
-                &[0u8; 32],
-                &calldata,
-                Some(&mut output_ref),
-            );
-
-            match result {
-                Ok(()) => {
-                    let is_some = output_buf[31] != 0;
-                    if !is_some {
-                        panic!("CDM: contract not found in registry");
+                match option_env!("CDM_REGISTRY") {
+                    Some(entries) => {
+                        let bytes = entries.as_bytes();
+                        let name = #cdm_name.as_bytes();
+                        match find_entry(bytes, name) {
+                            Some(eq) => {
+                                let mut start = eq + 1;
+                                // Tolerate optional `0x` prefix.
+                                if start + 1 < bytes.len()
+                                    && bytes[start] == b'0'
+                                    && (bytes[start + 1] == b'x'
+                                        || bytes[start + 1] == b'X')
+                                {
+                                    start += 2;
+                                }
+                                assert!(
+                                    start + 40 <= bytes.len(),
+                                    "CDM_REGISTRY entry is shorter than 40 hex chars"
+                                );
+                                let mut r = [0u8; 20];
+                                let mut i = 0;
+                                while i < 20 {
+                                    r[i] = hex(bytes[start + i * 2]) << 4
+                                        | hex(bytes[start + i * 2 + 1]);
+                                    i += 1;
+                                }
+                                r
+                            }
+                            None => [0u8; 20],
+                        }
                     }
-                    let mut addr = [0u8; 20];
-                    addr.copy_from_slice(&output_buf[44..64]);
-                    #contract_name::<Pure, (), (), false>::from_address(addr.into())
+                    None => [0u8; 20],
                 }
-                Err(_) => panic!("CDM: registry call failed"),
+            };
+
+            /// Get a runtime-resolved interface to the CDM-registered
+            /// contract. Calls `ContractRegistry.getAddress(string)` on the
+            /// registry at `CONTRACTS_REGISTRY_ADDR`. Panics if the registry
+            /// call fails or the contract is not registered.
+            pub fn lookup() -> #contract_name<Pure, (), (), false> {
+                extern crate alloc;
+
+                let cdm_name: &str = #cdm_name;
+                let name_len = cdm_name.len();
+                let padded_len = name_len.div_ceil(32) * 32;
+
+                let mut calldata = alloc::vec![0u8; 4 + 32 + 32 + padded_len];
+                calldata[0] = #s0;
+                calldata[1] = #s1;
+                calldata[2] = #s2;
+                calldata[3] = #s3;
+                calldata[4 + 24..4 + 32].copy_from_slice(&(32u64).to_be_bytes());
+                calldata[4 + 32 + 24..4 + 32 + 32]
+                    .copy_from_slice(&(name_len as u64).to_be_bytes());
+                calldata[4 + 64..4 + 64 + name_len].copy_from_slice(cdm_name.as_bytes());
+
+                let mut output_buf = [0u8; 64];
+                let mut output_ref: &mut [u8] = &mut output_buf[..];
+
+                let result = PolkaVmHost::call_evm(
+                    CallFlags::ALLOW_REENTRY,
+                    &__CDM_REGISTRY_ADDR,
+                    u64::MAX,
+                    &[0u8; 32],
+                    &calldata,
+                    Some(&mut output_ref),
+                );
+
+                match result {
+                    Ok(()) => {
+                        let is_some = output_buf[31] != 0;
+                        if !is_some {
+                            panic!("CDM: contract not found in registry");
+                        }
+                        let mut addr = [0u8; 20];
+                        addr.copy_from_slice(&output_buf[44..64]);
+                        #contract_name::<Pure, (), (), false>::from_address(addr.into())
+                    }
+                    Err(_) => panic!("CDM: registry call failed"),
+                }
+            }
+
+            /// Get a compile-time-resolved interface to the CDM-registered
+            /// contract. The address is baked into the binary from the
+            /// `CDM_REGISTRY` env var (`name=hex;name=hex;...`). Panics at
+            /// runtime if the env var was unset at build time or did not
+            /// contain an entry for the CDM name.
+            pub fn from_env() -> #contract_name<Pure, (), (), false> {
+                if __CDM_FROM_ENV_ADDR == [0u8; 20] {
+                    panic!(concat!(
+                        "from_env(): CDM_REGISTRY env var must be set at build time ",
+                        "and contain an entry for `", #cdm_name, "=<hexaddress>`"
+                    ));
+                }
+                #contract_name::<Pure, (), (), false>::from_address(
+                    __CDM_FROM_ENV_ADDR.into(),
+                )
             }
         }
     }
