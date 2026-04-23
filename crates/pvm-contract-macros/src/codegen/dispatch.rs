@@ -149,7 +149,11 @@ fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
     quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
-pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStream, TokenStream) {
+pub fn generate_dispatch_arm(
+    method: &MethodInfo,
+    use_alloc: bool,
+    guard_hoisted: bool,
+) -> (TokenStream, TokenStream) {
     let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
     let const_def = build_selector_const(method);
 
@@ -165,7 +169,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
 
     let revert_err = generate_revert_encoding(use_alloc);
 
-    let payable_guard = if method.mutability == StateMutability::Payable {
+    let payable_guard = if guard_hoisted || method.mutability == StateMutability::Payable {
         quote! {}
     } else {
         quote! {
@@ -246,10 +250,29 @@ pub fn generate_router(
     use_alloc: bool,
     value_prelude: TokenStream,
 ) -> (RouteItems, RouterImpl) {
+    // When every method is non-payable, the per-arm `if __has_value { revert }`
+    // collapses into a single guard before the match.
+    let all_non_payable = !methods.is_empty()
+        && methods
+            .iter()
+            .all(|m| m.mutability != StateMutability::Payable);
+
     let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = methods
         .iter()
-        .map(|m| generate_dispatch_arm(m, use_alloc))
+        .map(|m| generate_dispatch_arm(m, use_alloc, all_non_payable))
         .unzip();
+
+    let hoisted_guard = if all_non_payable {
+        quote! {
+            if __has_value {
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     let route_items = RouteItems {
         contract_struct: quote! {
@@ -262,6 +285,7 @@ pub fn generate_router(
                 #(#selector_consts)*
 
                 #value_prelude
+                #hoisted_guard
 
                 match selector {
                     #(#dispatch_arms)*
@@ -378,7 +402,7 @@ mod tests {
             mutability: StateMutability::NonPayable,
             precomputed_selector: None,
         };
-        let (_const_def, arm) = generate_dispatch_arm(&m, false);
+        let (_const_def, arm) = generate_dispatch_arm(&m, false, false);
         let s = arm.to_string();
         assert!(
             s.contains("__has_value"),
@@ -402,7 +426,7 @@ mod tests {
             mutability: StateMutability::Payable,
             precomputed_selector: None,
         };
-        let (_const_def, arm) = generate_dispatch_arm(&m, false);
+        let (_const_def, arm) = generate_dispatch_arm(&m, false, false);
         let s = arm.to_string();
         assert!(
             !s.contains("__has_value"),
