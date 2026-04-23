@@ -143,7 +143,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ## Error Handling
 ///
 /// The scaffold uses `EmptyError` for methods that don't produce errors.
-/// To add custom errors, define `SolError` structs and use them directly:
+/// To add custom errors, define error structs with `#[derive(SolError)]` and use them directly:
 ///
 /// ```ignore
 /// mod my_token {
