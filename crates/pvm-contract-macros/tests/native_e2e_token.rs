@@ -126,11 +126,7 @@ mod mini_token {
         }
 
         #[pvm_contract_macros::method]
-        pub fn transfer(
-            &mut self,
-            to: Address,
-            amount: U256,
-        ) -> Result<(), InsufficientBalance> {
+        pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let mut caller_bytes = [0u8; 20];
             self.host.caller(&mut caller_bytes);
             let from = Address::from(caller_bytes);
@@ -149,8 +145,11 @@ mod mini_token {
             let current_to = self.balance_of(to);
             let new_to = current_to + amount;
 
-            self.host
-                .set_storage(StorageFlags::empty(), &from_key, &new_from.to_be_bytes::<32>());
+            self.host.set_storage(
+                StorageFlags::empty(),
+                &from_key,
+                &new_from.to_be_bytes::<32>(),
+            );
             self.host
                 .set_storage(StorageFlags::empty(), &to_key, &new_to.to_be_bytes::<32>());
 
@@ -193,8 +192,8 @@ fn selector(sig: &str) -> [u8; 4] {
 
 fn encode_transfer_calldata(to: Address, amount: U256) -> Vec<u8> {
     // (address, uint256) encodes as two 32-byte words (ABI head).
-    const LEN: usize = <Address as StaticEncodedLen>::ENCODED_SIZE
-        + <U256 as StaticEncodedLen>::ENCODED_SIZE;
+    const LEN: usize =
+        <Address as StaticEncodedLen>::ENCODED_SIZE + <U256 as StaticEncodedLen>::ENCODED_SIZE;
     let mut buf = vec![0u8; LEN];
     (to, amount).encode_to(&mut buf);
     buf
@@ -269,7 +268,12 @@ fn balance_of_returns_zero_for_untouched_address() {
 
     let mut out = [0u8; 256];
     let input = encode_balance_of_calldata(Address::from(ALICE));
-    let data = route_ok(&mut contract, selector("balanceOf(address)"), &input, &mut out);
+    let data = route_ok(
+        &mut contract,
+        selector("balanceOf(address)"),
+        &input,
+        &mut out,
+    );
 
     assert_eq!(U256::decode_at(data, 0), U256::ZERO);
 }
@@ -283,7 +287,12 @@ fn mint_by_owner_credits_balance_and_emits_transfer_event() {
     let mut out = [0u8; 256];
     let input = encode_mint_calldata(Address::from(ALICE), U256::from(1000u64));
 
-    let data = route_ok(&mut contract, selector("mint(address,uint256)"), &input, &mut out);
+    let data = route_ok(
+        &mut contract,
+        selector("mint(address,uint256)"),
+        &input,
+        &mut out,
+    );
     assert_eq!(data, &[] as &[u8], "void success returns empty data");
 
     // Storage side-effect
@@ -313,7 +322,12 @@ fn mint_by_non_owner_reverts_with_unauthorized() {
     let mut out = [0u8; 256];
     let input = encode_mint_calldata(Address::from(BOB), U256::from(100u64));
 
-    let data = route_revert(&mut contract, selector("mint(address,uint256)"), &input, &mut out);
+    let data = route_revert(
+        &mut contract,
+        selector("mint(address,uint256)"),
+        &input,
+        &mut out,
+    );
 
     // Revert payload is exactly the 4-byte `Unauthorized()` selector — no fields.
     assert_eq!(data, &selector("Unauthorized()"));
@@ -332,7 +346,12 @@ fn transfer_happy_path_moves_balance_and_emits_event() {
     let mut out = [0u8; 256];
     let input = encode_transfer_calldata(Address::from(BOB), U256::from(200u64));
 
-    let data = route_ok(&mut contract, selector("transfer(address,uint256)"), &input, &mut out);
+    let data = route_ok(
+        &mut contract,
+        selector("transfer(address,uint256)"),
+        &input,
+        &mut out,
+    );
     assert_eq!(data, &[] as &[u8]);
 
     assert_eq!(read_balance(&contract.host, ALICE), U256::from(300u64));
@@ -353,7 +372,12 @@ fn transfer_insufficient_balance_reverts_with_encoded_fields() {
     let mut out = [0u8; 256];
     let input = encode_transfer_calldata(Address::from(BOB), U256::from(100u64));
 
-    let data = route_revert(&mut contract, selector("transfer(address,uint256)"), &input, &mut out);
+    let data = route_revert(
+        &mut contract,
+        selector("transfer(address,uint256)"),
+        &input,
+        &mut out,
+    );
 
     // Expected revert: selector + ABI-encoded (available: U256, required: U256)
     let expected_selector = selector("InsufficientBalance(uint256,uint256)");
@@ -378,8 +402,16 @@ fn short_input_reverts_with_framework_invalid_calldata() {
     let mut out = [0u8; 256];
     let short = [0u8; 10]; // need 64 bytes for (Address, U256)
 
-    let data = route_revert(&mut contract, selector("transfer(address,uint256)"), &short, &mut out);
-    assert_eq!(data, &pvm_contract_types::framework_errors::INVALID_CALLDATA);
+    let data = route_revert(
+        &mut contract,
+        selector("transfer(address,uint256)"),
+        &short,
+        &mut out,
+    );
+    assert_eq!(
+        data,
+        &pvm_contract_types::framework_errors::INVALID_CALLDATA
+    );
 }
 
 #[test]
