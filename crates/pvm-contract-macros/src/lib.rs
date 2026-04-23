@@ -143,11 +143,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ## Error Handling
 ///
 /// The scaffold uses `EmptyError` for methods that don't produce errors.
-/// To add custom errors, define `SolErrorType` structs and use them directly:
+/// To add custom errors, define `SolError` structs and use them directly:
 ///
 /// ```ignore
 /// mod my_token {
-///     #[derive(Debug, pvm_contract_macros::SolErrorType)]
+///     #[derive(Debug, pvm_contract_macros::SolError)]
 ///     pub struct InsufficientBalance;
 ///
 ///     // Single error: use the struct directly
@@ -753,7 +753,7 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// # Example
 ///
 /// ```ignore
-/// #[derive(SolErrorType)]
+/// #[derive(SolError)]
 /// pub struct InsufficientBalance {
 ///     pub account: Address,
 ///     pub required: U256,
@@ -764,10 +764,10 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// Zero-field errors are valid:
 ///
 /// ```ignore
-/// #[derive(SolErrorType)]
+/// #[derive(SolError)]
 /// pub struct Unauthorized;
 /// ```
-#[proc_macro_derive(SolErrorType)]
+#[proc_macro_derive(SolError)]
 pub fn sol_error(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 

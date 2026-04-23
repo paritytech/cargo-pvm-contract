@@ -9,7 +9,7 @@ mod my_token {
     use super::*;
     use pvm_contract_sdk::Address;
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
     #[pvm_contract_sdk::constructor]

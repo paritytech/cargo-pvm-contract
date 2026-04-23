@@ -33,7 +33,7 @@ path = "src/example-mytoken-alloy-alloc.rs"
 [dependencies]
 pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk" }
 polkavm-derive = { version = "0.31.0" }  # required by proc macro generated code
-pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }  # SolErrorType derive used by DSL binary
+pvm-contract-macros = { path = "../../crates/pvm-contract-macros" }  # SolError derive used by DSL binary
 pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
 alloy-core = { version = "1.5", default-features = false, features = ["sol-types"] }
 picoalloc = { version = "5", default-features = false }
