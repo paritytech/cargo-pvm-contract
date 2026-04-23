@@ -18,9 +18,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// - `allocator = "pico"` - Enables allocator mode using picoalloc
 /// - `allocator = "bump"` - Enables allocator mode using pvm-bump-allocator
 /// - `allocator_size = N` - Sets allocator heap size (with `allocator = "pico"` or `allocator = "bump"`, default: 1024)
-/// - `cdm = "@ns/name"` - Contract Dependency Manager (CDM) package identity.
-///   The builder emits `<bin>.cdm.json` alongside `<bin>.polkavm`; `cdm deploy`
-///   reads that sidecar to register this contract under the given name.
+/// - `cdm = "@ns/name"` - CDM package identity; the builder emits
+///   `<bin>.cdm.json` alongside `<bin>.polkavm` for `cdm deploy`.
 ///
 /// # Usage with Solidity Interface
 ///
@@ -794,10 +793,8 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 ///
 /// - `#[abi_import(alloc = <true/false>)]` — higher level bindings and
 ///   dynamic type support. Default: `false`.
-/// - `#[abi_import(cdm = "@ns/name")]` — Contract Dependency Manager
-///   package identity. When set, the expansion emits a `reference`
-///   submodule with `lookup()` (runtime registry call) and `from_env()`
-///   (compile-time address from the `CDM_REGISTRY` env var).
+/// - `#[abi_import(cdm = "@ns/name")]` — CDM package identity; emits a
+///   `reference` submodule with `lookup()` and `from_env()`.
 ///
 /// # Example of usage
 /// - `solidity` literal
@@ -876,9 +873,8 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 ///
 /// # CDM integration
 ///
-/// With `#![abi_import(cdm = "@ns/name")]`, the expansion emits a
-/// `reference` submodule on the imported interface with two ways to build
-/// a typed handle without passing an address:
+/// `#![abi_import(cdm = "@ns/name")]` emits a `reference` submodule with
+/// two address resolvers:
 ///
 /// ```ignore
 /// pvm_contract_macros::abi_import! {
@@ -887,14 +883,10 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 ///     "abi/reputation.abi.json"
 /// }
 ///
-/// // Runtime registry lookup via `ContractRegistry.getAddress(string)`.
-/// // The registry address is baked from the `CONTRACTS_REGISTRY_ADDR`
-/// // env var at compile time.
+/// // Runtime: registry call using `CONTRACTS_REGISTRY_ADDR`.
 /// reputation::reference::lookup().get_average_rating(subject)?;
 ///
-/// // Compile-time address baked from the `CDM_REGISTRY` env var, which
-/// // is a semicolon-delimited `name=hexaddress;...` mapping. No runtime
-/// // lookup — same end state as `from_address(literal)`.
+/// // Compile-time: baked from `CDM_REGISTRY` (`name=hex;...` mapping).
 /// reputation::reference::from_env().get_average_rating(subject)?;
 /// ```
 ///

@@ -105,10 +105,7 @@ const UNKNOWN_ERROR: &str = "unknown `abi_import` attribute";
 pub struct AbiAttrs {
     /// `#[abi_import(alloc)]`
     pub alloc: Option<bool>,
-    /// `#[abi_import(cdm = "@ns/name")]` — Contract Dependency Manager
-    /// package identity. When set, the expansion also emits a `reference`
-    /// submodule with `lookup()` and `from_env()` entry points for
-    /// resolving the deployed contract address.
+    /// `#[abi_import(cdm = "@ns/name")]`
     pub cdm: Option<String>,
 }
 
@@ -154,7 +151,6 @@ impl AbiAttrs {
                     }
                 };
 
-                // `name = "..."` — required form for string-valued attrs.
                 let string = || {
                     let input = meta.value()?;
                     input.parse::<LitStr>().map(|lit| lit.value())

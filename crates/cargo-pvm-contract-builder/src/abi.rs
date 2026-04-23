@@ -6,12 +6,7 @@ use toml_edit::DocumentMut;
 pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, parse_type_str};
 
 /// Extract CDM metadata JSON from the `__PVM_CDM` symbol in an ELF binary.
-///
-/// The `#[contract(cdm = "...")]` attribute emits a `__PVM_CDM` static in the
-/// `.rodata.pvm_cdm` section containing `{"cdmPackage":"@ns/name"}`. We locate
-/// it by symbol name (section names are merged by the linker, but symbol names
-/// survive). Returns `Ok(None)` when the symbol isn't present — i.e. the
-/// contract didn't declare a CDM package.
+/// Returns `Ok(None)` when the symbol isn't present.
 pub fn extract_cdm_from_elf(elf_bytes: &[u8]) -> Result<Option<String>> {
     use object::{Object, ObjectSection, ObjectSymbol};
 
@@ -461,8 +456,6 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
-    // --- extract_cdm_from_elf ---
-
     #[test]
     fn extract_cdm_from_non_elf_errors() {
         assert!(extract_cdm_from_elf(b"not an elf").is_err());
@@ -470,8 +463,6 @@ mod tests {
 
     #[test]
     fn extract_cdm_returns_none_when_symbol_absent() {
-        // The currently-running test binary itself doesn't contain `__PVM_CDM`,
-        // so the extractor should return `Ok(None)` rather than erroring.
         let path = std::env::current_exe().expect("current exe path");
         let bytes = std::fs::read(&path).expect("read current exe");
         assert!(matches!(extract_cdm_from_elf(&bytes), Ok(None)));

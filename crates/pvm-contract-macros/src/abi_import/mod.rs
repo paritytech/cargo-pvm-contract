@@ -375,21 +375,8 @@ pub fn expand_to_module(file: &File, alloc: bool, cdm: Option<&str>) -> TokenStr
     }
 }
 
-/// Emit a `reference` submodule on the imported interface when `abi_import!`
-/// specifies `cdm = "@ns/name"`. The submodule exposes two ways to build a
-/// typed handle to the CDM-registered contract:
-///
-/// - `reference::lookup()` — resolves the address **at runtime** by calling
-///   `ContractRegistry.getAddress(string)` on the registry deployed at
-///   `CONTRACTS_REGISTRY_ADDR` (env var, baked at compile time). Late
-///   binding; pays the registry roundtrip on every call.
-///
-/// - `reference::from_env()` — resolves the address **at compile time** by
-///   looking up the CDM name in the `CDM_REGISTRY` env var, which is a
-///   semicolon-delimited list of `name=hexaddress` pairs. The address is
-///   baked into the binary as a literal — same end result as
-///   `from_address(addr)`, but the address comes from the env instead of
-///   being passed in at call sites.
+/// Emit a `reference` submodule with `lookup()` (runtime registry call) and
+/// `from_env()` (compile-time address from `CDM_REGISTRY`) when `cdm` is set.
 fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> TokenStream {
     let Some(cdm_name) = cdm else {
         return quote! {};
@@ -401,64 +388,44 @@ fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> Toke
         pub mod reference {
             use super::*;
 
-            /// Address of the CDM contract registry, baked in from the
-            /// `CONTRACTS_REGISTRY_ADDR` env var at compile time. Used by
-            /// `lookup()`. Zero-address sentinel when unset — `lookup()`
-            /// callers get a runtime revert rather than a build-time error,
-            /// so contracts that only use `from_env()` still compile.
-            const __CDM_REGISTRY_ADDR: [u8; 20] = {
-                const fn hex(c: u8) -> u8 {
-                    match c {
-                        b'0'..=b'9' => c - b'0',
-                        b'a'..=b'f' => c - b'a' + 10,
-                        b'A'..=b'F' => c - b'A' + 10,
-                        _ => panic!(
-                            "CONTRACTS_REGISTRY_ADDR contains an invalid hex character"
-                        ),
-                    }
+            const fn __hex_nibble(c: u8) -> u8 {
+                match c {
+                    b'0'..=b'9' => c - b'0',
+                    b'a'..=b'f' => c - b'a' + 10,
+                    b'A'..=b'F' => c - b'A' + 10,
+                    _ => panic!("CDM address contains an invalid hex character"),
                 }
-                match option_env!("CONTRACTS_REGISTRY_ADDR") {
-                    Some(s) => {
-                        let b = s.as_bytes();
-                        let off = if b.len() > 1
-                            && b[0] == b'0'
-                            && (b[1] == b'x' || b[1] == b'X')
-                        {
-                            2
-                        } else {
-                            0
-                        };
-                        assert!(
-                            b.len() - off == 40,
-                            "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (optional 0x prefix)"
-                        );
-                        let mut r = [0u8; 20];
-                        let mut i = 0;
-                        while i < 20 {
-                            r[i] = hex(b[off + i * 2]) << 4 | hex(b[off + i * 2 + 1]);
-                            i += 1;
-                        }
-                        r
+            }
+
+            /// Registry address from `CONTRACTS_REGISTRY_ADDR`. Zero when
+            /// unset so `from_env()`-only consumers still compile.
+            const __CDM_REGISTRY_ADDR: [u8; 20] = match option_env!("CONTRACTS_REGISTRY_ADDR") {
+                Some(s) => {
+                    let b = s.as_bytes();
+                    let off = if b.len() > 1 && b[0] == b'0' && (b[1] == b'x' || b[1] == b'X') {
+                        2
+                    } else {
+                        0
+                    };
+                    assert!(
+                        b.len() - off == 40,
+                        "CONTRACTS_REGISTRY_ADDR must be 40 hex chars (optional 0x prefix)"
+                    );
+                    let mut r = [0u8; 20];
+                    let mut i = 0;
+                    while i < 20 {
+                        r[i] = __hex_nibble(b[off + i * 2]) << 4
+                            | __hex_nibble(b[off + i * 2 + 1]);
+                        i += 1;
                     }
-                    None => [0u8; 20],
+                    r
                 }
+                None => [0u8; 20],
             };
 
-            /// Address resolved at compile time from the `CDM_REGISTRY` env
-            /// var. Zero-address sentinel when unset or the CDM name isn't
-            /// present — `from_env()` panics at runtime in that case so
-            /// contracts that only use `lookup()` still compile.
+            /// Compile-time address from `CDM_REGISTRY`. Zero when unset or
+            /// the name isn't in the mapping; `from_env()` checks for that.
             const __CDM_FROM_ENV_ADDR: [u8; 20] = {
-                const fn hex(c: u8) -> u8 {
-                    match c {
-                        b'0'..=b'9' => c - b'0',
-                        b'a'..=b'f' => c - b'a' + 10,
-                        b'A'..=b'F' => c - b'A' + 10,
-                        _ => panic!("CDM_REGISTRY contains an invalid hex character"),
-                    }
-                }
-                // Locate `<name>=` preceded by ';' or at the start of the
-                // mapping. Returns the byte index of '=' on match.
                 const fn find_entry(entries: &[u8], name: &[u8]) -> Option<usize> {
                     let mut i = 0;
                     while i + name.len() < entries.len() {
@@ -483,11 +450,9 @@ fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> Toke
                         match find_entry(bytes, name) {
                             Some(eq) => {
                                 let mut start = eq + 1;
-                                // Tolerate optional `0x` prefix.
                                 if start + 1 < bytes.len()
                                     && bytes[start] == b'0'
-                                    && (bytes[start + 1] == b'x'
-                                        || bytes[start + 1] == b'X')
+                                    && (bytes[start + 1] == b'x' || bytes[start + 1] == b'X')
                                 {
                                     start += 2;
                                 }
@@ -498,8 +463,8 @@ fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> Toke
                                 let mut r = [0u8; 20];
                                 let mut i = 0;
                                 while i < 20 {
-                                    r[i] = hex(bytes[start + i * 2]) << 4
-                                        | hex(bytes[start + i * 2 + 1]);
+                                    r[i] = __hex_nibble(bytes[start + i * 2]) << 4
+                                        | __hex_nibble(bytes[start + i * 2 + 1]);
                                     i += 1;
                                 }
                                 r
@@ -511,10 +476,8 @@ fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> Toke
                 }
             };
 
-            /// Get a runtime-resolved interface to the CDM-registered
-            /// contract. Calls `ContractRegistry.getAddress(string)` on the
-            /// registry at `CONTRACTS_REGISTRY_ADDR`. Panics if the registry
-            /// call fails or the contract is not registered.
+            /// Runtime contract registry lookup. Panics if the registry call fails
+            /// or the contract is not registered.
             pub fn lookup() -> #contract_name<Pure, (), (), false> {
                 extern crate alloc;
 
@@ -558,11 +521,8 @@ fn generate_cdm_reference(contract_name: &syn::Ident, cdm: Option<&str>) -> Toke
                 }
             }
 
-            /// Get a compile-time-resolved interface to the CDM-registered
-            /// contract. The address is baked into the binary from the
-            /// `CDM_REGISTRY` env var (`name=hex;name=hex;...`). Panics at
-            /// runtime if the env var was unset at build time or did not
-            /// contain an entry for the CDM name.
+            /// Address baked from `CDM_REGISTRY` (`name=hex;name=hex;...`).
+            /// Panics at runtime if the env was unset or missing the name.
             pub fn from_env() -> #contract_name<Pure, (), (), false> {
                 if __CDM_FROM_ENV_ADDR == [0u8; 20] {
                     panic!(concat!(
@@ -620,37 +580,17 @@ mod test {
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
     }
 
-    /// `cdm = "..."` should emit the `reference` submodule with both
-    /// `lookup` and `from_env` entry points, the registry-address and
-    /// from-env-address consts, and the CDM name baked into the expansion.
     #[test]
     fn cdm_arg_emits_reference_submodule() {
         let code = load_with_cdm("multi-method", Some("@example/multi-method"));
-        assert!(
-            code.contains("pub mod reference"),
-            "reference submodule should be emitted"
-        );
-        assert!(code.contains("pub fn lookup"), "lookup() should be emitted");
-        assert!(
-            code.contains("pub fn from_env"),
-            "from_env() should be emitted"
-        );
-        assert!(
-            code.contains("__CDM_REGISTRY_ADDR"),
-            "registry-address const should be emitted"
-        );
-        assert!(
-            code.contains("__CDM_FROM_ENV_ADDR"),
-            "from-env-address const should be emitted"
-        );
-        assert!(
-            code.contains("@example/multi-method"),
-            "cdm name should be baked into the expansion"
-        );
+        assert!(code.contains("pub mod reference"));
+        assert!(code.contains("pub fn lookup"));
+        assert!(code.contains("pub fn from_env"));
+        assert!(code.contains("__CDM_REGISTRY_ADDR"));
+        assert!(code.contains("__CDM_FROM_ENV_ADDR"));
+        assert!(code.contains("@example/multi-method"));
     }
 
-    /// Without `cdm = "..."`, the `reference` submodule and its consts
-    /// must not appear in the expansion.
     #[test]
     fn no_cdm_arg_omits_reference_submodule() {
         let code = load_with_cdm("multi-method", None);

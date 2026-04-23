@@ -497,36 +497,31 @@ fn parse_contract(
     })
 }
 
-/// Emit a `__PVM_CDM` static in `.rodata.pvm_cdm` containing
-/// `{"cdmPackage":"<name>"}` when the contract declares a CDM package name.
-/// The builder extracts this symbol from the linked ELF and writes it to
-/// `<bin>.cdm.json` alongside the `.polkavm` bytecode.
+/// Emit a `__PVM_CDM` static in `.rodata.pvm_cdm` holding
+/// `{"cdmPackage":"<name>"}` when a CDM package name is set.
 fn generate_cdm_section(cdm: Option<&str>) -> TokenStream {
     let Some(name) = cdm else {
         return quote! {};
     };
+    if name.contains('"') || name.contains('\\') {
+        return syn::Error::new_spanned(
+            proc_macro2::TokenStream::new(),
+            format!("cdm package name {name:?} contains characters that cannot be embedded in JSON unescaped"),
+        )
+        .to_compile_error();
+    }
+    let json_bytes = format!("{{\"cdmPackage\":\"{name}\"}}").into_bytes();
+    let len = json_bytes.len();
     quote! {
         #[cfg(all(
             not(feature = "abi-gen"),
             any(target_arch = "riscv32", target_arch = "riscv64")
         ))]
         const _: () = {
-            const __PVM_CDM_JSON: &str = ::pvm_contract_sdk::const_format::concatcp!(
-                "{\"cdmPackage\":\"", #name, "\"}"
-            );
             #[unsafe(link_section = ".rodata.pvm_cdm")]
             #[unsafe(no_mangle)]
             #[used]
-            static __PVM_CDM: [u8; __PVM_CDM_JSON.len()] = {
-                let b = __PVM_CDM_JSON.as_bytes();
-                let mut a = [0u8; __PVM_CDM_JSON.len()];
-                let mut i = 0;
-                while i < b.len() {
-                    a[i] = b[i];
-                    i += 1;
-                }
-                a
-            };
+            static __PVM_CDM: [u8; #len] = [#(#json_bytes),*];
         };
     }
 }
@@ -1126,22 +1121,12 @@ mod tests {
         };
         let output = expand_contract(args, item).unwrap().to_string();
 
-        assert!(
-            output.contains("__PVM_CDM"),
-            "expansion should emit __PVM_CDM static when cdm is set"
-        );
-        assert!(
-            output.contains(".rodata.pvm_cdm"),
-            "static should target .rodata.pvm_cdm section"
-        );
-        assert!(
-            output.contains("@example/my-contract"),
-            "cdm package name should appear in generated code"
-        );
-        assert!(
-            output.contains("cdmPackage"),
-            "JSON wrapper should appear in generated code"
-        );
+        assert!(output.contains("__PVM_CDM"));
+        assert!(output.contains(".rodata.pvm_cdm"));
+        // The JSON string is encoded as byte literals; check for `{` (123) and
+        // `@` (64) from the start of `{"cdmPackage":"@...`.
+        assert!(output.contains("123u8"));
+        assert!(output.contains("64u8"));
     }
 
     #[test]
@@ -1159,10 +1144,7 @@ mod tests {
         let output = expand_contract(ContractArgs::default(), item)
             .unwrap()
             .to_string();
-        assert!(
-            !output.contains("__PVM_CDM"),
-            "no __PVM_CDM static should be emitted when cdm is not set"
-        );
+        assert!(!output.contains("__PVM_CDM"));
     }
 
     #[test]

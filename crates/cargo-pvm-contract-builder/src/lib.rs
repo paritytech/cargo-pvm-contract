@@ -281,9 +281,7 @@ fn process_elf_binaries(
     Ok(())
 }
 
-/// Extract the `__PVM_CDM` symbol from the linked ELF and write it as a
-/// `<bin>.cdm.json` sidecar. Silently skips contracts that don't declare
-/// `cdm = "..."` on `#[contract]` (symbol isn't present).
+/// Write `<bin>.cdm.json` from the ELF's `__PVM_CDM` symbol if present.
 fn generate_cdm_file(elf_path: &Path, output_path: &Path) -> Result<()> {
     let elf_bytes = fs::read(elf_path)
         .with_context(|| format!("Failed to read ELF: {}", elf_path.display()))?;
