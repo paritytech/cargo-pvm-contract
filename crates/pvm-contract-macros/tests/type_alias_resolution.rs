@@ -6,14 +6,14 @@
 //! - Containers with custom types (`[Point; 2]`, `(Count, u32)`) — inline expansion
 //! - Mixed structs (concrete + alias + custom fields)
 
-use pvm_contract_macros::SolType;
-use pvm_contract_types::{SolDecode, SolEncode};
-use ruint::aliases::U256;
+use pvm_contract_sdk::SolType;
+use pvm_contract_sdk::U256;
+use pvm_contract_sdk::{SolDecode, SolEncode};
 
 // ===== Type aliases =====
 type Count = u64;
 type TokenAmount = U256;
-type Owner = pvm_contract_types::Address;
+type Owner = pvm_contract_sdk::Address;
 type Coord = u64;
 
 // ===== Structs with type alias fields =====
@@ -97,7 +97,7 @@ fn simple_alias_encode_len() {
 #[test]
 fn multi_alias_encode_len() {
     let s = MultiAlias {
-        owner: pvm_contract_types::Address([0xAB; 20]),
+        owner: pvm_contract_sdk::Address([0xAB; 20]),
         amount: U256::from(1000u64),
     };
     assert_eq!(s.encode_len(), 64, "address + uint256 = 64 bytes");
@@ -163,7 +163,7 @@ fn simple_alias_roundtrip() {
 #[test]
 fn multi_alias_roundtrip() {
     let s = MultiAlias {
-        owner: pvm_contract_types::Address([0xAB; 20]),
+        owner: pvm_contract_sdk::Address([0xAB; 20]),
         amount: U256::from(1000u64),
     };
     let len = s.encode_len();

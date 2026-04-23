@@ -1,13 +1,69 @@
 [
-  {"type":"constructor","inputs":[],"stateMutability":"nonpayable"},
-  {"type":"function","name":"touch","inputs":[
-    {"name":"value","type":"(uint256,uint256)"}
-  ],"outputs":[
-    {"name":"","type":"(uint256,uint256)"}
-  ],"stateMutability":"nonpayable"},
-  {"type":"error","name":"InvalidCalldata","inputs":[]},
-  {"type":"error","name":"CalldataTooLarge","inputs":[]},
-  {"type":"error","name":"NoSelector","inputs":[]},
-  {"type":"error","name":"UnknownSelector","inputs":[]},
-  {"type":"error","name":"NonPayableValueReceived","inputs":[]}
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "name": "x",
+            "type": "uint256"
+          },
+          {
+            "name": "y",
+            "type": "uint256"
+          }
+        ],
+        "name": "value",
+        "type": "tuple"
+      }
+    ],
+    "name": "touch",
+    "outputs": [
+      {
+        "components": [
+          {
+            "name": "x",
+            "type": "uint256"
+          },
+          {
+            "name": "y",
+            "type": "uint256"
+          }
+        ],
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
 ]

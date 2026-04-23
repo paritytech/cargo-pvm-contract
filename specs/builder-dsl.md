@@ -10,7 +10,7 @@ A non-macro alternative to `#[contract]`. You wire up dispatch manually using `C
 
 use pallet_revive_uapi::{HostFn as _, HostFnImpl, ReturnFlags, StorageFlags};
 use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
-use pvm_contract_types::{SolEncode, StaticEncodedLen};
+use pvm_contract_sdk::{SolEncode, StaticEncodedLen};
 use ruint::aliases::U256;
 
 use pallet_revive_uapi::HostFnImpl as api;
@@ -72,12 +72,12 @@ pub extern "C" fn call() {
     let call_data_len = HostFnImpl::call_data_size() as usize;
     let mut buf = [0u8; 256];
     if call_data_len > 256 {
-        HostFnImpl::return_value(ReturnFlags::REVERT, &pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+        HostFnImpl::return_value(ReturnFlags::REVERT, &pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
     }
     HostFnImpl::call_data_copy(&mut buf[..call_data_len], 0);
 
     if call_data_len < 4 {
-        HostFnImpl::return_value(ReturnFlags::REVERT, &pvm_contract_types::framework_errors::NO_SELECTOR);
+        HostFnImpl::return_value(ReturnFlags::REVERT, &pvm_contract_sdk::framework_errors::NO_SELECTOR);
     }
 
     let selector: [u8; 4] = [buf[0], buf[1], buf[2], buf[3]];
@@ -94,7 +94,7 @@ pub extern "C" fn call() {
     }
 
     // No match — custom fallback
-    HostFnImpl::return_value(ReturnFlags::REVERT, &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+    HostFnImpl::return_value(ReturnFlags::REVERT, &pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
 }
 ```
 
@@ -111,9 +111,9 @@ DSL contracts use `RevertBuffer` to encode ABI-compatible revert data from error
 
 ```rust,ignore
 use pvm_contract_builder_dsl::RevertBuffer;
-use pvm_contract_types::SolError;
+use pvm_contract_sdk::SolError;
 
-#[derive(pvm_contract_macros::SolError)]
+#[derive(pvm_contract_macros::SolErrorType)]
 struct InsufficientBalance;
 
 fn transfer_handler(input: &[u8]) {
@@ -127,9 +127,9 @@ fn transfer_handler(input: &[u8]) {
 }
 ```
 
-`RevertBuffer<N>` is a fixed-size stack buffer that encodes any `SolRevert` type (single `SolError` structs or `sol_revert_enum!` enums). The const generic `N` controls the buffer size — use a size large enough for the error's encoded data (4-byte selector + ABI-encoded parameters).
+`RevertBuffer<N>` is a fixed-size stack buffer that encodes any `SolRevert` type (single `SolError` types or `sol_revert_enum!` enums). The const generic `N` controls the buffer size — use a size large enough for the error's encoded data (4-byte selector + ABI-encoded parameters).
 
-Contracts with no error paths can use `pvm_contract_types::EmptyError` as a zero-cost uninhabited error type.
+Contracts with no error paths can use `pvm_contract_sdk::EmptyError` as a zero-cost uninhabited error type.
 
 ## Contract Entry Points
 

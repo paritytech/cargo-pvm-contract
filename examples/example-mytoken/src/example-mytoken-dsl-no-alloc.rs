@@ -1,10 +1,11 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_types::{HostApi as _, PolkaVmHost, ReturnFlags, StorageFlags};
-use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
-use pvm_contract_types::{Address, SolDecode, SolEncode, StaticEncodedLen};
-use ruint::aliases::U256;
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    Address, HostApi as _, PolkaVmHost, ReturnFlags, SolDecode, SolEncode, StaticEncodedLen,
+    StorageFlags, U256,
+};
+use pvm_contract_builder_dsl::{ContractBuilder, RevertBuffer, solidity_selector};
 
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
@@ -33,12 +34,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-use pvm_contract_types::PolkaVmHost as api;
-
-#[derive(Debug, pvm_contract_macros::SolError)]
+#[derive(Debug, pvm_contract_macros::SolErrorType)]
 pub struct InsufficientBalance;
 
-pvm_contract_types::sol_revert_enum! {
+pvm_contract_builder_dsl::pvm_contract_types::sol_revert_enum! {
     pub enum TokenError {
         InsufficientBalance(InsufficientBalance),
     }
@@ -64,7 +63,7 @@ fn total_supply_handler(_input: &[u8]) {
     let mut supply_bytes = [0u8; 32];
     let mut supply_slice = &mut supply_bytes[..];
 
-    let result = match api::get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
+    let result = match PolkaVmHost::get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
         Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
         Err(_) => U256::ZERO,
     };
@@ -80,7 +79,7 @@ fn balance_of_handler(input: &[u8]) {
     let mut balance_bytes = [0u8; 32];
     let mut balance_slice = &mut balance_bytes[..];
 
-    let result = match api::get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
+    let result = match PolkaVmHost::get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
         Ok(_) => U256::from_be_bytes::<32>(balance_bytes),
         Err(_) => U256::ZERO,
     };
@@ -98,7 +97,7 @@ fn transfer_handler(input: &[u8]) {
     let sender_key = balance_key(&caller);
     let mut sender_balance_bytes = [0u8; 32];
     let mut sender_balance_slice = &mut sender_balance_bytes[..];
-    let sender_balance = match api::get_storage(
+    let sender_balance = match PolkaVmHost::get_storage(
         StorageFlags::empty(),
         &sender_key,
         &mut sender_balance_slice,
@@ -108,7 +107,7 @@ fn transfer_handler(input: &[u8]) {
     };
 
     if sender_balance < amount {
-        let mut revert_buf = pvm_contract_builder_dsl::RevertBuffer::<64>::new();
+        let mut revert_buf = RevertBuffer::<64>::new();
         let payload = revert_buf.encode(&InsufficientBalance);
         PolkaVmHost::return_value(ReturnFlags::REVERT, payload);
     }
@@ -117,7 +116,7 @@ fn transfer_handler(input: &[u8]) {
     let recipient_key = balance_key(&to);
     let mut recipient_balance_bytes = [0u8; 32];
     let mut recipient_balance_slice = &mut recipient_balance_bytes[..];
-    let recipient_balance = match api::get_storage(
+    let recipient_balance = match PolkaVmHost::get_storage(
         StorageFlags::empty(),
         &recipient_key,
         &mut recipient_balance_slice,
@@ -140,7 +139,7 @@ fn mint_handler(input: &[u8]) {
     let recipient_key = balance_key(&to);
     let mut recipient_balance_bytes = [0u8; 32];
     let mut recipient_balance_slice = &mut recipient_balance_bytes[..];
-    let recipient_balance = match api::get_storage(
+    let recipient_balance = match PolkaVmHost::get_storage(
         StorageFlags::empty(),
         &recipient_key,
         &mut recipient_balance_slice,
@@ -154,7 +153,7 @@ fn mint_handler(input: &[u8]) {
     let supply_key = total_supply_key();
     let mut supply_bytes = [0u8; 32];
     let mut supply_slice = &mut supply_bytes[..];
-    let supply = match api::get_storage(StorageFlags::empty(), &supply_key, &mut supply_slice) {
+    let supply = match PolkaVmHost::get_storage(StorageFlags::empty(), &supply_key, &mut supply_slice) {
         Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
         Err(_) => U256::ZERO,
     };
@@ -175,23 +174,23 @@ fn balance_key(addr: &[u8; 20]) -> [u8; 32] {
     input[63] = 1;
 
     let mut key = [0u8; 32];
-    api::hash_keccak_256(&input, &mut key);
+    PolkaVmHost::hash_keccak_256(&input, &mut key);
     key
 }
 
 fn set_total_supply(amount: U256) {
     let key = total_supply_key();
-    api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
+    PolkaVmHost::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
 fn set_balance(addr: &[u8; 20], amount: U256) {
     let key = balance_key(addr);
-    api::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
+    PolkaVmHost::set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
 fn get_caller() -> [u8; 20] {
     let mut caller = [0u8; 20];
-    api::caller(&mut caller);
+    PolkaVmHost::caller(&mut caller);
     caller
 }
 
@@ -204,5 +203,5 @@ fn emit_transfer(from: &[u8; 20], to: &[u8; 20], value: U256) {
 
     let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
     let data = value.to_be_bytes::<32>();
-    api::deposit_event(&topics, &data);
+    PolkaVmHost::deposit_event(&topics, &data);
 }

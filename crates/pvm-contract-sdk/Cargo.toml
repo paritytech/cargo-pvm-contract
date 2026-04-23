@@ -1,0 +1,20 @@
+[package]
+name = "pvm-contract-sdk"
+description = "SDK for building Rust smart contracts targeting PolkaVM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+pvm-contract-macros = { path = "../pvm-contract-macros" }
+pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+pvm-contract-core = { path = "../pvm-contract-core" }
+polkavm-derive = { workspace = true }
+ruint = { workspace = true, default-features = false }
+
+[features]
+default = []
+alloc = ["pvm-contract-types/alloc"]
+std = ["alloc", "pvm-contract-types/std"]
+abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]

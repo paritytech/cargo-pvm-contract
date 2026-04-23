@@ -311,10 +311,10 @@ When a contract method returns `Err(e)`, the SDK encodes the error as ABI-compat
 
 ### Custom Errors
 
-Custom errors are defined as Rust structs with `#[derive(SolError)]`:
+Custom errors are defined as Rust structs with `#[derive(SolErrorType)]`:
 
 ```rust,ignore
-#[derive(pvm_contract_macros::SolError)]
+#[derive(pvm_contract_macros::SolErrorType)]
 pub struct InsufficientBalance {
     pub account: Address,
     pub required: U256,
@@ -358,7 +358,7 @@ For a static custom error like `InsufficientBalance { account, required, availab
 When a method can return multiple error types, use `sol_revert_enum!`:
 
 ```rust,ignore
-pvm_contract_types::sol_revert_enum!(ContractError {
+pvm_contract_sdk::sol_revert_enum!(ContractError {
     InsufficientBalance,
     Unauthorized,
 });
@@ -372,7 +372,7 @@ Contracts with no error paths use `EmptyError` as a zero-cost uninhabited error 
 
 ```rust,ignore
 #[pvm_contract_macros::constructor]
-pub fn new() -> Result<(), pvm_contract_types::EmptyError> { Ok(()) }
+pub fn new() -> Result<(), pvm_contract_sdk::EmptyError> { Ok(()) }
 ```
 
 ### ABI JSON
@@ -483,7 +483,7 @@ The macro generates size checks before decoding:
 ```rust,ignore
 let min_size = sum of head_size() for all parameters;
 if input.len() < min_size {
-    return_value(REVERT, &pvm_contract_types::framework_errors::INVALID_CALLDATA);
+    return_value(REVERT, &pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
 }
 ```
 

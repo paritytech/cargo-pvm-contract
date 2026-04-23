@@ -1,8 +1,32 @@
 [
-  {"type":"constructor","inputs":[],"stateMutability":"nonpayable"},
-  {"type":"error","name":"InvalidCalldata","inputs":[]},
-  {"type":"error","name":"CalldataTooLarge","inputs":[]},
-  {"type":"error","name":"NoSelector","inputs":[]},
-  {"type":"error","name":"UnknownSelector","inputs":[]},
-  {"type":"error","name":"NonPayableValueReceived","inputs":[]}
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
 ]

@@ -13,6 +13,8 @@ cargo-pvm-contract/
 ├── cargo-pvm-contract          CLI tool — scaffolds new contract projects
 ├── cargo-pvm-contract-builder  Build library — links PolkaVM bytecode + emits ABI JSON (used by CLI and optional build.rs)
 ├── pvm-contract-macros         Proc macros — #[contract], #[method], #[constructor], #[fallback], #[derive(SolType)]
+├── pvm-contract-sdk            Primary user-facing SDK — re-exports macros, types, and polkavm-derive
+├── pvm-contract-core           Core structures for the PVM smart contracts SDK
 ├── pvm-contract-types          ABI traits — SolEncode / SolDecode, no_std compatible
 ├── pvm-contract-builder-dsl    Builder DSL — non-macro alternative (ContractBuilder)
 ├── pvm-bump-allocator          Bump allocator — simple no-dealloc heap for contract execution

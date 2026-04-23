@@ -1,1 +1,85 @@
-[{"type":"constructor","inputs":[],"stateMutability":"nonpayable"},{"type":"function","name":"getNamed","inputs":[],"outputs":[{"name":"","type":"(uint64,string)"}],"stateMutability":"nonpayable"},{"type":"function","name":"process","inputs":[{"name":"data","type":"(uint64,string)"},{"name":"flag","type":"bool"}],"outputs":[{"name":"","type":"uint64"}],"stateMutability":"nonpayable"},{"type":"error","name":"InvalidCalldata","inputs":[]},{"type":"error","name":"CalldataTooLarge","inputs":[]},{"type":"error","name":"NoSelector","inputs":[]},{"type":"error","name":"UnknownSelector","inputs":[]},{"type":"error","name":"NonPayableValueReceived","inputs":[]}]
+[
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "getNamed",
+    "outputs": [
+      {
+        "components": [
+          {
+            "name": "id",
+            "type": "uint64"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "name": "id",
+            "type": "uint64"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          }
+        ],
+        "name": "data",
+        "type": "tuple"
+      },
+      {
+        "name": "flag",
+        "type": "bool"
+      }
+    ],
+    "name": "process",
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
+]

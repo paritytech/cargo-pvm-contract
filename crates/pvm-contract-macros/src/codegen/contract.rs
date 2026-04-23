@@ -138,7 +138,12 @@ pub(super) struct ParsedContract {
     pub(super) error_types: Vec<syn::Type>,
 }
 
-const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
+const VALID_PREFIXES: &[&str] = &[
+    "pvm",
+    "pvm_contract",
+    "pvm_contract_macros",
+    "pvm_contract_sdk",
+];
 
 /// Verify that a Rust method's parameters are compatible with the Solidity
 /// function it implements. Checks arity strictly, and type compatibility for
@@ -185,7 +190,7 @@ fn check_signature_compatibility(
     Ok(())
 }
 
-fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
+fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -196,10 +201,28 @@ fn extract_method_rename(attrs: &[Attribute]) -> Option<String> {
             && let Some(name) = args.rename
             && !name.is_empty()
         {
-            return Some(name);
+            if !is_valid_solidity_identifier(&name) {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    format!(
+                        "Invalid Solidity identifier `{name}`. \
+                         Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
+                    ),
+                ));
+            }
+            return Ok(Some(name));
         }
     }
-    None
+    Ok(None)
+}
+
+fn is_valid_solidity_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
@@ -358,7 +381,7 @@ fn build_value_prelude(needs_has_value: bool) -> TokenStream {
     }
     quote! {
         let mut __value_buf = [0u8; 32];
-        ::pvm_contract_types::PolkaVmHost::value_transferred(&mut __value_buf);
+        ::pvm_contract_sdk::PolkaVmHost::value_transferred(&mut __value_buf);
         let __has_value = __value_buf != [0u8; 32];
     }
 }
@@ -370,9 +393,9 @@ fn build_non_payable_guard(emit: bool) -> TokenStream {
     }
     quote! {
         if __has_value {
-            ::pvm_contract_types::PolkaVmHost::return_value(
-                ::pvm_contract_types::ReturnFlags::REVERT,
-                &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+            ::pvm_contract_sdk::PolkaVmHost::return_value(
+                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
         }
     }
 }
@@ -431,7 +454,7 @@ fn parse_contract(
                     sol_interface
                 {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)
+                    let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .functions
@@ -479,7 +502,7 @@ fn parse_contract(
                     }
                     (sol_func.name.clone(), Some(selector), sol_mutability)
                 } else {
-                    let sol_name = extract_method_rename(&func.attrs)
+                    let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
                     let mutability = if is_payable {
                         StateMutability::Payable
@@ -642,23 +665,23 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {}
         } else if use_alloc {
             quote! {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
             }
         } else {
             let buffer_size = args.buffer_size;
             quote! {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
-                        ::pvm_contract_types::ReturnFlags::REVERT,
-                        &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+                    ::pvm_contract_sdk::PolkaVmHost::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
                 let input = &call_data[..call_data_len];
                 #size_check
             }
@@ -755,14 +778,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_types::PolkaVmHost::return_value(
-                    ::pvm_contract_types::ReturnFlags::REVERT,
-                    &::pvm_contract_types::framework_errors::NO_SELECTOR);
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_types::PolkaVmHost::return_value(
-                    ::pvm_contract_types::ReturnFlags::REVERT,
-                    &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
             },
         )
     };
@@ -771,9 +794,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -783,8 +806,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let input = &call_data[4..];
 
                 if route(selector, input).is_some() {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
-                        ::pvm_contract_types::ReturnFlags::empty(), &[]);
+                    ::pvm_contract_sdk::PolkaVmHost::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::empty(), &[]);
                 }
 
                 #unknown_selector_handler
@@ -795,14 +818,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
-                        ::pvm_contract_types::ReturnFlags::REVERT,
-                        &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+                    ::pvm_contract_sdk::PolkaVmHost::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -812,8 +835,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let input = &call_data[4..call_data_len];
 
                 if route(selector, input).is_some() {
-                    ::pvm_contract_types::PolkaVmHost::return_value(
-                        ::pvm_contract_types::ReturnFlags::empty(), &[]);
+                    ::pvm_contract_sdk::PolkaVmHost::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::empty(), &[]);
                 }
 
                 #unknown_selector_handler
@@ -898,7 +921,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
     quote! {
         #[cfg(not(feature = "abi-gen"))]
         #[allow(unused_imports)]
-        use ::pvm_contract_types::HostApi as _;
+        use ::pvm_contract_sdk::HostApi as _;
 
         #(#items)*
     }
@@ -1147,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn constructor_inputs_appear_in_abi_gen_output() {
+    fn constructor_with_params_generates_deploy_decoding() {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
@@ -1162,15 +1185,13 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // abi-gen main is generated (no sol_path)
-        assert!(output.contains("feature = \"abi-gen\""));
-        // constructor entry is present with its inputs array
-        assert!(output.contains("{\\\"type\\\":\\\"constructor\\\",\\\"inputs\\\":["));
-        // param names are emitted
+        // deploy() is generated with param decoding
+        assert!(output.contains("deploy"));
+        // param names are used in decode statements
         assert!(output.contains("\"owner\""));
         assert!(output.contains("\"supply\""));
-        // param types are resolved via trait SOL_NAME
-        assert!(output.contains("SOL_NAME"));
+        // route function is generated
+        assert!(output.contains("fn route"));
     }
 
     #[test]
@@ -1201,9 +1222,7 @@ mod tests {
             output.contains("fn route (selector : [u8 ; 4] , input : & [u8]) -> Option < () >")
         );
         // Router trait impl references the module
-        assert!(
-            output.contains("impl :: pvm_contract_types :: Router for my_contract :: Contract")
-        );
+        assert!(output.contains("impl :: pvm_contract_sdk :: Router for my_contract :: Contract"));
         // call() delegates to route()
         assert!(output.contains("route (selector , input)"));
     }

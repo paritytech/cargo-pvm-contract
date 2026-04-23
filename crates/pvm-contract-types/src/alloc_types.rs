@@ -144,6 +144,17 @@ impl<T: SolEncode> SolEncode for alloc::vec::Vec<T> {
             }
         }
     }
+
+    /// For `Vec<T>`, ABI type is `T_abi_type[]` and components come from T.
+    #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> crate::AbiParam {
+        let inner = T::abi_param("");
+        crate::AbiParam {
+            name: name.into(),
+            param_type: alloc::format!("{}[]", inner.param_type),
+            components: inner.components,
+        }
+    }
 }
 
 impl<T: SolEncode> crate::SolArrayElement for alloc::vec::Vec<T> {}

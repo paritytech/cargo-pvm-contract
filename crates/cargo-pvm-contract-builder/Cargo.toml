@@ -10,9 +10,8 @@ publish = true
 [dependencies]
 anyhow = { workspace = true }
 polkavm-linker = { workspace = true }
-pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+pvm-contract-types = { path = "../pvm-contract-types", default-features = false, features = ["abi-gen"] }
 toml_edit = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]

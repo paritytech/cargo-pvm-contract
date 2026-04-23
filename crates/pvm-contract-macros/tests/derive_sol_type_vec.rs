@@ -1,6 +1,6 @@
-use pvm_contract_macros::SolType;
-use pvm_contract_types::{SolDecode, SolEncode};
-use ruint::aliases::U256;
+use pvm_contract_sdk::SolType;
+use pvm_contract_sdk::U256;
+use pvm_contract_sdk::{SolDecode, SolEncode};
 
 #[derive(Debug, PartialEq, Eq, SolType)]
 struct WithVecU256 {
