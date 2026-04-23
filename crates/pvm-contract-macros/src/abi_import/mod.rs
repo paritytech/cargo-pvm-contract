@@ -1477,8 +1477,7 @@ mod test {
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
         expect_test::expect![[r#"
-            use pvm_contract_types::*;
-            use pvm_contract_core::call::*;
+            use pvm_contract_sdk::*;
             pub mod flipper {
                 use super::*;
                 #[derive(Clone, Copy)]
