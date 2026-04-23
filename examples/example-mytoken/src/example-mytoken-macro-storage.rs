@@ -26,7 +26,7 @@ mod my_token {
         balances: Mapping<Address, U256>,
     }
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
     pvm_contract_sdk::sol_revert_enum! {
