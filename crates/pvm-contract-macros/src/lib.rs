@@ -751,7 +751,7 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 ///
 /// Generates `SELECTOR` (compile-time keccak256), `SIGNATURE`, and
 /// `encode_params` from the struct fields. Each field must implement
-/// [`SolEncode`].
+/// [`pvm_contract_types::SolEncode`].
 ///
 /// # Example
 ///
@@ -780,51 +780,132 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Imports an external contract's ABI and generates a typed call interface.
+/// Generates bindings to interact with a contract interface using either a:
+/// - solidity literal that has the defined inteface of said contract.
+/// - json abi file as a path and a name for said contract.
 ///
-/// # Forms
+/// # Supported methods
+///
+/// - delegate call
+/// - call
+/// - instantiation via `new` function.
+///
+/// # Supported attributes
+///
+/// - `#[abi_import(alloc = <true/false>)]` — higher level bindings and
+///   dynamic type support. Default: `false`.
+/// - `#[abi_import(cdm = "@ns/name")]` — Contract Dependency Manager
+///   package identity. When set, the expansion emits a `reference`
+///   submodule with `lookup()` (runtime registry call) and `from_env()`
+///   (compile-time address from the `CDM_REGISTRY` env var).
+///
+/// # Example of usage
+/// - `solidity` literal
 ///
 /// ```ignore
-/// // Inline Solidity (bare):
-/// pvm_contract_sdk::abi_import! {
-///     interface Counter {
-///         function get() external view returns (uint64);
-///         function inc() external;
+/// pvm_contract_macros::abi_import! {
+///     #![abi_import(alloc = true)]
+///     // SPDX-License-Identifier: MIT
+///     pragma solidity ^0.8.0;
+///     interface Flipper {
+///         function flip() external;
+///         function get() external view returns (bool);
+///     }
+/// }
+/// ```
+///
+/// - `json` api
+/// ```text
+/// abi_import! {
+///     #![abi_import(alloc = true)]
+///     Contract,
+///     concat!(env!("CARGO_MANIFEST_DIR"), "/path/to/MyJsonContract.abi.json"))
+/// }
+/// ```
+///
+/// # Name Matching
+///
+/// Solidity function names are converted to snake_case for compatibility:
+/// - `totalSupply` → `total_supply`
+/// - `balanceOf` → `balance_of`
+///
+/// # Function overloading inside abi
+///
+/// in case of function overloading inside abi a-la:
+/// ```solidity
+///    function flip() external;
+///    function flip(bool a) external;
+/// ```
+/// the folowing methods will be generated:
+/// ```text
+///    fn flip(&mut self) -> ...
+///    fn flip_1(&mut self, a: bool) -> ...
+/// ```
+///
+/// # Alloc enabled api examples
+///
+/// `#![abi_import(alloc = true)]` enables a higher level api.
+/// example below:
+///
+/// ```text
+/// pvm_contract_macros::abi_import! {
+///     #![abi_import(alloc = true)]
+///     // SPDX-License-Identifier: MIT
+///     pragma solidity ^0.8.0;
+///     interface Flipper {
+///         constructor();
+///         function flip() payable external;
+///         function get() external view returns (bool);
 ///     }
 /// }
 ///
-/// // Inline Solidity with alloc:
-/// pvm_contract_sdk::abi_import!(alloc = true, { interface Foo { ... } });
+/// ...
 ///
-/// // JSON ABI file:
-/// pvm_contract_sdk::abi_import!(counter, "abi/counter.abi.json");
+/// fn example() {
+///     use flipper::*;
+///     // call a contract
+///     let bool: bool = Flipper::from_address(<addr>).get().call()?;
+///     // set a `value` this method is only present if the method is `payable`.
+///     // also its possible to set a limit for the call.
+///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call()?;
+///
+///     // instantiate a contract
+///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(<code_hash>, <value>, <limits>, <optional salt>)?;
+/// }
 /// ```
 ///
 /// # CDM integration
 ///
-/// When the JSON-path form is used, an optional `cdm = "@ns/name"` can be
-/// appended. This generates a `reference` submodule on the imported
-/// interface with two ways to build a typed handle:
+/// With `#![abi_import(cdm = "@ns/name")]`, the expansion emits a
+/// `reference` submodule on the imported interface with two ways to build
+/// a typed handle without passing an address:
 ///
 /// ```ignore
-/// pvm_contract_sdk::abi_import!(
-///     alloc = true,
-///     reputation,
-///     "abi/reputation.abi.json",
-///     cdm = "@polkadot/reputation",
-/// );
+/// pvm_contract_macros::abi_import! {
+///     #![abi_import(alloc = true, cdm = "@polkadot/reputation")]
+///     Reputation,
+///     "abi/reputation.abi.json"
+/// }
 ///
 /// // Runtime registry lookup via `ContractRegistry.getAddress(string)`.
-/// // Address of the registry is baked from `CONTRACTS_REGISTRY_ADDR`.
+/// // The registry address is baked from the `CONTRACTS_REGISTRY_ADDR`
+/// // env var at compile time.
 /// reputation::reference::lookup().get_average_rating(subject)?;
 ///
-/// // Compile-time address baked from `CDM_REGISTRY` env var, which is a
-/// // semicolon-delimited `name=hexaddress;...` mapping. No runtime lookup.
+/// // Compile-time address baked from the `CDM_REGISTRY` env var, which
+/// // is a semicolon-delimited `name=hexaddress;...` mapping. No runtime
+/// // lookup — same end state as `from_address(literal)`.
 /// reputation::reference::from_env().get_average_rating(subject)?;
 /// ```
+///
+/// # Further Documentation
+/// Please refer to:
+/// - [`pvm_contract_core::call::CallError`] for errors
+/// - [`pvm_contract_core::call::CallLimits`] for call limits
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(input with abi_import::parse::parse_macro);
+    let (file, attrs) = parse_macro_input!(input with abi_import::parse::parse_macro);
 
-    abi_import::expand_to_module(&args.file, args.alloc, args.cdm.as_deref()).into()
+    abi_import::expand_to_module(&file, attrs.alloc.unwrap_or_default(), attrs.cdm.as_deref())
+        .into()
 }

@@ -1,50 +1,26 @@
 use alloy_json_abi::ToSolConfig;
 use std::path::{Path, PathBuf};
 use syn::{
-    Error, Expr, Ident, Lit, LitBool, LitStr, Result, Token,
+    Attribute, Error, Ident, LitBool, LitStr, Result, Token,
     parse::{Parse, ParseStream},
 };
 
-/// Parsed `abi_import!` arguments.
-pub struct AbiImportArgs {
-    pub file: syn_solidity::File,
-    pub alloc: bool,
-    /// CDM package name if `cdm = "@ns/name"` was passed.
-    pub cdm: Option<String>,
-}
-
-pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<AbiImportArgs> {
+pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File, AbiAttrs)> {
+    let attrs = Attribute::parse_inner(input)?;
     let fork = input.fork();
-    let (alloc_present, is_alloc) =
-        if let Ok(syn::MetaNameValue { path, value, .. }) = fork.parse::<syn::MetaNameValue>() {
-            (
-                true,
-                path.get_ident().is_some_and(|x| *x == "alloc")
-                    && matches!(
-                        value,
-                        Expr::Lit(syn::ExprLit {
-                            lit: Lit::Bool(LitBool { value: true, .. }),
-                            ..
-                        })
-                    ),
-            )
-        } else {
-            (false, false)
-        };
 
-    let fork = if alloc_present {
-        let _ = fork.parse::<Token![,]>();
-        let _ = input.parse::<syn::MetaNameValue>();
-        let _ = input.parse::<Token![,]>();
-        fork
-    } else {
-        input.fork()
-    };
     // Include macro calls like `concat!(env!())`;
     let is_litstr_like = |fork: syn::parse::ParseStream<'_>| {
         fork.peek(LitStr) || (fork.peek(Ident) && fork.peek2(Token![!]))
     };
 
+    let (abi_attrs, rest) = AbiAttrs::parse(&attrs)?;
+    if !rest.is_empty() {
+        return Err(syn::Error::new_spanned(
+            rest.first().unwrap(),
+            "only `#[abi_import]` attributes are allowed here",
+        ));
+    }
     if is_litstr_like(&fork)
         || (fork.peek(Ident) && fork.peek2(Token![,]) && {
             let _ = fork.parse::<Ident>();
@@ -52,33 +28,13 @@ pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<AbiImportArgs> {
             is_litstr_like(&fork)
         })
     {
-        let (file, cdm) = parse_json(input)?;
-        Ok(AbiImportArgs {
-            file,
-            alloc: is_alloc,
-            cdm,
-        })
-    } else if alloc_present {
-        let content;
-
-        syn::braced!(content in input);
-        let file = syn_solidity::File::parse(&content)?;
-        Ok(AbiImportArgs {
-            file,
-            alloc: is_alloc,
-            cdm: None,
-        })
+        parse_json(input).map(|x| (x, abi_attrs))
     } else {
-        let file = syn_solidity::File::parse(input)?;
-        Ok(AbiImportArgs {
-            file,
-            alloc: is_alloc,
-            cdm: None,
-        })
+        syn_solidity::File::parse(input).map(|x| (x, abi_attrs))
     }
 }
 
-fn parse_json(input: ParseStream<'_>) -> Result<(syn_solidity::File, Option<String>)> {
+fn parse_json(input: ParseStream<'_>) -> Result<syn_solidity::File> {
     let name = input.parse::<Option<Ident>>()?;
     if name.is_some() {
         input.parse::<Token![,]>()?;
@@ -88,24 +44,6 @@ fn parse_json(input: ParseStream<'_>) -> Result<(syn_solidity::File, Option<Stri
     let mut value = macro_string.eval()?;
 
     let _ = input.parse::<Option<Token![,]>>()?;
-
-    // Optional trailing `cdm = "@ns/name"`.
-    let mut cdm: Option<String> = None;
-    if input.peek(Ident) {
-        let ident: Ident = input.parse()?;
-        if ident == "cdm" {
-            input.parse::<Token![=]>()?;
-            let name: LitStr = input.parse()?;
-            cdm = Some(name.value());
-            let _ = input.parse::<Option<Token![,]>>()?;
-        } else {
-            return Err(Error::new(
-                ident.span(),
-                format!("unexpected argument `{ident}`; expected `cdm = \"...\"`"),
-            ));
-        }
-    }
-
     if !input.is_empty() {
         let msg = "unexpected token, expected end of input";
         return Err(Error::new(input.span(), msg));
@@ -130,12 +68,11 @@ fn parse_json(input: ParseStream<'_>) -> Result<(syn_solidity::File, Option<Stri
         return Err(Error::new(span, msg));
     }
     let span = input.span();
-    let file = load_json_abi(
+    load_json_abi(
         name.map_or("contract".to_owned(), |x| x.to_string()),
         span,
         &path,
-    )?;
-    Ok((file, cdm))
+    )
 }
 
 pub(crate) fn load_json_abi(
@@ -159,4 +96,77 @@ pub(crate) fn load_json_abi(
     syn_solidity::parse2(quote::quote! {
         #tts
     })
+}
+
+const DUPLICATE_ERROR: &str = "duplicate attribute";
+const UNKNOWN_ERROR: &str = "unknown `abi_import` attribute";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AbiAttrs {
+    /// `#[abi_import(alloc)]`
+    pub alloc: Option<bool>,
+    /// `#[abi_import(cdm = "@ns/name")]` — Contract Dependency Manager
+    /// package identity. When set, the expansion also emits a `reference`
+    /// submodule with `lookup()` and `from_env()` entry points for
+    /// resolving the deployed contract address.
+    pub cdm: Option<String>,
+}
+
+impl AbiAttrs {
+    /// Parse the `#[abi_import(...)]` attributes from a list of attributes.
+    pub fn parse(attrs: &[Attribute]) -> Result<(Self, Vec<Attribute>)> {
+        let mut this = Self::default();
+        let mut others = Vec::with_capacity(attrs.len());
+        for attr in attrs {
+            if !attr.path().is_ident("abi_import") {
+                others.push(attr.clone());
+                continue;
+            }
+
+            attr.meta.require_list()?.parse_nested_meta(|meta| {
+                let path = meta
+                    .path
+                    .get_ident()
+                    .ok_or_else(|| meta.error("expected ident"))?;
+                let s = path.to_string();
+
+                macro_rules! match_ {
+                    ($($l:ident => $e:expr),* $(,)?) => {
+                        match s.as_str() {
+                            $(
+                                stringify!($l) => if this.$l.is_some() {
+                                    return Err(meta.error(DUPLICATE_ERROR))
+                                } else {
+                                    this.$l = Some($e);
+                                },
+                            )*
+                            _ => return Err(meta.error(UNKNOWN_ERROR)),
+                        }
+                    };
+                }
+
+                // `path` => true, `path = <bool>` => <bool>
+                let bool = || {
+                    if let Ok(input) = meta.value() {
+                        input.parse::<LitBool>().map(|lit| lit.value)
+                    } else {
+                        Ok(true)
+                    }
+                };
+
+                // `name = "..."` — required form for string-valued attrs.
+                let string = || {
+                    let input = meta.value()?;
+                    input.parse::<LitStr>().map(|lit| lit.value())
+                };
+
+                match_! {
+                    alloc => bool()?,
+                    cdm => string()?,
+                };
+                Ok(())
+            })?;
+        }
+        Ok((this, others))
+    }
 }
