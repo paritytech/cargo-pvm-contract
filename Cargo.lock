@@ -4413,6 +4413,7 @@ dependencies = [
  "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",
+ "pvm-storage",
  "ruint",
 ]
 

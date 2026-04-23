@@ -916,15 +916,9 @@ fn strip_pvm_attrs(
                 // the function has a pvm method/constructor/fallback attribute
                 // and a SolStorage struct was found in the module.
                 if let Some(struct_name) = storage_struct_name {
-                    let is_pvm_fn = func.attrs.iter().any(|attr| {
-                        let segments: Vec<_> = attr.path().segments.iter().collect();
-                        segments.len() == 2
-                            && VALID_PREFIXES
-                                .contains(&segments[0].ident.to_string().as_str())
-                            && (segments[1].ident == "method"
-                                || segments[1].ident == "constructor"
-                                || segments[1].ident == "fallback")
-                    });
+                    let is_pvm_fn = has_pvm_attr(&func.attrs, "method")
+                        || has_pvm_attr(&func.attrs, "constructor")
+                        || has_pvm_attr(&func.attrs, "fallback");
 
                     if is_pvm_fn {
                         let injection: syn::Stmt = syn::parse_quote! {
