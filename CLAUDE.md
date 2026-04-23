@@ -367,7 +367,7 @@ examples/
   test-contracts/               9+ test contracts with .sol interfaces
 specs/
   abi.md                        ABI encoding specification (includes error encoding)
-  builder-dsl.md                Builder DSL specification (includes RevertBuffer)
+  builder-dsl.md                Builder DSL specification
 ```
 
 ## Editing Rust Code

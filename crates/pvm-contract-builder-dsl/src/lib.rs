@@ -15,28 +15,6 @@ use pvm_contract_types::ReturnFlags;
 /// 4-byte Solidity function selector.
 pub type Selector = [u8; 4];
 
-/// Fixed-size stack buffer for encoding ABI-compatible revert data.
-pub struct RevertBuffer<const N: usize> {
-    buf: [u8; N],
-}
-
-impl<const N: usize> Default for RevertBuffer<N> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const N: usize> RevertBuffer<N> {
-    pub fn new() -> Self {
-        Self { buf: [0; N] }
-    }
-
-    pub fn encode<'a, E: pvm_contract_types::SolRevert>(&'a mut self, e: &E) -> &'a [u8] {
-        let len = e.revert_data(&mut self.buf);
-        &self.buf[..len]
-    }
-}
-
 /// The result a [`MethodHandler`] returns to the dispatcher.
 ///
 /// `Ok(n)` — success; `n` bytes were written to the caller-supplied output buffer.

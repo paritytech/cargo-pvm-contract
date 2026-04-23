@@ -1,8 +1,10 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, RevertBuffer, solidity_selector};
-use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
+use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_sdk::{
+    Address, HostApi, PolkaVmHost, SolDecode, SolEncode, SolRevert, StaticEncodedLen, StorageFlags,
+};
 use pvm_contract_sdk::U256;
 
 #[global_allocator]
@@ -102,10 +104,8 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
         };
 
     if sender_balance < amount {
-        let mut revert_buf = RevertBuffer::<64>::new();
-        let payload = revert_buf.encode(&InsufficientBalance);
-        output[..payload.len()].copy_from_slice(payload);
-        return HandlerResult::Revert(payload.len());
+        let n = SolRevert::revert_data(&InsufficientBalance, output);
+        return HandlerResult::Revert(n);
     }
 
     let new_sender_balance = sender_balance - amount;
