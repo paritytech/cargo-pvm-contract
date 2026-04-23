@@ -41,7 +41,7 @@ use pvm_contract_types::MockHost as Host;
 use pvm_contract_types::HostApi;
 
 // ---------------------------------------------------------------------------
-// Shared inner functions — type-erased helpers that operate on raw [u8; 32].
+// Shared inner functions: type-erased helpers that operate on raw [u8; 32].
 // Benchmarked with/without #[inline(never)]: letting the compiler decide
 // produced smaller .polkavm output so we omit the annotation.
 // ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ pub trait SolStorage: Sized {
 }
 
 // ---------------------------------------------------------------------------
-// StorageLayoutType — for storageLayout JSON generation (abi-gen only)
+// StorageLayoutType: for storageLayout JSON generation (abi-gen only)
 // ---------------------------------------------------------------------------
 
 /// Trait for resolving Solidity type names in `storageLayout` JSON.
@@ -396,7 +396,7 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
 }
 
 // ---------------------------------------------------------------------------
-// Mapping<K1, Mapping<K2, V>> — nested
+// Mapping<K1, Mapping<K2, V>> (nested)
 // ---------------------------------------------------------------------------
 
 /// Nested mappings can also be accessed with tuple keys:
@@ -590,7 +590,7 @@ mod tests {
         let mut chained = Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2));
         chained.entry(&owner).insert(&spender, &amount);
 
-        // Read via tuple key — same slot
+        // Read via tuple key (same slot)
         let tuple_map = Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2));
         assert_eq!(tuple_map.get(&(owner, spender)), amount);
     }
@@ -620,7 +620,7 @@ mod tests {
         let chained = chained.derive(&b);
         let chained = chained.derive(&c);
 
-        // Derive slot via 3-tuple — must match
+        // Derive slot via 3-tuple (must match chaining)
         let tupled = (a, b, c).derive_slot(&root);
         assert_eq!(chained, tupled);
     }

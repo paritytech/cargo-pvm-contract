@@ -815,7 +815,7 @@ fn find_sol_storage_struct(input: &ItemMod) -> syn::Result<Option<Ident>> {
     // Proc macros run before #[cfg] evaluation, so feature-gated storage structs
     // are all visible even though only one will be active per build. We allow
     // this IF every candidate is #[cfg]-gated AND they all share the same name,
-    // because the injected code references the struct by name — it must resolve
+    // because the injected code references the struct by name, which must resolve
     // regardless of which cfg branch the compiler selects.
     let all_cfg_gated = candidates.iter().all(|(_, has_cfg)| *has_cfg);
 
@@ -837,7 +837,7 @@ fn find_sol_storage_struct(input: &ItemMod) -> syn::Result<Option<Ident>> {
         return Ok(Some(first_name.clone()));
     }
 
-    // At least one candidate is unconditional — reject the duplicate.
+    // At least one candidate is unconditional. Reject the duplicate.
     let first_name = &candidates[0].0.ident;
     for (s, has_cfg) in &candidates[1..] {
         if !has_cfg {

@@ -18,12 +18,12 @@ pub fn generate_abi_gen(
     storage_struct: Option<syn::Ident>,
 ) -> (TokenStream, TokenStream) {
     if has_sol_path && storage_struct.is_none() {
-        // .sol path, no storage — builder gets everything from the .sol file.
+        // .sol path, no storage: builder gets everything from the .sol file.
         return (quote! {}, quote! {});
     }
 
     if has_sol_path {
-        // .sol path with storage — builder gets ABI from .sol, but needs
+        // .sol path with storage: builder gets ABI from .sol, but needs
         // main() to output storage layout from the Rust side.
         let mod_name = &parsed.mod_name;
         let helper = storage_layout_helper(storage_struct.as_ref().unwrap());
@@ -36,7 +36,7 @@ pub fn generate_abi_gen(
         return (helper, main_fn);
     }
 
-    // Non-.sol path — generate both ABI and optional storage layout.
+    // Non-.sol path: generate both ABI and optional storage layout.
     match generate_abi_gen_impl(parsed, storage_struct) {
         Ok((helper, main_fn)) => (helper, main_fn),
         Err(err) => {

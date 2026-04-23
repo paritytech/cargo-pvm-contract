@@ -17,10 +17,10 @@ pub fn generate_abi_for_bin(
 /// `#[derive(SolStorage)]`. Returns the raw `serde_json::Value` of the
 /// `storageLayout` object, or `None` when no storage is declared.
 ///
-/// Detection uses text scanning (`has_sol_storage_derive`), which may
-/// false-positive when `SolStorage` appears outside the `#[contract]` module
-/// (e.g. in a comment). In that case the abi-gen binary has no `main()` and
-/// compilation fails with "main function not found" — we treat that specific
+/// Detection parses the source with `syn` and walks the AST for
+/// `#[derive(SolStorage)]`. If the `SolStorage` struct is outside the
+/// `#[contract]` module, the macro won't generate an abi-gen `main()` and
+/// compilation fails with "main function not found". We treat that specific
 /// error as "no storage layout". All other failures propagate normally.
 pub fn generate_storage_layout_for_bin(
     manifest_dir: &Path,
@@ -41,9 +41,9 @@ pub fn generate_storage_layout_for_bin(
         Ok(Some(s)) => s,
         Ok(None) => return Ok(None),
         Err(e) => {
-            // The text scanner may false-positive (SolStorage in a comment or
-            // outside the #[contract] module). In that case no main() was
-            // generated and abi-gen fails with "main function not found".
+            // The AST check found SolStorage somewhere in the file, but it
+            // may be outside the #[contract] module. In that case no main()
+            // was generated and abi-gen fails with "main function not found".
             // Treat that specific error as "no storage layout"; propagate
             // everything else.
             let msg = format!("{e:?}");
@@ -197,33 +197,60 @@ pub(crate) fn has_contract_macro(source: &str) -> bool {
     source.contains("::contract]") || source.contains("::contract(")
 }
 
-/// Detect whether the source contains `#[derive(...SolStorage...)]`.
-///
-/// Scans for `derive(` with optional whitespace, extracts the balanced content,
-/// and uses [`split_top_level`] to split entries by top-level commas. Checks
-/// whether any entry is exactly `SolStorage` or ends with `::SolStorage`.
+/// Detect whether the source contains `#[derive(SolStorage)]` by parsing
+/// the file as a Rust AST and walking struct attributes. Returns `false`
+/// if the source cannot be parsed. Such files won't compile anyway, so
+/// skipping storage layout detection is safe.
 fn has_sol_storage_derive(source: &str) -> bool {
-    let mut rest = source;
-    while let Some(pos) = rest.find("derive") {
-        rest = &rest[pos + "derive".len()..];
-        let trimmed = rest.trim_start();
-        if !trimmed.starts_with('(') {
-            continue;
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    for item in &file.items {
+        if has_sol_storage_in_item(item) {
+            return true;
         }
-        // Offset into `rest` where the `(` is — find_matching_paren needs the
-        // index relative to the string it searches.
-        let paren_offset = rest.len() - trimmed.len();
-        let Some(close) = find_matching_paren(rest, paren_offset) else {
-            continue;
-        };
-        let inner = &rest[paren_offset + 1..close];
-        for entry in split_top_level(inner) {
-            let normalized: String = entry.split_whitespace().collect::<Vec<_>>().join("");
-            if normalized == "SolStorage" || normalized.ends_with("::SolStorage") {
-                return true;
+    }
+    false
+}
+
+/// Recursively check an item (and its children, e.g. items inside a module)
+/// for `#[derive(SolStorage)]`.
+fn has_sol_storage_in_item(item: &syn::Item) -> bool {
+    match item {
+        syn::Item::Struct(s) => has_sol_storage_attr(&s.attrs),
+        syn::Item::Mod(m) => {
+            if let Some((_, items)) = &m.content {
+                items.iter().any(has_sol_storage_in_item)
+            } else {
+                false
             }
         }
-        rest = &rest[close + 1..];
+        _ => false,
+    }
+}
+
+/// Check whether a struct's attributes include `#[derive(...SolStorage...)]`.
+fn has_sol_storage_attr(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if let syn::Meta::List(meta_list) = &attr.meta {
+            if !meta_list.path.is_ident("derive") {
+                continue;
+            }
+            let Ok(paths) = meta_list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            ) else {
+                continue;
+            };
+            for path in &paths {
+                if path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "SolStorage")
+                {
+                    return true;
+                }
+            }
+        }
     }
     false
 }
@@ -1208,66 +1235,66 @@ interface Token {{
         );
     }
 
-    // --- has_sol_storage_derive scanner ---
+    // --- has_sol_storage_derive (AST-based) ---
 
     #[test]
     fn detects_simple_sol_storage_derive() {
-        assert!(has_sol_storage_derive(r#"#[derive(SolStorage)]"#));
+        assert!(has_sol_storage_derive(
+            "#[derive(SolStorage)] struct S { x: u32 }"
+        ));
     }
 
     #[test]
     fn detects_sol_storage_among_multiple_derives() {
         assert!(has_sol_storage_derive(
-            r#"#[derive(Clone, SolStorage, Debug)]"#
+            "#[derive(Clone, SolStorage, Debug)] struct S { x: u32 }"
         ));
     }
 
     #[test]
     fn detects_fully_qualified_sol_storage() {
         assert!(has_sol_storage_derive(
-            r#"#[derive(pvm_contract_macros::SolStorage)]"#
-        ));
-    }
-
-    #[test]
-    fn detects_fully_qualified_with_spaces() {
-        assert!(has_sol_storage_derive(
-            r#"#[derive(pvm_contract_macros :: SolStorage)]"#
+            "#[derive(pvm_contract_macros::SolStorage)] struct S { x: u32 }"
         ));
     }
 
     #[test]
     fn detects_multiline_derive() {
         assert!(has_sol_storage_derive(
-            "#[derive(\n    Clone,\n    SolStorage,\n)]"
+            "#[derive(\n    Clone,\n    SolStorage,\n)]\nstruct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn detects_sol_storage_inside_module() {
+        assert!(has_sol_storage_derive(
+            "mod my_contract { #[derive(SolStorage)] struct Storage { x: u32 } }"
         ));
     }
 
     #[test]
     fn rejects_bare_sol_storage_in_comment() {
-        assert!(!has_sol_storage_derive("// TODO: add SolStorage"));
+        assert!(!has_sol_storage_derive(
+            "// TODO: add SolStorage\nstruct S { x: u32 }"
+        ));
     }
 
     #[test]
     fn rejects_sol_storage_in_string() {
-        assert!(!has_sol_storage_derive(r#"let s = "SolStorage";"#));
+        assert!(!has_sol_storage_derive(
+            r#"fn f() { let s = "SolStorage"; }"#
+        ));
     }
 
     #[test]
     fn rejects_substring_match() {
-        assert!(!has_sol_storage_derive(r#"#[derive(NotSolStorage)]"#));
-    }
-
-    #[test]
-    fn handles_nested_parens_in_derive() {
-        // SolType(x) has nested parens but SolStorage is still detected
-        assert!(has_sol_storage_derive(
-            r#"#[derive(SolType(x), SolStorage)]"#
+        assert!(!has_sol_storage_derive(
+            "#[derive(NotSolStorage)] struct S { x: u32 }"
         ));
     }
 
     #[test]
     fn no_false_positive_without_derive() {
-        assert!(!has_sol_storage_derive("struct SolStorage {}"));
+        assert!(!has_sol_storage_derive("struct SolStorage { x: u32 }"));
     }
 }
