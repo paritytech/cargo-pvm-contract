@@ -922,7 +922,7 @@ fn strip_pvm_attrs(
 
                     if is_pvm_fn {
                         let injection: syn::Stmt = syn::parse_quote! {
-                            let storage = &mut <#struct_name as ::pvm_storage::SolStorage>::__pvm_storage();
+                            let storage = &mut <#struct_name as ::pvm_contract_sdk::SolStorage>::__pvm_storage();
                         };
                         new_func.block.stmts.insert(0, injection);
                     }
@@ -1253,7 +1253,8 @@ mod tests {
 
         // Verify the injection uses fully-qualified trait method call
         assert!(
-            output.contains("as :: pvm_storage :: SolStorage") && output.contains("__pvm_storage"),
+            output.contains("as :: pvm_contract_sdk :: SolStorage")
+                && output.contains("__pvm_storage"),
             "Storage injection should use fully-qualified SolStorage::__pvm_storage().\n\
              Expanded output:\n{output}"
         );

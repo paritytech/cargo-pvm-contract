@@ -128,6 +128,13 @@ pub use pvm_contract_types as types;
 #[doc(hidden)]
 pub use pvm_contract_types::const_format;
 
+#[doc(hidden)]
+pub use pvm_storage::{SolStorage, StorageKey};
+
+#[cfg(feature = "abi-gen")]
+#[doc(hidden)]
+pub use pvm_storage::StorageLayoutType;
+
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]
 pub use pvm_contract_types::serde_json;

@@ -707,7 +707,6 @@ dependencies = [
  "pvm-contract-builder-dsl",
  "pvm-contract-macros",
  "pvm-contract-sdk",
- "pvm-storage",
 ]
 
 [[package]]

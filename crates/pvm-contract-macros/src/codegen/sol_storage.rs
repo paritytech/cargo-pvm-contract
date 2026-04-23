@@ -71,13 +71,13 @@ pub fn expand_sol_storage(input: DeriveInput) -> syn::Result<TokenStream> {
         .map(|(name, ty, slot)| {
             let slot_lit = *slot;
             quote! {
-                #name: <#ty>::new(::pvm_storage::StorageKey::from_slot(#slot_lit))
+                #name: <#ty>::new(::pvm_contract_sdk::StorageKey::from_slot(#slot_lit))
             }
         })
         .collect();
 
     let storage_impl = quote! {
-        impl ::pvm_storage::SolStorage for #name {
+        impl ::pvm_contract_sdk::SolStorage for #name {
             fn __pvm_storage() -> Self {
                 Self {
                     #(#field_inits),*
@@ -99,7 +99,7 @@ pub fn expand_sol_storage(input: DeriveInput) -> syn::Result<TokenStream> {
                     entry.push_str("\",\"slot\":\"");
                     entry.push_str(#slot_str);
                     entry.push_str("\",\"type\":\"");
-                    entry.push_str(&<#ty as ::pvm_storage::StorageLayoutType>::sol_type_name());
+                    entry.push_str(&<#ty as ::pvm_contract_sdk::StorageLayoutType>::sol_type_name());
                     entry.push_str("\"}");
                     entry
                 }

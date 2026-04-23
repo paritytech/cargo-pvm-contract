@@ -15,8 +15,7 @@ static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;
-    use pvm_contract_sdk::Address;
-    use pvm_storage::{Lazy, Mapping};
+    use pvm_contract_sdk::{Address, Lazy, Mapping};
 
     #[derive(pvm_contract_sdk::SolStorage)]
     struct Storage {

@@ -23,7 +23,9 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-extern crate self as pvm_storage;
+// Alias so that macro-generated `::pvm_contract_sdk::` paths resolve
+// within this crate's own tests. Same pattern as pvm-contract-types.
+extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
 use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
