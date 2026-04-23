@@ -4,7 +4,8 @@ use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse:
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, generate_param_decoding, generate_revert_encoding, generate_router,
+    MethodInfo, RouteItems, boundary_size_check, generate_param_decoding,
+    generate_revert_encoding_boundary, generate_router,
 };
 use crate::signature::{SolType, compute_selector};
 use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
@@ -683,10 +684,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
-            size_check,
+            min_size_expr,
             decode_statements,
             call_args,
+            has_params,
         } = decoding;
+        let size_check = boundary_size_check(has_params, &min_size_expr);
 
         let read_calldata = if param_names.is_empty() {
             quote! {}
@@ -714,7 +717,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         };
 
         let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
-        let revert_err = generate_revert_encoding(use_alloc);
+        let revert_err = generate_revert_encoding_boundary(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -760,7 +763,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
         let handler = if parsed.fallback_returns_result {
-            let revert_err = generate_revert_encoding(use_alloc);
+            let revert_err = generate_revert_encoding_boundary(use_alloc);
             quote! {
                 match this.#fallback_name() {
                     Ok(()) => return,
@@ -791,6 +794,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         )
     };
 
+    // `call()` is the riscv64 boundary: read calldata into an input buffer,
+    // allocate an output buffer, run `route()` (host-agnostic), and translate
+    // the returned `DispatchResult` into exactly one `return_value` syscall.
     let call_fn = if use_alloc {
         quote! {
             #[cfg(target_arch = "riscv64")]
@@ -810,13 +816,21 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
+                let mut __out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
-                if route(&mut this, selector, input).is_some() {
-                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_types::ReturnFlags::empty(), &[]);
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_types::DispatchResult::Ok(data) => {
+                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_types::ReturnFlags::empty(), data);
+                    }
+                    ::pvm_contract_types::DispatchResult::Revert(data) => {
+                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_types::ReturnFlags::REVERT, data);
+                    }
+                    ::pvm_contract_types::DispatchResult::Unhandled => {
+                        #unknown_selector_handler
+                    }
                 }
-
-                #unknown_selector_handler
             }
         }
     } else {
@@ -843,13 +857,21 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
+                let mut __out = [0u8; #buffer_size];
 
-                if route(&mut this, selector, input).is_some() {
-                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_types::ReturnFlags::empty(), &[]);
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_types::DispatchResult::Ok(data) => {
+                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_types::ReturnFlags::empty(), data);
+                    }
+                    ::pvm_contract_types::DispatchResult::Revert(data) => {
+                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_types::ReturnFlags::REVERT, data);
+                    }
+                    ::pvm_contract_types::DispatchResult::Unhandled => {
+                        #unknown_selector_handler
+                    }
                 }
-
-                #unknown_selector_handler
             }
         }
     };
@@ -1093,18 +1115,18 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Generated route() takes a `&mut Contract<PolkaVmHost>` instance
+        // Generated route() takes a `&mut Contract<H>` instance and an `out` buffer
         assert!(
             output.contains("fn route"),
             "route() function should be generated"
         );
-        // The Router trait is implemented for the user's struct, not a stand-in
+        // The Router trait is implemented host-generically (no cfg gate)
         assert!(
-            output.contains("Router for my_contract :: MyContract"),
-            "Router impl should target the user's struct"
+            output.contains("Router < H > for my_contract :: MyContract < H >"),
+            "Router impl should target Contract<H> generically"
         );
-        // call() delegates to route() with the constructed `this`
-        assert!(output.contains("route (& mut this , selector , input)"));
+        // call() delegates to route() with the constructed `this` and the out buffer
+        assert!(output.contains("route (& mut this , selector , input , & mut __out)"));
     }
 
     #[test]

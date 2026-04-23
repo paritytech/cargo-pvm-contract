@@ -197,33 +197,80 @@ pub mod framework_errors {
     ];
 }
 
+/// Outcome of a selector-based dispatch call.
+///
+/// Dispatch is value-returning (no boundary syscall), so contract logic runs
+/// identically on-target (riscv64 PolkaVM) and off-target (native unit tests
+/// against [`MockHost`]). The `call()` / `deploy()` wrappers (riscv64-only)
+/// consume this value and call `return_value` exactly once; tests assert on
+/// the variant directly.
+///
+/// The `'a` lifetime borrows from the caller-provided output buffer
+/// (`&mut [u8]` for no-alloc contracts, `&mut Vec<u8>` for alloc contracts).
+#[derive(Debug)]
+pub enum DispatchResult<'a> {
+    /// Selector matched and the method returned success. `data` is the
+    /// ABI-encoded return value (empty for `void`/`-> ()` methods).
+    Ok(&'a [u8]),
+    /// Selector matched and the method returned `Err(e)` or a framework
+    /// revert (e.g. `InvalidCalldata`). `data` is the ABI-encoded revert
+    /// payload (selector + encoded error fields).
+    Revert(&'a [u8]),
+    /// Selector did not match any method in this router. The caller typically
+    /// falls through to a fallback method, chains to another router (for
+    /// contract inheritance / composition), or reverts with `UnknownSelector`.
+    Unhandled,
+}
+
 /// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
-/// A `Router` implementation inspects the 4-byte selector and either handles
-/// the call (returning `Some(())`) or declines it (returning `None`).
-/// When a method returns data or reverts, the handler calls
-/// `return_value()` which diverges — `Some(())` is only reached for
-/// void-success methods that use a bare `return` statement.
+/// The `#[contract]` macro generates `impl<H: HostApi> Router<H> for Contract<H>`
+/// for every contract. The implementation is host-generic — the same impl
+/// serves the production [`PolkaVmHost`] path and the [`MockHost`]-based unit
+/// test path. No `cfg(target_arch)` gates required.
 ///
-/// The `#[contract]` macro automatically implements this trait for each
-/// contract module via a generated `Contract` unit struct. DSL contracts
-/// (`ContractBuilder`) use [`ContractBuilder::try_route`] directly instead —
-/// the static method signature here is designed for compile-time dispatch tables.
+/// # Associated `Buffer` type
 ///
-/// # Composition
+/// Dispatch writes encoded return / revert bytes into a caller-provided
+/// buffer. The concrete type depends on the contract's allocation mode:
+/// - No-alloc contracts (`buffer = N`): `type Buffer = [u8]`.
+/// - Alloc contracts (`allocator = "pico" | "bump"`): `type Buffer = Vec<u8>`.
 ///
-/// Multiple `#[contract]` modules can be chained in a single entrypoint:
+/// This lets a single trait serve both modes while giving the compiler enough
+/// information to monomorphize each instantiation to zero overhead.
+///
+/// # Composition and inheritance
+///
+/// Delegate to a parent router when a selector is unhandled:
 ///
 /// ```ignore
-/// pub extern "C" fn call() {
-///     let (selector, input) = read_calldata();
-///     if erc20::route(selector, input).is_some() { return; }
-///     if my_extension::route(selector, input).is_some() { return; }
-///     // fallback or revert
+/// impl<H: HostApi> Router<H> for MyToken<H> {
+///     type Buffer = [u8];
+///     fn route<'a>(&mut self, sel: [u8; 4], input: &[u8], out: &'a mut [u8])
+///         -> DispatchResult<'a>
+///     {
+///         match my_token::route(self, sel, input, out) {
+///             DispatchResult::Unhandled => {
+///                 <ERC20<H> as Router<H>>::route(&mut self.parent, sel, input, out)
+///             }
+///             handled => handled,
+///         }
+///     }
 /// }
 /// ```
-pub trait Router {
-    fn route(selector: [u8; 4], input: &[u8]) -> Option<()>;
+pub trait Router<H: HostApi> {
+    /// Caller-provided buffer for encoded return / revert data.
+    /// Typically `[u8]` (no-alloc) or `Vec<u8>` (alloc).
+    type Buffer: ?Sized;
+
+    /// Dispatch `selector` against `input`, writing any encoded output into
+    /// `out` and returning a [`DispatchResult`] borrowing from it.
+    fn route<'a>(
+        &mut self,
+        selector: [u8; 4],
+        input: &[u8],
+        out: &'a mut Self::Buffer,
+    ) -> DispatchResult<'a>;
 }
 
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.

@@ -105,38 +105,77 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// ## Entry Points and Router
 ///
-/// The macro generates the following **inside** the contract module
-/// (so that user type imports are in scope for trait-based dispatch):
+/// The macro generates the following **inside** the contract module:
 ///
-/// - `pub struct Contract;` — unit struct used as `Router` trait target
-/// - `pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()>` — selector dispatch
-/// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point
-/// - `pub extern "C" fn call()` — PolkaVM call entry point (delegates to `route()`)
+/// - `pub fn route<'a, H: HostApi>(this: &mut Contract<H>, selector: [u8; 4],
+///   input: &[u8], out: &'a mut Buffer) -> DispatchResult<'a>` — host-agnostic
+///   selector dispatch that writes encoded output into the caller's buffer.
+///   `Buffer` is `[u8]` (no-alloc) or `alloc::vec::Vec<u8>` (alloc mode).
+/// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point (riscv64-only)
+/// - `pub extern "C" fn call()` — PolkaVM call entry point (riscv64-only);
+///   reads calldata, calls `route()`, translates `DispatchResult` into exactly
+///   one `HostFnImpl::return_value` syscall.
 ///
-/// Outside the module, a `Router` trait impl is generated:
+/// Outside the module, a host-generic `Router<H>` trait impl is generated:
 ///
 /// ```ignore
-/// impl ::pvm_contract_types::Router for my_token::Contract {
-///     fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
-///         my_token::route(selector, input)
+/// impl<H: ::pvm_contract_types::HostApi> ::pvm_contract_types::Router<H>
+///     for my_token::Contract<H>
+/// {
+///     type Buffer = [u8]; // or alloc::vec::Vec<u8> for alloc-mode contracts
+///     fn route<'a>(
+///         &mut self,
+///         selector: [u8; 4],
+///         input: &[u8],
+///         out: &'a mut Self::Buffer,
+///     ) -> ::pvm_contract_types::DispatchResult<'a> {
+///         my_token::route(self, selector, input, out)
 ///     }
 /// }
 /// ```
 ///
+/// The impl has no `cfg(target_arch)` gate — the same code path serves the
+/// production `PolkaVmHost` build and native unit tests against `MockHost`.
+///
 /// All generated items are gated behind `#[cfg(not(feature = "abi-gen"))]`.
 ///
-/// ### Composition
+/// ### Composition and inheritance
 ///
-/// The `route()` function returns `Option<()>`: `Some(())` means "handled",
-/// `None` means "not my selector". This enables composing multiple contract
-/// modules in a single entrypoint:
+/// `route()` returns a `DispatchResult`: `Ok(data)`, `Revert(data)`, or
+/// `Unhandled`. The `Unhandled` variant enables chaining across multiple
+/// routers in a single entrypoint (parent/base contracts, mixins):
 ///
 /// ```ignore
 /// pub extern "C" fn call() {
 ///     let (selector, input) = read_calldata();
-///     if erc20_base::route(selector, input).is_some() { return; }
-///     if my_extension::route(selector, input).is_some() { return; }
-///     // fallback or revert
+///     let mut out = [0u8; 256];
+///     match erc20_base::route(&mut this, selector, input, &mut out) {
+///         DispatchResult::Unhandled => {
+///             match my_extension::route(&mut this, selector, input, &mut out) {
+///                 DispatchResult::Ok(d) => return_value(empty, d),
+///                 DispatchResult::Revert(d) => return_value(REVERT, d),
+///                 DispatchResult::Unhandled => /* fallback or revert */,
+///             }
+///         }
+///         DispatchResult::Ok(d) => return_value(empty, d),
+///         DispatchResult::Revert(d) => return_value(REVERT, d),
+///     }
+/// }
+/// ```
+///
+/// ### Native unit tests
+///
+/// Because `route()` is host-agnostic and returns a value (rather than
+/// calling `return_value` internally), contracts are fully unit-testable
+/// natively with `MockHost`:
+///
+/// ```ignore
+/// let mut contract = my_token::Contract { host: MockHostBuilder::new().build() };
+/// let mut out = [0u8; 256];
+/// match my_token::route(&mut contract, BALANCE_OF_SELECTOR, &input, &mut out) {
+///     DispatchResult::Ok(data) => { /* decode and assert on data */ }
+///     DispatchResult::Revert(data) => { /* assert revert selector + fields */ }
+///     DispatchResult::Unhandled => panic!("selector not recognized"),
 /// }
 /// ```
 ///
@@ -189,9 +228,12 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     // --- Generated inside the module: ---
 ///
-///     pub struct Contract;
-///
-///     pub fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
+///     pub fn route<'a, H: ::pvm_contract_types::HostApi>(
+///         this: &mut Contract<H>,
+///         selector: [u8; 4],
+///         input: &[u8],
+///         out: &'a mut [u8],
+///     ) -> ::pvm_contract_types::DispatchResult<'a> {
 ///         // Selector consts — precomputed from .sol, or derived via SOL_NAME
 ///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
 ///         const __SEL_transfer: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
@@ -200,8 +242,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///             // balanceOf(address) -> uint256
 ///             __SEL_balance_of => {
 ///                 if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
-///                     ::pvm_contract_types::PolkaVmHost::return_value(
-///                         ::pvm_contract_types::ReturnFlags::REVERT,
+///                     return ::pvm_contract_types::DispatchResult::Revert(
 ///                         &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
 ///                 }
 ///                 let mut __decode_offset: usize = 0;
@@ -211,71 +252,83 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
 ///                     __value
 ///                 };
-///                 let result = balance_of(::core::convert::Into::into(account));
-///                 let mut __buf = [0u8;
-///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE];
-///                 <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut __buf);
-///                 ::pvm_contract_types::PolkaVmHost::return_value(
-///                     ::pvm_contract_types::ReturnFlags::empty(), &__buf);
+///                 let result = this.balance_of(::core::convert::Into::into(account));
+///                 const __LEN: usize =
+///                     <U256 as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE;
+///                 <U256 as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut out[..__LEN]);
+///                 return ::pvm_contract_types::DispatchResult::Ok(&out[..__LEN]);
 ///             }
 ///
 ///             // transfer(address,uint256) — fallible, no return data
 ///             __SEL_transfer => {
 ///                 // ... size check + decode ...
-///                 match transfer(
+///                 match this.transfer(
 ///                     ::core::convert::Into::into(to),
 ///                     ::core::convert::Into::into(amount),
 ///                 ) {
-///                     Ok(()) => return Some(()),
+///                     Ok(()) => return ::pvm_contract_types::DispatchResult::Ok(&[]),
 ///                     Err(e) => {
-///                         let mut __revert_buf = [0u8; 256];
-///                         let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-///                         ::pvm_contract_types::PolkaVmHost::return_value(
-///                             ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
+///                         let __revert_len =
+///                             ::pvm_contract_types::SolRevert::revert_data(&e, out);
+///                         return ::pvm_contract_types::DispatchResult::Revert(
+///                             &out[..__revert_len]);
 ///                     }
 ///                 }
 ///             }
 ///
-///             _ => None,
+///             _ => ::pvm_contract_types::DispatchResult::Unhandled,
 ///         }
 ///     }
 ///
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn call() {
-///         let call_data_len = ::pvm_contract_types::PolkaVmHost::call_data_size() as usize;
+///         let mut this = Contract::<::pvm_contract_types::PolkaVmHost> {
+///             host: ::pvm_contract_types::PolkaVmHost,
+///         };
+///         let call_data_len = HostFnImpl::call_data_size() as usize;
 ///         let mut call_data = [0u8; 512];
 ///         if call_data_len > 512 {
-///             ::pvm_contract_types::PolkaVmHost::return_value(
-///                 ::pvm_contract_types::ReturnFlags::REVERT,
+///             HostFnImpl::return_value(ReturnFlags::REVERT,
 ///                 &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
 ///         }
-///         ::pvm_contract_types::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+///         HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
 ///         if call_data_len < 4 {
 ///             // With #[fallback]: calls fallback. Without: reverts with NoSelector.
-///             ::pvm_contract_types::PolkaVmHost::return_value(
-///                 ::pvm_contract_types::ReturnFlags::REVERT,
+///             HostFnImpl::return_value(ReturnFlags::REVERT,
 ///                 &::pvm_contract_types::framework_errors::NO_SELECTOR);
 ///         }
 ///
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///         let input = &call_data[4..call_data_len];
+///         let mut __out = [0u8; 512];
 ///
-///         if route(selector, input).is_some() {
-///             ::pvm_contract_types::PolkaVmHost::return_value(
-///                 ::pvm_contract_types::ReturnFlags::empty(), &[]);
+///         match route(&mut this, selector, input, &mut __out) {
+///             ::pvm_contract_types::DispatchResult::Ok(data) =>
+///                 HostFnImpl::return_value(ReturnFlags::empty(), data),
+///             ::pvm_contract_types::DispatchResult::Revert(data) =>
+///                 HostFnImpl::return_value(ReturnFlags::REVERT, data),
+///             ::pvm_contract_types::DispatchResult::Unhandled => {
+///                 // With #[fallback]: calls fallback. Without: UnknownSelector.
+///                 HostFnImpl::return_value(ReturnFlags::REVERT,
+///                     &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+///             }
 ///         }
-///         // With #[fallback]: calls fallback. Without: reverts with UnknownSelector.
-///         ::pvm_contract_types::PolkaVmHost::return_value(
-///             ::pvm_contract_types::ReturnFlags::REVERT,
-///             &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
 ///     }
 /// }
 ///
 /// // Generated outside the module:
-/// impl ::pvm_contract_types::Router for my_token::Contract {
-///     fn route(selector: [u8; 4], input: &[u8]) -> Option<()> {
-///         my_token::route(selector, input)
+/// impl<H: ::pvm_contract_types::HostApi> ::pvm_contract_types::Router<H>
+///     for my_token::Contract<H>
+/// {
+///     type Buffer = [u8];
+///     fn route<'a>(
+///         &mut self,
+///         selector: [u8; 4],
+///         input: &[u8],
+///         out: &'a mut [u8],
+///     ) -> ::pvm_contract_types::DispatchResult<'a> {
+///         my_token::route(self, selector, input, out)
 ///     }
 /// }
 /// ```
