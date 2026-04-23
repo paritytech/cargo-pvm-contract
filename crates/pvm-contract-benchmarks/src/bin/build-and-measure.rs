@@ -46,9 +46,6 @@ path = "src/{}.rs"
 pvm-contract-sdk = {{ path = "{}" }}
 polkavm-derive = {{ version = "0.31.0" }}
 
-[features]
-abi-gen = ["pvm-contract-sdk/abi-gen"]
-
 [profile.dev]
 panic = "abort"
 
@@ -85,9 +82,6 @@ path = "src/{}.rs"
 pvm-contract-sdk = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
 polkavm-derive = {{ version = "0.31.0" }}
-
-[features]
-abi-gen = ["pvm-contract-sdk/abi-gen"]
 
 [profile.dev]
 panic = "abort"

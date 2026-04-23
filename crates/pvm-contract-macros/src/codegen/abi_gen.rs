@@ -7,19 +7,16 @@ use super::dispatch::MethodInfo;
 /// Generate both the in-module ABI helper and the top-level `main()`.
 ///
 /// The helper lives inside the user's module so all type imports are in scope.
-/// The `main()` prints a JSON wrapper: `{"abi":[...],"cdm":"..."}` (or
-/// `{"abi":[...]}` when `cdm` is unset). The builder splits the wrapper into
-/// `<bin>.abi.json` (raw ABI array) and `<bin>.cdm.json` (CDM package name).
-///
-/// When a `.sol` file is provided, the builder derives the ABI from the
-/// Solidity interface — macro-side ABI generation is skipped. The CDM helper
-/// is still emitted so CDM metadata rides the same abi-gen run.
-pub fn generate_abi_gen(
-    parsed: &ParsedContract,
-    has_sol_path: bool,
-    cdm: Option<&str>,
-) -> (TokenStream, TokenStream) {
-    match generate_abi_gen_impl(parsed, has_sol_path, cdm) {
+/// The `main()` just calls the helper and prints the result.
+pub fn generate_abi_gen(parsed: &ParsedContract, has_sol_path: bool) -> (TokenStream, TokenStream) {
+    // When a .sol file is provided, the builder derives ABI from the Solidity
+    // interface at build time (see cargo-pvm-contract-builder/src/abi.rs).
+    // No macro-side ABI generation is needed.
+    if has_sol_path {
+        return (quote! {}, quote! {});
+    }
+
+    match generate_abi_gen_impl(parsed) {
         Ok((helper, main_fn)) => (helper, main_fn),
         Err(err) => {
             let err = err.to_compile_error();
@@ -28,11 +25,7 @@ pub fn generate_abi_gen(
     }
 }
 
-fn generate_abi_gen_impl(
-    parsed: &ParsedContract,
-    has_sol_path: bool,
-    cdm: Option<&str>,
-) -> syn::Result<(TokenStream, TokenStream)> {
+fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, TokenStream)> {
     let constructor_entry = if parsed.has_constructor {
         let ctor_params: Vec<TokenStream> = parsed
             .constructor_inputs
@@ -143,79 +136,32 @@ fn generate_abi_gen_impl(
         })
         .collect();
 
-    // Skip the ABI helper when a .sol file is provided — the builder derives
-    // ABI from Solidity directly. We still need the CDM helper so the wrapper
-    // main can surface CDM metadata to the builder.
-    let abi_helper = if has_sol_path {
-        quote! {}
-    } else {
-        quote! {
-            #[cfg(feature = "abi-gen")]
-            #[doc(hidden)]
-            pub fn __abi_json() -> ::std::string::String {
-                #split_params_helper
-
-                let mut __items: ::std::vec::Vec<::pvm_contract_sdk::AbiItem> = ::std::vec::Vec::new();
-                let mut __seen_errors = ::std::vec::Vec::<&str>::new();
-
-                #constructor_entry
-
-                #(#method_entries)*
-
-                #(#error_entries)*
-
-                #(#framework_error_entries)*
-
-                ::pvm_contract_sdk::abi_to_json(&__items)
-            }
-        }
-    };
-
-    let cdm_value: TokenStream = match cdm {
-        Some(name) => quote! { ::core::option::Option::Some(#name) },
-        None => quote! { ::core::option::Option::None },
-    };
-    let cdm_helper = quote! {
+    let helper = quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
-        pub fn __cdm_package() -> ::core::option::Option<&'static str> {
-            #cdm_value
-        }
-    };
+        pub fn __abi_json() -> ::std::string::String {
+            #split_params_helper
 
-    let helper = quote! {
-        #abi_helper
-        #cdm_helper
+            let mut __items: ::std::vec::Vec<::pvm_contract_sdk::AbiItem> = ::std::vec::Vec::new();
+            let mut __seen_errors = ::std::vec::Vec::<&str>::new();
+
+            #constructor_entry
+
+            #(#method_entries)*
+
+            #(#error_entries)*
+
+            #(#framework_error_entries)*
+
+            ::pvm_contract_sdk::abi_to_json(&__items)
+        }
     };
 
     let mod_name = &parsed.mod_name;
-    // When .sol drives ABI generation, the abi-gen binary can't call
-    // __abi_json() (it isn't emitted). It still needs to emit a wrapper so
-    // the builder can pick up CDM metadata; the ABI field is left as `null`
-    // and the builder falls back to its .sol-based generator for the array.
-    let abi_body = if has_sol_path {
-        quote! { ::std::string::String::from("null") }
-    } else {
-        quote! { #mod_name::__abi_json() }
-    };
     let main_fn = quote! {
         #[cfg(feature = "abi-gen")]
         fn main() {
-            let __abi: ::std::string::String = #abi_body;
-            let __cdm: ::core::option::Option<&'static str> = #mod_name::__cdm_package();
-            match __cdm {
-                ::core::option::Option::Some(__name) => {
-                    ::std::println!(
-                        "{{\"abi\":{},\"cdm\":{}}}",
-                        __abi,
-                        ::pvm_contract_sdk::serde_json::to_string(__name)
-                            .expect("cdm package name must serialize"),
-                    );
-                }
-                ::core::option::Option::None => {
-                    ::std::println!("{{\"abi\":{}}}", __abi);
-                }
-            }
+            ::std::println!("{}", #mod_name::__abi_json());
         }
     };
 
@@ -265,8 +211,9 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
 mod tests {
     use super::*;
 
-    fn empty_parsed() -> ParsedContract {
-        ParsedContract {
+    #[test]
+    fn returns_empty_for_sol_path_contract() {
+        let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
             methods: vec![],
             has_constructor: false,
@@ -277,50 +224,10 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             error_types: vec![],
-        }
-    }
+        };
 
-    #[test]
-    fn sol_path_skips_abi_helper_but_emits_cdm_helper_and_main() {
-        let (helper, main_fn) = generate_abi_gen(&empty_parsed(), true, None);
-        let helper_s = helper.to_string();
-        let main_s = main_fn.to_string();
-        assert!(
-            !helper_s.contains("__abi_json"),
-            "sol-path contracts should not emit __abi_json"
-        );
-        assert!(
-            helper_s.contains("__cdm_package"),
-            "__cdm_package must be emitted for every contract"
-        );
-        assert!(main_s.contains("fn main"));
-    }
-
-    #[test]
-    fn emits_cdm_package_none_when_unset() {
-        let (helper, _) = generate_abi_gen(&empty_parsed(), false, None);
-        assert!(
-            helper
-                .to_string()
-                .contains(":: core :: option :: Option :: None"),
-            "helper must return Option::None when cdm is unset"
-        );
-    }
-
-    #[test]
-    fn emits_cdm_package_value_when_set() {
-        let (helper, _) = generate_abi_gen(&empty_parsed(), false, Some("@polkadot/reputation"));
-        let helper_s = helper.to_string();
-        assert!(helper_s.contains("@polkadot/reputation"));
-        assert!(helper_s.contains(":: core :: option :: Option :: Some"));
-    }
-
-    #[test]
-    fn main_wrapper_prints_cdm_field() {
-        let (_, main_fn) = generate_abi_gen(&empty_parsed(), false, Some("@ns/tok"));
-        let main_s = main_fn.to_string();
-        // Both branches of the match on __cdm should be present
-        assert!(main_s.contains("\\\"abi\\\":"));
-        assert!(main_s.contains("\\\"cdm\\\":"));
+        let (helper, main_fn) = generate_abi_gen(&parsed, true);
+        assert!(helper.is_empty());
+        assert!(main_fn.is_empty());
     }
 }

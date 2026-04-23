@@ -497,6 +497,40 @@ fn parse_contract(
     })
 }
 
+/// Emit a `__PVM_CDM` static in `.rodata.pvm_cdm` containing
+/// `{"cdmPackage":"<name>"}` when the contract declares a CDM package name.
+/// The builder extracts this symbol from the linked ELF and writes it to
+/// `<bin>.cdm.json` alongside the `.polkavm` bytecode.
+fn generate_cdm_section(cdm: Option<&str>) -> TokenStream {
+    let Some(name) = cdm else {
+        return quote! {};
+    };
+    quote! {
+        #[cfg(all(
+            not(feature = "abi-gen"),
+            any(target_arch = "riscv32", target_arch = "riscv64")
+        ))]
+        const _: () = {
+            const __PVM_CDM_JSON: &str = ::pvm_contract_sdk::const_format::concatcp!(
+                "{\"cdmPackage\":\"", #name, "\"}"
+            );
+            #[unsafe(link_section = ".rodata.pvm_cdm")]
+            #[unsafe(no_mangle)]
+            #[used]
+            static __PVM_CDM: [u8; __PVM_CDM_JSON.len()] = {
+                let b = __PVM_CDM_JSON.as_bytes();
+                let mut a = [0u8; __PVM_CDM_JSON.len()];
+                let mut i = 0;
+                while i < b.len() {
+                    a[i] = b[i];
+                    i += 1;
+                }
+                a
+            };
+        };
+    }
+}
+
 pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenStream> {
     let sol_interface = if let Some(ref path) = args.sol_path {
         Some(load_sol_interface(path).map_err(|e| syn::Error::new_spanned(&input, e))?)
@@ -506,8 +540,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let (abi_gen_helper, abi_gen_main) =
-        generate_abi_gen(&parsed, args.sol_path.is_some(), args.cdm.as_deref());
+    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(&parsed, args.sol_path.is_some());
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -751,10 +784,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
+    let cdm_section = generate_cdm_section(args.cdm.as_deref());
+
     Ok(quote! {
         #alloc_setup
 
         #panic_handler
+
+        #cdm_section
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
@@ -1065,6 +1102,66 @@ mod tests {
         assert!(
             !output.contains("as_ref"),
             "Generated dispatch should not use as_ref for error encoding"
+        );
+    }
+
+    #[test]
+    fn cdm_attribute_emits_pvm_cdm_section() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn ping() -> bool { true }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let args = ContractArgs {
+            cdm: Some("@example/my-contract".to_string()),
+            ..ContractArgs::default()
+        };
+        let output = expand_contract(args, item).unwrap().to_string();
+
+        assert!(
+            output.contains("__PVM_CDM"),
+            "expansion should emit __PVM_CDM static when cdm is set"
+        );
+        assert!(
+            output.contains(".rodata.pvm_cdm"),
+            "static should target .rodata.pvm_cdm section"
+        );
+        assert!(
+            output.contains("@example/my-contract"),
+            "cdm package name should appear in generated code"
+        );
+        assert!(
+            output.contains("cdmPackage"),
+            "JSON wrapper should appear in generated code"
+        );
+    }
+
+    #[test]
+    fn no_cdm_attribute_emits_no_pvm_cdm_section() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        assert!(
+            !output.contains("__PVM_CDM"),
+            "no __PVM_CDM static should be emitted when cdm is not set"
         );
     }
 

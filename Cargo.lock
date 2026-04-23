@@ -1235,6 +1235,7 @@ name = "cargo-pvm-contract-builder"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "object 0.36.7",
  "polkavm-linker",
  "pvm-contract-types",
  "serde_json",

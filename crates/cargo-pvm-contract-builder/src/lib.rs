@@ -269,13 +269,30 @@ fn process_elf_binaries(
         let output_path = profile_dir.join(format!("{bin}.polkavm"));
         link_to_polkavm(&elf_path, &output_path)?;
 
+        let cdm_path = profile_dir.join(format!("{bin}.cdm.json"));
+        generate_cdm_file(&elf_path, &cdm_path)?;
+
         if generate_abi {
             let abi_path = profile_dir.join(format!("{bin}.abi.json"));
-            let cdm_path = profile_dir.join(format!("{bin}.cdm.json"));
-            generate_metadata_files(manifest_dir, bin, &abi_path, &cdm_path, abi_target_root)?;
+            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root)?;
         }
     }
 
+    Ok(())
+}
+
+/// Extract the `__PVM_CDM` symbol from the linked ELF and write it as a
+/// `<bin>.cdm.json` sidecar. Silently skips contracts that don't declare
+/// `cdm = "..."` on `#[contract]` (symbol isn't present).
+fn generate_cdm_file(elf_path: &Path, output_path: &Path) -> Result<()> {
+    let elf_bytes = fs::read(elf_path)
+        .with_context(|| format!("Failed to read ELF: {}", elf_path.display()))?;
+    if let Some(json) = abi::extract_cdm_from_elf(&elf_bytes)? {
+        fs::write(output_path, &json).with_context(|| {
+            format!("Failed to write CDM metadata to {}", output_path.display())
+        })?;
+        eprintln!("Created CDM metadata: {}", output_path.display());
+    }
     Ok(())
 }
 
@@ -459,37 +476,27 @@ fn cargo_supports_z_flag(flag: &str, work_dir: &Path, remove_toolchain_env: bool
     probe.status().map(|s| s.success()).unwrap_or(false)
 }
 
-fn generate_metadata_files(
+fn generate_abi_file(
     manifest_dir: &Path,
     bin_name: &str,
-    abi_path: &Path,
-    cdm_path: &Path,
+    output_path: &Path,
     target_root: Option<&Path>,
 ) -> Result<()> {
-    let metadata = abi::generate_metadata_for_bin(manifest_dir, bin_name, target_root)
-        .context("Failed to generate contract metadata")?;
-
-    match &metadata.abi {
-        Some(abi) => {
+    match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
+        Ok(Some(abi)) => {
             let json =
-                serde_json::to_string_pretty(abi).context("Failed to serialize ABI to JSON")?;
-            fs::write(abi_path, json)
-                .with_context(|| format!("Failed to write ABI to {}", abi_path.display()))?;
-            eprintln!("Created ABI: {}", abi_path.display());
+                serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
+            fs::write(output_path, json)
+                .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
+            eprintln!("Created ABI: {}", output_path.display());
         }
-        None => {
+        Ok(None) => {
             eprintln!("No pvm_contract found, skipping ABI generation");
         }
+        Err(e) => {
+            return Err(e).context("Failed to generate ABI");
+        }
     }
-
-    if let Some(cdm) = &metadata.cdm {
-        let json = serde_json::to_string_pretty(&serde_json::json!({ "cdmPackage": cdm }))
-            .context("Failed to serialize CDM metadata")?;
-        fs::write(cdm_path, json)
-            .with_context(|| format!("Failed to write CDM metadata to {}", cdm_path.display()))?;
-        eprintln!("Created CDM metadata: {}", cdm_path.display());
-    }
-
     Ok(())
 }
 

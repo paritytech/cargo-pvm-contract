@@ -5,19 +5,48 @@ use toml_edit::DocumentMut;
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
 pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, parse_type_str};
 
-/// Build-time metadata extracted from a contract binary via abi-gen.
-#[derive(Default, Debug, Clone)]
-pub struct ContractMetadata {
-    pub abi: Option<AbiJson>,
-    /// CDM package name from `cdm = "@ns/name"` on `#[contract(...)]`.
-    pub cdm: Option<String>,
+/// Extract CDM metadata JSON from the `__PVM_CDM` symbol in an ELF binary.
+///
+/// The `#[contract(cdm = "...")]` attribute emits a `__PVM_CDM` static in the
+/// `.rodata.pvm_cdm` section containing `{"cdmPackage":"@ns/name"}`. We locate
+/// it by symbol name (section names are merged by the linker, but symbol names
+/// survive). Returns `Ok(None)` when the symbol isn't present — i.e. the
+/// contract didn't declare a CDM package.
+pub fn extract_cdm_from_elf(elf_bytes: &[u8]) -> Result<Option<String>> {
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let obj = object::File::parse(elf_bytes).context("Failed to parse ELF binary")?;
+    let Some(sym) = obj.symbols().find(|s| s.name() == Ok("__PVM_CDM")) else {
+        return Ok(None);
+    };
+
+    let size = sym.size() as usize;
+    if size == 0 {
+        return Ok(None);
+    }
+
+    let section_index = sym
+        .section_index()
+        .context("__PVM_CDM symbol has no section")?;
+    let section = obj
+        .section_by_index(section_index)
+        .context("Failed to find section for __PVM_CDM")?;
+    let sec_data = section.data().context("Failed to read section data")?;
+
+    let offset = (sym.address() - section.address()) as usize;
+    let cdm_data = sec_data
+        .get(offset..offset + size)
+        .context("__PVM_CDM symbol data out of section bounds")?;
+
+    let json = std::str::from_utf8(cdm_data).context("__PVM_CDM symbol contains invalid UTF-8")?;
+    Ok(Some(json.to_string()))
 }
 
-pub fn generate_metadata_for_bin(
+pub fn generate_abi_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
-) -> Result<ContractMetadata> {
+) -> Result<Option<AbiJson>> {
     generate_abi_via_feature(manifest_dir, bin_name, target_root)
 }
 
@@ -46,34 +75,25 @@ fn generate_abi_via_feature(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
-) -> Result<ContractMetadata> {
+) -> Result<Option<AbiJson>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists() {
-        return Ok(ContractMetadata::default());
+        return Ok(None);
     }
 
     let source_content = fs::read_to_string(&source_path)
         .with_context(|| format!("Failed to read {}", source_path.display()))?;
 
-    // When a `.sol` file drives the ABI, derive it from the interface. Even in
-    // this case we still need the abi-gen binary to surface CDM metadata, so
-    // we only return early if the contract macro isn't present (DSL path).
-    let sol_abi = if let Some(sol_path) = extract_sol_path_from_source(&source_content) {
+    if let Some(sol_path) = extract_sol_path_from_source(&source_content) {
         let sol_full_path = manifest_dir.join(sol_path);
-        generate_abi_from_sol(&sol_full_path)?
-    } else {
-        None
-    };
+        return generate_abi_from_sol(&sol_full_path);
+    }
 
     // ABI generation requires either a `.sol` file or the `#[contract]` macro
-    // (which generates `__abi_json()` and `__cdm_package()` under
-    // `--features abi-gen`). DSL-based contracts don't use the macro and are
-    // expected to handle ABI themselves.
+    // (which generates `__abi_json()` under `--features abi-gen`). DSL-based
+    // contracts don't use the macro and are expected to handle ABI themselves.
     if !has_contract_macro(&source_content) {
-        return Ok(ContractMetadata {
-            abi: sol_abi,
-            cdm: None,
-        });
+        return Ok(None);
     }
 
     let target_dir = match target_root {
@@ -128,32 +148,10 @@ fn generate_abi_via_feature(
     let stdout_str =
         String::from_utf8(output.stdout).context("ABI generation output is not valid UTF-8")?;
 
-    // abi-gen stdout is a wrapper `{"abi":<array|null>,"cdm":<string?>}`.
-    let wrapper: serde_json::Value =
-        serde_json::from_str(&stdout_str).context("Failed to parse abi-gen wrapper JSON")?;
+    let abi: AbiJson = serde_json::from_str(&stdout_str)
+        .context("Failed to parse ABI JSON from abi-gen output")?;
 
-    let abi_value = wrapper
-        .get("abi")
-        .cloned()
-        .context("abi-gen output missing `abi` field")?;
-
-    // Prefer sol-derived ABI when present; the abi-gen main emits `"abi":null`
-    // in that case and the ABI array lives in the .sol file.
-    let abi = match (sol_abi, abi_value) {
-        (Some(sol), _) => Some(sol),
-        (None, serde_json::Value::Null) => None,
-        (None, other) => Some(
-            serde_json::from_value::<AbiJson>(other)
-                .context("Failed to parse `abi` field of abi-gen output")?,
-        ),
-    };
-
-    let cdm = wrapper
-        .get("cdm")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-
-    Ok(ContractMetadata { abi, cdm })
+    Ok(Some(abi))
 }
 
 /// Detect whether the source uses the `#[contract]` attribute macro. Matches
@@ -462,6 +460,22 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    // --- extract_cdm_from_elf ---
+
+    #[test]
+    fn extract_cdm_from_non_elf_errors() {
+        assert!(extract_cdm_from_elf(b"not an elf").is_err());
+    }
+
+    #[test]
+    fn extract_cdm_returns_none_when_symbol_absent() {
+        // The currently-running test binary itself doesn't contain `__PVM_CDM`,
+        // so the extractor should return `Ok(None)` rather than erroring.
+        let path = std::env::current_exe().expect("current exe path");
+        let bytes = std::fs::read(&path).expect("read current exe");
+        assert!(matches!(extract_cdm_from_elf(&bytes), Ok(None)));
+    }
 
     // --- extract_sol_path_from_source ---
 
