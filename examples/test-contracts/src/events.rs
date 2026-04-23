@@ -1,11 +1,11 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use ruint::aliases::U256;
+use pvm_contract_sdk::U256;
 
-#[pvm_contract_macros::contract("Events.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("Events.sol", allocator = "pico")]
 mod events {
     use super::*;
-    use pvm_contract_types::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
 
     const VALUE_KEY: [u8; 32] = [0u8; 32];
 
@@ -21,12 +21,12 @@ mod events {
     }
 
     impl<H: HostApi> Events<H> {
-        #[pvm_contract_macros::constructor]
-        pub fn new(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn set_value(&mut self, val: U256) {
             let old = self.get_value();
 
@@ -48,7 +48,7 @@ mod events {
             self.host.deposit_event(&topics, &data);
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn get_value(&self) -> U256 {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
@@ -58,8 +58,8 @@ mod events {
             }
         }
 
-        #[pvm_contract_macros::fallback]
-        pub fn fallback(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
     }

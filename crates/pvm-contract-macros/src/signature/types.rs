@@ -131,13 +131,17 @@ impl SolType {
             "Address"
             | "pvm_contract_types::Address"
             | "::pvm_contract_types::Address"
+            | "pvm_contract_sdk::Address"
+            | "::pvm_contract_sdk::Address"
             | "pvm_contract::Address"
             | "::pvm_contract::Address" => Some(SolType::Address),
             "U256" | "ruint::aliases::U256" => Some(SolType::Uint(256)),
             "u256" => Some(SolType::Uint(256)),
-            "I256" | "pvm_contract_types::I256" | "::pvm_contract_types::I256" => {
-                Some(SolType::Int(256))
-            }
+            "I256"
+            | "pvm_contract_types::I256"
+            | "::pvm_contract_types::I256"
+            | "pvm_contract_sdk::I256"
+            | "::pvm_contract_sdk::I256" => Some(SolType::Int(256)),
             "i256" => Some(SolType::Int(256)),
             "u128" => Some(SolType::Uint(128)),
             "u64" => Some(SolType::Uint(64)),
@@ -151,9 +155,11 @@ impl SolType {
             "i8" => Some(SolType::Int(8)),
             "bool" => Some(SolType::Bool),
             "String" | "alloc::string::String" => Some(SolType::String),
-            "Bytes" | "pvm_contract_types::Bytes" | "::pvm_contract_types::Bytes" => {
-                Some(SolType::DynBytes)
-            }
+            "Bytes"
+            | "pvm_contract_types::Bytes"
+            | "::pvm_contract_types::Bytes"
+            | "pvm_contract_sdk::Bytes"
+            | "::pvm_contract_sdk::Bytes" => Some(SolType::DynBytes),
             _ => Some(SolType::Custom(type_str)),
         }
     }

@@ -54,10 +54,10 @@ mod mini_token {
     use super::*;
     use pvm_contract_types::{HostApi, PolkaVmHost, StorageFlags};
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct Unauthorized;
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct InsufficientBalance {
         pub available: U256,
         pub required: U256,

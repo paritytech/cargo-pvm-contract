@@ -1,26 +1,26 @@
 #![no_main]
 #![no_std]
 
-#[pvm_contract_macros::contract("Fibonacci.sol", buffer = 256)]
+#[pvm_contract_sdk::contract("Fibonacci.sol", buffer = 256)]
 mod fibonacci {
-    use pvm_contract_types::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi, PolkaVmHost};
 
     pub struct Fibonacci<H: HostApi = PolkaVmHost> {
         pub host: H,
     }
 
     impl<H: HostApi> Fibonacci<H> {
-        #[pvm_contract_macros::constructor]
-        pub fn new(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
 
-        #[pvm_contract_macros::fallback]
-        pub fn fallback(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn fibonacci(&self, n: u32) -> u32 {
             if n <= 1 {
                 n

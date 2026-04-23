@@ -1,14 +1,14 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use ruint::aliases::U256;
+use pvm_contract_sdk::U256;
 
-#[pvm_contract_macros::contract("MyToken.sol", allocator = "bump")]
+#[pvm_contract_sdk::contract("MyToken.sol", allocator = "bump")]
 mod my_token {
     use super::*;
     use alloc::vec;
-    use pvm_contract_types::{Address, HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, StorageFlags};
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct InsufficientBalance;
 
     pub struct MyToken<H: HostApi = PolkaVmHost> {
@@ -16,12 +16,12 @@ mod my_token {
     }
 
     impl<H: HostApi> MyToken<H> {
-        #[pvm_contract_macros::constructor]
-        pub fn new(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn total_supply(&self) -> U256 {
             let key = total_supply_key();
             let mut supply_bytes = vec![0u8; 32];
@@ -36,7 +36,7 @@ mod my_token {
             }
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn balance_of(&self, account: Address) -> U256 {
             let account: [u8; 20] = account.into();
             let key = self.balance_key(&account);
@@ -52,7 +52,7 @@ mod my_token {
             }
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let caller = self.get_caller();
             let sender_balance = self.balance_of(caller.into());
@@ -73,7 +73,7 @@ mod my_token {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let new_recipient_balance = self.balance_of(to).saturating_add(amount);
 
@@ -87,8 +87,8 @@ mod my_token {
             Ok(())
         }
 
-        #[pvm_contract_macros::fallback]
-        pub fn fallback(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
 

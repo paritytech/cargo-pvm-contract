@@ -108,11 +108,9 @@ fn verify_cargo_toml(project_dir: &Path, use_dsl: bool) {
     if use_dsl {
         assert!(cargo_toml.contains("pvm-contract-builder-dsl"));
     } else {
-        assert!(cargo_toml.contains("pvm-contract-macros"));
+        assert!(cargo_toml.contains("pvm-contract-sdk"));
     }
-    assert!(cargo_toml.contains("pvm-contract-types"));
     assert!(cargo_toml.contains("polkavm-derive"));
-    assert!(cargo_toml.contains("ruint"));
     assert!(
         !cargo_toml.contains("[build-dependencies]"),
         "Cargo.toml should not contain [build-dependencies]"

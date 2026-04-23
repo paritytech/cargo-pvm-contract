@@ -17,13 +17,13 @@ pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
         syn::Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "SolError can only be derived for structs. Use sol_revert_enum! for error enums.",
+                "SolErrorType can only be derived for structs. Use sol_revert_enum! for error enums.",
             ));
         }
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "SolError cannot be derived for unions",
+                "SolErrorType cannot be derived for unions",
             ));
         }
     };
@@ -37,7 +37,7 @@ pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
     let (encode_body, encoded_size_body) = generate_error_encode(fields, &field_info);
 
     Ok(quote! {
-        impl ::pvm_contract_types::SolError for #name {
+        impl ::pvm_contract_sdk::SolError for #name {
             const SELECTOR: [u8; 4] = #selector_expr;
             const SIGNATURE: &'static str = #sig_expr;
 
@@ -102,7 +102,7 @@ fn build_signature_expr(
     }
 
     parts.push(quote! { ")" });
-    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 fn build_selector_expr(
@@ -123,7 +123,7 @@ fn build_selector_expr(
     }
 
     let sig_expr = build_signature_expr(error_name, field_info);
-    quote! { ::pvm_contract_types::const_selector(#sig_expr) }
+    quote! { ::pvm_contract_sdk::const_selector(#sig_expr) }
 }
 
 #[cfg(test)]

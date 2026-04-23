@@ -3,8 +3,8 @@
 #![no_std]
 
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
-use pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
-use ruint::aliases::U256;
+use pvm_contract_builder_dsl::pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_builder_dsl::ruint::aliases::U256;
 
 const ADD_SELECTOR: [u8; 4] = solidity_selector("add(uint32,uint32)");
 const MULTIPLY_SELECTOR: [u8; 4] = solidity_selector("multiply(uint64,uint64)");

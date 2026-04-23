@@ -2,28 +2,28 @@
 
 extern crate alloc;
 
-use ruint::aliases::U256;
+use pvm_contract_sdk::U256;
 
-#[derive(pvm_contract_macros::SolType)]
+#[derive(pvm_contract_sdk::SolType)]
 pub struct MyPoint {
     pub x: U256,
     pub y: U256,
 }
 
-#[pvm_contract_macros::contract]
+#[pvm_contract_sdk::contract]
 mod my_contract {
     use super::MyPoint;
-    use pvm_contract_types::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi, PolkaVmHost};
 
     pub struct MyContract<H: HostApi = PolkaVmHost> {
         pub host: H,
     }
 
     impl<H: HostApi> MyContract<H> {
-        #[pvm_contract_macros::constructor]
+        #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) {}
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn touch(&self, value: MyPoint) -> MyPoint {
             value
         }

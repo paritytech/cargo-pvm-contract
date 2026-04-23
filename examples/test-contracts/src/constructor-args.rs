@@ -1,11 +1,11 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use ruint::aliases::U256;
+use pvm_contract_sdk::U256;
 
-#[pvm_contract_macros::contract("ConstructorArgs.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("ConstructorArgs.sol", allocator = "pico")]
 mod constructor_args {
     use super::*;
-    use pvm_contract_types::{Address, HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, StorageFlags};
 
     const OWNER_KEY: [u8; 32] = key(0);
     const SUPPLY_KEY: [u8; 32] = key(1);
@@ -21,12 +21,12 @@ mod constructor_args {
     }
 
     impl<H: HostApi> ConstructorArgs<H> {
-        #[pvm_contract_macros::constructor]
+        #[pvm_contract_sdk::constructor]
         pub fn new(
             &mut self,
             owner: Address,
             initial_supply: U256,
-        ) -> Result<(), pvm_contract_types::EmptyError> {
+        ) -> Result<(), pvm_contract_sdk::EmptyError> {
             let addr: [u8; 20] = owner.into();
             let mut buf = [0u8; 32];
             buf[12..32].copy_from_slice(&addr);
@@ -39,7 +39,7 @@ mod constructor_args {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn get_owner(&self) -> Address {
             let slot = self.read_slot(&OWNER_KEY);
             let mut addr = [0u8; 20];
@@ -47,13 +47,13 @@ mod constructor_args {
             addr.into()
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn get_initial_supply(&self) -> U256 {
             U256::from_be_bytes::<32>(self.read_slot(&SUPPLY_KEY))
         }
 
-        #[pvm_contract_macros::fallback]
-        pub fn fallback(&mut self) -> Result<(), pvm_contract_types::EmptyError> {
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
         }
 

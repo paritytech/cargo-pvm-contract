@@ -1,19 +1,19 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use ruint::aliases::U256;
+use pvm_contract_sdk::U256;
 
-#[pvm_contract_macros::contract("ErrorHandling.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("ErrorHandling.sol", allocator = "pico")]
 mod error_handling {
     use super::*;
-    use pvm_contract_types::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct AlwaysReverts;
 
-    #[derive(Debug, pvm_contract_macros::SolError)]
+    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
     pub struct ZeroNotAllowed;
 
-    pvm_contract_types::sol_revert_enum! {
+    pvm_contract_sdk::sol_revert_enum! {
         pub enum ContractError {
             AlwaysReverts(AlwaysReverts),
             ZeroNotAllowed(ZeroNotAllowed),
@@ -27,22 +27,22 @@ mod error_handling {
     }
 
     impl<H: HostApi> ErrorHandling<H> {
-        #[pvm_contract_macros::constructor]
+        #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), ContractError> {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn will_revert(&self) -> Result<(), ContractError> {
             Err(AlwaysReverts.into())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn will_succeed(&self) -> bool {
             true
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn set_guarded(&mut self, val: U256) -> Result<(), ContractError> {
             if val == U256::ZERO {
                 return Err(ZeroNotAllowed.into());
@@ -52,7 +52,7 @@ mod error_handling {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn get_guarded(&self) -> U256 {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
@@ -62,7 +62,7 @@ mod error_handling {
             }
         }
 
-        #[pvm_contract_macros::fallback]
+        #[pvm_contract_sdk::fallback]
         pub fn fallback(&mut self) -> Result<(), ContractError> {
             Ok(())
         }

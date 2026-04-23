@@ -8,7 +8,9 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 |-------|-------------|
 | `cargo-pvm-contract` | CLI tool — scaffolds contract projects from `.sol` files |
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolError)]` |
+| `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
+| `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolErrorType)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error traits (`SolError`, `SolRevert`) — `no_std` compatible |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
@@ -147,7 +149,7 @@ pub trait SolRevert {
 }
 ```
 
-- `SolError` — implemented per error struct (single selector). Use `#[derive(SolError)]`.
+- `SolError` — implemented per error struct (single selector). Use `#[derive(SolErrorType)]`.
 - `SolRevert` — dispatch boundary trait. Blanket impl for `T: SolError`. Manual impl for error enums via `sol_revert_enum!`.
 - `RevertString` — encodes `Error(string)` with truncation for buffer safety.
 - `Panic` — encodes `Panic(uint256)` for overflow/division-by-zero.
@@ -347,11 +349,13 @@ crates/
     src/codegen/encode.rs       (removed — encoding now handled directly in dispatch.rs)
     src/codegen/decode.rs       Parameter decoding codegen
     src/codegen/sol_type.rs     #[derive(SolType)] expansion
-    src/codegen/sol_error.rs    #[derive(SolError)] expansion
+    src/codegen/sol_error.rs    #[derive(SolErrorType)] expansion
     src/signature/types.rs      Rust-to-Solidity type mapping
     src/signature/parser.rs     Solidity signature parsing
     src/signature/selector.rs   Keccak-256 selector computation
     src/solidity.rs             .sol interface file parsing
+  pvm-contract-sdk/              Primary user-facing SDK crate (re-exports macros, types, polkavm-derive)
+  pvm-contract-core/             Core structures for the PVM smart contracts SDK
   pvm-contract-types/           ABI encoding/decoding traits
     src/lib.rs                  SolEncode, SolDecode, StaticEncodedLen + primitive impls
     src/alloc_types.rs          String, Vec<T> impls (alloc feature)

@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-pvm_contract_macros::abi_import!(alloc = true, {
+pvm_contract_sdk::abi_import!(alloc = true, {
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -11,10 +11,10 @@ interface Flipper {
 }
 });
 
-#[pvm_contract_macros::contract("FlipperCallAlloy.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_instantiate {
-    use pvm_contract_core::call::{CallError, RefTimeAndProofSizeLimits};
-    use pvm_contract_types::*;
+    use pvm_contract_sdk::{CallError, RefTimeAndProofSizeLimits};
+    use pvm_contract_sdk::*;
 
     use super::*;
     use flipper::{self, Flipper};
@@ -30,12 +30,12 @@ mod flipper_instantiate {
     }
 
     impl<H: HostApi> FlipperInstantiate<H> {
-        #[pvm_contract_macros::constructor]
+        #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), Error> {
             Ok(())
         }
 
-        #[pvm_contract_macros::method]
+        #[pvm_contract_sdk::method]
         pub fn call_flipper(&mut self, addr: Address) -> Result<(), Error> {
             let flipper = Flipper::from_address(addr);
             let get = flipper.get();
@@ -73,7 +73,7 @@ mod flipper_instantiate {
             Ok(())
         }
 
-        #[pvm_contract_macros::fallback]
+        #[pvm_contract_sdk::fallback]
         pub fn fallback(&mut self) -> Result<(), Error> {
             Ok(())
         }

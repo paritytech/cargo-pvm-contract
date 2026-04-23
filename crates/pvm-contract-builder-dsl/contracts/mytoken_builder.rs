@@ -3,10 +3,10 @@
 #![no_std]
 
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
-use pvm_contract_types::{
+use pvm_contract_builder_dsl::pvm_contract_types::{
     HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
 };
-use ruint::aliases::U256;
+use pvm_contract_builder_dsl::ruint::aliases::U256;
 
 const TOTAL_SUPPLY_SELECTOR: [u8; 4] = solidity_selector("totalSupply()");
 const BALANCE_OF_SELECTOR: [u8; 4] = solidity_selector("balanceOf(address)");

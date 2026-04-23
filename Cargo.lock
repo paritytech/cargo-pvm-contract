@@ -4386,13 +4386,26 @@ dependencies = [
  "macro-string 0.2.0",
  "prettyplease",
  "proc-macro2",
+ "proptest",
  "pvm-contract-core",
+ "pvm-contract-sdk",
  "pvm-contract-types",
  "quote",
  "ruint",
  "serde_json",
  "syn 2.0.117",
  "syn-solidity",
+]
+
+[[package]]
+name = "pvm-contract-sdk"
+version = "0.3.0"
+dependencies = [
+ "polkavm-derive 0.31.0",
+ "pvm-contract-core",
+ "pvm-contract-macros",
+ "pvm-contract-types",
+ "ruint",
 ]
 
 [[package]]

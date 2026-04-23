@@ -9,18 +9,18 @@ use super::decode::{calculate_min_input_size, generate_decode_params};
 pub(super) fn generate_revert_encoding_boundary(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
-            let __revert_len = ::pvm_contract_types::SolRevert::revert_data_len(&e);
+            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data_len(&e);
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
-            ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf);
+            ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf);
         }
     } else {
         quote! {
             let mut __revert_buf = [0u8; 256];
-            let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, &mut __revert_buf);
-            ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                ::pvm_contract_types::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
+            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
         }
     }
 }
@@ -36,21 +36,21 @@ pub(super) fn generate_revert_encoding_boundary(use_alloc: bool) -> TokenStream 
 fn generate_revert_to_dispatch_result(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
-            let __revert_len = ::pvm_contract_types::SolRevert::revert_data_len(&e);
+            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data_len(&e);
             out.reserve(__revert_len);
             unsafe {
-                ::pvm_contract_types::SolRevert::revert_data(
+                ::pvm_contract_sdk::SolRevert::revert_data(
                     &e,
                     ::core::slice::from_raw_parts_mut(out.as_mut_ptr(), __revert_len),
                 );
                 out.set_len(__revert_len);
             }
-            return ::pvm_contract_types::DispatchResult::Revert(out.as_slice());
+            return ::pvm_contract_sdk::DispatchResult::Revert(out.as_slice());
         }
     } else {
         quote! {
-            let __revert_len = ::pvm_contract_types::SolRevert::revert_data(&e, out);
-            return ::pvm_contract_types::DispatchResult::Revert(&out[..__revert_len]);
+            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data(&e, out);
+            return ::pvm_contract_sdk::DispatchResult::Revert(&out[..__revert_len]);
         }
     }
 }
@@ -127,7 +127,7 @@ fn build_selector_const(method: &MethodInfo) -> TokenStream {
     } else {
         let sig_expr = build_const_signature_expr(method);
         quote! {
-            const #sel_ident: [u8; 4] = ::pvm_contract_types::const_selector(#sig_expr);
+            const #sel_ident: [u8; 4] = ::pvm_contract_sdk::const_selector(#sig_expr);
         }
     }
 }
@@ -142,11 +142,11 @@ fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
         if i > 0 {
             parts.push(quote! { "," });
         }
-        parts.push(quote! { <#ty as ::pvm_contract_types::SolEncode>::SOL_NAME });
+        parts.push(quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
     }
 
     parts.push(quote! { ")" });
-    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 /// Size-check wrapped in dispatch-arm style — returns `DispatchResult::Revert`
@@ -155,8 +155,8 @@ fn dispatch_size_check(has_params: bool, min_size_expr: &TokenStream) -> TokenSt
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                return ::pvm_contract_types::DispatchResult::Revert(
-                    &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
+                return ::pvm_contract_sdk::DispatchResult::Revert(
+                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
             }
         }
     } else {
@@ -170,9 +170,9 @@ pub(super) fn boundary_size_check(has_params: bool, min_size_expr: &TokenStream)
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_types::ReturnFlags::REVERT,
-                    &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
             }
         }
     } else {
@@ -211,7 +211,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
         } else {
             quote! {
                 match this.#fn_name(#(#call_args),*) {
-                    Ok(()) => return ::pvm_contract_types::DispatchResult::Ok(&[]),
+                    Ok(()) => return ::pvm_contract_sdk::DispatchResult::Ok(&[]),
                     Err(e) => {
                         #revert_err
                     }
@@ -226,7 +226,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     } else {
         quote! {
             this.#fn_name(#(#call_args),*);
-            return ::pvm_contract_types::DispatchResult::Ok(&[]);
+            return ::pvm_contract_sdk::DispatchResult::Ok(&[]);
         }
     };
 
@@ -287,18 +287,18 @@ pub fn generate_router(
     let route_items = RouteItems {
         route_fn: quote! {
             #[allow(non_upper_case_globals)]
-            pub fn route<'a, H: ::pvm_contract_types::HostApi>(
+            pub fn route<'a, H: ::pvm_contract_sdk::HostApi>(
                 this: &mut #struct_name<H>,
                 selector: [u8; 4],
                 input: &[u8],
                 out: #buffer_param_ty,
-            ) -> ::pvm_contract_types::DispatchResult<'a> {
-                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
+            ) -> ::pvm_contract_sdk::DispatchResult<'a> {
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
                 #(#selector_consts)*
 
                 match selector {
                     #(#dispatch_arms)*
-                    _ => ::pvm_contract_types::DispatchResult::Unhandled,
+                    _ => ::pvm_contract_sdk::DispatchResult::Unhandled,
                 }
             }
         },
@@ -306,7 +306,7 @@ pub fn generate_router(
 
     let router_impl = RouterImpl {
         tokens: quote! {
-            impl<H: ::pvm_contract_types::HostApi> ::pvm_contract_types::Router<H>
+            impl<H: ::pvm_contract_sdk::HostApi> ::pvm_contract_sdk::Router<H>
                 for #mod_name::#struct_name<H>
             {
                 type Buffer = #buffer_assoc_ty;
@@ -315,7 +315,7 @@ pub fn generate_router(
                     selector: [u8; 4],
                     input: &[u8],
                     out: #buffer_param_ty,
-                ) -> ::pvm_contract_types::DispatchResult<'a> {
+                ) -> ::pvm_contract_sdk::DispatchResult<'a> {
                     #mod_name::route(self, selector, input, out)
                 }
             }
@@ -327,7 +327,7 @@ pub fn generate_router(
 
 fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenStream {
     if outputs.is_empty() {
-        return quote! { return ::pvm_contract_types::DispatchResult::Ok(&[]); };
+        return quote! { return ::pvm_contract_sdk::DispatchResult::Ok(&[]); };
     }
 
     if use_alloc {
@@ -342,24 +342,24 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         let ty = &outputs[0];
         return quote! {{
             const { assert!(
-                !<#ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
+                !<#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC,
                 "dynamic types (String, Vec, Bytes) require allocator = \"pico\" or \"bump\""
             ) };
-            const __LEN: usize = <#ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE;
-            <#ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut out[..__LEN]);
-            return ::pvm_contract_types::DispatchResult::Ok(&out[..__LEN]);
+            const __LEN: usize = <#ty as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE;
+            <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut out[..__LEN]);
+            return ::pvm_contract_sdk::DispatchResult::Ok(&out[..__LEN]);
         }};
     }
 
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
         const { assert!(
-            !<#tuple_ty as ::pvm_contract_types::SolEncode>::IS_DYNAMIC,
+            !<#tuple_ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC,
             "dynamic return types require allocator = \"pico\" or \"bump\""
         ) };
-        const __LEN: usize = <#tuple_ty as ::pvm_contract_types::StaticEncodedLen>::ENCODED_SIZE;
-        <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(&result, &mut out[..__LEN]);
-        return ::pvm_contract_types::DispatchResult::Ok(&out[..__LEN]);
+        const __LEN: usize = <#tuple_ty as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE;
+        <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut out[..__LEN]);
+        return ::pvm_contract_sdk::DispatchResult::Ok(&out[..__LEN]);
     }}
 }
 
@@ -374,30 +374,30 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
     if outputs.len() == 1 {
         let ty = &outputs[0];
         return quote! {{
-            let __len = <#ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+            let __len = <#ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
             out.reserve(__len);
             unsafe {
-                <#ty as ::pvm_contract_types::SolEncode>::encode_to(
+                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(
                     &result,
                     ::core::slice::from_raw_parts_mut(out.as_mut_ptr(), __len),
                 );
                 out.set_len(__len);
             }
-            return ::pvm_contract_types::DispatchResult::Ok(out.as_slice());
+            return ::pvm_contract_sdk::DispatchResult::Ok(out.as_slice());
         }};
     }
 
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
-        let __len = <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_len(&result);
+        let __len = <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
         out.reserve(__len);
         unsafe {
-            <#tuple_ty as ::pvm_contract_types::SolEncode>::encode_to(
+            <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(
                 &result,
                 ::core::slice::from_raw_parts_mut(out.as_mut_ptr(), __len),
             );
             out.set_len(__len);
         }
-        return ::pvm_contract_types::DispatchResult::Ok(out.as_slice());
+        return ::pvm_contract_sdk::DispatchResult::Ok(out.as_slice());
     }}
 }

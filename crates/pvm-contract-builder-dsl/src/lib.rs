@@ -6,6 +6,7 @@ use core::marker::PhantomData;
 pub use pallet_revive_uapi;
 pub use pallet_revive_uapi::solidity_selector;
 pub use polkavm_derive;
+pub use polkavm_derive::polkavm_export;
 pub use pvm_contract_types;
 pub use ruint;
 

@@ -6,8 +6,8 @@ extern crate alloc;
 use alloc::vec;
 use alloy_core::primitives::U256;
 use alloy_core::sol_types::{SolType, sol_data};
-use pallet_revive_uapi::{HostFn as _, HostFnImpl as api};
-use pvm_contract_types::{ReturnFlags, StorageFlags};
+use pvm_contract_sdk::pallet_revive_uapi::{HostFn as _, HostFnImpl as api};
+use pvm_contract_sdk::{ReturnFlags, StorageFlags};
 
 #[global_allocator]
 static ALLOC: pvm_bump_allocator::BumpAllocator<1024> = pvm_bump_allocator::BumpAllocator::new();

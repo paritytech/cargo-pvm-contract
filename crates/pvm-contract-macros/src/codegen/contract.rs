@@ -138,7 +138,12 @@ pub(super) struct ParsedContract {
     pub(super) error_types: Vec<syn::Type>,
 }
 
-const VALID_PREFIXES: &[&str] = &["pvm", "pvm_contract", "pvm_contract_macros"];
+const VALID_PREFIXES: &[&str] = &[
+    "pvm",
+    "pvm_contract",
+    "pvm_contract_macros",
+    "pvm_contract_sdk",
+];
 
 fn check_signature_compatibility(
     func: &syn::ImplItemFn,
@@ -695,22 +700,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {}
         } else if use_alloc {
             quote! {
-                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
             }
         } else {
             quote! {
-                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_types::ReturnFlags::REVERT,
-                        &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
                 let input = &call_data[..call_data_len];
                 #size_check
             }
@@ -739,9 +744,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
-                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name::<::pvm_contract_types::PolkaVmHost> {
-                    host: ::pvm_contract_types::PolkaVmHost,
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name::<::pvm_contract_sdk::PolkaVmHost> {
+                    host: ::pvm_contract_sdk::PolkaVmHost,
                 };
                 #read_calldata
                 #decode_and_call
@@ -782,14 +787,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_types::ReturnFlags::REVERT,
-                    &::pvm_contract_types::framework_errors::NO_SELECTOR);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_types::ReturnFlags::REVERT,
-                    &::pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
             },
         )
     };
@@ -802,13 +807,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name::<::pvm_contract_types::PolkaVmHost> {
-                    host: ::pvm_contract_types::PolkaVmHost,
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name::<::pvm_contract_sdk::PolkaVmHost> {
+                    host: ::pvm_contract_sdk::PolkaVmHost,
                 };
-                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -819,15 +824,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let mut __out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
                 match route(&mut this, selector, input, &mut __out) {
-                    ::pvm_contract_types::DispatchResult::Ok(data) => {
-                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_types::ReturnFlags::empty(), data);
+                    ::pvm_contract_sdk::DispatchResult::Ok(data) => {
+                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_sdk::ReturnFlags::empty(), data);
                     }
-                    ::pvm_contract_types::DispatchResult::Revert(data) => {
-                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_types::ReturnFlags::REVERT, data);
+                    ::pvm_contract_sdk::DispatchResult::Revert(data) => {
+                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_sdk::ReturnFlags::REVERT, data);
                     }
-                    ::pvm_contract_types::DispatchResult::Unhandled => {
+                    ::pvm_contract_sdk::DispatchResult::Unhandled => {
                         #unknown_selector_handler
                     }
                 }
@@ -838,18 +843,18 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                use ::pvm_contract_types::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name::<::pvm_contract_types::PolkaVmHost> {
-                    host: ::pvm_contract_types::PolkaVmHost,
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name::<::pvm_contract_sdk::PolkaVmHost> {
+                    host: ::pvm_contract_sdk::PolkaVmHost,
                 };
-                let call_data_len = ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_types::ReturnFlags::REVERT,
-                        &::pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -860,15 +865,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let mut __out = [0u8; #buffer_size];
 
                 match route(&mut this, selector, input, &mut __out) {
-                    ::pvm_contract_types::DispatchResult::Ok(data) => {
-                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_types::ReturnFlags::empty(), data);
+                    ::pvm_contract_sdk::DispatchResult::Ok(data) => {
+                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_sdk::ReturnFlags::empty(), data);
                     }
-                    ::pvm_contract_types::DispatchResult::Revert(data) => {
-                        ::pvm_contract_types::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_types::ReturnFlags::REVERT, data);
+                    ::pvm_contract_sdk::DispatchResult::Revert(data) => {
+                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                            ::pvm_contract_sdk::ReturnFlags::REVERT, data);
                     }
-                    ::pvm_contract_types::DispatchResult::Unhandled => {
+                    ::pvm_contract_sdk::DispatchResult::Unhandled => {
                         #unknown_selector_handler
                     }
                 }
@@ -949,7 +954,7 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
     quote! {
         #[cfg(not(feature = "abi-gen"))]
         #[allow(unused_imports)]
-        use ::pvm_contract_types::HostApi as _;
+        use ::pvm_contract_sdk::HostApi as _;
 
         #(#items)*
     }

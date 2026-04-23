@@ -49,8 +49,8 @@ static ALLOC: BumpAllocator = BumpAllocator;
 {% endif %}
 
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
-use pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
-use ruint::aliases::U256;
+use pvm_contract_builder_dsl::pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_builder_dsl::ruint::aliases::U256;
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {

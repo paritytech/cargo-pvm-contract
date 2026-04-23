@@ -2,8 +2,8 @@
 #![no_std]
 
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, RevertBuffer, solidity_selector};
-use pvm_contract_types::{Address, HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
-use ruint::aliases::U256;
+use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
+use pvm_contract_sdk::U256;
 
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
@@ -32,10 +32,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-#[derive(Debug, pvm_contract_macros::SolError)]
+#[derive(Debug, pvm_contract_sdk::SolErrorType)]
 pub struct InsufficientBalance;
 
-pvm_contract_types::sol_revert_enum! {
+pvm_contract_sdk::sol_revert_enum! {
     pub enum TokenError {
         InsufficientBalance(InsufficientBalance),
     }
