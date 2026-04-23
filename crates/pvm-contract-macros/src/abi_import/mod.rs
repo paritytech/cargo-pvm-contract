@@ -597,6 +597,10 @@ mod test {
     }
 
     fn load(name: &str) -> String {
+        load_with_cdm(name, None)
+    }
+
+    fn load_with_cdm(name: &str, cdm: Option<&str>) -> String {
         let name = &name.replace('-', "_");
         let json = cargo_load_abi(name);
         let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(&json).unwrap();
@@ -611,8 +615,47 @@ mod test {
             #tts
         })
         .unwrap();
-        let tokens = expand_to_module(&file, true, None).to_token_stream();
+        let tokens = expand_to_module(&file, true, cdm).to_token_stream();
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+    }
+
+    /// `cdm = "..."` should emit the `reference` submodule with both
+    /// `lookup` and `from_env` entry points, the registry-address and
+    /// from-env-address consts, and the CDM name baked into the expansion.
+    #[test]
+    fn cdm_arg_emits_reference_submodule() {
+        let code = load_with_cdm("multi-method", Some("@example/multi-method"));
+        assert!(
+            code.contains("pub mod reference"),
+            "reference submodule should be emitted"
+        );
+        assert!(code.contains("pub fn lookup"), "lookup() should be emitted");
+        assert!(
+            code.contains("pub fn from_env"),
+            "from_env() should be emitted"
+        );
+        assert!(
+            code.contains("__CDM_REGISTRY_ADDR"),
+            "registry-address const should be emitted"
+        );
+        assert!(
+            code.contains("__CDM_FROM_ENV_ADDR"),
+            "from-env-address const should be emitted"
+        );
+        assert!(
+            code.contains("@example/multi-method"),
+            "cdm name should be baked into the expansion"
+        );
+    }
+
+    /// Without `cdm = "..."`, the `reference` submodule and its consts
+    /// must not appear in the expansion.
+    #[test]
+    fn no_cdm_arg_omits_reference_submodule() {
+        let code = load_with_cdm("multi-method", None);
+        assert!(!code.contains("pub mod reference"));
+        assert!(!code.contains("__CDM_REGISTRY_ADDR"));
+        assert!(!code.contains("__CDM_FROM_ENV_ADDR"));
     }
 
     #[test]
