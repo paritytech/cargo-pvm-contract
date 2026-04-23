@@ -1,42 +1,26 @@
 use alloy_json_abi::ToSolConfig;
 use std::path::{Path, PathBuf};
 use syn::{
-    Error, Expr, Ident, Lit, LitBool, LitStr, Result, Token,
+    Attribute, Error, Ident, LitBool, LitStr, Result, Token,
     parse::{Parse, ParseStream},
 };
 
 pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File, bool)> {
+    let attrs = Attribute::parse_inner(input)?;
     let fork = input.fork();
-    let (alloc_present, is_alloc) =
-        if let Ok(syn::MetaNameValue { path, value, .. }) = fork.parse::<syn::MetaNameValue>() {
-            (
-                true,
-                path.get_ident().is_some_and(|x| *x == "alloc")
-                    && matches!(
-                        value,
-                        Expr::Lit(syn::ExprLit {
-                            lit: Lit::Bool(LitBool { value: true, .. }),
-                            ..
-                        })
-                    ),
-            )
-        } else {
-            (false, false)
-        };
 
-    let fork = if alloc_present {
-        let _ = fork.parse::<Token![,]>();
-        let _ = input.parse::<syn::MetaNameValue>();
-        let _ = input.parse::<Token![,]>();
-        fork
-    } else {
-        input.fork()
-    };
     // Include macro calls like `concat!(env!())`;
     let is_litstr_like = |fork: syn::parse::ParseStream<'_>| {
         fork.peek(LitStr) || (fork.peek(Ident) && fork.peek2(Token![!]))
     };
 
+    let (abi_attrs, rest) = AbiAttrs::parse(&attrs)?;
+    if !rest.is_empty() {
+        return Err(syn::Error::new_spanned(
+            rest.first().unwrap(),
+            "only `#[abi_import]` attributes are allowed here",
+        ));
+    }
     if is_litstr_like(&fork)
         || (fork.peek(Ident) && fork.peek2(Token![,]) && {
             let _ = fork.parse::<Ident>();
@@ -44,14 +28,9 @@ pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File,
             is_litstr_like(&fork)
         })
     {
-        parse_json(input).map(|x| (x, is_alloc))
-    } else if alloc_present {
-        let content;
-
-        syn::braced!(content in input);
-        syn_solidity::File::parse(&content).map(|x| (x, is_alloc))
+        parse_json(input).map(|x| (x, abi_attrs.alloc.unwrap_or_default()))
     } else {
-        syn_solidity::File::parse(input).map(|x| (x, is_alloc))
+        syn_solidity::File::parse(input).map(|x| (x, abi_attrs.alloc.unwrap_or_default()))
     }
 }
 
@@ -117,4 +96,65 @@ pub(crate) fn load_json_abi(
     syn_solidity::parse2(quote::quote! {
         #tts
     })
+}
+
+const DUPLICATE_ERROR: &str = "duplicate attribute";
+const UNKNOWN_ERROR: &str = "unknown `abi_import` attribute";
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AbiAttrs {
+    /// `#[abi_import(alloc)]`
+    pub alloc: Option<bool>,
+}
+
+impl AbiAttrs {
+    /// Parse the `#[abi_import(...)]` attributes from a list of attributes.
+    pub fn parse(attrs: &[Attribute]) -> Result<(Self, Vec<Attribute>)> {
+        let mut this = Self::default();
+        let mut others = Vec::with_capacity(attrs.len());
+        for attr in attrs {
+            if !attr.path().is_ident("abi_import") {
+                others.push(attr.clone());
+                continue;
+            }
+
+            attr.meta.require_list()?.parse_nested_meta(|meta| {
+                let path = meta
+                    .path
+                    .get_ident()
+                    .ok_or_else(|| meta.error("expected ident"))?;
+                let s = path.to_string();
+
+                macro_rules! match_ {
+                    ($($l:ident => $e:expr),* $(,)?) => {
+                        match s.as_str() {
+                            $(
+                                stringify!($l) => if this.$l.is_some() {
+                                    return Err(meta.error(DUPLICATE_ERROR))
+                                } else {
+                                    this.$l = Some($e);
+                                },
+                            )*
+                            _ => return Err(meta.error(UNKNOWN_ERROR)),
+                        }
+                    };
+                }
+
+                // `path` => true, `path = <bool>` => <bool>
+                let bool = || {
+                    if let Ok(input) = meta.value() {
+                        input.parse::<LitBool>().map(|lit| lit.value)
+                    } else {
+                        Ok(true)
+                    }
+                };
+
+                match_! {
+                    alloc => bool()?,
+                };
+                Ok(())
+            })?;
+        }
+        Ok((this, others))
+    }
 }

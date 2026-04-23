@@ -2,7 +2,8 @@
 
 use pvm_contract_sdk::StorageFlags;
 
-pvm_contract_sdk::abi_import!(alloc = true, {
+pvm_contract_sdk::abi_import! {
+    #![abi_import(alloc = true)]
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -10,7 +11,7 @@ interface Flipper {
     function flip() external;
     function get() external view returns (bool);
 }
-});
+}
 
 #[pvm_contract_sdk::contract("DelegateFlipper.sol", allocator = "pico")]
 mod flipper_delegate {

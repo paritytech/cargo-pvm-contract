@@ -1,8 +1,7 @@
-use pvm_contract_sdk::SolErrorType;
 use pvm_contract_sdk::U256;
 use pvm_contract_sdk::{Address, SolError, SolRevert};
 
-#[derive(SolErrorType)]
+#[derive(SolError)]
 struct InsufficientBalance {
     account: Address,
     required: U256,
@@ -45,7 +44,7 @@ mod alloy_cross_check {
         use pvm_contract_sdk::U256;
         use pvm_contract_sdk::{Address, SolRevert};
 
-        // Encode with our SolErrorType derive
+        // Encode with our SolError derive
         let error = crate::InsufficientBalance {
             account: Address([0xAB; 20]),
             required: U256::from(1000u64),
@@ -90,7 +89,7 @@ fn revert_data_includes_selector_and_params() {
 }
 
 // Zero-field error
-#[derive(SolErrorType)]
+#[derive(SolError)]
 struct Unauthorized;
 
 #[test]
@@ -119,7 +118,7 @@ fn zero_field_error_revert_data() {
 // Type alias resolution
 type Amount = U256;
 
-#[derive(SolErrorType)]
+#[derive(SolError)]
 struct OverLimit {
     limit: Amount,
 }
@@ -144,7 +143,7 @@ struct Point {
     y: u64,
 }
 
-#[derive(SolErrorType)]
+#[derive(SolError)]
 struct PointError {
     origin: Point,
     value: U256,

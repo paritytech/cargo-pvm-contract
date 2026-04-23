@@ -311,10 +311,10 @@ When a contract method returns `Err(e)`, the SDK encodes the error as ABI-compat
 
 ### Custom Errors
 
-Custom errors are defined as Rust structs with `#[derive(SolErrorType)]`:
+Custom errors are defined as Rust structs with `#[derive(SolError)]`:
 
 ```rust,ignore
-#[derive(pvm_contract_macros::SolErrorType)]
+#[derive(pvm_contract_macros::SolError)]
 pub struct InsufficientBalance {
     pub account: Address,
     pub required: U256,

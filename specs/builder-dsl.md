@@ -113,7 +113,7 @@ DSL contracts use `RevertBuffer` to encode ABI-compatible revert data from error
 use pvm_contract_builder_dsl::RevertBuffer;
 use pvm_contract_sdk::SolError;
 
-#[derive(pvm_contract_macros::SolErrorType)]
+#[derive(pvm_contract_macros::SolError)]
 struct InsufficientBalance;
 
 fn transfer_handler(input: &[u8]) {

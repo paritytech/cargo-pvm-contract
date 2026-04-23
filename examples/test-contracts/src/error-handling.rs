@@ -7,10 +7,10 @@ use pvm_contract_sdk::U256;
 mod error_handling {
     use super::*;
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct AlwaysReverts;
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct ZeroNotAllowed;
 
     pvm_contract_sdk::sol_revert_enum! {
