@@ -1,6 +1,6 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(test), no_main, no_std)]
 {% if use_alloc %}
+#[cfg(not(test))]
 extern crate alloc;
 
 struct BumpAllocator;
@@ -44,6 +44,7 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
 
+#[cfg(not(test))]
 #[global_allocator]
 static ALLOC: BumpAllocator = BumpAllocator;
 {% endif %}
@@ -52,6 +53,7 @@ use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector
 use pvm_contract_builder_dsl::pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
 use pvm_contract_builder_dsl::ruint::aliases::U256;
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
@@ -66,10 +68,12 @@ const {{ func.selector_const }}: [u8; 4] = solidity_selector("{{ func.solidity_s
 {% endfor %}
 {% endif %}
 
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn deploy() {}
 
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
