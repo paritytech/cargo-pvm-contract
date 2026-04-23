@@ -96,6 +96,9 @@ pub use pvm_contract_types::{
     sol_revert_enum,
 };
 
+// Storage
+pub use pvm_storage::{Lazy, Mapping};
+
 // Cross-contract calls
 pub use pvm_contract_core::call::{
     CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
