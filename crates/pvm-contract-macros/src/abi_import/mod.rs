@@ -583,12 +583,27 @@ mod test {
     #[test]
     fn cdm_arg_emits_reference_submodule() {
         let code = load_with_cdm("multi-method", Some("@example/multi-method"));
-        assert!(code.contains("pub mod reference"));
-        assert!(code.contains("pub fn lookup"));
-        assert!(code.contains("pub fn from_env"));
-        assert!(code.contains("__CDM_REGISTRY_ADDR"));
-        assert!(code.contains("__CDM_FROM_ENV_ADDR"));
-        assert!(code.contains("@example/multi-method"));
+        assert!(
+            code.contains("pub mod reference"),
+            "reference submodule should be emitted"
+        );
+        assert!(code.contains("pub fn lookup"), "lookup() should be emitted");
+        assert!(
+            code.contains("pub fn from_env"),
+            "from_env() should be emitted"
+        );
+        assert!(
+            code.contains("__CDM_REGISTRY_ADDR"),
+            "registry-address const should be emitted"
+        );
+        assert!(
+            code.contains("__CDM_FROM_ENV_ADDR"),
+            "from-env-address const should be emitted"
+        );
+        assert!(
+            code.contains("@example/multi-method"),
+            "cdm name should be baked into the expansion"
+        );
     }
 
     #[test]

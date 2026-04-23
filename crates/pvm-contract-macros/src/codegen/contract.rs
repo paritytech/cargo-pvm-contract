@@ -1121,12 +1121,24 @@ mod tests {
         };
         let output = expand_contract(args, item).unwrap().to_string();
 
-        assert!(output.contains("__PVM_CDM"));
-        assert!(output.contains(".rodata.pvm_cdm"));
+        assert!(
+            output.contains("__PVM_CDM"),
+            "expansion should emit __PVM_CDM static when cdm is set"
+        );
+        assert!(
+            output.contains(".rodata.pvm_cdm"),
+            "static should target .rodata.pvm_cdm section"
+        );
         // The JSON string is encoded as byte literals; check for `{` (123) and
         // `@` (64) from the start of `{"cdmPackage":"@...`.
-        assert!(output.contains("123u8"));
-        assert!(output.contains("64u8"));
+        assert!(
+            output.contains("123u8"),
+            "__PVM_CDM initializer should start with the byte for '{{'"
+        );
+        assert!(
+            output.contains("64u8"),
+            "__PVM_CDM initializer should contain the byte for '@' from the cdm name"
+        );
     }
 
     #[test]
@@ -1144,7 +1156,10 @@ mod tests {
         let output = expand_contract(ContractArgs::default(), item)
             .unwrap()
             .to_string();
-        assert!(!output.contains("__PVM_CDM"));
+        assert!(
+            !output.contains("__PVM_CDM"),
+            "no __PVM_CDM static should be emitted when cdm is not set"
+        );
     }
 
     #[test]
