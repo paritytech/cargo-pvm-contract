@@ -43,7 +43,7 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolErrorType, SolType, abi_import, constructor, contract, fallback, method,
+    SolError, SolStorage, SolType, abi_import, constructor, contract, fallback, method,
 };
 
 // ---------------------------------------------------------------------------
@@ -96,6 +96,9 @@ pub use pvm_contract_types::{
     sol_revert_enum,
 };
 
+// Storage
+pub use pvm_storage::{Lazy, Mapping};
+
 // Cross-contract calls
 pub use pvm_contract_core::call::{
     CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
@@ -124,6 +127,13 @@ pub use pvm_contract_types as types;
 
 #[doc(hidden)]
 pub use pvm_contract_types::const_format;
+
+#[doc(hidden)]
+pub use pvm_storage::{SolStorage, StorageKey};
+
+#[cfg(feature = "abi-gen")]
+#[doc(hidden)]
+pub use pvm_storage::StorageLayoutType;
 
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]

@@ -22,6 +22,7 @@ rows = [
     ("example-mytoken-macro-no-alloc", "macro-no-alloc"),
     ("example-mytoken-macro-no-sol", "macro-no-sol"),
     ("example-mytoken-macro-pico-alloc", "macro-pico-alloc"),
+    ("example-mytoken-macro-storage", "macro-storage"),
 ]
 
 

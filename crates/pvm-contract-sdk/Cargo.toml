@@ -12,9 +12,10 @@ pvm-contract-types = { path = "../pvm-contract-types", default-features = false 
 pvm-contract-core = { path = "../pvm-contract-core" }
 polkavm-derive = { workspace = true }
 ruint = { workspace = true, default-features = false }
+pvm-storage = { path = "../pvm-storage", default-features = false }
 
 [features]
 default = []
 alloc = ["pvm-contract-types/alloc"]
 std = ["alloc", "pvm-contract-types/std"]
-abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen"]
+abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen", "pvm-storage/abi-gen"]

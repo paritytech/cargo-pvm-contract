@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-pvm_contract_sdk::abi_import!(alloc = true, {
+pvm_contract_sdk::abi_import! {
+#![abi_import(alloc = true)]
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
@@ -8,7 +9,7 @@ interface Flipper {
     function flip() external;
     function get() external view returns (bool);
 }
-});
+}
 
 #[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_call_alloy {

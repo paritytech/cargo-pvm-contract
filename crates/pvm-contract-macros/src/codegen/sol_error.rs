@@ -17,13 +17,13 @@ pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
         syn::Data::Enum(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "SolErrorType can only be derived for structs. Use sol_revert_enum! for error enums.",
+                "SolError can only be derived for structs. Use sol_revert_enum! for error enums.",
             ));
         }
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "SolErrorType cannot be derived for unions",
+                "SolError cannot be derived for unions",
             ));
         }
     };

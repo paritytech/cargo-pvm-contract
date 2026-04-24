@@ -1238,6 +1238,7 @@ dependencies = [
  "polkavm-linker",
  "pvm-contract-types",
  "serde_json",
+ "syn 2.0.117",
  "tempfile",
  "toml_edit 0.22.27",
 ]
@@ -4387,6 +4388,7 @@ version = "0.3.0"
 dependencies = [
  "alloy-core",
  "alloy-json-abi",
+ "const-hex",
  "expect-test",
  "keccak-const",
  "macro-string 0.2.0",
@@ -4412,6 +4414,7 @@ dependencies = [
  "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",
+ "pvm-storage",
  "ruint",
 ]
 
@@ -4429,6 +4432,16 @@ dependencies = [
  "ruint",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pvm-storage"
+version = "0.3.0"
+dependencies = [
+ "pvm-contract-macros",
+ "pvm-contract-types",
+ "ruint",
+ "trybuild",
 ]
 
 [[package]]

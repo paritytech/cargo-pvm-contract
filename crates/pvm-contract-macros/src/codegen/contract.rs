@@ -228,6 +228,9 @@ fn is_valid_solidity_identifier(s: &str) -> bool {
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
+        if segments.len() == 1 && segments[0].ident == name {
+            return true;
+        }
         if segments.len() == 2 {
             let first = segments[0].ident.to_string();
             if VALID_PREFIXES.contains(&first.as_str()) && segments[1].ident == name {
@@ -569,13 +572,18 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(&parsed, args.sol_path.is_some());
+    let storage_struct_name = find_sol_storage_struct(&input)?;
+    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(
+        &parsed,
+        args.sol_path.is_some(),
+        storage_struct_name.clone(),
+    );
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
 
-    let mod_content = strip_pvm_attrs(&input);
+    let mod_content = strip_pvm_attrs(&input, &storage_struct_name)?;
 
     let alloc_setup = match args.allocator {
         Some(AllocatorKind::Pico) => {
@@ -860,14 +868,156 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     })
 }
 
-fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
+/// Detect a struct with `#[derive(SolStorage)]` in the module items.
+/// Returns the struct name if found, or an error if more than one non-cfg-gated
+/// duplicate is found.
+///
+/// Proc macros see module items before `#[cfg]` evaluation, so feature-gated
+/// storage structs (e.g. `#[cfg(feature = "v1")] struct StorageV1`) are visible
+/// even when inactive. We allow multiple `SolStorage` structs as long as every
+/// duplicate carries a `#[cfg(...)]` attribute, which indicates the developer
+/// intends for exactly one to be active per build.
+fn find_sol_storage_struct(input: &ItemMod) -> syn::Result<Option<Ident>> {
+    let content = match input.content.as_ref() {
+        Some(c) => c,
+        None => return Ok(None),
+    };
+
+    // Collect all structs that derive SolStorage, noting whether they have #[cfg].
+    let mut candidates: Vec<(&syn::ItemStruct, bool)> = Vec::new();
+    for item in &content.1 {
+        let syn::Item::Struct(s) = item else {
+            continue;
+        };
+        if !has_sol_storage_derive(s) {
+            continue;
+        }
+        let has_cfg = s.attrs.iter().any(|a| a.path().is_ident("cfg"));
+        candidates.push((s, has_cfg));
+    }
+
+    if candidates.len() <= 1 {
+        return Ok(candidates.first().map(|(s, _)| s.ident.clone()));
+    }
+
+    // Multiple candidates found.
+    //
+    // Proc macros run before #[cfg] evaluation, so feature-gated storage structs
+    // are all visible even though only one will be active per build. We allow
+    // this IF every candidate is #[cfg]-gated AND they all share the same name,
+    // because the injected code references the struct by name, which must resolve
+    // regardless of which cfg branch the compiler selects.
+    let all_cfg_gated = candidates.iter().all(|(_, has_cfg)| *has_cfg);
+
+    if all_cfg_gated {
+        let first_name = &candidates[0].0.ident;
+        for (s, _) in &candidates[1..] {
+            if s.ident != *first_name {
+                return Err(syn::Error::new_spanned(
+                    s,
+                    format!(
+                        "cfg-gated #[derive(SolStorage)] structs must share the same name \
+                         (found `{}` and `{}`); the #[contract] macro injects code that \
+                         references the struct by name, which must resolve in every cfg branch",
+                        first_name, s.ident
+                    ),
+                ));
+            }
+        }
+        return Ok(Some(first_name.clone()));
+    }
+
+    // At least one candidate is unconditional. Reject the duplicate.
+    let first_name = &candidates[0].0.ident;
+    for (s, has_cfg) in &candidates[1..] {
+        if !has_cfg {
+            return Err(syn::Error::new_spanned(
+                s,
+                format!(
+                    "only one #[derive(SolStorage)] struct is allowed per contract module \
+                     (already found `{}`); if these are feature-gated, add #[cfg(...)] \
+                     to each variant",
+                    first_name
+                ),
+            ));
+        }
+    }
+    // First candidate lacks cfg but later ones have it.
+    Err(syn::Error::new_spanned(
+        candidates[0].0,
+        format!(
+            "only one #[derive(SolStorage)] struct is allowed per contract module \
+             (also found `{}`); if these are feature-gated, add #[cfg(...)] \
+             to each variant",
+            candidates[1].0.ident
+        ),
+    ))
+}
+
+/// Check whether a struct has `#[derive(SolStorage)]` by parsing the derive
+/// token list and matching each path exactly (not substring).
+fn has_sol_storage_derive(s: &syn::ItemStruct) -> bool {
+    for attr in &s.attrs {
+        if let syn::Meta::List(meta_list) = &attr.meta {
+            if !meta_list.path.is_ident("derive") {
+                continue;
+            }
+            // Parse the derive arguments as a comma-separated list of paths
+            let paths: Result<syn::punctuated::Punctuated<syn::Path, syn::Token![,]>, _> =
+                meta_list.parse_args_with(syn::punctuated::Punctuated::parse_terminated);
+            if let Ok(paths) = paths {
+                for path in &paths {
+                    // Match both `SolStorage` (unqualified) and
+                    // `pvm_contract_macros::SolStorage` (fully qualified).
+                    // For multi-segment paths, verify the prefix is a known
+                    // PVM macro crate name.
+                    if path.is_ident("SolStorage") {
+                        return true;
+                    }
+                    if path.segments.len() == 2 {
+                        let prefix = path.segments[0].ident.to_string();
+                        if VALID_PREFIXES.contains(&prefix.as_str())
+                            && path.segments[1].ident == "SolStorage"
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn strip_pvm_attrs(
+    input: &ItemMod,
+    storage_struct_name: &Option<Ident>,
+) -> syn::Result<TokenStream> {
     let content = input.content.as_ref().unwrap();
+
     let items: Vec<_> = content
         .1
         .iter()
         .map(|item| match item {
             syn::Item::Fn(func) => {
                 let mut new_func = func.clone();
+
+                // Inject `let storage = &mut StructName::__pvm_storage();` if
+                // the function has a pvm method/constructor/fallback attribute
+                // and a SolStorage struct was found in the module.
+                if let Some(struct_name) = storage_struct_name {
+                    let is_pvm_fn = has_pvm_attr(&func.attrs, "method")
+                        || has_pvm_attr(&func.attrs, "constructor")
+                        || has_pvm_attr(&func.attrs, "fallback");
+
+                    if is_pvm_fn {
+                        let injection: syn::Stmt = syn::parse_quote! {
+                            let storage = &mut <#struct_name as ::pvm_contract_sdk::SolStorage>::__pvm_storage();
+                        };
+                        new_func.block.stmts.insert(0, injection);
+                    }
+                }
+
                 new_func.attrs.retain(|attr| {
                     let segments: Vec<_> = attr.path().segments.iter().collect();
                     !(segments.len() == 2
@@ -904,13 +1054,13 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
         })
         .collect();
 
-    quote! {
+    Ok(quote! {
         #[cfg(not(feature = "abi-gen"))]
         #[allow(unused_imports)]
         use ::pvm_contract_sdk::HostApi as _;
 
         #(#items)*
-    }
+    })
 }
 
 #[cfg(test)]
@@ -1551,6 +1701,270 @@ mod tests {
         assert!(
             !output.contains("match fallback"),
             "Unit-return fallback should not generate a match expression"
+        );
+    }
+
+    #[test]
+    fn contract_injects_storage_variable_when_sol_storage_present() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(SolStorage)]
+                struct Storage {
+                    #[slot(0)]
+                    counter: Lazy<U256>,
+                }
+
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn get_counter() -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // The storage injection should be present in method bodies
+        assert!(
+            output.contains("__pvm_storage"),
+            "Contract should inject storage variable when SolStorage struct is present.\n\
+             Expanded output:\n{output}"
+        );
+
+        // Verify the injection uses fully-qualified trait method call
+        assert!(
+            output.contains("as :: pvm_contract_sdk :: SolStorage")
+                && output.contains("__pvm_storage"),
+            "Storage injection should use fully-qualified SolStorage::__pvm_storage().\n\
+             Expanded output:\n{output}"
+        );
+
+        // Both constructor and method should get the injection
+        let pvm_storage_count = output.matches("__pvm_storage").count();
+        assert!(
+            pvm_storage_count >= 2,
+            "Both constructor and method should get storage injection, \
+             but found only {pvm_storage_count} occurrence(s).\n\
+             Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn contract_does_not_inject_storage_without_sol_storage() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn get_value() -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("__pvm_storage"),
+            "Contract should not inject storage when no SolStorage struct is present"
+        );
+    }
+
+    #[test]
+    fn contract_rejects_multiple_sol_storage_structs() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(SolStorage)]
+                struct StorageA {
+                    #[slot(0)]
+                    a: Lazy<U256>,
+                }
+
+                #[derive(SolStorage)]
+                struct StorageB {
+                    #[slot(1)]
+                    b: Lazy<U256>,
+                }
+
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+            }
+        "#,
+        )
+        .unwrap();
+
+        let result = expand_contract(ContractArgs::default(), item);
+        assert!(
+            result.is_err(),
+            "Should reject modules with multiple non-cfg-gated SolStorage structs"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("only one #[derive(SolStorage)]"),
+            "Error should mention the constraint. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn contract_allows_cfg_gated_sol_storage_structs() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[cfg(feature = "v1")]
+                #[derive(SolStorage)]
+                struct Storage {
+                    #[slot(0)]
+                    a: Lazy<U256>,
+                }
+
+                #[cfg(not(feature = "v1"))]
+                #[derive(SolStorage)]
+                struct Storage {
+                    #[slot(0)]
+                    a: Lazy<U256>,
+                    #[slot(1)]
+                    b: Lazy<U256>,
+                }
+
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn get_value() -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Should accept multiple SolStorage structs when all cfg-gated with same name
+        assert!(
+            output.contains("__pvm_storage"),
+            "Contract should accept cfg-gated SolStorage structs and inject storage.\n\
+             Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn contract_rejects_cfg_gated_sol_storage_with_different_names() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[cfg(feature = "v1")]
+                #[derive(SolStorage)]
+                struct StorageV1 {
+                    #[slot(0)]
+                    a: Lazy<U256>,
+                }
+
+                #[cfg(not(feature = "v1"))]
+                #[derive(SolStorage)]
+                struct StorageV2 {
+                    #[slot(0)]
+                    a: Lazy<U256>,
+                }
+
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+            }
+        "#,
+        )
+        .unwrap();
+
+        let result = expand_contract(ContractArgs::default(), item);
+        assert!(
+            result.is_err(),
+            "Should reject cfg-gated SolStorage structs with different names"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must share the same name"),
+            "Error should explain the name requirement. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn contract_does_not_match_sol_storage_substring() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(NotSolStorage)]
+                struct Storage {
+                    value: u32,
+                }
+
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn get_value() -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("__pvm_storage"),
+            "Should not match derive names that merely contain 'SolStorage' as substring"
+        );
+    }
+
+    #[test]
+    fn contract_detects_fully_qualified_sol_storage_derive() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(pvm_contract_macros::SolStorage)]
+                struct Storage {
+                    #[slot(0)]
+                    counter: Lazy<U256>,
+                }
+
+                #[pvm_contract_macros::constructor]
+                pub fn new() {}
+
+                #[pvm_contract_macros::method]
+                pub fn get_counter() -> U256 {
+                    U256::ZERO
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            output.contains("__pvm_storage"),
+            "Contract should detect fully qualified pvm_contract_macros::SolStorage.\n\
+             Expanded output:\n{output}"
         );
     }
 }
