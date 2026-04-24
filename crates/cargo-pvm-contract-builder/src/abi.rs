@@ -47,7 +47,10 @@ pub fn generate_storage_layout_for_bin(
             // Treat that specific error as "no storage layout"; propagate
             // everything else.
             let msg = format!("{e:?}");
-            if msg.contains("main function not found") || msg.contains("main` function not found") {
+            if msg.contains("main function not found")
+                || msg.contains("main` function not found")
+                || msg.contains("does not contain this feature")
+            {
                 return Ok(None);
             }
             return Err(e).context("Failed to generate storage layout via abi-gen");
