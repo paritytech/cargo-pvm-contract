@@ -17,7 +17,7 @@ interface Flipper {
 mod flipper_delegate {
     use super::*;
     use pvm_contract_sdk::CallError;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
     use flipper::{self, Flipper};
@@ -28,14 +28,12 @@ mod flipper_delegate {
         }
     }
 
-    pub struct FlipperDelegate<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct FlipperDelegate;
 
-    impl<H: HostApi> FlipperDelegate<H> {
+    impl FlipperDelegate {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), Error> {
-            self.host.set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
+            self.host().set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
             Ok(())
         }
 
@@ -58,7 +56,7 @@ mod flipper_delegate {
         fn read_value(&self) -> bool {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
                 Ok(_) => buf[31] != 0,
                 Err(_) => false,
             }

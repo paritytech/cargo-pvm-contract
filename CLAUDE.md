@@ -48,18 +48,27 @@ cargo build --release  (user runs this in the scaffolded project)
 
 **Macro API** (declarative, auto-ABI):
 ```rust
-#[pvm_contract_macros::contract("MyToken.sol", buffer = 256)]
+#[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> { Ok(()) }
+    pub struct MyToken;
 
-    #[pvm_contract_macros::method]
-    pub fn balance_of(account: Address) -> U256 { /* ... */ }
+    impl MyToken {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), Error> { Ok(()) }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> { Ok(()) }
+        #[pvm_contract_sdk::method]
+        pub fn balance_of(&self, account: Address) -> U256 {
+            self.host().get_storage(/* ... */);
+            /* ... */
+        }
+
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> { Ok(()) }
+    }
 }
 ```
+
+The macro injects a private `host: Host` field on the storage struct and a `fn host(&self) -> &Host` accessor. `Host` is a cfg-gated wrapper: ZST over `PolkaVmHost` on riscv64; `Box<dyn HostApi>` on host-target builds so tests inject a `MockHost` without touching the contract struct signature.
 
 **DSL API** (explicit, manual dispatch):
 ```rust

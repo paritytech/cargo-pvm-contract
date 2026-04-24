@@ -5,13 +5,11 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("CompositeTypes.sol", allocator = "pico")]
 mod composite_types {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
-    pub struct CompositeTypes<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct CompositeTypes;
 
-    impl<H: HostApi> CompositeTypes<H> {
+    impl CompositeTypes {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())

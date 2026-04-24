@@ -3,13 +3,11 @@
 
 #[pvm_contract_sdk::contract("Fibonacci.sol", allocator = "bump")]
 mod fibonacci {
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
-    pub struct Fibonacci<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct Fibonacci;
 
-    impl<H: HostApi> Fibonacci<H> {
+    impl Fibonacci {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())

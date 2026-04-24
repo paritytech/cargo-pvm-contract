@@ -14,13 +14,11 @@ pub struct Named {
 mod my_contract {
     use super::Named;
     use alloc::string::String;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
-    pub struct MyContract<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MyContract;
 
-    impl<H: HostApi> MyContract<H> {
+    impl MyContract {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) {}
 

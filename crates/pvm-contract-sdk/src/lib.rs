@@ -72,6 +72,7 @@ pub use pvm_contract_types::{
     DispatchResult,
     // Error traits and types
     EmptyError,
+    Host,
     HostApi,
     HostResult,
     I256,
@@ -152,6 +153,7 @@ pub mod prelude {
         // Errors
         EmptyError,
         // Host
+        Host,
         HostApi,
         I256,
         PolkaVmHost,

@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("StorageTypes.sol", allocator = "pico")]
 mod storage_types {
     use super::*;
-    use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{Address, StorageFlags};
 
     const KEY_U8: [u8; 32] = key(0);
     const KEY_U16: [u8; 32] = key(1);
@@ -23,11 +23,9 @@ mod storage_types {
         k
     }
 
-    pub struct StorageTypes<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct StorageTypes;
 
-    impl<H: HostApi> StorageTypes<H> {
+    impl StorageTypes {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
@@ -37,7 +35,7 @@ mod storage_types {
         pub fn set_u8(&mut self, val: u8) {
             let mut buf = [0u8; 32];
             buf[31] = val;
-            self.host.set_storage(StorageFlags::empty(), &KEY_U8, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_U8, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -49,7 +47,7 @@ mod storage_types {
         pub fn set_u16(&mut self, val: u16) {
             let mut buf = [0u8; 32];
             buf[30..32].copy_from_slice(&val.to_be_bytes());
-            self.host.set_storage(StorageFlags::empty(), &KEY_U16, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_U16, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -62,7 +60,7 @@ mod storage_types {
         pub fn set_u32(&mut self, val: u32) {
             let mut buf = [0u8; 32];
             buf[28..32].copy_from_slice(&val.to_be_bytes());
-            self.host.set_storage(StorageFlags::empty(), &KEY_U32, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_U32, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -75,7 +73,7 @@ mod storage_types {
         pub fn set_u64(&mut self, val: u64) {
             let mut buf = [0u8; 32];
             buf[24..32].copy_from_slice(&val.to_be_bytes());
-            self.host.set_storage(StorageFlags::empty(), &KEY_U64, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_U64, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -88,7 +86,7 @@ mod storage_types {
         pub fn set_u128(&mut self, val: u128) {
             let mut buf = [0u8; 32];
             buf[16..32].copy_from_slice(&val.to_be_bytes());
-            self.host.set_storage(StorageFlags::empty(), &KEY_U128, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_U128, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -99,7 +97,7 @@ mod storage_types {
 
         #[pvm_contract_sdk::method]
         pub fn set_u256(&mut self, val: U256) {
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &KEY_U256, &val.to_be_bytes::<32>());
         }
 
@@ -112,7 +110,7 @@ mod storage_types {
         pub fn set_bool(&mut self, val: bool) {
             let mut buf = [0u8; 32];
             buf[31] = if val { 1 } else { 0 };
-            self.host.set_storage(StorageFlags::empty(), &KEY_BOOL, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_BOOL, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -125,7 +123,7 @@ mod storage_types {
             let addr: [u8; 20] = val.into();
             let mut buf = [0u8; 32];
             buf[12..32].copy_from_slice(&addr);
-            self.host.set_storage(StorageFlags::empty(), &KEY_ADDRESS, &buf);
+            self.host().set_storage(StorageFlags::empty(), &KEY_ADDRESS, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -138,7 +136,7 @@ mod storage_types {
 
         #[pvm_contract_sdk::method]
         pub fn set_bytes32(&mut self, val: [u8; 32]) {
-            self.host.set_storage(StorageFlags::empty(), &KEY_BYTES32, &val);
+            self.host().set_storage(StorageFlags::empty(), &KEY_BYTES32, &val);
         }
 
         #[pvm_contract_sdk::method]
@@ -154,7 +152,7 @@ mod storage_types {
         fn read_slot(&self, key: &[u8; 32]) -> [u8; 32] {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), key, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), key, &mut out) {
                 Ok(_) => buf,
                 Err(_) => [0u8; 32],
             }

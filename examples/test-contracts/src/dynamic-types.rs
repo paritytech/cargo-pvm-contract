@@ -8,13 +8,11 @@ mod dynamic_types {
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
-    use pvm_contract_sdk::{Bytes, HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{Bytes};
 
-    pub struct DynamicTypes<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct DynamicTypes;
 
-    impl<H: HostApi> DynamicTypes<H> {
+    impl DynamicTypes {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())

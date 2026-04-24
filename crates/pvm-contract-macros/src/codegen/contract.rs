@@ -606,11 +606,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let struct_name = parsed.struct_name.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(
             &input,
-            "Contract module must contain a struct (e.g. `pub struct Foo<H: HostApi = PolkaVmHost> { host: H }`)",
+            "Contract module must contain a storage struct (e.g. `pub struct Foo;`)",
         )
     })?;
 
-    let mod_content = strip_pvm_attrs(&input);
+    let mod_content = strip_pvm_attrs(&input, struct_name)?;
 
     let alloc_setup = match args.allocator {
         Some(AllocatorKind::Pico) => {
@@ -745,8 +745,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name::<::pvm_contract_sdk::PolkaVmHost> {
-                    host: ::pvm_contract_sdk::PolkaVmHost,
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
                 };
                 #read_calldata
                 #decode_and_call
@@ -808,8 +808,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name::<::pvm_contract_sdk::PolkaVmHost> {
-                    host: ::pvm_contract_sdk::PolkaVmHost,
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
                 };
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
@@ -844,8 +844,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name::<::pvm_contract_sdk::PolkaVmHost> {
-                    host: ::pvm_contract_sdk::PolkaVmHost,
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
                 };
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
@@ -909,15 +909,29 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     })
 }
 
-fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
+/// Rewrite the contract module body:
+/// - Inject a `host: ::pvm_contract_sdk::Host` field on the storage struct;
+///   strip any legacy `<H: HostApi>` generic params.
+/// - Strip `#[method]` / `#[constructor]` / `#[fallback]` attrs from methods.
+/// - Strip any legacy `<H: HostApi>` generic params from `impl StorageStruct`
+///   blocks (and trait impls where the self-type is the storage struct).
+/// - Emit an `impl StorageStruct { fn host(&self) -> &Host }` accessor.
+///
+/// All user `impl` blocks are cfg-gated to `not(feature = "abi-gen")` so their
+/// bodies (which may call host APIs) are excluded from host-target ABI builds.
+fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStream> {
     let content = input.content.as_ref().unwrap();
-    let items: Vec<_> = content
-        .1
-        .iter()
-        .map(|item| match item {
+    let mut items: Vec<TokenStream> = Vec::new();
+    let mut struct_seen = false;
+
+    for item in &content.1 {
+        match item {
+            syn::Item::Struct(item_struct) if &item_struct.ident == struct_name => {
+                struct_seen = true;
+                let rewritten = rewrite_storage_struct(item_struct)?;
+                items.push(rewritten);
+            }
             syn::Item::Impl(item_impl) => {
-                // Strip #[method] / #[constructor] / #[fallback] attrs from
-                // methods, leaving the rest of the impl block intact.
                 let mut new_impl = item_impl.clone();
                 for impl_item in new_impl.items.iter_mut() {
                     if let syn::ImplItem::Fn(func) = impl_item {
@@ -931,32 +945,143 @@ fn strip_pvm_attrs(input: &ItemMod) -> TokenStream {
                         });
                     }
                 }
-                quote! {
+                // If this impl targets the storage struct, strip any `<H>` generic
+                // params and rewrite the self-type so `impl<H: HostApi> MyToken<H>`
+                // becomes plain `impl MyToken`. No-op for impls on other types or
+                // impls already written in the new concrete style.
+                if impl_targets_storage_struct(&new_impl, struct_name) {
+                    strip_host_generic_from_impl(&mut new_impl);
+                }
+                items.push(quote! {
                     #[cfg(not(feature = "abi-gen"))]
                     #new_impl
-                }
+                });
             }
             syn::Item::Use(use_item) => {
                 let use_str = quote! { #use_item }.to_string();
                 if use_str.contains("alloc ::") || use_str.contains("alloc::") {
-                    quote! {
+                    items.push(quote! {
                         #[cfg(not(feature = "abi-gen"))]
                         #use_item
-                    }
+                    });
                 } else {
-                    quote! { #use_item }
+                    items.push(quote! { #use_item });
                 }
             }
-            other => quote! { #other },
-        })
-        .collect();
+            other => items.push(quote! { #other }),
+        }
+    }
 
-    quote! {
+    if !struct_seen {
+        return Err(syn::Error::new_spanned(
+            input,
+            format!(
+                "Storage struct `{struct_name}` declaration not found in contract module. \
+                 Declare it as `pub struct {struct_name};` (the macro injects the `host` field).",
+            ),
+        ));
+    }
+
+    // Inject the `host()` accessor. The generated struct has a private `host`
+    // field; contract method bodies reach the host via `self.host()`, mirroring
+    // Stylus's `self.vm()` and ink!'s `self.env()`.
+    let host_accessor = quote! {
+        #[cfg(not(feature = "abi-gen"))]
+        impl #struct_name {
+            #[inline(always)]
+            pub fn host(&self) -> &::pvm_contract_sdk::Host {
+                &self.host
+            }
+        }
+    };
+
+    Ok(quote! {
         #[cfg(not(feature = "abi-gen"))]
         #[allow(unused_imports)]
         use ::pvm_contract_sdk::HostApi as _;
 
         #(#items)*
+
+        #host_accessor
+    })
+}
+
+/// Rewrite a user-declared storage struct into `pub struct Name { host: Host, <user fields> }`.
+/// Accepts unit (`pub struct Name;`), named (`pub struct Name { ... }`), and
+/// legacy generic forms (`pub struct Name<H: HostApi = PolkaVmHost> { host: H }`).
+fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStream> {
+    let attrs = &item_struct.attrs;
+    let vis = &item_struct.vis;
+    let name = &item_struct.ident;
+
+    // Collect user fields, dropping any legacy `host: H` (which was the manual
+    // field name in the old `<H: HostApi>` scheme).
+    let user_fields: Vec<&syn::Field> = match &item_struct.fields {
+        syn::Fields::Unit => Vec::new(),
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .filter(|f| {
+                f.ident
+                    .as_ref()
+                    .map(|i| i != "host")
+                    .unwrap_or(true)
+            })
+            .collect(),
+        syn::Fields::Unnamed(_) => {
+            return Err(syn::Error::new_spanned(
+                item_struct,
+                "Storage struct must be a unit struct (`pub struct Foo;`) or have named fields.",
+            ));
+        }
+    };
+
+    let user_field_tokens: Vec<TokenStream> = user_fields
+        .iter()
+        .map(|f| quote! { #f })
+        .collect();
+
+    Ok(quote! {
+        #(#attrs)*
+        #vis struct #name {
+            /// Host handle. Use [`Self::host`] in contract code; tests may
+            /// construct the struct directly with `Host::from_dyn(...)`.
+            pub host: ::pvm_contract_sdk::Host,
+            #(#user_field_tokens,)*
+        }
+    })
+}
+
+/// Whether this `impl` block targets the contract's storage struct (accepting
+/// both bare `impl StorageStruct` and legacy `impl<H> StorageStruct<H>` forms,
+/// plus trait impls like `impl Trait for StorageStruct[<H>]`).
+fn impl_targets_storage_struct(item_impl: &syn::ItemImpl, struct_name: &Ident) -> bool {
+    let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+        return false;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|s| &s.ident == struct_name)
+        .unwrap_or(false)
+}
+
+/// Drop any `<H>` / `<H: HostApi>` generic on an `impl Contract<H>` header:
+/// remove the impl-level type parameter and strip the ty-generic arg on the
+/// self-type. Legacy contract code carried this generic; new code has no
+/// generics at all, but both must produce the same output.
+fn strip_host_generic_from_impl(item_impl: &mut syn::ItemImpl) {
+    // Strip impl-level type params entirely — contract impls must not be generic.
+    item_impl.generics.params.clear();
+    item_impl.generics.where_clause = None;
+    item_impl.generics.lt_token = None;
+    item_impl.generics.gt_token = None;
+
+    if let syn::Type::Path(type_path) = item_impl.self_ty.as_mut()
+        && let Some(last) = type_path.path.segments.last_mut()
+    {
+        last.arguments = syn::PathArguments::None;
     }
 }
 
@@ -1011,7 +1136,7 @@ mod tests {
             mod empty { }
         };
         let err = expand_contract(ContractArgs::default(), input).unwrap_err();
-        assert!(err.to_string().contains("must contain a struct"));
+        assert!(err.to_string().contains("must contain a storage struct"));
     }
 
     #[test]
@@ -1021,8 +1146,8 @@ mod tests {
         // a cryptic "no method named" error. Catch it at parse time instead.
         let input: ItemMod = syn::parse_quote! {
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::method]
                     pub fn foo(value: u32) -> u32 { value }
                 }
@@ -1042,8 +1167,8 @@ mod tests {
         // receivers are allowed.
         let input: ItemMod = syn::parse_quote! {
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::method]
                     pub fn foo(self) -> u32 { 0 }
                 }
@@ -1076,8 +1201,8 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self, owner: Address, supply: U256) {}
                 }
@@ -1101,8 +1226,8 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self) {}
 
@@ -1125,10 +1250,11 @@ mod tests {
             output.contains("fn route"),
             "route() function should be generated"
         );
-        // The Router trait is implemented host-generically (no cfg gate)
+        // The Router trait is instantiated at the concrete Host type
         assert!(
-            output.contains("Router < H > for my_contract :: MyContract < H >"),
-            "Router impl should target Contract<H> generically"
+            output.contains("Router :: < :: pvm_contract_sdk :: Host >")
+                || output.contains(":: pvm_contract_sdk :: Router"),
+            "Router impl should target concrete Host"
         );
         // call() delegates to route() with the constructed `this` and the out buffer
         assert!(output.contains("route (& mut this , selector , input , & mut __out)"));
@@ -1139,8 +1265,8 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self, owner: Address) -> Result<(), Error> {
                         Ok(())
@@ -1165,8 +1291,8 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self) {}
 
@@ -1202,8 +1328,8 @@ mod tests {
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self) -> Result<(), MyError> {
                         Ok(())
@@ -1239,8 +1365,8 @@ mod tests {
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                pub struct MyContract<H: HostApi = PolkaVmHost> { pub host: H }
-                impl<H: HostApi> MyContract<H> {
+                pub struct MyContract;
+                impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self) {}
 

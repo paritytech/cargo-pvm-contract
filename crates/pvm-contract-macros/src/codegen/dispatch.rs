@@ -247,23 +247,24 @@ pub struct RouteItems {
     pub route_fn: TokenStream,
 }
 
-/// `impl<H: HostApi> Router<H> for mod_name::<StructName><H>` block, placed
-/// outside the module.
+/// `impl Router<Host> for mod_name::StructName` block, placed outside the module.
 pub struct RouterImpl {
     pub tokens: TokenStream,
 }
 
 /// Generate the `route` function and `Router` trait impl for a contract module.
 ///
-/// `route` takes a `&mut Contract<H>` for any `H: HostApi`, and writes encoded
-/// return/revert bytes into a caller-provided `out` buffer. It returns a
-/// `DispatchResult<'a>` borrowing from `out` — no host syscalls, no
-/// `return_value` calls. The `call()` / `deploy()` wrappers at the riscv64
-/// boundary consume the `DispatchResult` and invoke `return_value` once.
+/// `route` takes `&mut Contract` (concrete — the storage struct holds a
+/// concrete `Host` internally) and writes encoded return/revert bytes into a
+/// caller-provided `out` buffer. It returns a `DispatchResult<'a>` borrowing
+/// from `out` — no host syscalls, no `return_value` calls. The `call()` /
+/// `deploy()` wrappers at the riscv64 boundary consume the `DispatchResult`
+/// and invoke `return_value` once.
 ///
-/// The `Router` trait impl is host-generic (no `cfg(target_arch)` gate), so
-/// the same implementation serves production (`H = PolkaVmHost`) and native
-/// unit tests (`H = MockHost`).
+/// The `Router` trait impl is instantiated at the concrete `Host` type and has
+/// no `cfg(target_arch)` gate, so the same implementation serves both
+/// production (riscv64, `Host` is ZST) and native unit tests (host target,
+/// `Host` wraps `Box<dyn HostApi>`).
 pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
@@ -287,8 +288,8 @@ pub fn generate_router(
     let route_items = RouteItems {
         route_fn: quote! {
             #[allow(non_upper_case_globals)]
-            pub fn route<'a, H: ::pvm_contract_sdk::HostApi>(
-                this: &mut #struct_name<H>,
+            pub fn route<'a>(
+                this: &mut #struct_name,
                 selector: [u8; 4],
                 input: &[u8],
                 out: #buffer_param_ty,
@@ -306,8 +307,8 @@ pub fn generate_router(
 
     let router_impl = RouterImpl {
         tokens: quote! {
-            impl<H: ::pvm_contract_sdk::HostApi> ::pvm_contract_sdk::Router<H>
-                for #mod_name::#struct_name<H>
+            impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
+                for #mod_name::#struct_name
             {
                 type Buffer = #buffer_assoc_ty;
                 fn route<'a>(

@@ -20,7 +20,7 @@
 //!   parsing, ABI revert encoding — end-to-end verification that the
 //!   deployed contract will decode the same bytes Foundry/ethers send.
 
-use pvm_contract_sdk::{Address, MockHost, MockHostBuilder};
+use pvm_contract_sdk::{Address, Host, MockHost, MockHostBuilder};
 use ruint::aliases::U256;
 
 const OWNER_SLOT: [u8; 32] = [0u8; 32];
@@ -36,36 +36,34 @@ fn balance_key(addr: Address) -> [u8; 32] {
 #[pvm_contract_sdk::contract]
 mod mini_token {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{StorageFlags};
 
-    #[derive(Debug, PartialEq, Eq, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, PartialEq, Eq, pvm_contract_sdk::SolError)]
     pub struct Unauthorized;
 
-    #[derive(Debug, PartialEq, Eq, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, PartialEq, Eq, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance {
         pub available: U256,
         pub required: U256,
     }
 
-    pub struct MiniToken<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MiniToken;
 
-    impl<H: HostApi> MiniToken<H> {
+    impl MiniToken {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) {
             let mut caller = [0u8; 20];
-            self.host.caller(&mut caller);
+            self.host().caller(&mut caller);
             let mut slot = [0u8; 32];
             slot[12..].copy_from_slice(&caller);
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &OWNER_SLOT, &slot);
         }
 
         #[pvm_contract_sdk::method]
         pub fn owner(&self) -> Address {
             let mut buf = [0u8; 32];
-            self.host
+            self.host()
                 .get_storage_or_zero(StorageFlags::empty(), &OWNER_SLOT, &mut buf);
             let mut addr = [0u8; 20];
             addr.copy_from_slice(&buf[12..]);
@@ -75,7 +73,7 @@ mod mini_token {
         #[pvm_contract_sdk::method]
         pub fn balance_of(&self, account: Address) -> U256 {
             let mut buf = [0u8; 32];
-            self.host
+            self.host()
                 .get_storage_or_zero(StorageFlags::empty(), &balance_key(account), &mut buf);
             U256::from_be_bytes::<32>(buf)
         }
@@ -83,12 +81,12 @@ mod mini_token {
         #[pvm_contract_sdk::method]
         pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), Unauthorized> {
             let mut caller = [0u8; 20];
-            self.host.caller(&mut caller);
+            self.host().caller(&mut caller);
             if caller != *<Address as AsRef<[u8; 20]>>::as_ref(&self.owner()) {
                 return Err(Unauthorized);
             }
             let new = self.balance_of(to) + amount;
-            self.host.set_storage(
+            self.host().set_storage(
                 StorageFlags::empty(),
                 &balance_key(to),
                 &new.to_be_bytes::<32>(),
@@ -99,7 +97,7 @@ mod mini_token {
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let mut caller = [0u8; 20];
-            self.host.caller(&mut caller);
+            self.host().caller(&mut caller);
             let from = Address::from(caller);
             let available = self.balance_of(from);
             if available < amount {
@@ -110,12 +108,12 @@ mod mini_token {
             }
             let new_from = available - amount;
             let new_to = self.balance_of(to) + amount;
-            self.host.set_storage(
+            self.host().set_storage(
                 StorageFlags::empty(),
                 &balance_key(from),
                 &new_from.to_be_bytes::<32>(),
             );
-            self.host.set_storage(
+            self.host().set_storage(
                 StorageFlags::empty(),
                 &balance_key(to),
                 &new_to.to_be_bytes::<32>(),
@@ -133,10 +131,12 @@ const OWNER: [u8; 20] = [0xA0; 20];
 const ALICE: [u8; 20] = [0xA1; 20];
 const BOB: [u8; 20] = [0xB0; 20];
 
-fn contract_with_caller(caller: [u8; 20]) -> MiniToken<MockHost> {
-    MiniToken {
-        host: MockHostBuilder::new().caller(caller).build(),
-    }
+fn contract_with_caller(caller: [u8; 20]) -> (MiniToken, MockHost) {
+    let mock = MockHostBuilder::new().caller(caller).build();
+    let contract = MiniToken {
+        host: Host::from_dyn(Box::new(mock.clone())),
+    };
+    (contract, mock)
 }
 
 fn seed_owner(host: &MockHost, owner: [u8; 20]) {
@@ -156,8 +156,8 @@ fn seed_balance(host: &MockHost, addr: [u8; 20], amount: U256) {
 
 #[test]
 fn owner_returns_stored_address() {
-    let contract = contract_with_caller(ALICE);
-    seed_owner(&contract.host, OWNER);
+    let (contract, mock) = contract_with_caller(ALICE);
+    seed_owner(&mock, OWNER);
 
     // Direct method call — no selector, no encoding.
     assert_eq!(contract.owner(), Address::from(OWNER));
@@ -165,15 +165,15 @@ fn owner_returns_stored_address() {
 
 #[test]
 fn balance_of_returns_zero_by_default() {
-    let contract = contract_with_caller(ALICE);
+    let (contract, mock) = contract_with_caller(ALICE);
 
     assert_eq!(contract.balance_of(Address::from(ALICE)), U256::ZERO);
 }
 
 #[test]
 fn transfer_happy_path_returns_ok_and_moves_balance() {
-    let mut contract = contract_with_caller(ALICE);
-    seed_balance(&contract.host, ALICE, U256::from(1000u64));
+    let (mut contract, mock) = contract_with_caller(ALICE);
+    seed_balance(&mock, ALICE, U256::from(1000u64));
 
     // Direct call — the result is a typed `Result<(), InsufficientBalance>`.
     let result = contract.transfer(Address::from(BOB), U256::from(300u64));
@@ -188,8 +188,8 @@ fn transfer_happy_path_returns_ok_and_moves_balance() {
 
 #[test]
 fn transfer_insufficient_balance_returns_err_with_exact_fields() {
-    let mut contract = contract_with_caller(ALICE);
-    seed_balance(&contract.host, ALICE, U256::from(50u64));
+    let (mut contract, mock) = contract_with_caller(ALICE);
+    seed_balance(&mock, ALICE, U256::from(50u64));
 
     let result = contract.transfer(Address::from(BOB), U256::from(100u64));
 
@@ -210,8 +210,8 @@ fn transfer_insufficient_balance_returns_err_with_exact_fields() {
 #[test]
 fn mint_by_non_owner_returns_unauthorized() {
     // caller = BOB, but owner = OWNER
-    let mut contract = contract_with_caller(BOB);
-    seed_owner(&contract.host, OWNER);
+    let (mut contract, mock) = contract_with_caller(BOB);
+    seed_owner(&mock, OWNER);
 
     assert_eq!(
         contract.mint(Address::from(BOB), U256::from(100u64)),
@@ -225,8 +225,8 @@ fn mint_by_non_owner_returns_unauthorized() {
 #[test]
 fn mint_then_transfer_chain_updates_state_correctly() {
     // Multi-step stateful flow on a single contract instance.
-    let mut contract = contract_with_caller(OWNER);
-    seed_owner(&contract.host, OWNER);
+    let (mut contract, mock) = contract_with_caller(OWNER);
+    seed_owner(&mock, OWNER);
 
     // Owner mints to ALICE.
     contract
@@ -245,11 +245,13 @@ fn mint_then_transfer_chain_updates_state_correctly() {
         balance_key(Address::from(ALICE)),
         balance_key(Address::from(BOB)),
     ] {
-        if let Some(v) = contract.host.get_raw_storage(&key) {
+        if let Some(v) = mock.get_raw_storage(&key) {
             next_host.set_raw_storage(key.to_vec(), v);
         }
     }
-    let mut contract = MiniToken { host: next_host };
+    let mut contract = MiniToken {
+        host: Host::from_dyn(Box::new(next_host.clone())),
+    };
 
     contract
         .transfer(Address::from(BOB), U256::from(400u64))
@@ -267,8 +269,8 @@ fn property_like_test_with_arbitrary_inputs() {
     // Because methods are plain Rust, you can wrap them in `proptest!` /
     // `quickcheck` / loops without any framework boilerplate.
     for amount in [0u64, 1, 42, 999, u64::MAX / 2] {
-        let mut contract = contract_with_caller(ALICE);
-        seed_balance(&contract.host, ALICE, U256::from(amount));
+        let (mut contract, mock) = contract_with_caller(ALICE);
+        seed_balance(&mock, ALICE, U256::from(amount));
 
         // Transferring exactly the balance must always succeed.
         let result = contract.transfer(Address::from(BOB), U256::from(amount));

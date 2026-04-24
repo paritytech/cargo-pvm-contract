@@ -107,20 +107,20 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// The macro generates the following **inside** the contract module:
 ///
-/// - `pub fn route<'a, H: HostApi>(this: &mut Contract<H>, selector: [u8; 4],
-///   input: &[u8], out: &'a mut Buffer) -> DispatchResult<'a>` — host-agnostic
-///   selector dispatch that writes encoded output into the caller's buffer.
+/// - `pub fn route<'a>(this: &mut Contract, selector: [u8; 4],
+///   input: &[u8], out: &'a mut Buffer) -> DispatchResult<'a>` — selector
+///   dispatch that writes encoded output into the caller's buffer.
 ///   `Buffer` is `[u8]` (no-alloc) or `alloc::vec::Vec<u8>` (alloc mode).
 /// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point (riscv64-only)
 /// - `pub extern "C" fn call()` — PolkaVM call entry point (riscv64-only);
 ///   reads calldata, calls `route()`, translates `DispatchResult` into exactly
 ///   one `HostFnImpl::return_value` syscall.
 ///
-/// Outside the module, a host-generic `Router<H>` trait impl is generated:
+/// Outside the module, a `Router<Host>` trait impl is generated:
 ///
 /// ```ignore
-/// impl<H: ::pvm_contract_sdk::HostApi> ::pvm_contract_sdk::Router<H>
-///     for my_token::Contract<H>
+/// impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
+///     for my_token::Contract
 /// {
 ///     type Buffer = [u8]; // or alloc::vec::Vec<u8> for alloc-mode contracts
 ///     fn route<'a>(
@@ -134,8 +134,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// }
 /// ```
 ///
-/// The impl has no `cfg(target_arch)` gate — the same code path serves the
-/// production `PolkaVmHost` build and native unit tests against `MockHost`.
+/// The contract holds a concrete `Host` whose internals are cfg-gated:
+/// on riscv64 it's a ZST wrapping `PolkaVmHost` (zero overhead), on the
+/// host target it wraps `Box<dyn HostApi>` so tests can inject a `MockHost`.
+/// The generated code has no `cfg(target_arch)` gate — the same path serves
+/// production and native unit tests.
 ///
 /// All generated items are gated behind `#[cfg(not(feature = "abi-gen"))]`.
 ///
@@ -170,7 +173,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// natively with `MockHost`:
 ///
 /// ```ignore
-/// let mut contract = my_token::Contract { host: MockHostBuilder::new().build() };
+/// let mock = MockHostBuilder::new().build();
+/// let mut contract = my_token::Contract {
+///     host: Host::from_dyn(Box::new(mock.clone())),
+/// };
 /// let mut out = [0u8; 256];
 /// match my_token::route(&mut contract, BALANCE_OF_SELECTOR, &input, &mut out) {
 ///     DispatchResult::Ok(data) => { /* decode and assert on data */ }
@@ -228,8 +234,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     // --- Generated inside the module: ---
 ///
-///     pub fn route<'a, H: ::pvm_contract_types::HostApi>(
-///         this: &mut Contract<H>,
+///     pub fn route<'a>(
+///         this: &mut Contract,
 ///         selector: [u8; 4],
 ///         input: &[u8],
 ///         out: &'a mut [u8],
@@ -282,8 +288,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn call() {
-///         let mut this = Contract::<::pvm_contract_sdk::PolkaVmHost> {
-///             host: ::pvm_contract_sdk::PolkaVmHost,
+///         let mut this = Contract {
+///             host: ::pvm_contract_sdk::Host::new(),
 ///         };
 ///         let call_data_len = HostFnImpl::call_data_size() as usize;
 ///         let mut call_data = [0u8; 512];
@@ -318,8 +324,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// }
 ///
 /// // Generated outside the module:
-/// impl<H: ::pvm_contract_sdk::HostApi> ::pvm_contract_sdk::Router<H>
-///     for my_token::Contract<H>
+/// impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
+///     for my_token::Contract
 /// {
 ///     type Buffer = [u8];
 ///     fn route<'a>(

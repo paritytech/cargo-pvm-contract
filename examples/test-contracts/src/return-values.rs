@@ -5,13 +5,11 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("ReturnValues.sol", allocator = "pico")]
 mod return_values {
     use super::*;
-    use pvm_contract_sdk::{Address, HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{Address};
 
-    pub struct ReturnValues<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct ReturnValues;
 
-    impl<H: HostApi> ReturnValues<H> {
+    impl ReturnValues {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())

@@ -17,13 +17,11 @@ use pvm_contract_sdk::U256;
 {% endif %}
 mod contract {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
-    pub struct Contract<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct Contract;
 
-    impl<H: HostApi> Contract<H> {
+    impl Contract {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())

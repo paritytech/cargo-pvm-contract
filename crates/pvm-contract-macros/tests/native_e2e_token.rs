@@ -14,12 +14,12 @@
 //! - `balance_of(addr)` — pure read
 //! - `owner()` — pure read
 //!
-//! Each method uses `self.host.get_storage` / `set_storage` /
+//! Each method uses `self.host().get_storage` / `set_storage` /
 //! `deposit_event` / `caller`. None of it runs on `HostFnImpl` in these
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, DispatchResult, MockHost, MockHostBuilder, Router, SolDecode, SolEncode,
+    Address, DispatchResult, Host, MockHost, MockHostBuilder, Router, SolDecode, SolEncode,
     StaticEncodedLen,
 };
 use ruint::aliases::U256;
@@ -52,36 +52,34 @@ fn addr_topic(addr: Address) -> [u8; 32] {
 #[pvm_contract_macros::contract]
 mod mini_token {
     use super::*;
-    use pvm_contract_types::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_types::{StorageFlags};
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct Unauthorized;
 
-    #[derive(Debug, pvm_contract_sdk::SolErrorType)]
+    #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance {
         pub available: U256,
         pub required: U256,
     }
 
-    pub struct MiniToken<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MiniToken;
 
-    impl<H: HostApi> MiniToken<H> {
+    impl MiniToken {
         #[pvm_contract_macros::constructor]
         pub fn new(&mut self) {
             let mut caller_bytes = [0u8; 20];
-            self.host.caller(&mut caller_bytes);
+            self.host().caller(&mut caller_bytes);
             let mut slot = [0u8; 32];
             slot[12..].copy_from_slice(&caller_bytes);
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &OWNER_SLOT, &slot);
         }
 
         #[pvm_contract_macros::method]
         pub fn owner(&self) -> Address {
             let mut buf = [0u8; 32];
-            self.host
+            self.host()
                 .get_storage_or_zero(StorageFlags::empty(), &OWNER_SLOT, &mut buf);
             let mut addr = [0u8; 20];
             addr.copy_from_slice(&buf[12..]);
@@ -92,7 +90,7 @@ mod mini_token {
         pub fn balance_of(&self, account: Address) -> U256 {
             let key = balance_key(account);
             let mut buf = [0u8; 32];
-            self.host
+            self.host()
                 .get_storage_or_zero(StorageFlags::empty(), &key, &mut buf);
             U256::from_be_bytes::<32>(buf)
         }
@@ -100,7 +98,7 @@ mod mini_token {
         #[pvm_contract_macros::method]
         pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), Unauthorized> {
             let mut caller_bytes = [0u8; 20];
-            self.host.caller(&mut caller_bytes);
+            self.host().caller(&mut caller_bytes);
             let owner = self.owner();
             if caller_bytes != *<Address as AsRef<[u8; 20]>>::as_ref(&owner) {
                 return Err(Unauthorized);
@@ -109,7 +107,7 @@ mod mini_token {
             let current = self.balance_of(to);
             let new_balance = current + amount;
             let key = balance_key(to);
-            self.host.set_storage(
+            self.host().set_storage(
                 StorageFlags::empty(),
                 &key,
                 &new_balance.to_be_bytes::<32>(),
@@ -120,7 +118,7 @@ mod mini_token {
                 addr_topic(Address::ZERO),
                 addr_topic(to),
             ];
-            self.host
+            self.host()
                 .deposit_event(&topics, &amount.to_be_bytes::<32>());
             Ok(())
         }
@@ -128,7 +126,7 @@ mod mini_token {
         #[pvm_contract_macros::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
             let mut caller_bytes = [0u8; 20];
-            self.host.caller(&mut caller_bytes);
+            self.host().caller(&mut caller_bytes);
             let from = Address::from(caller_bytes);
 
             let available = self.balance_of(from);
@@ -145,16 +143,16 @@ mod mini_token {
             let current_to = self.balance_of(to);
             let new_to = current_to + amount;
 
-            self.host.set_storage(
+            self.host().set_storage(
                 StorageFlags::empty(),
                 &from_key,
                 &new_from.to_be_bytes::<32>(),
             );
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &to_key, &new_to.to_be_bytes::<32>());
 
             let topics = [transfer_topic_0(), addr_topic(from), addr_topic(to)];
-            self.host
+            self.host()
                 .deposit_event(&topics, &amount.to_be_bytes::<32>());
             Ok(())
         }
@@ -171,6 +169,15 @@ const CHARLIE: [u8; 20] = [0xC0; 20];
 /// Build a fresh host with `caller` set. Storage is empty.
 fn host_with_caller(caller: [u8; 20]) -> MockHost {
     MockHostBuilder::new().caller(caller).build()
+}
+
+/// Wire a `MockHost` into a fresh `MiniToken`. The contract and the returned
+/// `MockHost` share state (`Rc<RefCell<_>>` internally), so assertions can
+/// read back storage/events through the returned handle.
+fn make_contract(mock: &MockHost) -> mini_token::MiniToken {
+    mini_token::MiniToken {
+        host: Host::from_dyn(Box::new(mock.clone())),
+    }
 }
 
 /// Seed the owner slot directly (simulates a prior `new()` invocation).
@@ -222,7 +229,7 @@ fn read_balance(host: &MockHost, addr: [u8; 20]) -> U256 {
 
 /// Call `route()` and unwrap to `Ok(data)`, panicking on any other outcome.
 fn route_ok<'a>(
-    contract: &mut mini_token::MiniToken<MockHost>,
+    contract: &mut mini_token::MiniToken,
     sel: [u8; 4],
     input: &[u8],
     out: &'a mut [u8],
@@ -235,7 +242,7 @@ fn route_ok<'a>(
 
 /// Call `route()` and unwrap to `Revert(data)`, panicking on any other outcome.
 fn route_revert<'a>(
-    contract: &mut mini_token::MiniToken<MockHost>,
+    contract: &mut mini_token::MiniToken,
     sel: [u8; 4],
     input: &[u8],
     out: &'a mut [u8],
@@ -250,9 +257,9 @@ fn route_revert<'a>(
 
 #[test]
 fn owner_returns_stored_address() {
-    let host = host_with_caller(OWNER);
-    seed_owner(&host, OWNER);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(OWNER);
+    seed_owner(&mock, OWNER);
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let data = route_ok(&mut contract, selector("owner()"), &[], &mut out);
@@ -263,8 +270,8 @@ fn owner_returns_stored_address() {
 
 #[test]
 fn balance_of_returns_zero_for_untouched_address() {
-    let host = host_with_caller(ALICE);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(ALICE);
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let input = encode_balance_of_calldata(Address::from(ALICE));
@@ -280,9 +287,9 @@ fn balance_of_returns_zero_for_untouched_address() {
 
 #[test]
 fn mint_by_owner_credits_balance_and_emits_transfer_event() {
-    let host = host_with_caller(OWNER);
-    seed_owner(&host, OWNER);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(OWNER);
+    seed_owner(&mock, OWNER);
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let input = encode_mint_calldata(Address::from(ALICE), U256::from(1000u64));
@@ -296,10 +303,10 @@ fn mint_by_owner_credits_balance_and_emits_transfer_event() {
     assert_eq!(data, &[] as &[u8], "void success returns empty data");
 
     // Storage side-effect
-    assert_eq!(read_balance(&contract.host, ALICE), U256::from(1000u64));
+    assert_eq!(read_balance(&mock, ALICE), U256::from(1000u64));
 
     // Event side-effect: one Transfer(0x0, ALICE, 1000)
-    let events = contract.host.events();
+    let events = mock.events();
     assert_eq!(events.len(), 1);
     let (topics, payload) = &events[0];
     assert_eq!(topics.len(), 3);
@@ -315,9 +322,9 @@ fn mint_by_owner_credits_balance_and_emits_transfer_event() {
 #[test]
 fn mint_by_non_owner_reverts_with_unauthorized() {
     // Owner is OWNER; caller is BOB — mint must revert.
-    let host = host_with_caller(BOB);
-    seed_owner(&host, OWNER);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(BOB);
+    seed_owner(&mock, OWNER);
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let input = encode_mint_calldata(Address::from(BOB), U256::from(100u64));
@@ -333,15 +340,15 @@ fn mint_by_non_owner_reverts_with_unauthorized() {
     assert_eq!(data, &selector("Unauthorized()"));
 
     // State untouched: no balance change, no events.
-    assert_eq!(read_balance(&contract.host, BOB), U256::ZERO);
-    assert!(contract.host.events().is_empty());
+    assert_eq!(read_balance(&mock, BOB), U256::ZERO);
+    assert!(mock.events().is_empty());
 }
 
 #[test]
 fn transfer_happy_path_moves_balance_and_emits_event() {
-    let host = host_with_caller(ALICE);
-    seed_balance(&host, ALICE, U256::from(500u64));
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(ALICE);
+    seed_balance(&mock, ALICE, U256::from(500u64));
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let input = encode_transfer_calldata(Address::from(BOB), U256::from(200u64));
@@ -354,10 +361,10 @@ fn transfer_happy_path_moves_balance_and_emits_event() {
     );
     assert_eq!(data, &[] as &[u8]);
 
-    assert_eq!(read_balance(&contract.host, ALICE), U256::from(300u64));
-    assert_eq!(read_balance(&contract.host, BOB), U256::from(200u64));
+    assert_eq!(read_balance(&mock, ALICE), U256::from(300u64));
+    assert_eq!(read_balance(&mock, BOB), U256::from(200u64));
 
-    let events = contract.host.events();
+    let events = mock.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0[1], addr_topic(Address::from(ALICE)));
     assert_eq!(events[0].0[2], addr_topic(Address::from(BOB)));
@@ -365,9 +372,9 @@ fn transfer_happy_path_moves_balance_and_emits_event() {
 
 #[test]
 fn transfer_insufficient_balance_reverts_with_encoded_fields() {
-    let host = host_with_caller(ALICE);
-    seed_balance(&host, ALICE, U256::from(50u64));
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(ALICE);
+    seed_balance(&mock, ALICE, U256::from(50u64));
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let input = encode_transfer_calldata(Address::from(BOB), U256::from(100u64));
@@ -389,15 +396,15 @@ fn transfer_insufficient_balance_reverts_with_encoded_fields() {
     assert_eq!(data.len(), 4 + 64, "no trailing bytes");
 
     // State unchanged, no events emitted.
-    assert_eq!(read_balance(&contract.host, ALICE), U256::from(50u64));
-    assert_eq!(read_balance(&contract.host, BOB), U256::ZERO);
-    assert!(contract.host.events().is_empty());
+    assert_eq!(read_balance(&mock, ALICE), U256::from(50u64));
+    assert_eq!(read_balance(&mock, BOB), U256::ZERO);
+    assert!(mock.events().is_empty());
 }
 
 #[test]
 fn short_input_reverts_with_framework_invalid_calldata() {
-    let host = host_with_caller(ALICE);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(ALICE);
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let short = [0u8; 10]; // need 64 bytes for (Address, U256)
@@ -416,8 +423,8 @@ fn short_input_reverts_with_framework_invalid_calldata() {
 
 #[test]
 fn unknown_selector_returns_unhandled() {
-    let host = host_with_caller(ALICE);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(ALICE);
+    let mut contract = make_contract(&mock);
 
     let mut out = [0u8; 256];
     let result = mini_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[], &mut out);
@@ -427,9 +434,9 @@ fn unknown_selector_returns_unhandled() {
 #[test]
 fn full_lifecycle_mint_transfer_transfer() {
     // Step 1 — OWNER mints 1000 to ALICE.
-    let host = host_with_caller(OWNER);
-    seed_owner(&host, OWNER);
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(OWNER);
+    seed_owner(&mock, OWNER);
+    let mut contract = make_contract(&mock);
     let mut out = [0u8; 256];
     route_ok(
         &mut contract,
@@ -437,13 +444,14 @@ fn full_lifecycle_mint_transfer_transfer() {
         &encode_mint_calldata(Address::from(ALICE), U256::from(1000u64)),
         &mut out,
     );
-    assert_eq!(read_balance(&contract.host, ALICE), U256::from(1000u64));
+    assert_eq!(read_balance(&mock, ALICE), U256::from(1000u64));
 
     // Step 2 — rebuild host with caller = ALICE, migrate storage. Then transfer 300 to BOB.
-    let step2_host = host_with_caller(ALICE);
-    seed_owner(&step2_host, OWNER);
-    seed_balance(&step2_host, ALICE, read_balance(&contract.host, ALICE));
-    let mut contract = mini_token::MiniToken { host: step2_host };
+    let step1_mock = mock;
+    let mock = host_with_caller(ALICE);
+    seed_owner(&mock, OWNER);
+    seed_balance(&mock, ALICE, read_balance(&step1_mock, ALICE));
+    let mut contract = make_contract(&mock);
     route_ok(
         &mut contract,
         selector("transfer(address,uint256)"),
@@ -452,12 +460,13 @@ fn full_lifecycle_mint_transfer_transfer() {
     );
 
     // Step 3 — caller = BOB, transfer 100 to CHARLIE.
-    let step3_host = host_with_caller(BOB);
-    seed_owner(&step3_host, OWNER);
-    seed_balance(&step3_host, ALICE, read_balance(&contract.host, ALICE));
-    seed_balance(&step3_host, BOB, read_balance(&contract.host, BOB));
-    seed_balance(&step3_host, CHARLIE, read_balance(&contract.host, CHARLIE));
-    let mut contract = mini_token::MiniToken { host: step3_host };
+    let step2_mock = mock;
+    let mock = host_with_caller(BOB);
+    seed_owner(&mock, OWNER);
+    seed_balance(&mock, ALICE, read_balance(&step2_mock, ALICE));
+    seed_balance(&mock, BOB, read_balance(&step2_mock, BOB));
+    seed_balance(&mock, CHARLIE, read_balance(&step2_mock, CHARLIE));
+    let mut contract = make_contract(&mock);
     route_ok(
         &mut contract,
         selector("transfer(address,uint256)"),
@@ -466,12 +475,12 @@ fn full_lifecycle_mint_transfer_transfer() {
     );
 
     // Verify final state.
-    assert_eq!(read_balance(&contract.host, ALICE), U256::from(700u64));
-    assert_eq!(read_balance(&contract.host, BOB), U256::from(200u64));
-    assert_eq!(read_balance(&contract.host, CHARLIE), U256::from(100u64));
+    assert_eq!(read_balance(&mock, ALICE), U256::from(700u64));
+    assert_eq!(read_balance(&mock, BOB), U256::from(200u64));
+    assert_eq!(read_balance(&mock, CHARLIE), U256::from(100u64));
 
     // Step 3's MockHost only captured its own Transfer event.
-    let events = contract.host.events();
+    let events = mock.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].0[1], addr_topic(Address::from(BOB)));
     assert_eq!(events[0].0[2], addr_topic(Address::from(CHARLIE)));
@@ -479,9 +488,9 @@ fn full_lifecycle_mint_transfer_transfer() {
 
 #[test]
 fn router_trait_path_produces_identical_result_to_free_fn() {
-    let host = host_with_caller(ALICE);
-    seed_balance(&host, ALICE, U256::from(42u64));
-    let mut contract = mini_token::MiniToken { host };
+    let mock = host_with_caller(ALICE);
+    seed_balance(&mock, ALICE, U256::from(42u64));
+    let mut contract = make_contract(&mock);
 
     let mut out_free = [0u8; 256];
     let mut out_trait = [0u8; 256];
@@ -489,7 +498,7 @@ fn router_trait_path_produces_identical_result_to_free_fn() {
     let sel = selector("balanceOf(address)");
 
     let free = mini_token::route(&mut contract, sel, &input, &mut out_free);
-    let via_trait = <mini_token::MiniToken<MockHost> as Router<MockHost>>::route(
+    let via_trait = <mini_token::MiniToken as Router<Host>>::route(
         &mut contract,
         sel,
         &input,

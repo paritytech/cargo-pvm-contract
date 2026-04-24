@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("ConstructorArgs.sol", allocator = "pico")]
 mod constructor_args {
     use super::*;
-    use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{Address, StorageFlags};
 
     const OWNER_KEY: [u8; 32] = key(0);
     const SUPPLY_KEY: [u8; 32] = key(1);
@@ -16,11 +16,9 @@ mod constructor_args {
         k
     }
 
-    pub struct ConstructorArgs<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct ConstructorArgs;
 
-    impl<H: HostApi> ConstructorArgs<H> {
+    impl ConstructorArgs {
         #[pvm_contract_sdk::constructor]
         pub fn new(
             &mut self,
@@ -30,8 +28,8 @@ mod constructor_args {
             let addr: [u8; 20] = owner.into();
             let mut buf = [0u8; 32];
             buf[12..32].copy_from_slice(&addr);
-            self.host.set_storage(StorageFlags::empty(), &OWNER_KEY, &buf);
-            self.host.set_storage(
+            self.host().set_storage(StorageFlags::empty(), &OWNER_KEY, &buf);
+            self.host().set_storage(
                 StorageFlags::empty(),
                 &SUPPLY_KEY,
                 &initial_supply.to_be_bytes::<32>(),
@@ -60,7 +58,7 @@ mod constructor_args {
         fn read_slot(&self, key: &[u8; 32]) -> [u8; 32] {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), key, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), key, &mut out) {
                 Ok(_) => buf,
                 Err(_) => [0u8; 32],
             }

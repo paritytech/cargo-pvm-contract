@@ -26,11 +26,9 @@ mod flipper_instantiate {
         }
     }
 
-    pub struct FlipperInstantiate<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct FlipperInstantiate;
 
-    impl<H: HostApi> FlipperInstantiate<H> {
+    impl FlipperInstantiate {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), Error> {
             Ok(())
@@ -48,7 +46,7 @@ mod flipper_instantiate {
             let res = get.call()?;
             assert_eq!(res, true);
             let mut code_hash = [0; 32];
-            let _ = self.host.code_hash(&addr.0, &mut code_hash);
+            let _ = self.host().code_hash(&addr.0, &mut code_hash);
             let f = flipper::new_flipper();
             let deposit_limit = ruint::aliases::U256::from(u128::MAX);
             let deposit_limit = deposit_limit.to_be_bytes();

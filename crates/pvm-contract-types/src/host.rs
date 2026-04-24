@@ -507,3 +507,460 @@ impl HostApi for PolkaVmHost {
         unimplemented!("PolkaVmHost::block_hash is only available on PolkaVM")
     }
 }
+
+// ---------------------------------------------------------------------------
+// Concrete `Host` wrapper — cfg-gated internals, uniform surface
+// ---------------------------------------------------------------------------
+//
+// Mirrors Stylus's `VM`: contracts always hold a concrete `Host`; the field
+// type swaps under cfg. On riscv64, `Host { inner: PolkaVmHost }` is ZST and
+// method calls inline to `HostFnImpl::*` — byte-equivalent to the previous
+// `<H: HostApi>` monomorphization. On host targets, `Host { inner: Box<dyn
+// HostApi> }` enables test harnesses to inject a shared `MockHost` without
+// the contract struct carrying a generic.
+
+/// Concrete host handle held by every macro-path contract.
+///
+/// Internals are cfg-gated:
+/// - `target_arch = "riscv64"`: contains a [`PolkaVmHost`] ZST — methods
+///   inline to `pallet_revive_uapi::HostFnImpl::*`, no runtime overhead.
+/// - host target with `feature = "alloc"`: contains `Box<dyn HostApi>` —
+///   tests inject a mock via [`Host::from_dyn`].
+/// - host target without `alloc`: uninhabited (no constructor) — the type
+///   name exists so contract structs declaring `host: Host` parse on any
+///   target, but constructing one is impossible until `alloc` is enabled.
+///
+/// The [`HostApi`] trait is implemented for `Host`, so generic DSL code and
+/// contract bodies can treat it uniformly.
+#[cfg(target_arch = "riscv64")]
+pub struct Host {
+    pub inner: PolkaVmHost,
+}
+
+#[cfg(all(not(target_arch = "riscv64"), feature = "alloc"))]
+pub struct Host {
+    pub inner: alloc::boxed::Box<dyn HostApi>,
+}
+
+#[cfg(all(not(target_arch = "riscv64"), not(feature = "alloc")))]
+pub struct Host {
+    _never: core::convert::Infallible,
+}
+
+#[cfg(target_arch = "riscv64")]
+impl Host {
+    /// Construct the production host (ZST).
+    #[inline(always)]
+    pub const fn new() -> Self {
+        Self { inner: PolkaVmHost }
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+impl Default for Host {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(all(not(target_arch = "riscv64"), feature = "alloc"))]
+impl Host {
+    /// Wrap any [`HostApi`] implementor for host-target tests.
+    ///
+    /// Typical use: `Host::from_dyn(alloc::boxed::Box::new(mock_host.clone()))`
+    /// where `mock_host: MockHost` shares state through `Rc<RefCell<_>>`
+    /// internally, so the wrapped copy and the original handle observe the
+    /// same storage/events/calls.
+    pub fn from_dyn(inner: alloc::boxed::Box<dyn HostApi>) -> Self {
+        Self { inner }
+    }
+}
+
+#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+impl HostApi for Host {
+    #[inline(always)]
+    fn address(&self, output: &mut [u8; 20]) {
+        self.inner.address(output)
+    }
+    #[inline(always)]
+    fn get_immutable_data(&self, output: &mut &mut [u8]) {
+        self.inner.get_immutable_data(output)
+    }
+    #[inline(always)]
+    fn set_immutable_data(&self, data: &[u8]) {
+        self.inner.set_immutable_data(data)
+    }
+    #[inline(always)]
+    fn balance(&self, output: &mut [u8; 32]) {
+        self.inner.balance(output)
+    }
+    #[inline(always)]
+    fn balance_of(&self, addr: &[u8; 20], output: &mut [u8; 32]) {
+        self.inner.balance_of(addr, output)
+    }
+    #[inline(always)]
+    fn chain_id(&self, output: &mut [u8; 32]) {
+        self.inner.chain_id(output)
+    }
+    #[inline(always)]
+    fn gas_price(&self) -> u64 {
+        self.inner.gas_price()
+    }
+    #[inline(always)]
+    fn base_fee(&self, output: &mut [u8; 32]) {
+        self.inner.base_fee(output)
+    }
+    #[inline(always)]
+    fn call_data_size(&self) -> u64 {
+        self.inner.call_data_size()
+    }
+    #[inline(always)]
+    fn call(
+        &self,
+        flags: CallFlags,
+        callee: &[u8; 20],
+        ref_time_limit: u64,
+        proof_size_limit: u64,
+        deposit: &[u8; 32],
+        value: &[u8; 32],
+        input_data: &[u8],
+        output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        self.inner.call(
+            flags,
+            callee,
+            ref_time_limit,
+            proof_size_limit,
+            deposit,
+            value,
+            input_data,
+            output,
+        )
+    }
+    #[inline(always)]
+    fn call_evm(
+        &self,
+        flags: CallFlags,
+        callee: &[u8; 20],
+        gas: u64,
+        value: &[u8; 32],
+        input_data: &[u8],
+        output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        self.inner
+            .call_evm(flags, callee, gas, value, input_data, output)
+    }
+    #[inline(always)]
+    fn caller(&self, output: &mut [u8; 20]) {
+        self.inner.caller(output)
+    }
+    #[inline(always)]
+    fn origin(&self, output: &mut [u8; 20]) {
+        self.inner.origin(output)
+    }
+    #[inline(always)]
+    fn code_hash(&self, addr: &[u8; 20], output: &mut [u8; 32]) {
+        self.inner.code_hash(addr, output)
+    }
+    #[inline(always)]
+    fn code_size(&self, addr: &[u8; 20]) -> u64 {
+        self.inner.code_size(addr)
+    }
+    #[inline(always)]
+    fn delegate_call(
+        &self,
+        flags: CallFlags,
+        address: &[u8; 20],
+        ref_time_limit: u64,
+        proof_size_limit: u64,
+        deposit_limit: &[u8; 32],
+        input_data: &[u8],
+        output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        self.inner.delegate_call(
+            flags,
+            address,
+            ref_time_limit,
+            proof_size_limit,
+            deposit_limit,
+            input_data,
+            output,
+        )
+    }
+    #[inline(always)]
+    fn delegate_call_evm(
+        &self,
+        flags: CallFlags,
+        address: &[u8; 20],
+        gas: u64,
+        input_data: &[u8],
+        output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        self.inner
+            .delegate_call_evm(flags, address, gas, input_data, output)
+    }
+    #[inline(always)]
+    fn deposit_event(&self, topics: &[[u8; 32]], data: &[u8]) {
+        self.inner.deposit_event(topics, data)
+    }
+    #[inline(always)]
+    fn get_storage(&self, flags: StorageFlags, key: &[u8], output: &mut &mut [u8]) -> HostResult {
+        self.inner.get_storage(flags, key, output)
+    }
+    #[inline(always)]
+    fn hash_keccak_256(&self, input: &[u8], output: &mut [u8; 32]) {
+        self.inner.hash_keccak_256(input, output)
+    }
+    #[inline(always)]
+    fn call_data_copy(&self, output: &mut [u8], offset: u32) {
+        self.inner.call_data_copy(output, offset)
+    }
+    #[inline(always)]
+    fn call_data_load(&self, output: &mut [u8; 32], offset: u32) {
+        self.inner.call_data_load(output, offset)
+    }
+    #[inline(always)]
+    fn instantiate(
+        &self,
+        ref_time_limit: u64,
+        proof_size_limit: u64,
+        deposit: &[u8; 32],
+        value: &[u8; 32],
+        input: &[u8],
+        address: Option<&mut [u8; 20]>,
+        output: Option<&mut &mut [u8]>,
+        salt: Option<&[u8; 32]>,
+    ) -> HostResult {
+        self.inner.instantiate(
+            ref_time_limit,
+            proof_size_limit,
+            deposit,
+            value,
+            input,
+            address,
+            output,
+            salt,
+        )
+    }
+    #[inline(always)]
+    fn now(&self, output: &mut [u8; 32]) {
+        self.inner.now(output)
+    }
+    #[inline(always)]
+    fn gas_limit(&self) -> u64 {
+        self.inner.gas_limit()
+    }
+    #[inline(always)]
+    fn set_storage(&self, flags: StorageFlags, key: &[u8], value: &[u8]) -> Option<u32> {
+        self.inner.set_storage(flags, key, value)
+    }
+    #[inline(always)]
+    fn set_storage_or_clear(
+        &self,
+        flags: StorageFlags,
+        key: &[u8; 32],
+        value: &[u8; 32],
+    ) -> Option<u32> {
+        self.inner.set_storage_or_clear(flags, key, value)
+    }
+    #[inline(always)]
+    fn get_storage_or_zero(&self, flags: StorageFlags, key: &[u8; 32], output: &mut [u8; 32]) {
+        self.inner.get_storage_or_zero(flags, key, output)
+    }
+    #[inline(always)]
+    fn value_transferred(&self, output: &mut [u8; 32]) {
+        self.inner.value_transferred(output)
+    }
+    #[inline(always)]
+    fn return_data_size(&self) -> u64 {
+        self.inner.return_data_size()
+    }
+    #[inline(always)]
+    fn return_data_copy(&self, output: &mut &mut [u8], offset: u32) {
+        self.inner.return_data_copy(output, offset)
+    }
+    #[inline(always)]
+    fn gas_left(&self) -> u64 {
+        self.inner.gas_left()
+    }
+    #[inline(always)]
+    fn block_author(&self, output: &mut [u8; 20]) {
+        self.inner.block_author(output)
+    }
+    #[inline(always)]
+    fn block_number(&self, output: &mut [u8; 32]) {
+        self.inner.block_number(output)
+    }
+    #[inline(always)]
+    fn block_hash(&self, block_number: &[u8; 32], output: &mut [u8; 32]) {
+        self.inner.block_hash(block_number, output)
+    }
+}
+
+// `Host` on a non-riscv64 target without `alloc` is uninhabited — every
+// method dispatch is `match self._never {}`. This exists so contract code
+// that names `Host` still compiles on this configuration, even though no
+// `Host` value can ever be constructed.
+#[cfg(all(not(target_arch = "riscv64"), not(feature = "alloc")))]
+impl HostApi for Host {
+    fn address(&self, _output: &mut [u8; 20]) {
+        match self._never {}
+    }
+    fn get_immutable_data(&self, _output: &mut &mut [u8]) {
+        match self._never {}
+    }
+    fn set_immutable_data(&self, _data: &[u8]) {
+        match self._never {}
+    }
+    fn balance(&self, _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn balance_of(&self, _addr: &[u8; 20], _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn chain_id(&self, _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn gas_price(&self) -> u64 {
+        match self._never {}
+    }
+    fn base_fee(&self, _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn call_data_size(&self) -> u64 {
+        match self._never {}
+    }
+    fn call(
+        &self,
+        _flags: CallFlags,
+        _callee: &[u8; 20],
+        _ref_time_limit: u64,
+        _proof_size_limit: u64,
+        _deposit: &[u8; 32],
+        _value: &[u8; 32],
+        _input_data: &[u8],
+        _output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        match self._never {}
+    }
+    fn call_evm(
+        &self,
+        _flags: CallFlags,
+        _callee: &[u8; 20],
+        _gas: u64,
+        _value: &[u8; 32],
+        _input_data: &[u8],
+        _output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        match self._never {}
+    }
+    fn caller(&self, _output: &mut [u8; 20]) {
+        match self._never {}
+    }
+    fn origin(&self, _output: &mut [u8; 20]) {
+        match self._never {}
+    }
+    fn code_hash(&self, _addr: &[u8; 20], _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn code_size(&self, _addr: &[u8; 20]) -> u64 {
+        match self._never {}
+    }
+    fn delegate_call(
+        &self,
+        _flags: CallFlags,
+        _address: &[u8; 20],
+        _ref_time_limit: u64,
+        _proof_size_limit: u64,
+        _deposit_limit: &[u8; 32],
+        _input_data: &[u8],
+        _output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        match self._never {}
+    }
+    fn delegate_call_evm(
+        &self,
+        _flags: CallFlags,
+        _address: &[u8; 20],
+        _gas: u64,
+        _input_data: &[u8],
+        _output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        match self._never {}
+    }
+    fn deposit_event(&self, _topics: &[[u8; 32]], _data: &[u8]) {
+        match self._never {}
+    }
+    fn get_storage(
+        &self,
+        _flags: StorageFlags,
+        _key: &[u8],
+        _output: &mut &mut [u8],
+    ) -> HostResult {
+        match self._never {}
+    }
+    fn hash_keccak_256(&self, _input: &[u8], _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn call_data_copy(&self, _output: &mut [u8], _offset: u32) {
+        match self._never {}
+    }
+    fn call_data_load(&self, _output: &mut [u8; 32], _offset: u32) {
+        match self._never {}
+    }
+    fn instantiate(
+        &self,
+        _ref_time_limit: u64,
+        _proof_size_limit: u64,
+        _deposit: &[u8; 32],
+        _value: &[u8; 32],
+        _input: &[u8],
+        _address: Option<&mut [u8; 20]>,
+        _output: Option<&mut &mut [u8]>,
+        _salt: Option<&[u8; 32]>,
+    ) -> HostResult {
+        match self._never {}
+    }
+    fn now(&self, _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn gas_limit(&self) -> u64 {
+        match self._never {}
+    }
+    fn set_storage(&self, _flags: StorageFlags, _key: &[u8], _value: &[u8]) -> Option<u32> {
+        match self._never {}
+    }
+    fn set_storage_or_clear(
+        &self,
+        _flags: StorageFlags,
+        _key: &[u8; 32],
+        _value: &[u8; 32],
+    ) -> Option<u32> {
+        match self._never {}
+    }
+    fn get_storage_or_zero(&self, _flags: StorageFlags, _key: &[u8; 32], _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn value_transferred(&self, _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn return_data_size(&self) -> u64 {
+        match self._never {}
+    }
+    fn return_data_copy(&self, _output: &mut &mut [u8], _offset: u32) {
+        match self._never {}
+    }
+    fn gas_left(&self) -> u64 {
+        match self._never {}
+    }
+    fn block_author(&self, _output: &mut [u8; 20]) {
+        match self._never {}
+    }
+    fn block_number(&self, _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn block_hash(&self, _block_number: &[u8; 32], _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+}

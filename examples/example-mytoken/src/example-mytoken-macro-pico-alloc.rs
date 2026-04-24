@@ -6,7 +6,7 @@ use pvm_contract_sdk::U256;
 mod my_token {
     use super::*;
     use alloc::vec;
-    use pvm_contract_sdk::{Address, HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{Address, StorageFlags};
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
@@ -17,11 +17,9 @@ mod my_token {
         }
     }
 
-    pub struct MyToken<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MyToken;
 
-    impl<H: HostApi> MyToken<H> {
+    impl MyToken {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), TokenError> {
             Ok(())
@@ -104,25 +102,25 @@ mod my_token {
             input[63] = 1;
 
             let mut key = [0u8; 32];
-            self.host.hash_keccak_256(&input, &mut key);
+            self.host().hash_keccak_256(&input, &mut key);
             key
         }
 
         fn set_total_supply(&self, amount: U256) {
             let key = total_supply_key();
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
         }
 
         fn set_balance(&self, addr: &[u8; 20], amount: U256) {
             let key = self.balance_key(addr);
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
         }
 
         fn get_caller(&self) -> [u8; 20] {
             let mut caller = [0u8; 20];
-            self.host.caller(&mut caller);
+            self.host().caller(&mut caller);
             caller
         }
 
@@ -135,7 +133,7 @@ mod my_token {
 
             let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
             let data = value.to_be_bytes::<32>();
-            self.host.deposit_event(&topics, &data);
+            self.host().deposit_event(&topics, &data);
         }
     }
 

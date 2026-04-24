@@ -13,13 +13,11 @@ pub struct MyPoint {
 #[pvm_contract_sdk::contract]
 mod my_contract {
     use super::MyPoint;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
-    pub struct MyContract<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MyContract;
 
-    impl<H: HostApi> MyContract<H> {
+    impl MyContract {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) {}
 

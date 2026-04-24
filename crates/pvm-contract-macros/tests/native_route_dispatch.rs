@@ -1,4 +1,4 @@
-//! Native unit tests exercising macro-generated `route()` + `Router<H>` impl
+//! Native unit tests exercising macro-generated `route()` + `Router` impl
 //! against `MockHost`. Proves that contract dispatch is host-agnostic and
 //! fully runnable off-target.
 //!
@@ -6,8 +6,7 @@
 //! generated `route()` directly, asserting on the returned `DispatchResult`.
 
 use pvm_contract_types::{
-    Address, DispatchResult, HostApi, MockHost, MockHostBuilder, PolkaVmHost, Router, SolDecode,
-    SolEncode, StaticEncodedLen,
+    Address, DispatchResult, Host, MockHostBuilder, Router, SolDecode, SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
@@ -15,13 +14,11 @@ use ruint::aliases::U256;
 #[pvm_contract_macros::contract]
 mod my_token {
     use super::*;
-    use pvm_contract_types::{HostApi, PolkaVmHost};
+    use pvm_contract_types::{HostApi};
 
-    pub struct MyContract<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MyContract;
 
-    impl<H: HostApi> MyContract<H> {
+    impl MyContract {
         #[pvm_contract_macros::constructor]
         pub fn new(&mut self) {}
 
@@ -56,9 +53,9 @@ fn encode_address(addr: Address) -> Vec<u8> {
     buf
 }
 
-fn new_contract() -> my_token::MyContract<MockHost> {
+fn new_contract() -> my_token::MyContract {
     my_token::MyContract {
-        host: MockHostBuilder::new().build(),
+        host: Host::from_dyn(Box::new(MockHostBuilder::new().build())),
     }
 }
 
@@ -133,7 +130,7 @@ fn router_trait_impl_delegates_to_module_route() {
     let mut out = [0u8; 256];
 
     // Call through the Router trait rather than the free function.
-    let result = <my_token::MyContract<MockHost> as Router<MockHost>>::route(
+    let result = <my_token::MyContract as Router<Host>>::route(
         &mut contract,
         sel,
         &input,

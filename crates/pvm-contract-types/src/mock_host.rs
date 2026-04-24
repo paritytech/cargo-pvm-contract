@@ -5,26 +5,27 @@
 //! inject it into the contract — no thread-locals, no global setup, no panic
 //! capture. Run tests in parallel without contention.
 //!
-//! # Quick start
+//! # Shared state via `Rc<RefCell<...>>`
+//!
+//! `MockHost` is `Clone`; all clones share the same underlying `MockState`
+//! through an `Rc<RefCell<_>>`. This lets tests keep one handle for setup and
+//! assertions while the contract (wrapped in [`super::Host`]) holds a second
+//! handle that mutates the same storage, events, and return-data buffers.
 //!
 //! ```ignore
-//! use pvm_contract_types::{HostApi, MockHostBuilder, StorageFlags};
+//! use pvm_contract_types::{Host, HostApi, MockHostBuilder};
 //!
-//! let host = MockHostBuilder::new()
-//!     .caller([0xAA; 20])
-//!     .calldata(vec![0x01, 0x02, 0x03, 0x04])
-//!     .build();
-//!
-//! host.deposit_event(&[[0; 32]], &[1, 2, 3]);
-//! assert_eq!(host.events().len(), 1);
+//! let mock = MockHostBuilder::new().caller([0xAA; 20]).build();
+//! let host = Host::from_dyn(alloc::boxed::Box::new(mock.clone()));
+//! // `mock` still observes writes done through `host`.
 //! ```
 //!
 //! # Mock external calls
 //!
 //! ```ignore
-//! let mut host = MockHostBuilder::new().build();
+//! let host = MockHostBuilder::new().build();
 //! host.mock_call([0xBB; 20], Ok(vec![0, 0, 0, 1]));
-//! // HostApi::call to [0xBB; 20] now returns Ok(()) with the mock data.
+//! // `HostApi::call` to [0xBB; 20] now returns Ok(()) with the mock data.
 //! ```
 //!
 //! # Return values
@@ -37,6 +38,7 @@
 
 use core::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, StorageFlags};
 
@@ -55,18 +57,9 @@ struct MockInstantiateReturn {
     output: Vec<u8>,
 }
 
-/// Mock host backend for native testing.
-///
-/// All state lives in the instance — no thread-local, no globals. Construct
-/// via [`MockHostBuilder::build`]. Interior mutability (`RefCell`) is used
-/// only for state that contract methods mutate through `&self.host`: storage,
-/// events, and cached return data.
-///
-/// Re-entrancy note: methods that read/write interior-mutable state borrow
-/// briefly (borrow-drop-immediately pattern) so a re-entering `mock_call` or
-/// `delegate_call` does not collide with a live borrow guard.
-pub struct MockHost {
-    // --- Input state (configured before contract execution) ---
+/// Shared inner state of a [`MockHost`]. Lives behind `Rc<RefCell<_>>`.
+struct MockState {
+    // --- Input state (typically set before execution, read during) ---
     caller: [u8; 20],
     origin: [u8; 20],
     address: [u8; 20],
@@ -80,41 +73,85 @@ pub struct MockHost {
     value_transferred: [u8; 32],
     calldata: Vec<u8>,
 
-    // --- Mutable state during execution (needs interior mutability under &self) ---
-    storage: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
-    events: RefCell<Vec<EventRecord>>,
-    immutable_data: RefCell<Vec<u8>>,
-    return_data: RefCell<Vec<u8>>,
+    // --- Mutable during execution ---
+    storage: HashMap<Vec<u8>, Vec<u8>>,
+    events: Vec<EventRecord>,
+    immutable_data: Vec<u8>,
+    return_data: Vec<u8>,
 
-    // --- Mock configuration (read-only during execution) ---
+    // --- Mock configuration ---
     call_returns: HashMap<[u8; 20], MockCallReturn>,
     instantiate_return: Option<MockInstantiateReturn>,
 }
 
+impl MockState {
+    fn new() -> Self {
+        Self {
+            caller: [0; 20],
+            origin: [0; 20],
+            address: [0; 20],
+            balance: [0; 32],
+            balances: HashMap::new(),
+            chain_id: [0; 32],
+            base_fee: [0; 32],
+            block_number: [0; 32],
+            block_timestamp: [0; 32],
+            block_author: [0; 20],
+            value_transferred: [0; 32],
+            calldata: Vec::new(),
+            storage: HashMap::new(),
+            events: Vec::new(),
+            immutable_data: Vec::new(),
+            return_data: Vec::new(),
+            call_returns: HashMap::new(),
+            instantiate_return: None,
+        }
+    }
+}
+
+/// Mock host backend for native testing.
+///
+/// Holds a reference-counted handle to [`MockState`]. Cloning `MockHost` is
+/// cheap (an `Rc` bump) and **shares state** — both the clone and the original
+/// observe the same storage, events, return-data, and mock configuration.
+///
+/// Construct via [`MockHostBuilder::build`]. All operations take `&self`:
+/// setup (`mock_call`, `mock_instantiate`), contract-facing `HostApi` calls,
+/// and test assertions (`events`, `get_raw_storage`).
+///
+/// Re-entrancy: every state access uses the borrow-drop-immediately pattern —
+/// values are copied/cloned out before downstream logic runs, so nested
+/// HostApi calls triggered by a mock don't collide with a live borrow guard.
+#[derive(Clone)]
+pub struct MockHost {
+    state: Rc<RefCell<MockState>>,
+}
+
 impl MockHost {
     /// Register a mock return value for [`HostApi::call`] to `callee`.
-    pub fn mock_call(&mut self, callee: [u8; 20], result: MockCallReturn) {
-        self.call_returns.insert(callee, result);
+    pub fn mock_call(&self, callee: [u8; 20], result: MockCallReturn) {
+        self.state.borrow_mut().call_returns.insert(callee, result);
     }
 
     /// Register a mock return for [`HostApi::instantiate`].
-    pub fn mock_instantiate(&mut self, address: [u8; 20], output: Vec<u8>) {
-        self.instantiate_return = Some(MockInstantiateReturn { address, output });
+    pub fn mock_instantiate(&self, address: [u8; 20], output: Vec<u8>) {
+        self.state.borrow_mut().instantiate_return =
+            Some(MockInstantiateReturn { address, output });
     }
 
     /// All events emitted via [`HostApi::deposit_event`].
     pub fn events(&self) -> Vec<EventRecord> {
-        self.events.borrow().clone()
+        self.state.borrow().events.clone()
     }
 
     /// Raw storage read — for test assertions.
     pub fn get_raw_storage(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.storage.borrow().get(key).cloned()
+        self.state.borrow().storage.get(key).cloned()
     }
 
     /// Raw storage write — for test setup.
     pub fn set_raw_storage(&self, key: Vec<u8>, value: Vec<u8>) {
-        self.storage.borrow_mut().insert(key, value);
+        self.state.borrow_mut().storage.insert(key, value);
     }
 }
 
@@ -130,7 +167,7 @@ impl MockHost {
 ///     .build();
 /// ```
 pub struct MockHostBuilder {
-    host: MockHost,
+    state: MockState,
 }
 
 impl Default for MockHostBuilder {
@@ -142,114 +179,97 @@ impl Default for MockHostBuilder {
 impl MockHostBuilder {
     pub fn new() -> Self {
         Self {
-            host: MockHost {
-                caller: [0; 20],
-                origin: [0; 20],
-                address: [0; 20],
-                balance: [0; 32],
-                balances: HashMap::new(),
-                chain_id: [0; 32],
-                base_fee: [0; 32],
-                block_number: [0; 32],
-                block_timestamp: [0; 32],
-                block_author: [0; 20],
-                value_transferred: [0; 32],
-                calldata: Vec::new(),
-                storage: RefCell::new(HashMap::new()),
-                events: RefCell::new(Vec::new()),
-                immutable_data: RefCell::new(Vec::new()),
-                return_data: RefCell::new(Vec::new()),
-                call_returns: HashMap::new(),
-                instantiate_return: None,
-            },
+            state: MockState::new(),
         }
     }
 
     pub fn caller(mut self, caller: [u8; 20]) -> Self {
-        self.host.caller = caller;
+        self.state.caller = caller;
         self
     }
 
     pub fn origin(mut self, origin: [u8; 20]) -> Self {
-        self.host.origin = origin;
+        self.state.origin = origin;
         self
     }
 
     pub fn address(mut self, address: [u8; 20]) -> Self {
-        self.host.address = address;
+        self.state.address = address;
         self
     }
 
     pub fn balance(mut self, balance: [u8; 32]) -> Self {
-        self.host.balance = balance;
+        self.state.balance = balance;
         self
     }
 
     pub fn balance_of(mut self, addr: [u8; 20], balance: [u8; 32]) -> Self {
-        self.host.balances.insert(addr, balance);
+        self.state.balances.insert(addr, balance);
         self
     }
 
     pub fn base_fee(mut self, base_fee: [u8; 32]) -> Self {
-        self.host.base_fee = base_fee;
+        self.state.base_fee = base_fee;
         self
     }
 
     pub fn immutable_data(mut self, data: Vec<u8>) -> Self {
-        self.host.immutable_data = RefCell::new(data);
+        self.state.immutable_data = data;
         self
     }
 
     pub fn chain_id(mut self, chain_id: [u8; 32]) -> Self {
-        self.host.chain_id = chain_id;
+        self.state.chain_id = chain_id;
         self
     }
 
     pub fn block_number(mut self, block_number: [u8; 32]) -> Self {
-        self.host.block_number = block_number;
+        self.state.block_number = block_number;
         self
     }
 
     pub fn block_timestamp(mut self, timestamp: [u8; 32]) -> Self {
-        self.host.block_timestamp = timestamp;
+        self.state.block_timestamp = timestamp;
         self
     }
 
     pub fn block_author(mut self, author: [u8; 20]) -> Self {
-        self.host.block_author = author;
+        self.state.block_author = author;
         self
     }
 
     pub fn value_transferred(mut self, value: [u8; 32]) -> Self {
-        self.host.value_transferred = value;
+        self.state.value_transferred = value;
         self
     }
 
     pub fn calldata(mut self, data: Vec<u8>) -> Self {
-        self.host.calldata = data;
+        self.state.calldata = data;
         self
     }
 
     pub fn storage(mut self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> Self {
         for (key, value) in entries {
-            self.host.storage.get_mut().insert(key, value);
+            self.state.storage.insert(key, value);
         }
         self
     }
 
     pub fn mock_call(mut self, callee: [u8; 20], result: MockCallReturn) -> Self {
-        self.host.call_returns.insert(callee, result);
+        self.state.call_returns.insert(callee, result);
         self
     }
 
     pub fn mock_instantiate(mut self, address: [u8; 20], output: Vec<u8>) -> Self {
-        self.host.instantiate_return = Some(MockInstantiateReturn { address, output });
+        self.state.instantiate_return = Some(MockInstantiateReturn { address, output });
         self
     }
 
-    /// Consume the builder and return an owned [`MockHost`].
+    /// Finalize the builder into a [`MockHost`] backed by `Rc<RefCell<_>>`.
     pub fn build(self) -> MockHost {
-        self.host
+        MockHost {
+            state: Rc::new(RefCell::new(self.state)),
+        }
     }
 }
 
@@ -259,11 +279,11 @@ impl MockHostBuilder {
 
 impl HostApi for MockHost {
     fn address(&self, output: &mut [u8; 20]) {
-        *output = self.address;
+        *output = self.state.borrow().address;
     }
 
     fn get_immutable_data(&self, output: &mut &mut [u8]) {
-        let data = self.immutable_data.borrow();
+        let data = self.state.borrow().immutable_data.clone();
         let len = data.len().min(output.len());
         output[..len].copy_from_slice(&data[..len]);
         let tmp = core::mem::take(output);
@@ -271,22 +291,22 @@ impl HostApi for MockHost {
     }
 
     fn set_immutable_data(&self, data: &[u8]) {
-        *self.immutable_data.borrow_mut() = data.to_vec();
+        self.state.borrow_mut().immutable_data = data.to_vec();
     }
 
     fn balance(&self, output: &mut [u8; 32]) {
-        *output = self.balance;
+        *output = self.state.borrow().balance;
     }
 
     fn balance_of(&self, addr: &[u8; 20], output: &mut [u8; 32]) {
-        match self.balances.get(addr) {
+        match self.state.borrow().balances.get(addr) {
             Some(bal) => *output = *bal,
             None => output.fill(0),
         }
     }
 
     fn chain_id(&self, output: &mut [u8; 32]) {
-        *output = self.chain_id;
+        *output = self.state.borrow().chain_id;
     }
 
     fn gas_price(&self) -> u64 {
@@ -294,11 +314,11 @@ impl HostApi for MockHost {
     }
 
     fn base_fee(&self, output: &mut [u8; 32]) {
-        *output = self.base_fee;
+        *output = self.state.borrow().base_fee;
     }
 
     fn call_data_size(&self) -> u64 {
-        self.calldata.len() as u64
+        self.state.borrow().calldata.len() as u64
     }
 
     fn call(
@@ -328,11 +348,11 @@ impl HostApi for MockHost {
     }
 
     fn caller(&self, output: &mut [u8; 20]) {
-        *output = self.caller;
+        *output = self.state.borrow().caller;
     }
 
     fn origin(&self, output: &mut [u8; 20]) {
-        *output = self.origin;
+        *output = self.state.borrow().origin;
     }
 
     fn code_hash(&self, _addr: &[u8; 20], output: &mut [u8; 32]) {
@@ -368,13 +388,14 @@ impl HostApi for MockHost {
     }
 
     fn deposit_event(&self, topics: &[[u8; 32]], data: &[u8]) {
-        self.events
+        self.state
             .borrow_mut()
+            .events
             .push((topics.to_vec(), data.to_vec()));
     }
 
     fn get_storage(&self, _flags: StorageFlags, key: &[u8], output: &mut &mut [u8]) -> HostResult {
-        let value = self.storage.borrow().get(key).cloned();
+        let value = self.state.borrow().storage.get(key).cloned();
         match value {
             Some(value) => {
                 let len = value.len().min(output.len());
@@ -392,17 +413,19 @@ impl HostApi for MockHost {
     }
 
     fn call_data_copy(&self, output: &mut [u8], offset: u32) {
-        let start = (offset as usize).min(self.calldata.len());
-        let len = output.len().min(self.calldata.len() - start);
-        output[..len].copy_from_slice(&self.calldata[start..start + len]);
+        let calldata = self.state.borrow().calldata.clone();
+        let start = (offset as usize).min(calldata.len());
+        let len = output.len().min(calldata.len() - start);
+        output[..len].copy_from_slice(&calldata[start..start + len]);
         output[len..].fill(0);
     }
 
     fn call_data_load(&self, output: &mut [u8; 32], offset: u32) {
-        let start = (offset as usize).min(self.calldata.len());
+        let calldata = self.state.borrow().calldata.clone();
+        let start = (offset as usize).min(calldata.len());
         output.fill(0);
-        let len = 32.min(self.calldata.len() - start);
-        output[..len].copy_from_slice(&self.calldata[start..start + len]);
+        let len = 32.min(calldata.len() - start);
+        output[..len].copy_from_slice(&calldata[start..start + len]);
     }
 
     fn instantiate(
@@ -416,12 +439,13 @@ impl HostApi for MockHost {
         output: Option<&mut &mut [u8]>,
         _salt: Option<&[u8; 32]>,
     ) -> HostResult {
-        match &self.instantiate_return {
+        let ret = self.state.borrow().instantiate_return.clone();
+        match ret {
             Some(ret) => {
                 if let Some(addr) = address {
                     *addr = ret.address;
                 }
-                *self.return_data.borrow_mut() = ret.output.clone();
+                self.state.borrow_mut().return_data = ret.output.clone();
                 if let Some(out) = output {
                     let len = ret.output.len().min(out.len());
                     out[..len].copy_from_slice(&ret.output[..len]);
@@ -433,7 +457,7 @@ impl HostApi for MockHost {
     }
 
     fn now(&self, output: &mut [u8; 32]) {
-        *output = self.block_timestamp;
+        *output = self.state.borrow().block_timestamp;
     }
 
     fn gas_limit(&self) -> u64 {
@@ -441,8 +465,9 @@ impl HostApi for MockHost {
     }
 
     fn set_storage(&self, _flags: StorageFlags, key: &[u8], value: &[u8]) -> Option<u32> {
-        self.storage
+        self.state
             .borrow_mut()
+            .storage
             .insert(key.to_vec(), value.to_vec())
             .map(|v| v.len() as u32)
     }
@@ -453,19 +478,19 @@ impl HostApi for MockHost {
         key: &[u8; 32],
         value: &[u8; 32],
     ) -> Option<u32> {
-        let mut storage = self.storage.borrow_mut();
+        let mut st = self.state.borrow_mut();
         if *value == [0u8; 32] {
-            storage.remove(key.as_slice()).map(|v| v.len() as u32)
+            st.storage.remove(key.as_slice()).map(|v| v.len() as u32)
         } else {
-            storage
+            st.storage
                 .insert(key.to_vec(), value.to_vec())
                 .map(|v| v.len() as u32)
         }
     }
 
     fn get_storage_or_zero(&self, _flags: StorageFlags, key: &[u8; 32], output: &mut [u8; 32]) {
-        let storage = self.storage.borrow();
-        match storage.get(key.as_slice()) {
+        let st = self.state.borrow();
+        match st.storage.get(key.as_slice()) {
             Some(value) => {
                 output.fill(0);
                 let len = value.len().min(32);
@@ -476,15 +501,15 @@ impl HostApi for MockHost {
     }
 
     fn value_transferred(&self, output: &mut [u8; 32]) {
-        *output = self.value_transferred;
+        *output = self.state.borrow().value_transferred;
     }
 
     fn return_data_size(&self) -> u64 {
-        self.return_data.borrow().len() as u64
+        self.state.borrow().return_data.len() as u64
     }
 
     fn return_data_copy(&self, output: &mut &mut [u8], offset: u32) {
-        let data = self.return_data.borrow();
+        let data = self.state.borrow().return_data.clone();
         let start = (offset as usize).min(data.len());
         let len = output.len().min(data.len() - start);
         output[..len].copy_from_slice(&data[start..start + len]);
@@ -497,11 +522,11 @@ impl HostApi for MockHost {
     }
 
     fn block_author(&self, output: &mut [u8; 20]) {
-        *output = self.block_author;
+        *output = self.state.borrow().block_author;
     }
 
     fn block_number(&self, output: &mut [u8; 32]) {
-        *output = self.block_number;
+        *output = self.state.borrow().block_number;
     }
 
     fn block_hash(&self, _block_number: &[u8; 32], output: &mut [u8; 32]) {
@@ -513,9 +538,10 @@ impl MockHost {
     /// Shared logic for `call`, `call_evm`, `delegate_call`, `delegate_call_evm`.
     /// Uses borrow-drop-immediately pattern to stay re-entrancy-safe.
     fn resolve_call(&self, callee: &[u8; 20], output: Option<&mut &mut [u8]>) -> HostResult {
-        match self.call_returns.get(callee) {
+        let resolved = self.state.borrow().call_returns.get(callee).cloned();
+        match resolved {
             Some(Ok(data)) => {
-                *self.return_data.borrow_mut() = data.clone();
+                self.state.borrow_mut().return_data = data.clone();
                 if let Some(out) = output {
                     let len = data.len().min(out.len());
                     out[..len].copy_from_slice(&data[..len]);
@@ -523,11 +549,11 @@ impl MockHost {
                 Ok(())
             }
             Some(Err(())) => {
-                self.return_data.borrow_mut().clear();
+                self.state.borrow_mut().return_data.clear();
                 Err(ReturnErrorCode::CalleeReverted)
             }
             None => {
-                self.return_data.borrow_mut().clear();
+                self.state.borrow_mut().return_data.clear();
                 Ok(())
             }
         }
@@ -1062,5 +1088,48 @@ mod tests {
             None,
         );
         assert_eq!(host.get_raw_storage(&[1, 2, 3]), Some(vec![4, 5, 6]));
+    }
+
+    #[test]
+    fn clone_shares_state() {
+        // Stylus-style pattern: the test keeps one handle, the contract gets
+        // a clone via `Host::from_dyn(Box::new(mock.clone()))`. Both must
+        // observe the same storage/events/return-data.
+        let host = MockHostBuilder::new().build();
+        let clone = host.clone();
+        clone.set_storage(StorageFlags::empty(), &[1u8; 32], &[42u8; 32]);
+
+        assert_eq!(
+            host.get_raw_storage(&[1u8; 32]),
+            Some(vec![42u8; 32]),
+            "clone writes must be visible through the original handle"
+        );
+
+        host.deposit_event(&[[0u8; 32]], &[9, 9, 9]);
+        assert_eq!(clone.events().len(), 1);
+    }
+
+    #[test]
+    fn mock_call_can_be_configured_after_build() {
+        // `mock_call` is `&self`, so handles obtained from `build()` (and
+        // any clones) can still register mock returns.
+        let callee = [0xBB; 20];
+        let host = MockHostBuilder::new().build();
+        host.mock_call(callee, Ok(vec![7, 7, 7, 7]));
+
+        let mut buf = [0u8; 32];
+        let mut out = &mut buf[..];
+        let result = host.call(
+            CallFlags::empty(),
+            &callee,
+            0,
+            0,
+            &[0u8; 32],
+            &[0u8; 32],
+            &[],
+            Some(&mut out),
+        );
+        assert!(result.is_ok());
+        assert_eq!(&buf[..4], &[7, 7, 7, 7]);
     }
 }

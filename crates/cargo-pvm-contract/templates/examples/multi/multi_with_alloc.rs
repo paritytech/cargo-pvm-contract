@@ -7,13 +7,11 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Multi.sol", allocator = "bump")]
 mod multi {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost};
+    use pvm_contract_sdk::{HostApi};
 
-    pub struct Multi<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct Multi;
 
-    impl<H: HostApi> Multi<H> {
+    impl Multi {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())

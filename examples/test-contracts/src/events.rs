@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Events.sol", allocator = "pico")]
 mod events {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{StorageFlags};
 
     const VALUE_KEY: [u8; 32] = [0u8; 32];
 
@@ -16,11 +16,9 @@ mod events {
         0x95, 0x52,
     ];
 
-    pub struct Events<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct Events;
 
-    impl<H: HostApi> Events<H> {
+    impl Events {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
@@ -30,11 +28,11 @@ mod events {
         pub fn set_value(&mut self, val: U256) {
             let old = self.get_value();
 
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &VALUE_KEY, &val.to_be_bytes::<32>());
 
             let mut caller = [0u8; 20];
-            self.host.caller(&mut caller);
+            self.host().caller(&mut caller);
 
             let mut who_topic = [0u8; 32];
             who_topic[12..32].copy_from_slice(&caller);
@@ -45,14 +43,14 @@ mod events {
             data[0..32].copy_from_slice(&old.to_be_bytes::<32>());
             data[32..64].copy_from_slice(&val.to_be_bytes::<32>());
 
-            self.host.deposit_event(&topics, &data);
+            self.host().deposit_event(&topics, &data);
         }
 
         #[pvm_contract_sdk::method]
         pub fn get_value(&self) -> U256 {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), &VALUE_KEY, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), &VALUE_KEY, &mut out) {
                 Ok(_) => U256::from_be_bytes::<32>(buf),
                 Err(_) => U256::ZERO,
             }

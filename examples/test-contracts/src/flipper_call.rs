@@ -25,11 +25,9 @@ mod flipper_call_alloy {
         }
     }
 
-    pub struct FlipperCallAlloy<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct FlipperCallAlloy;
 
-    impl<H: HostApi> FlipperCallAlloy<H> {
+    impl FlipperCallAlloy {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), Error> {
             Ok(())

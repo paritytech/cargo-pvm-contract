@@ -22,7 +22,7 @@ pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
+    CallFlags, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
 };
 
 /// Re-exported so macro-generated `call()` / `deploy()` wrappers can reach it

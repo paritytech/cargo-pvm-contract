@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("ErrorHandling.sol", allocator = "pico")]
 mod error_handling {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{StorageFlags};
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct AlwaysReverts;
@@ -22,11 +22,9 @@ mod error_handling {
 
     const GUARDED_KEY: [u8; 32] = [0u8; 32];
 
-    pub struct ErrorHandling<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct ErrorHandling;
 
-    impl<H: HostApi> ErrorHandling<H> {
+    impl ErrorHandling {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), ContractError> {
             Ok(())
@@ -47,7 +45,7 @@ mod error_handling {
             if val == U256::ZERO {
                 return Err(ZeroNotAllowed.into());
             }
-            self.host
+            self.host()
                 .set_storage(StorageFlags::empty(), &GUARDED_KEY, &val.to_be_bytes::<32>());
             Ok(())
         }
@@ -56,7 +54,7 @@ mod error_handling {
         pub fn get_guarded(&self) -> U256 {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), &GUARDED_KEY, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), &GUARDED_KEY, &mut out) {
                 Ok(_) => U256::from_be_bytes::<32>(buf),
                 Err(_) => U256::ZERO,
             }

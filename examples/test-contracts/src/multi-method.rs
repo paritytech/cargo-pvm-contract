@@ -5,15 +5,13 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("MultiMethod.sol", allocator = "pico")]
 mod multi_method {
     use super::*;
-    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{StorageFlags};
 
     const COUNTER_KEY: [u8; 32] = [0u8; 32];
 
-    pub struct MultiMethod<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct MultiMethod;
 
-    impl<H: HostApi> MultiMethod<H> {
+    impl MultiMethod {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
@@ -38,7 +36,7 @@ mod multi_method {
         pub fn get_counter(&self) -> U256 {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), &COUNTER_KEY, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), &COUNTER_KEY, &mut out) {
                 Ok(_) => U256::from_be_bytes::<32>(buf),
                 Err(_) => U256::ZERO,
             }
@@ -48,12 +46,12 @@ mod multi_method {
         pub fn increment(&mut self) {
             let current = self.get_counter();
             let new_val = current + U256::from(1u64);
-            self.host.set_storage(StorageFlags::empty(), &COUNTER_KEY, &new_val.to_be_bytes::<32>());
+            self.host().set_storage(StorageFlags::empty(), &COUNTER_KEY, &new_val.to_be_bytes::<32>());
         }
 
         #[pvm_contract_sdk::method]
         pub fn reset(&mut self) {
-            self.host.set_storage(StorageFlags::empty(), &COUNTER_KEY, &[0u8; 32]);
+            self.host().set_storage(StorageFlags::empty(), &COUNTER_KEY, &[0u8; 32]);
         }
 
         #[pvm_contract_sdk::fallback]

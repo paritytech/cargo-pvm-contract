@@ -2,6 +2,8 @@
 
 A non-macro alternative to `#[contract]`. You wire up dispatch manually using `ContractBuilder`, with no proc macros and full explicit control over entry points and method routing.
 
+> **Host handle:** The DSL path keeps the explicit `<H: HostApi>` generic on handler signatures (`fn handler<H: HostApi>(host: &H, input, output)`). In production you instantiate it with `PolkaVmHost`; in native unit tests you instantiate it with `MockHost` directly. The macro path hides this behind a concrete `Host` field injected onto the contract struct — the DSL deliberately keeps it explicit so authors control the monomorphization boundary themselves.
+
 ## Basic Usage
 
 ```rust,ignore

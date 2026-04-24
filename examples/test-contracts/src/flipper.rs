@@ -2,18 +2,16 @@
 
 #[pvm_contract_sdk::contract("Flipper.sol", allocator = "pico")]
 mod flipper {
-    use pvm_contract_sdk::{HostApi, PolkaVmHost, StorageFlags};
+    use pvm_contract_sdk::{StorageFlags};
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
 
-    pub struct Flipper<H: HostApi = PolkaVmHost> {
-        pub host: H,
-    }
+    pub struct Flipper;
 
-    impl<H: HostApi> Flipper<H> {
+    impl Flipper {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
-            self.host.set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
+            self.host().set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
             Ok(())
         }
 
@@ -23,7 +21,7 @@ mod flipper {
             let new_val = if current { 0u8 } else { 1u8 };
             let mut buf = [0u8; 32];
             buf[31] = new_val;
-            self.host.set_storage(StorageFlags::empty(), &STORAGE_KEY, &buf);
+            self.host().set_storage(StorageFlags::empty(), &STORAGE_KEY, &buf);
         }
 
         #[pvm_contract_sdk::method]
@@ -39,7 +37,7 @@ mod flipper {
         fn read_value(&self) -> bool {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host.get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
+            match self.host().get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
                 Ok(_) => buf[31] != 0,
                 Err(_) => false,
             }
