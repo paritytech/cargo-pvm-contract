@@ -8,6 +8,7 @@ enum Variant {
     NoAlloc,
     WithAlloc,
     BuilderDsl,
+    Storage,
 }
 
 impl Variant {
@@ -16,12 +17,13 @@ impl Variant {
             Variant::NoAlloc => "no-alloc",
             Variant::WithAlloc => "with-alloc",
             Variant::BuilderDsl => "builder-dsl",
+            Variant::Storage => "storage",
         }
     }
 
     fn cargo_toml(&self, contract: &str, base_path: &Path) -> String {
         match self {
-            Variant::NoAlloc => cargo_toml_no_alloc(contract, base_path),
+            Variant::NoAlloc | Variant::Storage => cargo_toml_no_alloc(contract, base_path),
             Variant::WithAlloc => cargo_toml_with_alloc(contract, base_path),
             Variant::BuilderDsl => cargo_toml_builder_dsl(contract, base_path),
         }
@@ -152,6 +154,7 @@ fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result
     let source_file = match variant {
         Variant::NoAlloc => format!("{contract}_no_alloc.rs"),
         Variant::WithAlloc => format!("{contract}_with_alloc.rs"),
+        Variant::Storage => format!("{contract}_storage.rs"),
         Variant::BuilderDsl => unreachable!(),
     };
 
@@ -245,8 +248,12 @@ fn build_variant(
     Ok(())
 }
 
-fn variants_for_contract(_contract: &str) -> Vec<Variant> {
-    vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl]
+fn variants_for_contract(contract: &str) -> Vec<Variant> {
+    let mut variants = vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl];
+    if contract == "mytoken" {
+        variants.push(Variant::Storage);
+    }
+    variants
 }
 
 fn main() -> Result<()> {
