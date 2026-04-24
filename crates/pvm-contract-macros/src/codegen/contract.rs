@@ -223,6 +223,9 @@ fn is_valid_solidity_identifier(s: &str) -> bool {
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
+        if segments.len() == 1 && segments[0].ident == name {
+            return true;
+        }
         if segments.len() == 2 {
             let first = segments[0].ident.to_string();
             if VALID_PREFIXES.contains(&first.as_str()) && segments[1].ident == name {
