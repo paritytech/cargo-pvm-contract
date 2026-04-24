@@ -1,3 +1,4 @@
+#![cfg(not(feature = "abi-gen"))]
 //! Native unit tests exercising macro-generated `route()` + `Router` impl
 //! against `MockHost`. Proves that contract dispatch is host-agnostic and
 //! fully runnable off-target.

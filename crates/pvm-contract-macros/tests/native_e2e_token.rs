@@ -1,3 +1,4 @@
+#![cfg(not(feature = "abi-gen"))]
 //! End-to-end native unit tests for a realistic contract.
 //!
 //! Exercises the full dispatch pipeline against `MockHost`:

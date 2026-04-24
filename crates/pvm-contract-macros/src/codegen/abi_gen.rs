@@ -159,7 +159,7 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
 
     let mod_name = &parsed.mod_name;
     let main_fn = quote! {
-        #[cfg(feature = "abi-gen")]
+        #[cfg(all(feature = "abi-gen", not(test)))]
         fn main() {
             ::std::println!("{}", #mod_name::__abi_json());
         }

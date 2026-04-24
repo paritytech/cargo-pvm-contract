@@ -1,3 +1,4 @@
+#![cfg(not(feature = "abi-gen"))]
 //! Method-level unit tests — the simplest and fastest way to exercise
 //! contract logic with `MockHost`.
 //!
