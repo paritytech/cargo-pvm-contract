@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_sdk::{PolkaVmHost, U256};
 
