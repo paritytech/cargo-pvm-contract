@@ -4338,6 +4338,25 @@ name = "pvm-bump-allocator"
 version = "0.3.0"
 
 [[package]]
+name = "pvm-cdm"
+version = "0.3.0"
+dependencies = [
+ "pvm-cdm-macros",
+ "pvm-contract-sdk",
+ "trybuild",
+]
+
+[[package]]
+name = "pvm-cdm-macros"
+version = "0.3.0"
+dependencies = [
+ "keccak-const",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "pvm-contract-benchmarks"
 version = "0.3.0"
 dependencies = [

@@ -12,6 +12,8 @@ members = [
     "crates/pvm-storage",
     "crates/pvm-contract-e2e-tests",
     "crates/cargo-pvm-contract-extrinsics",
+    "crates/pvm-cdm",
+    "crates/pvm-cdm-macros",
 ]
 resolver = "2"
 
