@@ -422,8 +422,7 @@ fn parse_contract(
                     && let Some(sol_iface) = sol_iface.items.iter().find_map(|x| match x {
                         Item::Contract(item_contract)
                             if item_contract.is_interface()
-                                && mod_name
-                                    == to_snake_case(&item_contract.name.to_string()) =>
+                                && mod_name == to_snake_case(&item_contract.name.to_string()) =>
                         {
                             Some(item_contract)
                         }
