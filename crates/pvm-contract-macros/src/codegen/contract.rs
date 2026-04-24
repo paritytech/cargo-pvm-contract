@@ -118,7 +118,7 @@ fn load_sol_interface(path: &str) -> Result<syn_solidity::File, String> {
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
     syn::parse_str(&source)
-        .and_then(|s| syn_solidity::parse2(s))
+        .and_then(syn_solidity::parse2)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))
 }
 
@@ -422,8 +422,8 @@ fn parse_contract(
                     && let Some(sol_iface) = sol_iface.items.iter().find_map(|x| match x {
                         Item::Contract(item_contract)
                             if item_contract.is_interface()
-                                && to_snake_case(&item_contract.name.to_string())
-                                    == mod_name.to_string() =>
+                                && mod_name
+                                    == to_snake_case(&item_contract.name.to_string()) =>
                         {
                             Some(item_contract)
                         }
@@ -464,7 +464,7 @@ fn parse_contract(
                         &param_types,
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&compute_function_signature(&sol_func));
+                    let selector = compute_selector(&compute_function_signature(sol_func));
                     (sol_func.name().to_string(), Some(selector))
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
@@ -490,7 +490,7 @@ fn parse_contract(
         && let Some(sol_iface) = sol_iface.items.iter().find_map(|x| match x {
             Item::Contract(item_contract)
                 if item_contract.is_interface()
-                    && to_snake_case(&item_contract.name.to_string()) == mod_name.to_string() =>
+                    && mod_name == to_snake_case(&item_contract.name.to_string()) =>
             {
                 Some(item_contract)
             }
