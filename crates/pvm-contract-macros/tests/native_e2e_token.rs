@@ -52,7 +52,7 @@ fn addr_topic(addr: Address) -> [u8; 32] {
 #[pvm_contract_macros::contract]
 mod mini_token {
     use super::*;
-    use pvm_contract_types::{StorageFlags};
+    use pvm_contract_types::StorageFlags;
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct Unauthorized;
@@ -498,12 +498,8 @@ fn router_trait_path_produces_identical_result_to_free_fn() {
     let sel = selector("balanceOf(address)");
 
     let free = mini_token::route(&mut contract, sel, &input, &mut out_free);
-    let via_trait = <mini_token::MiniToken as Router<Host>>::route(
-        &mut contract,
-        sel,
-        &input,
-        &mut out_trait,
-    );
+    let via_trait =
+        <mini_token::MiniToken as Router<Host>>::route(&mut contract, sel, &input, &mut out_trait);
 
     match (free, via_trait) {
         (DispatchResult::Ok(a), DispatchResult::Ok(b)) => assert_eq!(a, b),

@@ -14,7 +14,7 @@ use ruint::aliases::U256;
 #[pvm_contract_macros::contract]
 mod my_token {
     use super::*;
-    use pvm_contract_types::{HostApi};
+    use pvm_contract_types::HostApi;
 
     pub struct MyContract;
 
@@ -130,12 +130,8 @@ fn router_trait_impl_delegates_to_module_route() {
     let mut out = [0u8; 256];
 
     // Call through the Router trait rather than the free function.
-    let result = <my_token::MyContract as Router<Host>>::route(
-        &mut contract,
-        sel,
-        &input,
-        &mut out,
-    );
+    let result =
+        <my_token::MyContract as Router<Host>>::route(&mut contract, sel, &input, &mut out);
 
     match result {
         DispatchResult::Ok(data) => {

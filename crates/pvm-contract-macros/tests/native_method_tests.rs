@@ -36,7 +36,7 @@ fn balance_key(addr: Address) -> [u8; 32] {
 #[pvm_contract_sdk::contract]
 mod mini_token {
     use super::*;
-    use pvm_contract_sdk::{StorageFlags};
+    use pvm_contract_sdk::StorageFlags;
 
     #[derive(Debug, PartialEq, Eq, pvm_contract_sdk::SolError)]
     pub struct Unauthorized;

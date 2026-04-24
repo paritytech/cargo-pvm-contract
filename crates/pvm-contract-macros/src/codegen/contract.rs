@@ -1021,12 +1021,7 @@ fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStr
         syn::Fields::Named(named) => named
             .named
             .iter()
-            .filter(|f| {
-                f.ident
-                    .as_ref()
-                    .map(|i| i != "host")
-                    .unwrap_or(true)
-            })
+            .filter(|f| f.ident.as_ref().map(|i| i != "host").unwrap_or(true))
             .collect(),
         syn::Fields::Unnamed(_) => {
             return Err(syn::Error::new_spanned(
@@ -1036,10 +1031,7 @@ fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStr
         }
     };
 
-    let user_field_tokens: Vec<TokenStream> = user_fields
-        .iter()
-        .map(|f| quote! { #f })
-        .collect();
+    let user_field_tokens: Vec<TokenStream> = user_fields.iter().map(|f| quote! { #f }).collect();
 
     Ok(quote! {
         #(#attrs)*
