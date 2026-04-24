@@ -836,6 +836,33 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Derive macro for storage declaration.
+///
+/// Implements the [`SolStorage`] trait, generating a constructor that creates
+/// each field at its declared `#[slot(N)]`. Also generates `__storage_layout_json()`
+/// behind `cfg(feature = "abi-gen")` for Solidity tooling compatibility.
+///
+/// # Example
+///
+/// ```ignore
+/// #[derive(SolStorage)]
+/// struct Storage {
+///     #[slot(0)]
+///     total_supply: Lazy<U256>,
+///     #[slot(1)]
+///     balances: Mapping<Address, U256>,
+/// }
+/// ```
+#[proc_macro_derive(SolStorage, attributes(slot))]
+pub fn sol_storage(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_storage(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 /// Generates bindings to interact with a contract interface using either a:
 /// - solidity literal that has the defined inteface of said contract.
 /// - json abi file as a path and a name for said contract.
@@ -919,7 +946,7 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 ///     // set a `value` this method is only present if the method is `payable`.
 ///     // also its possible to set a limit for the call.
 ///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call()?;
-///     
+///
 ///     // instantiate a contract
 ///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(<code_hash>, <value>, <limits>, <optional salt>)?;
 /// }

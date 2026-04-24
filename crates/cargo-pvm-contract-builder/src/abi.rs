@@ -13,6 +13,65 @@ pub fn generate_abi_for_bin(
     generate_abi_via_feature(manifest_dir, bin_name, target_root)
 }
 
+/// Generate the storage layout JSON for a binary, if the contract uses
+/// `#[derive(SolStorage)]`. Returns the raw `serde_json::Value` of the
+/// `storageLayout` object, or `None` when no storage is declared.
+///
+/// Detection parses the source with `syn` and walks the AST for
+/// `#[derive(SolStorage)]`. If the `SolStorage` struct is outside the
+/// `#[contract]` module, the macro won't generate an abi-gen `main()` and
+/// compilation fails with "main function not found". We treat that specific
+/// error as "no storage layout". All other failures propagate normally.
+pub fn generate_storage_layout_for_bin(
+    manifest_dir: &Path,
+    bin_name: &str,
+    target_root: Option<&Path>,
+) -> Result<Option<serde_json::Value>> {
+    let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
+    if !source_path.exists()
+        || !has_sol_storage_derive(
+            &fs::read_to_string(&source_path)
+                .with_context(|| format!("Failed to read {}", source_path.display()))?,
+        )
+    {
+        return Ok(None);
+    }
+
+    let stdout = match run_abi_gen_binary(manifest_dir, bin_name, target_root) {
+        Ok(Some(s)) => s,
+        Ok(None) => return Ok(None),
+        Err(e) => {
+            // The AST check found SolStorage somewhere in the file, but it
+            // may be outside the #[contract] module. In that case no main()
+            // was generated and abi-gen fails with "main function not found".
+            // Treat that specific error as "no storage layout"; propagate
+            // everything else.
+            let msg = format!("{e:?}");
+            if msg.contains("main function not found")
+                || msg.contains("main` function not found")
+                || msg.contains("does not contain this feature")
+            {
+                return Ok(None);
+            }
+            return Err(e).context("Failed to generate storage layout via abi-gen");
+        }
+    };
+    let stdout = stdout.trim();
+    if stdout.is_empty() {
+        return Ok(None);
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_str(stdout).context("Failed to parse storage layout JSON from abi-gen")?;
+
+    // The output is either just the storage layout (sol path) or a combined
+    // object with "storageLayout" field (non-sol path).
+    Ok(value
+        .get("storageLayout")
+        .cloned()
+        .or_else(|| value.get("storage").map(|_| value.clone())))
+}
+
 fn get_host_triple() -> Result<String> {
     if let Ok(host) = env::var("HOST") {
         return Ok(host);
@@ -52,27 +111,44 @@ fn generate_abi_via_feature(
         return generate_abi_from_sol(&sol_full_path);
     }
 
-    // ABI generation requires either a `.sol` file or the `#[contract]` macro
-    // (which generates `__abi_json()` under `--features abi-gen`). DSL-based
-    // contracts don't use the macro and are expected to handle ABI themselves.
+    // Non-.sol path: ABI generation requires the `#[contract]` macro.
     if !has_contract_macro(&source_content) {
         return Ok(None);
     }
 
+    // The abi-gen binary outputs either a bare ABI array (no storage) or
+    // {"abi": [...], "storageLayout": {...}} (with storage). Extract
+    // just the ABI items either way.
+    let stdout = run_abi_gen_binary(manifest_dir, bin_name, target_root)?
+        .context("abi-gen binary produced no output")?;
+
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).context("Failed to parse abi-gen output as JSON")?;
+
+    let abi_value = match value.get("abi") {
+        Some(v) => v.clone(),
+        None => value, // bare array
+    };
+
+    let abi: AbiJson =
+        serde_json::from_value(abi_value).context("Failed to parse ABI from abi-gen output")?;
+
+    Ok(Some(abi))
+}
+
+/// Run the abi-gen binary and return its raw stdout.
+fn run_abi_gen_binary(
+    manifest_dir: &Path,
+    bin_name: &str,
+    target_root: Option<&Path>,
+) -> Result<Option<String>> {
     let target_dir = match target_root {
         Some(root) => root.join("abi-gen-target"),
         None => super::get_target_root().join("abi-gen-target"),
     };
     let manifest_path = manifest_dir.join("Cargo.toml");
-
-    // The project's .cargo/config.toml targets RISC-V with build-std=core,alloc.
-    // The abi-gen binary needs std and must run on the host, so we override both:
-    // --target forces the host triple, build-std adds std to the sysroot rebuild.
     let host = get_host_triple()?;
 
-    // Remove RUSTUP_TOOLCHAIN only when rust-toolchain.toml exists, matching
-    // build_elf's behavior. Without a toolchain file we keep the inherited
-    // toolchain (e.g. nightly passed via `cargo +nightly`).
     let has_toolchain_file = manifest_dir.join("rust-toolchain.toml").exists()
         || manifest_dir.join("rust-toolchain").exists();
 
@@ -110,11 +186,11 @@ fn generate_abi_via_feature(
 
     let stdout_str =
         String::from_utf8(output.stdout).context("ABI generation output is not valid UTF-8")?;
-
-    let abi: AbiJson = serde_json::from_str(&stdout_str)
-        .context("Failed to parse ABI JSON from abi-gen output")?;
-
-    Ok(Some(abi))
+    let trimmed = stdout_str.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 /// Detect whether the source uses the `#[contract]` attribute macro. Matches
@@ -122,6 +198,64 @@ fn generate_abi_via_feature(
 /// ABI generation for DSL-based contracts that don't use the macro.
 pub(crate) fn has_contract_macro(source: &str) -> bool {
     source.contains("::contract]") || source.contains("::contract(")
+}
+
+/// Detect whether the source contains `#[derive(SolStorage)]` by parsing
+/// the file as a Rust AST and walking struct attributes. Returns `false`
+/// if the source cannot be parsed. Such files won't compile anyway, so
+/// skipping storage layout detection is safe.
+fn has_sol_storage_derive(source: &str) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    for item in &file.items {
+        if has_sol_storage_in_item(item) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Recursively check an item (and its children, e.g. items inside a module)
+/// for `#[derive(SolStorage)]`.
+fn has_sol_storage_in_item(item: &syn::Item) -> bool {
+    match item {
+        syn::Item::Struct(s) => has_sol_storage_attr(&s.attrs),
+        syn::Item::Mod(m) => {
+            if let Some((_, items)) = &m.content {
+                items.iter().any(has_sol_storage_in_item)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Check whether a struct's attributes include `#[derive(...SolStorage...)]`.
+fn has_sol_storage_attr(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if let syn::Meta::List(meta_list) = &attr.meta {
+            if !meta_list.path.is_ident("derive") {
+                continue;
+            }
+            let Ok(paths) = meta_list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            ) else {
+                continue;
+            };
+            for path in &paths {
+                if path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "SolStorage")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
@@ -1102,5 +1236,68 @@ interface Token {{
                 state_mutability: Some("payable".into()),
             }
         );
+    }
+
+    // --- has_sol_storage_derive (AST-based) ---
+
+    #[test]
+    fn detects_simple_sol_storage_derive() {
+        assert!(has_sol_storage_derive(
+            "#[derive(SolStorage)] struct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn detects_sol_storage_among_multiple_derives() {
+        assert!(has_sol_storage_derive(
+            "#[derive(Clone, SolStorage, Debug)] struct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn detects_fully_qualified_sol_storage() {
+        assert!(has_sol_storage_derive(
+            "#[derive(pvm_contract_macros::SolStorage)] struct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn detects_multiline_derive() {
+        assert!(has_sol_storage_derive(
+            "#[derive(\n    Clone,\n    SolStorage,\n)]\nstruct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn detects_sol_storage_inside_module() {
+        assert!(has_sol_storage_derive(
+            "mod my_contract { #[derive(SolStorage)] struct Storage { x: u32 } }"
+        ));
+    }
+
+    #[test]
+    fn rejects_bare_sol_storage_in_comment() {
+        assert!(!has_sol_storage_derive(
+            "// TODO: add SolStorage\nstruct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn rejects_sol_storage_in_string() {
+        assert!(!has_sol_storage_derive(
+            r#"fn f() { let s = "SolStorage"; }"#
+        ));
+    }
+
+    #[test]
+    fn rejects_substring_match() {
+        assert!(!has_sol_storage_derive(
+            "#[derive(NotSolStorage)] struct S { x: u32 }"
+        ));
+    }
+
+    #[test]
+    fn no_false_positive_without_derive() {
+        assert!(!has_sol_storage_derive("struct SolStorage { x: u32 }"));
     }
 }

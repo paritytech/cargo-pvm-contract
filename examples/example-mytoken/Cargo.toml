@@ -23,6 +23,10 @@ name = "example-mytoken-macro-no-sol"
 path = "src/example-mytoken-macro-no-sol.rs"
 
 [[bin]]
+name = "example-mytoken-macro-storage"
+path = "src/example-mytoken-macro-storage.rs"
+
+[[bin]]
 name = "example-mytoken-dsl-no-alloc"
 path = "src/example-mytoken-dsl-no-alloc.rs"
 

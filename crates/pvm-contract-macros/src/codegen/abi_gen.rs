@@ -8,15 +8,36 @@ use super::dispatch::MethodInfo;
 ///
 /// The helper lives inside the user's module so all type imports are in scope.
 /// The `main()` just calls the helper and prints the result.
-pub fn generate_abi_gen(parsed: &ParsedContract, has_sol_path: bool) -> (TokenStream, TokenStream) {
-    // When a .sol file is provided, the builder derives ABI from the Solidity
-    // interface at build time (see cargo-pvm-contract-builder/src/abi.rs).
-    // No macro-side ABI generation is needed.
-    if has_sol_path {
+///
+/// When a `.sol` file is provided, the builder derives the ABI from the Solidity
+/// interface at build time. However, `storageLayout` is always Rust-side, so
+/// `main()` is still generated when a `SolStorage` struct exists.
+pub fn generate_abi_gen(
+    parsed: &ParsedContract,
+    has_sol_path: bool,
+    storage_struct: Option<syn::Ident>,
+) -> (TokenStream, TokenStream) {
+    if has_sol_path && storage_struct.is_none() {
+        // .sol path, no storage: builder gets everything from the .sol file.
         return (quote! {}, quote! {});
     }
 
-    match generate_abi_gen_impl(parsed) {
+    if has_sol_path {
+        // .sol path with storage: builder gets ABI from .sol, but needs
+        // main() to output storage layout from the Rust side.
+        let mod_name = &parsed.mod_name;
+        let helper = storage_layout_helper(storage_struct.as_ref().unwrap());
+        let main_fn = quote! {
+            #[cfg(feature = "abi-gen")]
+            fn main() {
+                ::std::println!("{}", #mod_name::__storage_layout_json());
+            }
+        };
+        return (helper, main_fn);
+    }
+
+    // Non-.sol path: generate both ABI and optional storage layout.
+    match generate_abi_gen_impl(parsed, storage_struct) {
         Ok((helper, main_fn)) => (helper, main_fn),
         Err(err) => {
             let err = err.to_compile_error();
@@ -25,7 +46,23 @@ pub fn generate_abi_gen(parsed: &ParsedContract, has_sol_path: bool) -> (TokenSt
     }
 }
 
-fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, TokenStream)> {
+/// Generate a module-level `__storage_layout_json()` wrapper that delegates
+/// to the (private) storage struct's method. Lives inside the module so it
+/// can access the struct; declared `pub` so `main()` can call it from outside.
+fn storage_layout_helper(struct_name: &syn::Ident) -> TokenStream {
+    quote! {
+        #[cfg(feature = "abi-gen")]
+        #[doc(hidden)]
+        pub fn __storage_layout_json() -> ::std::string::String {
+            #struct_name::__storage_layout_json()
+        }
+    }
+}
+
+fn generate_abi_gen_impl(
+    parsed: &ParsedContract,
+    storage_struct: Option<syn::Ident>,
+) -> syn::Result<(TokenStream, TokenStream)> {
     let constructor_entry = if parsed.has_constructor {
         let ctor_params: Vec<TokenStream> = parsed
             .constructor_inputs
@@ -158,14 +195,38 @@ fn generate_abi_gen_impl(parsed: &ParsedContract) -> syn::Result<(TokenStream, T
     };
 
     let mod_name = &parsed.mod_name;
-    let main_fn = quote! {
-        #[cfg(all(feature = "abi-gen", not(test)))]
-        fn main() {
-            ::std::println!("{}", #mod_name::__abi_json());
+
+    let combined_helper = match &storage_struct {
+        Some(struct_name) => {
+            let sh = storage_layout_helper(struct_name);
+            quote! { #helper #sh }
         }
+        None => helper,
     };
 
-    Ok((helper, main_fn))
+    let main_fn = match storage_struct {
+        Some(_) => quote! {
+            #[cfg(feature = "abi-gen")]
+            fn main() {
+                let abi = #mod_name::__abi_json();
+                let layout = #mod_name::__storage_layout_json();
+                // Wrap ABI array and storage layout into a JSON object.
+                ::std::print!("{{\"abi\":");
+                ::std::print!("{}", abi);
+                ::std::print!(",\"storageLayout\":");
+                ::std::print!("{}", layout);
+                ::std::println!("}}");
+            }
+        },
+        None => quote! {
+            #[cfg(feature = "abi-gen")]
+            fn main() {
+                ::std::println!("{}", #mod_name::__abi_json());
+            }
+        },
+    };
+
+    Ok((combined_helper, main_fn))
 }
 
 fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
@@ -227,8 +288,47 @@ mod tests {
             error_types: vec![],
         };
 
-        let (helper, main_fn) = generate_abi_gen(&parsed, true);
+        let (helper, main_fn) = generate_abi_gen(&parsed, true, None);
         assert!(helper.is_empty());
         assert!(main_fn.is_empty());
+    }
+
+    #[test]
+    fn sol_path_with_storage_generates_main_for_layout() {
+        let parsed = ParsedContract {
+            mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
+            methods: vec![],
+            has_constructor: false,
+            has_fallback: false,
+            constructor_name: None,
+            constructor_returns_result: false,
+            constructor_inputs: vec![],
+            fallback_name: None,
+            fallback_returns_result: false,
+            error_types: vec![],
+        };
+
+        let storage_name: syn::Ident = syn::parse_str("Storage").unwrap();
+        let (helper, main_fn) = generate_abi_gen(&parsed, true, Some(storage_name));
+        // Helper contains the __storage_layout_json wrapper; main() calls it.
+        assert!(
+            !helper.is_empty(),
+            "helper should contain __storage_layout_json wrapper for .sol + storage"
+        );
+        assert!(
+            !main_fn.is_empty(),
+            "main() should be generated for storage layout even with .sol path"
+        );
+        let helper_str = helper.to_string();
+        assert!(
+            helper_str.contains("__storage_layout_json"),
+            "helper should contain __storage_layout_json. Got: {helper_str}"
+        );
+        let main_str = main_fn.to_string();
+        assert!(
+            main_str.contains("__storage_layout_json"),
+            "main() should call __storage_layout_json(). Got: {main_str}"
+        );
     }
 }

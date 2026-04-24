@@ -1259,6 +1259,7 @@ dependencies = [
  "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",
+ "pvm-storage",
  "ruint",
 ]
 
@@ -1272,6 +1273,13 @@ dependencies = [
  "ruint",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pvm-storage"
+version = "0.3.0"
+dependencies = [
+ "pvm-contract-types",
 ]
 
 [[package]]

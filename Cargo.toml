@@ -9,6 +9,7 @@ members = [
     "crates/pvm-bump-allocator",
     "crates/pvm-contract-benchmarks",
     "crates/pvm-contract-builder-dsl",
+    "crates/pvm-storage",
     "crates/pvm-contract-e2e-tests",
     "crates/cargo-pvm-contract-extrinsics",
 ]
@@ -43,4 +44,6 @@ keccak-const = "0.2"
 tiny-keccak = { version = "2.0", features = ["keccak"] }
 convert_case = "0.6"
 toml_edit = "0.22"
+trybuild = "1.0"
+syn = { version = "2.0", features = ["full", "parsing"] }
 inquire = "0.7"

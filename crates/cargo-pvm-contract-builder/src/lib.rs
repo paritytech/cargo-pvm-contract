@@ -464,21 +464,33 @@ fn generate_abi_file(
     output_path: &Path,
     target_root: Option<&Path>,
 ) -> Result<()> {
-    match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
-        Ok(Some(abi)) => {
-            let json =
-                serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?;
-            fs::write(output_path, json)
-                .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
-            eprintln!("Created ABI: {}", output_path.display());
-        }
+    let abi = match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
+        Ok(Some(abi)) => abi,
         Ok(None) => {
             eprintln!("No pvm_contract found, skipping ABI generation");
+            return Ok(());
         }
         Err(e) => {
             return Err(e).context("Failed to generate ABI");
         }
-    }
+    };
+
+    let storage_layout = abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root)?;
+
+    let json = if let Some(layout) = storage_layout {
+        let abi_value = serde_json::to_value(&abi).context("Failed to serialize ABI")?;
+        serde_json::to_string_pretty(&serde_json::json!({
+            "abi": abi_value,
+            "storageLayout": layout,
+        }))
+        .context("Failed to serialize ABI + storageLayout")?
+    } else {
+        serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?
+    };
+
+    fs::write(output_path, json)
+        .with_context(|| format!("Failed to write ABI to {}", output_path.display()))?;
+    eprintln!("Created ABI: {}", output_path.display());
     Ok(())
 }
 

@@ -1,0 +1,21 @@
+[package]
+name = "pvm-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed storage helpers for PVM smart contracts with Solidity-compatible slot layout"
+
+[dependencies]
+pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+
+[dev-dependencies]
+pvm-contract-types = { path = "../pvm-contract-types", features = ["std"] }
+pvm-contract-macros = { path = "../pvm-contract-macros" }
+ruint = { workspace = true }
+trybuild = { workspace = true }
+
+[features]
+default = []
+std = []
+abi-gen = ["std"]
