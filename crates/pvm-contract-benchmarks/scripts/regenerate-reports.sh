@@ -226,7 +226,7 @@ regenerate_binary_sizes() {
     done
     contracts=("${seen_contracts[@]}")
 
-    local -a variants=("no-alloc" "builder-dsl" "with-alloc")
+    local -a variants=("no-alloc" "builder-dsl" "with-alloc" "storage")
 
     fmt_bytes() {
         printf "%'d" "$1"

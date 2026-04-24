@@ -4,7 +4,7 @@ Binary size comparison tool for PolkaVM contracts.
 
 ## Overview
 
-This crate builds multiple contract variants (no-alloc, with-alloc, builder-dsl) in both debug and release profiles, measures their binary sizes, and generates comparison reports. It is used in CI to detect size regressions in pull requests.
+This crate builds multiple contract variants (no-alloc, with-alloc, builder-dsl, storage) in both debug and release profiles, measures their binary sizes, and generates comparison reports. It is used in CI to detect size regressions in pull requests.
 
 **Goals:**
 - Track binary size impact of code changes

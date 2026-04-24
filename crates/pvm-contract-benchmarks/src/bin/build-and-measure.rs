@@ -23,9 +23,10 @@ impl Variant {
 
     fn cargo_toml(&self, contract: &str, base_path: &Path) -> String {
         match self {
-            Variant::NoAlloc | Variant::Storage => cargo_toml_no_alloc(contract, base_path),
+            Variant::NoAlloc => cargo_toml_no_alloc(contract, base_path),
             Variant::WithAlloc => cargo_toml_with_alloc(contract, base_path),
             Variant::BuilderDsl => cargo_toml_builder_dsl(contract, base_path),
+            Variant::Storage => cargo_toml_storage(contract, base_path),
         }
     }
 }
@@ -135,6 +136,44 @@ overflow-checks = false
         contract,
         contract,
         dsl_path.display(),
+    )
+}
+
+fn cargo_toml_storage(contract: &str, base_path: &Path) -> String {
+    let sdk_path = base_path.join("crates/pvm-contract-sdk");
+
+    format!(
+        r#"[package]
+name = "{}"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+
+[[bin]]
+name = "{}"
+path = "src/{}.rs"
+
+[dependencies]
+pvm-contract-sdk = {{ path = "{}" }}
+polkavm-derive = {{ version = "0.31.0" }}
+
+[features]
+abi-gen = ["pvm-contract-sdk/abi-gen"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+overflow-checks = false
+"#,
+        contract,
+        contract,
+        contract,
+        sdk_path.display(),
     )
 }
 
