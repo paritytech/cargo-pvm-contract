@@ -1,13 +1,14 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
+use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
     MethodInfo, RouteItems, generate_param_decoding, generate_revert_encoding, generate_router,
 };
 use crate::signature::{SolType, compute_selector};
-use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
+use crate::utils::{compute_function_signature, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -110,13 +111,15 @@ impl Parse for ContractArgs {
     }
 }
 
-fn load_sol_interface(path: &str) -> Result<SolInterface, String> {
+fn load_sol_interface(path: &str) -> Result<syn_solidity::File, String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR not set".to_string())?;
     let full_path = std::path::Path::new(&manifest_dir).join(path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
-    parse_solidity_interface(&source)
+    syn::parse_str(&source)
+        .and_then(|s| syn_solidity::parse2(s))
+        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))
 }
 
 pub(super) struct ParsedContract {
@@ -372,7 +375,7 @@ fn extract_typed_params(
 
 fn parse_contract(
     input: &ItemMod,
-    sol_interface: Option<&SolInterface>,
+    sol_interface: Option<&syn_solidity::File>,
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
     let content = input
@@ -415,14 +418,25 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(func);
 
-                let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface {
+                let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface
+                    && let Some(sol_iface) = sol_iface.items.iter().find_map(|x| match x {
+                        Item::Contract(item_contract)
+                            if item_contract.is_interface()
+                                && to_snake_case(&item_contract.name.to_string())
+                                    == mod_name.to_string() =>
+                        {
+                            Some(item_contract)
+                        }
+                        _ => None,
+                    }) {
                     let rust_fn_name = func.sig.ident.to_string();
                     let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
-                        .functions
-                        .iter()
-                        .find(|f| f.name == rename || to_snake_case(&f.name) == rust_fn_name)
+                        .body.iter().find_map(|f| match f {
+                            syn_solidity::Item::Function(item_function)  if item_function.name.as_ref().is_some_and(|name| name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name) => Some(item_function),
+                           _ => None
+                        })
                         .ok_or_else(|| {
                             syn::Error::new_spanned(
                                 func,
@@ -431,15 +445,27 @@ fn parse_contract(
                                 ),
                             )
                         })?;
+                    let sig = sol_func
+                        .parameters
+                        .types()
+                        .map(|x| x.clone().try_into())
+                        .collect::<Result<Vec<SolType>, String>>();
                     check_signature_compatibility(
                         func,
-                        &sol_func.name,
-                        &sol_func.signature.inputs,
+                        &sol_func.name().to_string(),
+                        &sig.map_err(|x| {
+                            syn::Error::new_spanned(
+                                func,
+                                format!(
+                                    "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
+                                ),
+                            )
+                        })?,
                         &param_types,
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&sol_func.signature.canonical_signature());
-                    (sol_func.name.clone(), Some(selector))
+                    let selector = compute_selector(&compute_function_signature(&sol_func));
+                    (sol_func.name().to_string(), Some(selector))
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
@@ -460,12 +486,26 @@ fn parse_contract(
         }
     }
 
-    if let Some(sol_iface) = sol_interface {
+    if let Some(sol_iface) = sol_interface
+        && let Some(sol_iface) = sol_iface.items.iter().find_map(|x| match x {
+            Item::Contract(item_contract)
+                if item_contract.is_interface()
+                    && to_snake_case(&item_contract.name.to_string()) == mod_name.to_string() =>
+            {
+                Some(item_contract)
+            }
+            _ => None,
+        })
+    {
         let missing: Vec<_> = sol_iface
-            .functions
+            .body
             .iter()
+            .filter_map(|f| match f {
+                syn_solidity::Item::Function(item_function) => Some(item_function),
+                _ => None,
+            })
             .filter(|f| !implemented_sol_methods.contains(&f.name))
-            .map(|f| f.name.as_str())
+            .map(|f| f.name().to_string())
             .collect();
 
         if !missing.is_empty() {

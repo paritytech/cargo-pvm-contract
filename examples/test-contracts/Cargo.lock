@@ -380,6 +380,7 @@ dependencies = [
  "polkavm-linker",
  "pvm-contract-types",
  "serde_json",
+ "syn 2.0.117",
  "toml_edit 0.22.27",
 ]
 
@@ -1340,6 +1341,7 @@ dependencies = [
  "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",
+ "pvm-storage",
  "ruint",
 ]
 
@@ -1353,6 +1355,13 @@ dependencies = [
  "ruint",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "pvm-storage"
+version = "0.3.0"
+dependencies = [
+ "pvm-contract-types",
 ]
 
 [[package]]

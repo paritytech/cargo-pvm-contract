@@ -1,11 +1,11 @@
-use ctxt::{Ctxt, compute_function_signature};
+use ctxt::Ctxt;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{self};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
-use crate::solidity::{capitalize, to_pascal_case, to_snake_case};
+use crate::utils::{capitalize, compute_function_signature, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(

@@ -5,7 +5,7 @@ extern crate proc_macro2;
 mod abi_import;
 mod codegen;
 mod signature;
-mod solidity;
+mod utils;
 use proc_macro::TokenStream;
 use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 
