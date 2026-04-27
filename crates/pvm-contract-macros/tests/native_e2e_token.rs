@@ -177,7 +177,7 @@ fn host_with_caller(caller: [u8; 20]) -> MockHost {
 /// read back storage/events through the returned handle.
 fn make_contract(mock: &MockHost) -> mini_token::MiniToken {
     mini_token::MiniToken {
-        host: Host::from_dyn(Box::new(mock.clone())),
+        host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
     }
 }
 

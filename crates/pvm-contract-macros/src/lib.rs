@@ -175,7 +175,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ```ignore
 /// let mock = MockHostBuilder::new().build();
 /// let mut contract = my_token::Contract {
-///     host: Host::from_dyn(Box::new(mock.clone())),
+///     host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
 /// };
 /// let mut out = [0u8; 256];
 /// match my_token::route(&mut contract, BALANCE_OF_SELECTOR, &input, &mut out) {

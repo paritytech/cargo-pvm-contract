@@ -618,7 +618,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         )
     })?;
 
-    let mod_content = strip_pvm_attrs(&input, struct_name)?;
+    let mod_content = strip_pvm_attrs(&input, struct_name, &storage_struct_name)?;
 
     let alloc_setup = match args.allocator {
         Some(AllocatorKind::Pico) => {
@@ -924,10 +924,18 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 /// - Strip any legacy `<H: HostApi>` generic params from `impl StorageStruct`
 ///   blocks (and trait impls where the self-type is the storage struct).
 /// - Emit an `impl StorageStruct { fn host(&self) -> &Host }` accessor.
+/// - If a `#[derive(SolStorage)]` struct is present in the module, inject
+///   `let mut storage = <StorageStruct as SolStorage>::__pvm_storage(self.host().clone());`
+///   at the top of every `#[method]`/`#[constructor]`/`#[fallback]` body, so
+///   contract code can read/write state via `storage.<field>.get()` etc.
 ///
 /// All user `impl` blocks are cfg-gated to `not(feature = "abi-gen")` so their
 /// bodies (which may call host APIs) are excluded from host-target ABI builds.
-fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStream> {
+fn strip_pvm_attrs(
+    input: &ItemMod,
+    struct_name: &Ident,
+    storage_struct_name: &Option<Ident>,
+) -> syn::Result<TokenStream> {
     let content = input.content.as_ref().unwrap();
     let mut items: Vec<TokenStream> = Vec::new();
     let mut struct_seen = false;
@@ -941,8 +949,10 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
             }
             syn::Item::Impl(item_impl) => {
                 let mut new_impl = item_impl.clone();
+                let targets_contract = impl_targets_storage_struct(&new_impl, struct_name);
                 for impl_item in new_impl.items.iter_mut() {
                     if let syn::ImplItem::Fn(func) = impl_item {
+                        let is_pvm_fn = has_pvm_method_attr(&func.attrs);
                         func.attrs.retain(|attr| {
                             let segments: Vec<_> = attr.path().segments.iter().collect();
                             !(segments.len() == 2
@@ -951,13 +961,25 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                                     || segments[1].ident == "constructor"
                                     || segments[1].ident == "fallback"))
                         });
+                        // Inject `let mut storage = ...` only into pvm-tagged
+                        // methods on the contract struct, when a SolStorage
+                        // struct is declared in the module.
+                        if is_pvm_fn
+                            && targets_contract
+                            && let Some(storage_ident) = storage_struct_name
+                        {
+                            let injection: syn::Stmt = syn::parse_quote! {
+                                let mut storage = <#storage_ident as ::pvm_contract_sdk::SolStorage>::__pvm_storage(self.host().clone());
+                            };
+                            func.block.stmts.insert(0, injection);
+                        }
                     }
                 }
                 // If this impl targets the storage struct, strip any `<H>` generic
                 // params and rewrite the self-type so `impl<H: HostApi> MyToken<H>`
                 // becomes plain `impl MyToken`. No-op for impls on other types or
                 // impls already written in the new concrete style.
-                if impl_targets_storage_struct(&new_impl, struct_name) {
+                if targets_contract {
                     strip_host_generic_from_impl(&mut new_impl);
                 }
                 items.push(quote! {
@@ -1011,6 +1033,20 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
         #(#items)*
 
         #host_accessor
+    })
+}
+
+/// Whether any of the attributes is a `#[method]`, `#[constructor]`, or
+/// `#[fallback]` from one of the pvm crates. Used to decide where to inject
+/// the `storage` binding.
+fn has_pvm_method_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let segments: Vec<_> = attr.path().segments.iter().collect();
+        segments.len() == 2
+            && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
+            && (segments[1].ident == "method"
+                || segments[1].ident == "constructor"
+                || segments[1].ident == "fallback")
     })
 }
 

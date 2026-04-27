@@ -105,6 +105,14 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
+// Typed storage helpers. The `SolStorage` trait + `StorageKey` are public user
+// surface; `Lazy`/`Mapping` are the declarable field types for
+// `#[derive(SolStorage)]`.
+pub use pvm_storage::{AsStorageKey, Lazy, Mapping, SolStorage, StorageKey};
+
+#[cfg(feature = "abi-gen")]
+pub use pvm_storage::StorageLayoutType;
+
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
 

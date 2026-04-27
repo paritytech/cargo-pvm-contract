@@ -121,6 +121,7 @@ pub trait HostApi {
 /// On `riscv64`, each method delegates to `pallet_revive_uapi::HostFnImpl`.
 /// On other targets, methods `unimplemented!()` — `PolkaVmHost` must only be
 /// constructed inside the riscv64-gated entry-point wrappers in production.
+#[derive(Clone, Copy)]
 pub struct PolkaVmHost;
 
 #[cfg(target_arch = "riscv64")]
@@ -533,16 +534,19 @@ impl HostApi for PolkaVmHost {
 /// The [`HostApi`] trait is implemented for `Host`, so generic DSL code and
 /// contract bodies can treat it uniformly.
 #[cfg(target_arch = "riscv64")]
+#[derive(Clone, Copy)]
 pub struct Host {
     pub inner: PolkaVmHost,
 }
 
 #[cfg(all(not(target_arch = "riscv64"), feature = "alloc"))]
+#[derive(Clone)]
 pub struct Host {
-    pub inner: alloc::boxed::Box<dyn HostApi>,
+    pub inner: alloc::rc::Rc<dyn HostApi>,
 }
 
 #[cfg(all(not(target_arch = "riscv64"), not(feature = "alloc")))]
+#[derive(Clone, Copy)]
 pub struct Host {
     _never: core::convert::Infallible,
 }
@@ -568,11 +572,12 @@ impl Default for Host {
 impl Host {
     /// Wrap any [`HostApi`] implementor for host-target tests.
     ///
-    /// Typical use: `Host::from_dyn(alloc::boxed::Box::new(mock_host.clone()))`
-    /// where `mock_host: MockHost` shares state through `Rc<RefCell<_>>`
-    /// internally, so the wrapped copy and the original handle observe the
-    /// same storage/events/calls.
-    pub fn from_dyn(inner: alloc::boxed::Box<dyn HostApi>) -> Self {
+    /// Storage types (`Lazy`, `Mapping`) clone the `Host` handle, so the
+    /// inner backing is `Rc<dyn HostApi>` — cheap to clone, all clones
+    /// observe the same underlying state.
+    ///
+    /// Typical use: `Host::from_dyn(alloc::rc::Rc::new(mock_host.clone()))`.
+    pub fn from_dyn(inner: alloc::rc::Rc<dyn HostApi>) -> Self {
         Self { inner }
     }
 }

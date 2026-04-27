@@ -135,7 +135,7 @@ const BOB: [u8; 20] = [0xB0; 20];
 fn contract_with_caller(caller: [u8; 20]) -> (MiniToken, MockHost) {
     let mock = MockHostBuilder::new().caller(caller).build();
     let contract = MiniToken {
-        host: Host::from_dyn(Box::new(mock.clone())),
+        host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
     };
     (contract, mock)
 }
@@ -251,7 +251,7 @@ fn mint_then_transfer_chain_updates_state_correctly() {
         }
     }
     let mut contract = MiniToken {
-        host: Host::from_dyn(Box::new(next_host.clone())),
+        host: Host::from_dyn(::std::rc::Rc::new(next_host.clone())),
     };
 
     contract

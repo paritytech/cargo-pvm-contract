@@ -56,7 +56,7 @@ fn encode_address(addr: Address) -> Vec<u8> {
 
 fn new_contract() -> my_token::MyContract {
     my_token::MyContract {
-        host: Host::from_dyn(Box::new(MockHostBuilder::new().build())),
+        host: Host::from_dyn(::std::rc::Rc::new(MockHostBuilder::new().build())),
     }
 }
 

@@ -28,49 +28,38 @@
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
-
-// ---------------------------------------------------------------------------
-// Host abstraction: PolkaVmHost in production, MockHost in tests
-// ---------------------------------------------------------------------------
-
-#[cfg(not(test))]
-use pvm_contract_types::PolkaVmHost as Host;
-
-#[cfg(test)]
-use pvm_contract_types::MockHost as Host;
-
-use pvm_contract_types::HostApi;
+use pvm_contract_types::{Host, HostApi, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
+// Each takes a `&Host` so the instance-based `HostApi` trait dispatch works.
 // Benchmarked with/without #[inline(never)]: letting the compiler decide
 // produced smaller .polkavm output so we omit the annotation.
 // ---------------------------------------------------------------------------
 
-fn storage_get_32(key: &[u8; 32]) -> [u8; 32] {
+fn storage_get_32(host: &Host, key: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 32];
-    Host::get_storage_or_zero(StorageFlags::empty(), key, &mut buf);
+    host.get_storage_or_zero(StorageFlags::empty(), key, &mut buf);
     buf
 }
 
-fn storage_set_32(key: &[u8; 32], value: &[u8; 32]) {
-    Host::set_storage_or_clear(StorageFlags::empty(), key, value);
+fn storage_set_32(host: &Host, key: &[u8; 32], value: &[u8; 32]) {
+    host.set_storage_or_clear(StorageFlags::empty(), key, value);
 }
 
-fn storage_derive_key(root: &[u8; 32], padded_key: &[u8; 32]) -> [u8; 32] {
+fn storage_derive_key(host: &Host, root: &[u8; 32], padded_key: &[u8; 32]) -> [u8; 32] {
     let mut preimage = [0u8; 64];
     preimage[0..32].copy_from_slice(padded_key);
     preimage[32..64].copy_from_slice(root);
     let mut output = [0u8; 32];
-    Host::hash_keccak_256(&preimage, &mut output);
+    host.hash_keccak_256(&preimage, &mut output);
     output
 }
 
-fn storage_try_get_32(key: &[u8; 32]) -> Option<[u8; 32]> {
+fn storage_try_get_32(host: &Host, key: &[u8; 32]) -> Option<[u8; 32]> {
     let mut buf = [0u8; 32];
     let mut out = &mut buf[..];
-    match Host::get_storage(StorageFlags::empty(), key, &mut out) {
+    match host.get_storage(StorageFlags::empty(), key, &mut out) {
         Ok(()) => Some(buf),
         Err(_) => None,
     }
@@ -109,8 +98,8 @@ impl StorageKey {
     /// For scalar keys: `keccak256(pad32(key) ++ self)` (one keccak).
     /// For tuple keys: chained derivation matching Solidity's nested mappings.
     /// Uses the host keccak function for native speed.
-    pub fn derive<K: AsStorageKey>(&self, map_key: &K) -> Self {
-        map_key.derive_slot(self)
+    pub fn derive<K: AsStorageKey>(&self, host: &Host, map_key: &K) -> Self {
+        map_key.derive_slot(host, self)
     }
 
     /// Raw access to the 32-byte key for debugging and host API interop.
@@ -137,7 +126,7 @@ pub trait AsStorageKey {
     ///
     /// For scalars: `keccak256(pad32(self) ++ root)`.
     /// For tuples: chained derivation matching Solidity's nested mappings.
-    fn derive_slot(&self, root: &StorageKey) -> StorageKey;
+    fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey;
 }
 
 /// Implement `AsStorageKey` for static types that ABI-encode to exactly 32 bytes.
@@ -152,10 +141,10 @@ pub trait AsStorageKey {
 macro_rules! impl_scalar_storage_key {
     ($($ty:ty),* $(,)?) => {$(
         impl AsStorageKey for $ty {
-            fn derive_slot(&self, root: &StorageKey) -> StorageKey {
+            fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
                 let mut padded = [0u8; 32];
                 SolEncode::encode_body_to(self, &mut padded);
-                StorageKey(storage_derive_key(root.as_bytes(), &padded))
+                StorageKey(storage_derive_key(host, root.as_bytes(), &padded))
             }
         }
     )*}
@@ -183,10 +172,10 @@ impl_scalar_storage_key!(
 // Fixed-size byte arrays [u8; N] encode as Solidity `bytesN` (left-aligned, 32 bytes).
 // Common key sizes: bytes32 ([u8; 32]) for hashes, bytes20 ([u8; 20]) for raw addresses.
 impl<const N: usize> AsStorageKey for [u8; N] {
-    fn derive_slot(&self, root: &StorageKey) -> StorageKey {
+    fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
         let mut padded = [0u8; 32];
         SolEncode::encode_body_to(self, &mut padded);
-        StorageKey(storage_derive_key(root.as_bytes(), &padded))
+        StorageKey(storage_derive_key(host, root.as_bytes(), &padded))
     }
 }
 
@@ -199,9 +188,9 @@ impl<const N: usize> AsStorageKey for [u8; N] {
 macro_rules! impl_tuple_storage_key {
     ($first:ident : $idx0:tt $(, $rest:ident : $idx:tt)+) => {
         impl<$first: AsStorageKey $(, $rest: AsStorageKey)+> AsStorageKey for ($first, $($rest,)+) {
-            fn derive_slot(&self, root: &StorageKey) -> StorageKey {
-                let slot = self.$idx0.derive_slot(root);
-                $(let slot = self.$idx.derive_slot(&slot);)+
+            fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
+                let slot = self.$idx0.derive_slot(host, root);
+                $(let slot = self.$idx.derive_slot(host, &slot);)+
                 slot
             }
         }
@@ -221,9 +210,10 @@ impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3, E: 4);
 /// Trait implemented by `#[derive(SolStorage)]` to provide the storage constructor.
 ///
 /// The `#[contract]` macro detects types implementing this trait and injects
-/// a `storage` variable into each method body.
+/// a `storage` variable into each method body, passing `self.host().clone()`
+/// so every storage cell has a host handle to reach the backing store.
 pub trait SolStorage: Sized {
-    fn __pvm_storage() -> Self;
+    fn __pvm_storage(host: Host) -> Self;
 }
 
 // ---------------------------------------------------------------------------
@@ -277,12 +267,13 @@ impl<K: SolEncode, V: StorageLayoutType> StorageLayoutType for Mapping<K, V> {
 /// Using a larger type produces a compile-time error.
 pub struct Lazy<T> {
     key: StorageKey,
+    host: Host,
     _marker: PhantomData<T>,
 }
 
 impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
-    /// Create a new `Lazy` at the given storage key.
-    pub const fn new(key: StorageKey) -> Self {
+    /// Create a new `Lazy` at the given storage key, bound to a host handle.
+    pub fn new(key: StorageKey, host: Host) -> Self {
         const {
             assert!(
                 T::ENCODED_SIZE == 32,
@@ -291,6 +282,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
         };
         Lazy {
             key,
+            host,
             _marker: PhantomData,
         }
     }
@@ -300,7 +292,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// Returns the zero value for `T` if the slot was never written,
     /// matching Solidity's default-to-zero semantics.
     pub fn get(&self) -> T {
-        let buf = storage_get_32(self.key.as_bytes());
+        let buf = storage_get_32(&self.host, self.key.as_bytes());
         T::decode(&buf)
     }
 
@@ -312,7 +304,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// Note: writing an all-zero value deletes the key (Solidity semantics),
     /// so `try_get()` returns `None` after writing zero.
     pub fn try_get(&self) -> Option<T> {
-        storage_try_get_32(self.key.as_bytes()).map(|buf| T::decode(&buf))
+        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode(&buf))
     }
 
     /// Write a value to storage.
@@ -322,14 +314,14 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     pub fn set(&mut self, value: &T) {
         let mut buf = [0u8; 32];
         SolEncode::encode_body_to(value, &mut buf);
-        storage_set_32(self.key.as_bytes(), &buf);
+        storage_set_32(&self.host, self.key.as_bytes(), &buf);
     }
 
     /// Clear the storage slot.
     ///
     /// Writes all-zero, which the host deletes from storage.
     pub fn clear(&mut self) {
-        storage_set_32(self.key.as_bytes(), &[0u8; 32]);
+        storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
     }
 }
 
@@ -343,14 +335,16 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
 /// The mapping stores nothing at its root slot.
 pub struct Mapping<K, V> {
     root: StorageKey,
+    host: Host,
     _marker: PhantomData<(K, V)>,
 }
 
 impl<K, V> Mapping<K, V> {
-    /// Create a new mapping rooted at the given storage key.
-    pub const fn new(root: StorageKey) -> Self {
+    /// Create a new mapping rooted at the given storage key, bound to a host handle.
+    pub fn new(root: StorageKey, host: Host) -> Self {
         Mapping {
             root,
+            host,
             _marker: PhantomData,
         }
     }
@@ -361,7 +355,7 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
     ///
     /// Useful for debugging and cross-checking with `cast index`.
     pub fn slot_of(&self, key: &K) -> StorageKey {
-        self.root.derive(key)
+        self.root.derive(&self.host, key)
     }
 
     /// Derive the slot once and return a [`Lazy`] handle for multiple operations.
@@ -371,19 +365,19 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
     ///
     /// This saves a keccak host call when doing read-then-write on the same key.
     pub fn entry(&mut self, key: &K) -> Lazy<V> {
-        Lazy::new(self.slot_of(key))
+        Lazy::new(self.slot_of(key), self.host.clone())
     }
 
     /// Read the value at the given key.
     ///
     /// Returns the zero value if the key was never written.
     pub fn get(&self, key: &K) -> V {
-        Lazy::new(self.slot_of(key)).get()
+        Lazy::new(self.slot_of(key), self.host.clone()).get()
     }
 
     /// Read the value, returning `None` if the key was never written.
     pub fn try_get(&self, key: &K) -> Option<V> {
-        Lazy::new(self.slot_of(key)).try_get()
+        Lazy::new(self.slot_of(key), self.host.clone()).try_get()
     }
 
     /// Write a value at the given key.
@@ -415,14 +409,14 @@ impl<K1: AsStorageKey, K2: AsStorageKey, V: SolEncode + SolDecode + StaticEncode
     /// `#[contract]` macro, which injects `&Storage` (not `&mut Storage`)
     /// for view functions, preventing access to this `&mut self` `entry()`.
     pub fn get(&self, key: &K1) -> Mapping<K2, V> {
-        Mapping::new(self.root.derive(key))
+        Mapping::new(self.root.derive(&self.host, key), self.host.clone())
     }
 
     /// Write path for nested mappings: derives the inner mapping root.
     ///
     /// Takes `&mut self`, so this is only available in mutating methods.
     pub fn entry(&mut self, key: &K1) -> Mapping<K2, V> {
-        Mapping::new(self.root.derive(key))
+        Mapping::new(self.root.derive(&self.host, key), self.host.clone())
     }
 }
 
@@ -432,36 +426,41 @@ impl<K1: AsStorageKey, K2: AsStorageKey, V: SolEncode + SolDecode + StaticEncode
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     extern crate std;
 
     use super::*;
+    use alloc::rc::Rc;
     use pvm_contract_types::Address;
-    use pvm_contract_types::MockHost;
+    use pvm_contract_types::MockHostBuilder;
     use ruint::aliases::U256;
+
+    /// Fresh isolated `Host` backed by a new `MockHost` in an `Rc`.
+    /// Clone the returned handle to share storage state between cells.
+    fn h() -> Host {
+        Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
+    }
 
     // --- Lazy roundtrips ---
 
     #[test]
     fn lazy_roundtrip_u256() {
-        MockHost::reset();
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
         assert_eq!(lazy.get(), U256::from(42));
     }
 
     #[test]
     fn lazy_roundtrip_address() {
-        MockHost::reset();
         let addr = Address([0xAA; 20]);
-        let mut lazy = Lazy::<Address>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<Address>::new(StorageKey::from_slot(0), h());
         lazy.set(&addr);
         assert_eq!(lazy.get(), addr);
     }
 
     #[test]
     fn lazy_roundtrip_bool() {
-        MockHost::reset();
-        let mut lazy = Lazy::<bool>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<bool>::new(StorageKey::from_slot(0), h());
         lazy.set(&true);
         assert!(lazy.get());
         lazy.set(&false);
@@ -471,30 +470,26 @@ mod tests {
 
     #[test]
     fn lazy_default_is_zero() {
-        MockHost::reset();
-        let lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         assert_eq!(lazy.get(), U256::ZERO);
     }
 
     #[test]
     fn lazy_try_get_uninitialized() {
-        MockHost::reset();
-        let lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         assert_eq!(lazy.try_get(), None);
     }
 
     #[test]
     fn lazy_try_get_nonzero_value() {
-        MockHost::reset();
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(99));
         assert_eq!(lazy.try_get(), Some(U256::from(99)));
     }
 
     #[test]
     fn lazy_set_zero_deletes() {
-        MockHost::reset();
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
         assert_eq!(lazy.try_get(), Some(U256::from(42)));
         lazy.set(&U256::ZERO);
@@ -504,8 +499,7 @@ mod tests {
 
     #[test]
     fn lazy_clear_then_try_get() {
-        MockHost::reset();
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
         lazy.clear();
         assert_eq!(lazy.try_get(), None);
@@ -513,8 +507,7 @@ mod tests {
 
     #[test]
     fn lazy_clear() {
-        MockHost::reset();
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0));
+        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
         lazy.clear();
         assert_eq!(lazy.get(), U256::ZERO);
@@ -524,8 +517,7 @@ mod tests {
 
     #[test]
     fn mapping_insert_get() {
-        MockHost::reset();
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let addr = Address([0xBB; 20]);
         m.insert(&addr, &U256::from(100));
         assert_eq!(m.get(&addr), U256::from(100));
@@ -533,8 +525,7 @@ mod tests {
 
     #[test]
     fn mapping_remove() {
-        MockHost::reset();
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let addr = Address([0xCC; 20]);
         m.insert(&addr, &U256::from(50));
         m.remove(&addr);
@@ -543,8 +534,7 @@ mod tests {
 
     #[test]
     fn mapping_remove_then_try_get() {
-        MockHost::reset();
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let addr = Address([0xDD; 20]);
         m.insert(&addr, &U256::from(50));
         assert_eq!(m.try_get(&addr), Some(U256::from(50)));
@@ -555,8 +545,7 @@ mod tests {
 
     #[test]
     fn mapping_different_keys_independent() {
-        MockHost::reset();
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let a = Address([0x01; 20]);
         let b = Address([0x02; 20]);
         m.insert(&a, &U256::from(10));
@@ -569,9 +558,8 @@ mod tests {
 
     #[test]
     fn nested_mapping_allowances() {
-        MockHost::reset();
         let mut allowances =
-            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2));
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h());
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
 
@@ -583,24 +571,25 @@ mod tests {
 
     #[test]
     fn tuple_key_matches_chaining() {
-        MockHost::reset();
+        let host = h();
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
         let amount = U256::from(123);
 
         // Write via nested mapping chaining
-        let mut chained = Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2));
+        let mut chained =
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone());
         chained.entry(&owner).insert(&spender, &amount);
 
-        // Read via tuple key (same slot)
-        let tuple_map = Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2));
+        // Read via tuple key (same slot, same host state)
+        let tuple_map =
+            Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone());
         assert_eq!(tuple_map.get(&(owner, spender)), amount);
     }
 
     #[test]
     fn tuple_key_write_and_read() {
-        MockHost::reset();
-        let mut m = Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0), h());
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
 
@@ -611,26 +600,25 @@ mod tests {
 
     #[test]
     fn triple_tuple_key_matches_chaining() {
-        MockHost::reset();
+        let host = h();
         let a = Address([0xAA; 20]);
         let b = Address([0xBB; 20]);
         let c = Address([0xCC; 20]);
 
         // Derive slot via triple nesting
         let root = StorageKey::from_slot(0);
-        let chained = root.derive(&a);
-        let chained = chained.derive(&b);
-        let chained = chained.derive(&c);
+        let chained = root.derive(&host, &a);
+        let chained = chained.derive(&host, &b);
+        let chained = chained.derive(&host, &c);
 
         // Derive slot via 3-tuple (must match chaining)
-        let tupled = (a, b, c).derive_slot(&root);
+        let tupled = (a, b, c).derive_slot(&host, &root);
         assert_eq!(chained, tupled);
     }
 
     #[test]
     fn bytes32_as_mapping_key() {
-        MockHost::reset();
-        let mut m = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), h());
         let key = [0xAB; 32];
         m.insert(&key, &U256::from(42));
         assert_eq!(m.get(&key), U256::from(42));
@@ -648,12 +636,12 @@ mod tests {
 
     #[test]
     fn derive_key_matches_solidity() {
-        MockHost::reset();
+        let host = h();
         // cast index address 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 1
         // Expected: keccak256(pad32(0xAA..AA) ++ pad32(1))
         let addr = Address([0xAA; 20]);
         let root = StorageKey::from_slot(1);
-        let derived = root.derive(&addr);
+        let derived = root.derive(&host, &addr);
 
         // Compute expected: keccak256(0x000..0xAAAA..AA ++ 0x000..001)
         let mut preimage = [0u8; 64];
@@ -662,7 +650,7 @@ mod tests {
         // Slot 1: 31 zero bytes + 0x01
         preimage[63] = 1;
         let mut expected = [0u8; 32];
-        Host::hash_keccak_256(&preimage, &mut expected);
+        host.hash_keccak_256(&preimage, &mut expected);
 
         assert_eq!(derived.as_bytes(), &expected);
     }
@@ -671,8 +659,7 @@ mod tests {
 
     #[test]
     fn entry_reuse_for_read_write() {
-        MockHost::reset();
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0));
+        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let addr = Address([0xEE; 20]);
         m.insert(&addr, &U256::from(100));
 
@@ -699,8 +686,7 @@ mod tests {
             balances: Mapping<Address, U256>,
         }
 
-        MockHost::reset();
-        let mut storage = TestStorage::__pvm_storage();
+        let mut storage = TestStorage::__pvm_storage(h());
 
         // counter at slot 0
         storage.counter.set(&U256::from(42));
@@ -728,8 +714,7 @@ mod tests {
             allowances: Mapping<Address, Mapping<Address, U256>>,
         }
 
-        MockHost::reset();
-        let mut storage = Storage::__pvm_storage();
+        let mut storage = Storage::__pvm_storage(h());
 
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
@@ -780,8 +765,7 @@ mod tests {
             value_b: Lazy<U256>,
         }
 
-        MockHost::reset();
-        let mut storage = TestStorage::__pvm_storage();
+        let mut storage = TestStorage::__pvm_storage(h());
 
         // Values at different slots don't interfere
         storage.value_a.set(&U256::from(111));
@@ -796,8 +780,7 @@ mod tests {
     fn mapping_solidity_slot_compat() {
         // `cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB 1`
         // → 0x8f22848572deaf321ecb41095a0a57d3f19eda24b92a3f4a8e554a2e56f45bc4
-        MockHost::reset();
-        let m = Mapping::<Address, U256>::new(StorageKey::from_slot(1));
+        let m = Mapping::<Address, U256>::new(StorageKey::from_slot(1), h());
         let addr = Address([0xBB; 20]);
         let slot = m.slot_of(&addr);
 
@@ -816,8 +799,8 @@ mod tests {
         //       → 0xe1e81504ed8609a5b03379f97b221e3dede4a62d6d61a87a4ab7ed7b1b9c0553
         // outer = cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB <inner>
         //       → 0x35815c850ac7d4d0af322824699787b146e33c6cac5d0a52ab3225d6985a27a7
-        MockHost::reset();
-        let allowances = Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2));
+        let allowances =
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h());
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
 
