@@ -47,13 +47,17 @@ fn validate_cdm_name(name: &str, span: &LitStr) -> syn::Result<()> {
         ));
     }
     fn valid_segment(s: &str) -> bool {
-        s.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        !s.starts_with('-')
+            && !s.ends_with('-')
+            && !s.starts_with('_')
+            && !s.ends_with('_')
+            && s.chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
     }
     if !valid_segment(ns) || !valid_segment(pkg) {
         return Err(syn::Error::new_spanned(
             span,
-            "CDM package name segments must contain only lowercase alphanumeric characters, hyphens, and underscores",
+            "CDM package name segments must contain only lowercase alphanumeric characters, hyphens, and underscores, and must not start or end with a hyphen or underscore",
         ));
     }
     Ok(())
@@ -389,6 +393,16 @@ mod tests {
     #[test]
     fn rejects_uppercase_in_name() {
         assert!(parse(r#"Foo, "@Ns/Foo""#).is_err());
+    }
+
+    #[test]
+    fn rejects_leading_hyphen() {
+        assert!(parse(r#"Foo, "@ns/-foo""#).is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_hyphen() {
+        assert!(parse(r#"Foo, "@ns/foo-""#).is_err());
     }
 
     #[test]
