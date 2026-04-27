@@ -20,7 +20,7 @@
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, DispatchResult, Host, MockHost, MockHostBuilder, Router, SolDecode, SolEncode,
+    Address, Host, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
     StaticEncodedLen,
 };
 use ruint::aliases::U256;
@@ -228,30 +228,39 @@ fn read_balance(host: &MockHost, addr: [u8; 20]) -> U256 {
     U256::from_be_bytes::<32>(bytes)
 }
 
-/// Call `route()` and unwrap to `Ok(data)`, panicking on any other outcome.
-fn route_ok<'a>(
+/// Call `route()`, expect a successful match (selector handled and
+/// `return_value` called with `flags == empty`), and return the captured
+/// encoded data.
+fn route_ok(
     contract: &mut mini_token::MiniToken,
+    mock: &MockHost,
     sel: [u8; 4],
     input: &[u8],
-    out: &'a mut [u8],
-) -> &'a [u8] {
-    match mini_token::route(contract, sel, input, out) {
-        DispatchResult::Ok(data) => data,
-        other => panic!("expected Ok, got {:?}", other),
-    }
+) -> Vec<u8> {
+    let outcome = mini_token::route(contract, sel, input);
+    assert_eq!(outcome, Some(()), "expected matched selector");
+    let rv = mock
+        .take_return_value()
+        .expect("contract called return_value");
+    assert_eq!(rv.flags, ReturnFlags::empty(), "expected success flags");
+    rv.data
 }
 
-/// Call `route()` and unwrap to `Revert(data)`, panicking on any other outcome.
-fn route_revert<'a>(
+/// Call `route()`, expect a revert (selector handled and `return_value`
+/// called with `flags == REVERT`), and return the captured revert payload.
+fn route_revert(
     contract: &mut mini_token::MiniToken,
+    mock: &MockHost,
     sel: [u8; 4],
     input: &[u8],
-    out: &'a mut [u8],
-) -> &'a [u8] {
-    match mini_token::route(contract, sel, input, out) {
-        DispatchResult::Revert(data) => data,
-        other => panic!("expected Revert, got {:?}", other),
-    }
+) -> Vec<u8> {
+    let outcome = mini_token::route(contract, sel, input);
+    assert_eq!(outcome, Some(()), "expected matched selector");
+    let rv = mock
+        .take_return_value()
+        .expect("contract called return_value");
+    assert_eq!(rv.flags, ReturnFlags::REVERT, "expected REVERT flags");
+    rv.data
 }
 
 // --- Tests ---
@@ -262,10 +271,9 @@ fn owner_returns_stored_address() {
     seed_owner(&mock, OWNER);
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
-    let data = route_ok(&mut contract, selector("owner()"), &[], &mut out);
+    let data = route_ok(&mut contract, &mock, selector("owner()"), &[]);
 
-    let returned = Address::decode_at(data, 0);
+    let returned = Address::decode_at(&data, 0);
     assert_eq!(returned, Address::from(OWNER));
 }
 
@@ -274,16 +282,10 @@ fn balance_of_returns_zero_for_untouched_address() {
     let mock = host_with_caller(ALICE);
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
     let input = encode_balance_of_calldata(Address::from(ALICE));
-    let data = route_ok(
-        &mut contract,
-        selector("balanceOf(address)"),
-        &input,
-        &mut out,
-    );
+    let data = route_ok(&mut contract, &mock, selector("balanceOf(address)"), &input);
 
-    assert_eq!(U256::decode_at(data, 0), U256::ZERO);
+    assert_eq!(U256::decode_at(&data, 0), U256::ZERO);
 }
 
 #[test]
@@ -292,14 +294,13 @@ fn mint_by_owner_credits_balance_and_emits_transfer_event() {
     seed_owner(&mock, OWNER);
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
     let input = encode_mint_calldata(Address::from(ALICE), U256::from(1000u64));
 
     let data = route_ok(
         &mut contract,
+        &mock,
         selector("mint(address,uint256)"),
         &input,
-        &mut out,
     );
     assert_eq!(data, &[] as &[u8], "void success returns empty data");
 
@@ -327,18 +328,17 @@ fn mint_by_non_owner_reverts_with_unauthorized() {
     seed_owner(&mock, OWNER);
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
     let input = encode_mint_calldata(Address::from(BOB), U256::from(100u64));
 
     let data = route_revert(
         &mut contract,
+        &mock,
         selector("mint(address,uint256)"),
         &input,
-        &mut out,
     );
 
     // Revert payload is exactly the 4-byte `Unauthorized()` selector — no fields.
-    assert_eq!(data, &selector("Unauthorized()"));
+    assert_eq!(data, selector("Unauthorized()"));
 
     // State untouched: no balance change, no events.
     assert_eq!(read_balance(&mock, BOB), U256::ZERO);
@@ -351,14 +351,13 @@ fn transfer_happy_path_moves_balance_and_emits_event() {
     seed_balance(&mock, ALICE, U256::from(500u64));
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
     let input = encode_transfer_calldata(Address::from(BOB), U256::from(200u64));
 
     let data = route_ok(
         &mut contract,
+        &mock,
         selector("transfer(address,uint256)"),
         &input,
-        &mut out,
     );
     assert_eq!(data, &[] as &[u8]);
 
@@ -377,14 +376,13 @@ fn transfer_insufficient_balance_reverts_with_encoded_fields() {
     seed_balance(&mock, ALICE, U256::from(50u64));
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
     let input = encode_transfer_calldata(Address::from(BOB), U256::from(100u64));
 
     let data = route_revert(
         &mut contract,
+        &mock,
         selector("transfer(address,uint256)"),
         &input,
-        &mut out,
     );
 
     // Expected revert: selector + ABI-encoded (available: U256, required: U256)
@@ -407,18 +405,17 @@ fn short_input_reverts_with_framework_invalid_calldata() {
     let mock = host_with_caller(ALICE);
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
     let short = [0u8; 10]; // need 64 bytes for (Address, U256)
 
     let data = route_revert(
         &mut contract,
+        &mock,
         selector("transfer(address,uint256)"),
         &short,
-        &mut out,
     );
     assert_eq!(
         data,
-        &pvm_contract_types::framework_errors::INVALID_CALLDATA
+        pvm_contract_types::framework_errors::INVALID_CALLDATA.as_slice()
     );
 }
 
@@ -427,9 +424,9 @@ fn unknown_selector_returns_unhandled() {
     let mock = host_with_caller(ALICE);
     let mut contract = make_contract(&mock);
 
-    let mut out = [0u8; 256];
-    let result = mini_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[], &mut out);
-    assert!(matches!(result, DispatchResult::Unhandled));
+    let outcome = mini_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[]);
+    assert_eq!(outcome, None);
+    assert!(mock.take_return_value().is_none());
 }
 
 #[test]
@@ -438,12 +435,11 @@ fn full_lifecycle_mint_transfer_transfer() {
     let mock = host_with_caller(OWNER);
     seed_owner(&mock, OWNER);
     let mut contract = make_contract(&mock);
-    let mut out = [0u8; 256];
     route_ok(
         &mut contract,
+        &mock,
         selector("mint(address,uint256)"),
         &encode_mint_calldata(Address::from(ALICE), U256::from(1000u64)),
-        &mut out,
     );
     assert_eq!(read_balance(&mock, ALICE), U256::from(1000u64));
 
@@ -455,9 +451,9 @@ fn full_lifecycle_mint_transfer_transfer() {
     let mut contract = make_contract(&mock);
     route_ok(
         &mut contract,
+        &mock,
         selector("transfer(address,uint256)"),
         &encode_transfer_calldata(Address::from(BOB), U256::from(300u64)),
-        &mut out,
     );
 
     // Step 3 — caller = BOB, transfer 100 to CHARLIE.
@@ -470,9 +466,9 @@ fn full_lifecycle_mint_transfer_transfer() {
     let mut contract = make_contract(&mock);
     route_ok(
         &mut contract,
+        &mock,
         selector("transfer(address,uint256)"),
         &encode_transfer_calldata(Address::from(CHARLIE), U256::from(100u64)),
-        &mut out,
     );
 
     // Verify final state.
@@ -493,17 +489,22 @@ fn router_trait_path_produces_identical_result_to_free_fn() {
     seed_balance(&mock, ALICE, U256::from(42u64));
     let mut contract = make_contract(&mock);
 
-    let mut out_free = [0u8; 256];
-    let mut out_trait = [0u8; 256];
     let input = encode_balance_of_calldata(Address::from(ALICE));
     let sel = selector("balanceOf(address)");
 
-    let free = mini_token::route(&mut contract, sel, &input, &mut out_free);
-    let via_trait =
-        <mini_token::MiniToken as Router<Host>>::route(&mut contract, sel, &input, &mut out_trait);
+    // Drive via the free function, take the captured return.
+    let outcome = mini_token::route(&mut contract, sel, &input);
+    assert_eq!(outcome, Some(()));
+    let free = mock
+        .take_return_value()
+        .expect("free fn called return_value");
 
-    match (free, via_trait) {
-        (DispatchResult::Ok(a), DispatchResult::Ok(b)) => assert_eq!(a, b),
-        other => panic!("expected matching Ok variants, got {:?}", other),
-    }
+    // Drive via the Router trait, take the freshly captured return.
+    let outcome = <mini_token::MiniToken as Router<Host>>::route(&mut contract, sel, &input);
+    assert_eq!(outcome, Some(()));
+    let via_trait = mock
+        .take_return_value()
+        .expect("trait route called return_value");
+
+    assert_eq!(free, via_trait);
 }

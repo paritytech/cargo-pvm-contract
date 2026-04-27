@@ -68,8 +68,6 @@ pub use pvm_contract_types::{
     CallFlags,
     // Encoding / decoding
     ConstStr,
-    // Dispatch result (host-agnostic outcome produced by `route()`)
-    DispatchResult,
     // Error traits and types
     EmptyError,
     Host,

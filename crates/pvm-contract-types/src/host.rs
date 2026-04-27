@@ -6,13 +6,14 @@
 //! (`self.host.caller(...)` in the macro path, `host.caller(...)` in the DSL
 //! path) so tests can inject a `MockHost` instance per test.
 //!
-//! **Boundary operations are not on the trait.** `return_value`,
-//! `consume_all_gas`, and `terminate` are all diverging exits to the runtime;
-//! they only make sense in production and live directly on
-//! `pallet_revive_uapi::HostFnImpl`, called from macro-generated `call()` /
-//! `deploy()` wrappers that are gated to `target_arch = "riscv64"`.
-//! Under test, contract methods return `Result<T, E>` natively and the test
-//! pattern-matches on the outcome — no panic capture, no `catch_unwind`.
+//! **`return_value` has a cfg-gated signature** — `-> !` on `riscv64` (a
+//! diverging syscall via `pallet_revive_uapi::HostFnImpl::return_value`), and
+//! `-> ()` on host targets (the [`MockHost`](super::MockHost) implementation
+//! captures `(flags, data)` so route-driving tests can inspect the result
+//! after `route()` returns). This mirrors ink!'s pattern: contract dispatch
+//! looks the same on both targets, but on chain it terminates execution and
+//! in tests it returns control with the encoded result available via
+//! `MockHost::take_return_value()`.
 
 pub use pallet_revive_uapi::{CallFlags, ReturnErrorCode, ReturnFlags, StorageFlags};
 
@@ -25,8 +26,11 @@ pub type HostResult = core::result::Result<(), ReturnErrorCode>;
 /// identical instructions as a static call. `MockHost` uses interior mutability
 /// (`RefCell`) only where it actually mutates shared state (storage, events).
 ///
-/// Diverging operations (`return_value`, `consume_all_gas`, `terminate`) are
-/// deliberately NOT on this trait — see the module-level docs.
+/// `return_value` has a cfg-gated signature: it diverges (`-> !`) on `riscv64`
+/// and returns `()` on host targets, where `MockHost` captures the encoded
+/// result instead of terminating. Other diverging operations (`consume_all_gas`,
+/// `terminate`) remain off the trait — they're production-only and used
+/// directly from macro-generated `call()` / `deploy()` wrappers.
 #[allow(clippy::too_many_arguments)]
 pub trait HostApi {
     fn address(&self, output: &mut [u8; 20]);
@@ -113,6 +117,22 @@ pub trait HostApi {
     fn block_author(&self, output: &mut [u8; 20]);
     fn block_number(&self, output: &mut [u8; 32]);
     fn block_hash(&self, block_number: &[u8; 32], output: &mut [u8; 32]);
+
+    /// Terminate execution with the given flags and encoded data.
+    ///
+    /// On `riscv64` this is a syscall and never returns. On host targets
+    /// the test mock captures the call as a [`ReturnValue`](super::ReturnValue)
+    /// and returns control to the caller — see
+    /// [`MockHost::take_return_value`](super::MockHost::take_return_value).
+    #[cfg(target_arch = "riscv64")]
+    fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> !;
+
+    /// Capture the return value (host-target equivalent of the `riscv64`
+    /// diverging syscall). Implementations on host targets should record the
+    /// `(flags, data)` pair (typically into a [`ReturnValue`](super::ReturnValue))
+    /// for the test to inspect after the dispatch returns.
+    #[cfg(not(target_arch = "riscv64"))]
+    fn return_value(&self, flags: ReturnFlags, data: &[u8]);
 }
 
 /// Real host backend for PolkaVM contracts.
@@ -344,6 +364,10 @@ impl HostApi for PolkaVmHost {
     fn block_hash(&self, block_number: &[u8; 32], output: &mut [u8; 32]) {
         pallet_revive_uapi::HostFnImpl::block_hash(block_number, output)
     }
+    #[inline(always)]
+    fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+        pallet_revive_uapi::HostFnImpl::return_value(flags, data)
+    }
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -506,6 +530,9 @@ impl HostApi for PolkaVmHost {
     }
     fn block_hash(&self, _block_number: &[u8; 32], _output: &mut [u8; 32]) {
         unimplemented!("PolkaVmHost::block_hash is only available on PolkaVM")
+    }
+    fn return_value(&self, _flags: ReturnFlags, _data: &[u8]) {
+        unimplemented!("PolkaVmHost::return_value is only available on PolkaVM")
     }
 }
 
@@ -801,6 +828,16 @@ impl HostApi for Host {
     fn block_hash(&self, block_number: &[u8; 32], output: &mut [u8; 32]) {
         self.inner.block_hash(block_number, output)
     }
+    #[cfg(target_arch = "riscv64")]
+    #[inline(always)]
+    fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+        self.inner.return_value(flags, data)
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    #[inline(always)]
+    fn return_value(&self, flags: ReturnFlags, data: &[u8]) {
+        self.inner.return_value(flags, data)
+    }
 }
 
 // `Host` on a non-riscv64 target without `alloc` is uninhabited — every
@@ -966,6 +1003,9 @@ impl HostApi for Host {
         match self._never {}
     }
     fn block_hash(&self, _block_number: &[u8; 32], _output: &mut [u8; 32]) {
+        match self._never {}
+    }
+    fn return_value(&self, _flags: ReturnFlags, _data: &[u8]) {
         match self._never {}
     }
 }

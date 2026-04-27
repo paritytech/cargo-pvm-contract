@@ -807,9 +807,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         )
     };
 
-    // `call()` is the riscv64 boundary: read calldata into an input buffer,
-    // allocate an output buffer, run `route()` (host-agnostic), and translate
-    // the returned `DispatchResult` into exactly one `return_value` syscall.
+    // `call()` is the riscv64 boundary: read calldata, dispatch via `route()`.
+    // Each matched dispatch arm calls `host.return_value(...)` directly
+    // (diverges via syscall) — no buffer round-trip, no result enum to
+    // translate. If `route()` returns `None`, no selector matched and we
+    // fall through to the fallback or unknown-selector handler.
     let call_fn = if use_alloc {
         quote! {
             #[cfg(target_arch = "riscv64")]
@@ -829,20 +831,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
-                let mut __out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
 
-                match route(&mut this, selector, input, &mut __out) {
-                    ::pvm_contract_sdk::DispatchResult::Ok(data) => {
-                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_sdk::ReturnFlags::empty(), data);
-                    }
-                    ::pvm_contract_sdk::DispatchResult::Revert(data) => {
-                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_sdk::ReturnFlags::REVERT, data);
-                    }
-                    ::pvm_contract_sdk::DispatchResult::Unhandled => {
-                        #unknown_selector_handler
-                    }
+                if route(&mut this, selector, input).is_none() {
+                    #unknown_selector_handler
                 }
             }
         }
@@ -870,20 +861,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
-                let mut __out = [0u8; #buffer_size];
 
-                match route(&mut this, selector, input, &mut __out) {
-                    ::pvm_contract_sdk::DispatchResult::Ok(data) => {
-                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_sdk::ReturnFlags::empty(), data);
-                    }
-                    ::pvm_contract_sdk::DispatchResult::Revert(data) => {
-                        ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                            ::pvm_contract_sdk::ReturnFlags::REVERT, data);
-                    }
-                    ::pvm_contract_sdk::DispatchResult::Unhandled => {
-                        #unknown_selector_handler
-                    }
+                if route(&mut this, selector, input).is_none() {
+                    #unknown_selector_handler
                 }
             }
         }
@@ -1402,7 +1382,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Generated route() takes a `&mut Contract<H>` instance and an `out` buffer
+        // Generated route() takes a `&mut Contract` and returns Option<()>
         assert!(
             output.contains("fn route"),
             "route() function should be generated"
@@ -1413,8 +1393,10 @@ mod tests {
                 || output.contains(":: pvm_contract_sdk :: Router"),
             "Router impl should target concrete Host"
         );
-        // call() delegates to route() with the constructed `this` and the out buffer
-        assert!(output.contains("route (& mut this , selector , input , & mut __out)"));
+        // call() delegates to route() with the constructed `this` and falls
+        // through to the unknown-selector handler when the Option is None.
+        assert!(output.contains("route (& mut this , selector , input)"));
+        assert!(output.contains("is_none ()"));
     }
 
     #[test]

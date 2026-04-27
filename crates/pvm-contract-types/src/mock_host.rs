@@ -40,7 +40,7 @@ use core::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, StorageFlags};
+use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, ReturnFlags, StorageFlags};
 
 /// Return value for mocked external calls.
 ///
@@ -50,6 +50,19 @@ pub type MockCallReturn = Result<Vec<u8>, ()>;
 
 /// One captured event: `(topics, data)`.
 pub type EventRecord = (Vec<[u8; 32]>, Vec<u8>);
+
+/// The `(flags, data)` payload from a single [`HostApi::return_value`] call,
+/// captured by [`MockHost`] for route-driving tests.
+///
+/// `flags == ReturnFlags::empty()` indicates a successful return (the
+/// dispatch arm matched and the method returned `Ok` / a value);
+/// `flags == ReturnFlags::REVERT` indicates a revert, with `data` holding
+/// the encoded revert payload (4-byte selector + ABI-encoded fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReturnValue {
+    pub flags: ReturnFlags,
+    pub data: Vec<u8>,
+}
 
 #[derive(Clone)]
 struct MockInstantiateReturn {
@@ -78,6 +91,11 @@ struct MockState {
     events: Vec<EventRecord>,
     immutable_data: Vec<u8>,
     return_data: Vec<u8>,
+    /// Captured `return_value` call from the contract.
+    /// On host targets, `HostApi::return_value` does not diverge; instead it
+    /// records the encoded result here so route-driving tests can read it
+    /// after `route()` returns.
+    return_value: Option<ReturnValue>,
 
     // --- Mock configuration ---
     call_returns: HashMap<[u8; 20], MockCallReturn>,
@@ -103,6 +121,7 @@ impl MockState {
             events: Vec::new(),
             immutable_data: Vec::new(),
             return_data: Vec::new(),
+            return_value: None,
             call_returns: HashMap::new(),
             instantiate_return: None,
         }
@@ -152,6 +171,20 @@ impl MockHost {
     /// Raw storage write — for test setup.
     pub fn set_raw_storage(&self, key: Vec<u8>, value: Vec<u8>) {
         self.state.borrow_mut().storage.insert(key, value);
+    }
+
+    /// Take the [`ReturnValue`] captured by the most recent
+    /// [`HostApi::return_value`] call on this mock, leaving the slot empty.
+    /// Returns `None` if no `return_value` has been called since the last
+    /// `take_return_value`.
+    ///
+    /// On host targets, dispatch arms call `host.return_value(...)` which
+    /// records the encoded result here instead of diverging. Each
+    /// `route()` invocation should be followed by exactly one
+    /// `take_return_value()` — consuming the value rather than cloning
+    /// prevents stale captures from leaking across calls on the same mock.
+    pub fn take_return_value(&self) -> Option<ReturnValue> {
+        self.state.borrow_mut().return_value.take()
     }
 }
 
@@ -531,6 +564,13 @@ impl HostApi for MockHost {
 
     fn block_hash(&self, _block_number: &[u8; 32], output: &mut [u8; 32]) {
         output.fill(0);
+    }
+
+    fn return_value(&self, flags: ReturnFlags, data: &[u8]) {
+        self.state.borrow_mut().return_value = Some(ReturnValue {
+            flags,
+            data: data.to_vec(),
+        });
     }
 }
 
