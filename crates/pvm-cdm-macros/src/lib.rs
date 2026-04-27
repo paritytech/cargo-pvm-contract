@@ -19,6 +19,46 @@ const GET_ADDRESS_SELECTOR: [u8; 4] = {
     [hash[0], hash[1], hash[2], hash[3]]
 };
 
+/// Validate that a CDM package name follows the `@namespace/name` convention.
+/// Segments must be non-empty and contain only lowercase alphanumeric characters,
+/// hyphens, and underscores.
+fn validate_cdm_name(name: &str, span: &LitStr) -> syn::Result<()> {
+    if !name.starts_with('@') {
+        return Err(syn::Error::new_spanned(
+            span,
+            "CDM package name must start with '@' (e.g. \"@example/foo\")",
+        ));
+    }
+    let after_at = &name[1..];
+    let slash_count = after_at.chars().filter(|&c| c == '/').count();
+    if slash_count != 1 {
+        return Err(syn::Error::new_spanned(
+            span,
+            "CDM package name must have exactly one '/' separating namespace and name (e.g. \"@example/foo\")",
+        ));
+    }
+    let mut parts = after_at.splitn(2, '/');
+    let ns = parts.next().unwrap_or("");
+    let pkg = parts.next().unwrap_or("");
+    if ns.is_empty() || pkg.is_empty() {
+        return Err(syn::Error::new_spanned(
+            span,
+            "CDM package name must have non-empty namespace and name (e.g. \"@example/foo\")",
+        ));
+    }
+    fn valid_segment(s: &str) -> bool {
+        s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    }
+    if !valid_segment(ns) || !valid_segment(pkg) {
+        return Err(syn::Error::new_spanned(
+            span,
+            "CDM package name segments must contain only lowercase alphanumeric characters, hyphens, and underscores",
+        ));
+    }
+    Ok(())
+}
+
 struct ReferenceInput {
     contract_ty: Path,
     cdm_name: String,
@@ -35,9 +75,11 @@ impl Parse for ReferenceInput {
                 return Err(input.error("unexpected tokens after CDM package name"));
             }
         }
+        let cdm_name = name_lit.value();
+        validate_cdm_name(&cdm_name, &name_lit)?;
         Ok(Self {
             contract_ty,
-            cdm_name: name_lit.value(),
+            cdm_name,
         })
     }
 }
@@ -68,6 +110,17 @@ pub fn reference(input: TokenStream) -> TokenStream {
 
     let [s0, s1, s2, s3] = GET_ADDRESS_SELECTOR;
 
+    // Compute calldata layout at macro time so we can emit a fixed-size
+    // stack array instead of heap-allocating with alloc::vec!.
+    let name_len = cdm_name.len();
+    let padded_len = (name_len + 31) / 32 * 32;
+    let calldata_len = 4 + 32 + 32 + padded_len;
+
+    // The generated impl targets the "base" specialization of the struct
+    // emitted by `abi_import!`: `Struct<Pure, (), (), false>` with a
+    // `from_address(Address) -> Self` constructor. If `abi_import!` changes
+    // its generic signature, this must be updated. The `reference_shape.rs`
+    // test in `pvm-cdm` catches drift at compile time.
     let expanded: TokenStream2 = quote! {
         impl #contract_ty<
             ::pvm_contract_sdk::Pure,
@@ -77,11 +130,10 @@ pub fn reference(input: TokenStream) -> TokenStream {
         > {
             /// Resolve this contract's address via a runtime call to the CDM registry.
             ///
-            /// Panics if `CONTRACTS_REGISTRY_ADDR` was unset at build time, if the
-            /// registry call fails, or if the package isn't registered.
+            /// Panics if `CONTRACTS_REGISTRY_ADDR` was unset at build time.
+            /// Reverts the transaction if the registry call fails or the
+            /// package isn't registered.
             pub fn cdm_lookup() -> Self {
-                extern crate alloc;
-
                 const fn __hex_nibble(c: u8) -> u8 {
                     match c {
                         b'0'..=b'9' => c - b'0',
@@ -124,9 +176,8 @@ pub fn reference(input: TokenStream) -> TokenStream {
 
                 let cdm_name: &str = #cdm_name;
                 let name_len = cdm_name.len();
-                let padded_len = name_len.div_ceil(32) * 32;
 
-                let mut calldata = alloc::vec![0u8; 4 + 32 + 32 + padded_len];
+                let mut calldata = [0u8; #calldata_len];
                 calldata[0] = #s0;
                 calldata[1] = #s1;
                 calldata[2] = #s2;
@@ -152,13 +203,17 @@ pub fn reference(input: TokenStream) -> TokenStream {
                     Ok(()) => {
                         let is_some = output_buf[31] != 0;
                         if !is_some {
-                            panic!("cdm_lookup: contract not found in registry");
+                            <::pvm_contract_sdk::PolkaVmHost as ::pvm_contract_sdk::HostApi>::return_value(
+                                ::pvm_contract_sdk::ReturnFlags::REVERT, &[])
                         }
                         let mut addr = [0u8; 20];
                         addr.copy_from_slice(&output_buf[44..64]);
                         Self::from_address(addr.into())
                     }
-                    Err(_) => panic!("cdm_lookup: registry call failed"),
+                    Err(_) => {
+                        <::pvm_contract_sdk::PolkaVmHost as ::pvm_contract_sdk::HostApi>::return_value(
+                            ::pvm_contract_sdk::ReturnFlags::REVERT, &[])
+                    }
                 }
             }
 
@@ -211,6 +266,11 @@ pub fn reference(input: TokenStream) -> TokenStream {
                                     assert!(
                                         start + 40 <= bytes.len(),
                                         "CDM_REGISTRY entry is shorter than 40 hex chars"
+                                    );
+                                    let end = start + 40;
+                                    assert!(
+                                        end == bytes.len() || bytes[end] == b';',
+                                        "CDM_REGISTRY entry has trailing characters after the 40-hex address"
                                     );
                                     let mut r = [0u8; 20];
                                     let mut i = 0;
@@ -294,6 +354,41 @@ mod tests {
     #[test]
     fn rejects_extra_args() {
         assert!(parse(r#"Foo, "@ns/foo", extra"#).is_err());
+    }
+
+    #[test]
+    fn accepts_underscores_in_name() {
+        parse(r#"Foo, "@my_org/my_contract""#).unwrap();
+    }
+
+    #[test]
+    fn rejects_name_without_at() {
+        assert!(parse(r#"Foo, "example/foo""#).is_err());
+    }
+
+    #[test]
+    fn rejects_name_without_slash() {
+        assert!(parse(r#"Foo, "@example""#).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_namespace() {
+        assert!(parse(r#"Foo, "@/foo""#).is_err());
+    }
+
+    #[test]
+    fn rejects_empty_name() {
+        assert!(parse(r#"Foo, "@ns/""#).is_err());
+    }
+
+    #[test]
+    fn rejects_whitespace_in_name() {
+        assert!(parse(r#"Foo, "@ns/foo bar""#).is_err());
+    }
+
+    #[test]
+    fn rejects_uppercase_in_name() {
+        assert!(parse(r#"Foo, "@Ns/Foo""#).is_err());
     }
 
     #[test]
