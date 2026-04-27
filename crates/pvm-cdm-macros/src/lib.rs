@@ -117,7 +117,7 @@ pub fn reference(input: TokenStream) -> TokenStream {
     // Compute calldata layout at macro time so we can emit a fixed-size
     // stack array instead of heap-allocating with alloc::vec!.
     let name_len = cdm_name.len();
-    let padded_len = (name_len + 31) / 32 * 32;
+    let padded_len = name_len.div_ceil(32) * 32;
     let calldata_len = 4 + 32 + 32 + padded_len;
 
     // The generated impl targets the "base" specialization of the struct
