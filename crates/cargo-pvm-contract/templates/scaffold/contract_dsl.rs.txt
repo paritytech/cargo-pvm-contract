@@ -81,19 +81,16 @@ pub extern "C" fn call() {
 {% if functions.is_empty() %}
     // Register your method handlers:
     // const MY_METHOD: [u8; 4] = solidity_selector("myMethod(uint256)");
-    // let outcome = ContractBuilder::<PolkaVmHost>::new()
+    // ContractBuilder::<PolkaVmHost>::new()
     //     .method(MY_METHOD, my_method_handler::<PolkaVmHost>)
     //     .dispatch_impl::<256>(&host);
-    // pvm_contract_builder_dsl::finalize(outcome)
-    let outcome = ContractBuilder::<PolkaVmHost>::new().dispatch_impl::<256>(&host);
-    pvm_contract_builder_dsl::finalize(outcome)
+    ContractBuilder::<PolkaVmHost>::new().dispatch_impl::<256>(&host);
 {% else %}
-    let outcome = ContractBuilder::<PolkaVmHost>::new()
+    ContractBuilder::<PolkaVmHost>::new()
 {% for func in functions %}
         .method({{ func.selector_const }}, {{ func.name_snake }}_handler::<PolkaVmHost>)
 {% endfor %}
         .dispatch_impl::<256>(&host);
-    pvm_contract_builder_dsl::finalize(outcome)
 {% endif %}
 }
 {% if !functions.is_empty() %}

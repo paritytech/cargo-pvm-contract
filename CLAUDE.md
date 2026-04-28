@@ -364,7 +364,7 @@ In CI (`benchmark.yml`), PR builds are compared against `origin/main` with a 5% 
 
 ### example-mytoken
 
-Six MyToken variants as separate binaries:
+Seven MyToken variants as separate binaries:
 
 - `example-mytoken-macro-pico-alloc` — `pvm_contract_macros` with `allocator = "pico"`
 - `example-mytoken-macro-bump-alloc` — `pvm_contract_macros` with `allocator = "bump"`

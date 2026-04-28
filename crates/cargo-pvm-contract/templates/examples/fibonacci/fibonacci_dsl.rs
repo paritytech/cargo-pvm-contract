@@ -22,10 +22,9 @@ pub extern "C" fn deploy() {}
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
     let host = PolkaVmHost;
-    let outcome = ContractBuilder::<PolkaVmHost>::new()
+    ContractBuilder::<PolkaVmHost>::new()
         .method(FIBONACCI_SELECTOR, fibonacci_handler::<PolkaVmHost>)
         .dispatch_impl::<256>(&host);
-    pvm_contract_builder_dsl::finalize(outcome)
 }
 
 fn fibonacci_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
