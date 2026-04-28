@@ -34,13 +34,12 @@ pub extern "C" fn deploy() {}
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
     let host = PolkaVmHost;
-    let outcome = ContractBuilder::<PolkaVmHost>::new()
+    ContractBuilder::<PolkaVmHost>::new()
         .method(TOTAL_SUPPLY_SELECTOR, total_supply_handler::<PolkaVmHost>)
         .method(BALANCE_OF_SELECTOR, balance_of_handler::<PolkaVmHost>)
         .method(TRANSFER_SELECTOR, transfer_handler::<PolkaVmHost>)
         .method(MINT_SELECTOR, mint_handler::<PolkaVmHost>)
         .dispatch_impl::<256>(&host);
-    pvm_contract_builder_dsl::finalize(outcome)
 }
 
 fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {

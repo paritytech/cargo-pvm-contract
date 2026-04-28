@@ -33,7 +33,7 @@ pub extern "C" fn deploy() {}
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
     let host = PolkaVmHost;
-    let outcome = ContractBuilder::<PolkaVmHost>::new()
+    ContractBuilder::<PolkaVmHost>::new()
         .method(ADD_SELECTOR, add_handler::<PolkaVmHost>)
         .method(MULTIPLY_SELECTOR, multiply_handler::<PolkaVmHost>)
         .method(IS_EVEN_SELECTOR, is_even_handler::<PolkaVmHost>)
@@ -45,7 +45,6 @@ pub extern "C" fn call() {
         .method(IS_ZERO_SELECTOR, is_zero_handler::<PolkaVmHost>)
         .method(INCREMENT_SELECTOR, increment_handler::<PolkaVmHost>)
         .dispatch_impl::<256>(&host);
-    pvm_contract_builder_dsl::finalize(outcome)
 }
 
 fn add_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {

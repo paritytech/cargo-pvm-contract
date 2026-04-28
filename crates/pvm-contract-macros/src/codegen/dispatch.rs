@@ -396,30 +396,32 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
 }
 
 fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
-    // Static types take a stack-buffer fast path (size known at compile time);
-    // dynamic types use a heap Vec sized at runtime. The `IS_DYNAMIC` branch
-    // is on a const bool, so LLVM DCEs the dead arm after monomorphization.
+    // Single `host.return_value(...)` call site shared between static and
+    // dynamic returns. Each branch fills a different buffer (heap Vec for
+    // dynamic, stack array for static) and exposes the encoded bytes via a
+    // shared `&[u8]`. LLVM DCEs the dead branch after monomorphization on
+    // `IS_DYNAMIC` (a const bool), and consolidating the syscall site cuts
+    // the per-arm prologue/epilogue cost vs. emitting two separate calls.
     if outputs.len() == 1 {
         let ty = &outputs[0];
         return quote! {{
-            if <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
-                let __len = <#ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
-                let mut __buf = alloc::vec![0u8; __len];
-                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                    this.host(),
-                    ::pvm_contract_sdk::ReturnFlags::empty(),
-                    &__buf,
-                );
+            let __len = <#ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
+            let mut __dyn_buf: alloc::vec::Vec<u8>;
+            let mut __static_buf: [u8; <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
+            let __data: &[u8] = if <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
+                __dyn_buf = alloc::vec![0u8; __len];
+                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __dyn_buf);
+                &__dyn_buf
             } else {
-                let mut __buf = [0u8; <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
-                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                    this.host(),
-                    ::pvm_contract_sdk::ReturnFlags::empty(),
-                    &__buf,
-                );
-            }
+                __static_buf = [0u8; <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
+                <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __static_buf[..__len]);
+                &__static_buf[..__len]
+            };
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                this.host(),
+                ::pvm_contract_sdk::ReturnFlags::empty(),
+                __data,
+            );
             #[allow(unreachable_code)]
             return ::core::option::Option::Some(());
         }};
@@ -427,24 +429,23 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
 
     let tuple_ty = quote! { (#(#outputs,)*) };
     quote! {{
-        if <#tuple_ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
-            let __len = <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
-            let mut __buf = alloc::vec![0u8; __len];
-            <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                this.host(),
-                ::pvm_contract_sdk::ReturnFlags::empty(),
-                &__buf,
-            );
+        let __len = <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_len(&result);
+        let mut __dyn_buf: alloc::vec::Vec<u8>;
+        let mut __static_buf: [u8; <#tuple_ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
+        let __data: &[u8] = if <#tuple_ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
+            __dyn_buf = alloc::vec![0u8; __len];
+            <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __dyn_buf);
+            &__dyn_buf
         } else {
-            let mut __buf = [0u8; <#tuple_ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
-            <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                this.host(),
-                ::pvm_contract_sdk::ReturnFlags::empty(),
-                &__buf,
-            );
-        }
+            __static_buf = [0u8; <#tuple_ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
+            <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __static_buf[..__len]);
+            &__static_buf[..__len]
+        };
+        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+            this.host(),
+            ::pvm_contract_sdk::ReturnFlags::empty(),
+            __data,
+        );
         #[allow(unreachable_code)]
         return ::core::option::Option::Some(());
     }}

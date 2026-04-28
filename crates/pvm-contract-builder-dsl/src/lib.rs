@@ -46,58 +46,6 @@ pub enum HandlerResult {
 ///   buffer past `n` bytes.
 pub type MethodHandler<H> = fn(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult;
 
-/// Outcome of a dispatcher run, with the output buffer inline.
-///
-/// Zero-alloc: the payload lives in a stack-allocated `[u8; N]` sized by the
-/// caller. `data()` returns the active prefix. Production code hands this to
-/// [`finalize`] (riscv64-only); tests assert on `flags` and `data()`.
-pub struct DispatchOutcome<const N: usize> {
-    pub flags: ReturnFlags,
-    buf: [u8; N],
-    len: usize,
-}
-
-impl<const N: usize> DispatchOutcome<N> {
-    pub fn data(&self) -> &[u8] {
-        &self.buf[..self.len]
-    }
-
-    pub fn is_ok(&self) -> bool {
-        !self.flags.contains(ReturnFlags::REVERT)
-    }
-
-    pub fn is_revert(&self) -> bool {
-        self.flags.contains(ReturnFlags::REVERT)
-    }
-}
-
-/// Terminate the contract by handing the outcome to the runtime.
-///
-/// # `#[cfg(target_arch = "riscv64")]`
-///
-/// **Deliberately only present on riscv64**. This function diverges via
-/// `pallet_revive_uapi::HostFnImpl::return_value`, which only has a real
-/// implementation in the PolkaVM runtime. On host targets the underlying
-/// `HostFnImpl::return_value` is an `unimplemented!()` stub that would panic
-/// at runtime — making `finalize` a silent footgun.
-///
-/// The missing-symbol compile error is the intended safety net: host test
-/// builds that try to call `finalize` get a clear "function not found in
-/// this scope" error at compile time. Tests should call
-/// [`ContractBuilder::dispatch_impl`] directly and assert on the returned
-/// [`DispatchOutcome`] (it's a plain value, no panic or `catch_unwind`
-/// required).
-///
-/// `#[inline(always)]`: encourages LLVM to fold the outcome struct into the
-/// caller, eliding the second stack buffer and matching the pre-receiver
-/// bytecode size.
-#[cfg(target_arch = "riscv64")]
-#[inline(always)]
-pub fn finalize<const N: usize>(outcome: DispatchOutcome<N>) -> ! {
-    use pallet_revive_uapi::HostFn as _;
-    pallet_revive_uapi::HostFnImpl::return_value(outcome.flags, &outcome.buf[..outcome.len])
-}
-
 /// Maximum number of methods a single contract can register.
 const MAX_METHODS: usize = 16;
 
@@ -132,10 +80,11 @@ fn noop_handler<H: pvm_contract_types::HostApi>(
 /// #[cfg(target_arch = "riscv64")]
 /// pub extern "C" fn call() {
 ///     let host = PolkaVmHost;
-///     let outcome = ContractBuilder::<PolkaVmHost>::new()
+///     ContractBuilder::<PolkaVmHost>::new()
 ///         .method(FIB, fibonacci::<PolkaVmHost>)
 ///         .dispatch_impl::<256>(&host);
-///     pvm_contract_builder_dsl::finalize(outcome)
+///     // unreachable on riscv64: every dispatch path calls
+///     // host.return_value(...) which is `-> !` (the syscall).
 /// }
 /// ```
 pub struct ContractBuilder<H: pvm_contract_types::HostApi> {
@@ -199,86 +148,65 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
         None
     }
 
-    /// Read calldata from the host, match the selector, and return the outcome
-    /// wrapped around a stack-allocated `[u8; BUF_SIZE]` output buffer.
+    /// Read calldata from the host, match the selector, and call
+    /// `host.return_value(flags, data)` directly with the encoded result.
     ///
-    /// Pure function — does not diverge, does not touch `return_value`.
-    /// Production code hands the result to [`finalize`]; tests assert on it.
+    /// On `riscv64`, `host.return_value` is the `pallet_revive_uapi` syscall
+    /// (`-> !`) and dispatch terminates the contract. On host targets, the
+    /// `MockHost` implementation captures `(flags, data)` and returns
+    /// control — tests inspect the result via
+    /// `MockHost::take_return_value()`.
     ///
-    /// `#[inline]`: when paired with an inline-always [`finalize`], LLVM folds
-    /// the outcome struct into the caller frame so the dispatch + finalize
-    /// combo compiles to the same instructions as the pre-receiver design.
+    /// Mirrors the `#[contract]` macro's `route()` shape: same dispatch
+    /// architecture across DSL and macro paths, same test ergonomics.
+    ///
+    /// `#[inline]` keeps the dispatcher tight when called from a single
+    /// `extern "C" fn call()` entry point.
     #[inline]
-    pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &H) -> DispatchOutcome<BUF_SIZE> {
+    pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &H) {
         let call_data_len = host.call_data_size() as usize;
 
-        let mut calldata = [0u8; BUF_SIZE];
-        let mut output = [0u8; BUF_SIZE];
-
         if call_data_len > BUF_SIZE {
-            let err = &pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE;
-            output[..err.len()].copy_from_slice(err);
-            return DispatchOutcome {
-                flags: ReturnFlags::REVERT,
-                buf: output,
-                len: err.len(),
-            };
-        }
+            host.return_value(
+                ReturnFlags::REVERT,
+                &pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE,
+            );
+        } else {
+            let mut calldata = [0u8; BUF_SIZE];
+            host.call_data_copy(&mut calldata[..call_data_len], 0);
 
-        host.call_data_copy(&mut calldata[..call_data_len], 0);
-
-        if call_data_len < 4 {
-            let err = &pvm_contract_types::framework_errors::NO_SELECTOR;
-            output[..err.len()].copy_from_slice(err);
-            return DispatchOutcome {
-                flags: ReturnFlags::REVERT,
-                buf: output,
-                len: err.len(),
-            };
-        }
-
-        let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
-        let input = &calldata[4..call_data_len];
-
-        if let Some(result) = self.try_route(host, selector, input, &mut output) {
-            let (flags, raw_len) = match result {
-                HandlerResult::Ok(n) => (ReturnFlags::empty(), n),
-                HandlerResult::Revert(n) => (ReturnFlags::REVERT, n),
-            };
-            // Clamp to BUF_SIZE so a handler returning a bogus length can't
-            // panic later when `DispatchOutcome::data()` slices `buf[..len]`.
-            let len = if raw_len > BUF_SIZE {
-                BUF_SIZE
+            if call_data_len < 4 {
+                host.return_value(
+                    ReturnFlags::REVERT,
+                    &pvm_contract_types::framework_errors::NO_SELECTOR,
+                );
             } else {
-                raw_len
-            };
-            return DispatchOutcome {
-                flags,
-                buf: output,
-                len,
-            };
-        }
+                let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
+                let input = &calldata[4..call_data_len];
+                let mut output = [0u8; BUF_SIZE];
 
-        let err = &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR;
-        output[..err.len()].copy_from_slice(err);
-        DispatchOutcome {
-            flags: ReturnFlags::REVERT,
-            buf: output,
-            len: err.len(),
+                if let Some(result) = self.try_route(host, selector, input, &mut output) {
+                    let (flags, raw_len) = match result {
+                        HandlerResult::Ok(n) => (ReturnFlags::empty(), n),
+                        HandlerResult::Revert(n) => (ReturnFlags::REVERT, n),
+                    };
+                    // Clamp to BUF_SIZE so a buggy handler returning a bogus
+                    // length cannot panic on the slice that follows.
+                    let len = if raw_len > BUF_SIZE {
+                        BUF_SIZE
+                    } else {
+                        raw_len
+                    };
+                    host.return_value(flags, &output[..len]);
+                } else {
+                    host.return_value(
+                        ReturnFlags::REVERT,
+                        &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR,
+                    );
+                }
+            }
         }
     }
-}
-
-/// Production riscv64 entry: dispatch then finalize.
-///
-/// Wraps [`ContractBuilder::dispatch_impl`] + [`finalize`] into the classic
-/// `-> !` entry-point shape. **Not reachable from tests** — gated to riscv64.
-#[cfg(target_arch = "riscv64")]
-pub fn dispatch_and_finalize<H: pvm_contract_types::HostApi, const BUF_SIZE: usize>(
-    builder: ContractBuilder<H>,
-    host: &H,
-) -> ! {
-    finalize(builder.dispatch_impl::<BUF_SIZE>(host))
 }
 
 #[cfg(test)]
