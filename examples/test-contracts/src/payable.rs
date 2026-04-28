@@ -1,33 +1,32 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_types::{PolkaVmHost as api, StorageFlags};
-use ruint::aliases::U256;
+use pvm_contract_sdk::{PolkaVmHost as api, StorageFlags, U256};
 
-#[pvm_contract_macros::contract("Payable.sol", allocator = "pico")]
+#[pvm_contract_sdk::contract("Payable.sol", allocator = "pico")]
 mod payable {
     use super::*;
-    use pvm_contract_types::Address;
+    use pvm_contract_sdk::Address;
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), pvm_contract_types::EmptyError> {
+    #[pvm_contract_sdk::constructor]
+    pub fn new() -> Result<(), pvm_contract_sdk::EmptyError> {
         Ok(())
     }
 
-    #[pvm_contract_macros::method]
-    #[pvm_contract_macros::payable]
+    #[pvm_contract_sdk::method]
+    #[pvm_contract_sdk::payable]
     pub fn deposit() {
         let caller = get_caller();
         credit(&caller, msg_value());
     }
 
-    #[pvm_contract_macros::method]
-    #[pvm_contract_macros::payable]
+    #[pvm_contract_sdk::method]
+    #[pvm_contract_sdk::payable]
     pub fn deposit_to(to: Address) {
         let to: [u8; 20] = to.into();
         credit(&to, msg_value());
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn transfer(to: Address, amount: U256) -> bool {
         let caller = get_caller();
         let from_balance = balance(&caller);
@@ -40,14 +39,14 @@ mod payable {
         true
     }
 
-    #[pvm_contract_macros::method]
+    #[pvm_contract_sdk::method]
     pub fn balance_of(who: Address) -> U256 {
         let who: [u8; 20] = who.into();
         balance(&who)
     }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), pvm_contract_types::EmptyError> {
+    #[pvm_contract_sdk::fallback]
+    pub fn fallback() -> Result<(), pvm_contract_sdk::EmptyError> {
         Ok(())
     }
 
