@@ -419,15 +419,24 @@ fn parse_contract(
                 let return_types = extract_return_types(func);
 
                 let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface
-                    && let Some(sol_iface) = sol_iface.items.iter().find_map(|x| match x {
-                        Item::Contract(item_contract)
-                            if item_contract.is_interface()
-                                && mod_name == to_snake_case(&item_contract.name.to_string()) =>
+                    && let Some(sol_iface) = {
+                        let mut items = sol_iface.items.iter().filter_map(|x| match x {
+                            Item::Contract(item_contract) if item_contract.is_interface() => {
+                                Some(item_contract)
+                            }
+                            _ => None,
+                        });
+                        if let i_face @ Some(_) = items.next()
+                            && items.next().is_none()
                         {
-                            Some(item_contract)
+                            i_face
+                        } else {
+                            return Err(syn::Error::new_spanned(
+                                input,
+                                "Only one contract interface per file is supported",
+                            ));
                         }
-                        _ => None,
-                    }) {
+                    } {
                     let rust_fn_name = func.sig.ident.to_string();
                     let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));

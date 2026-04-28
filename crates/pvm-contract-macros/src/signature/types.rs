@@ -218,6 +218,18 @@ mod tests {
     use super::SolType;
 
     #[test]
+    fn syn_solidity_uint_default_size() {
+        let ty: syn_solidity::Type = syn::parse_str("uint").unwrap();
+        assert_eq!(SolType::try_from(ty).unwrap(), SolType::Uint(256));
+    }
+
+    #[test]
+    fn syn_solidity_rejects_mapping() {
+        let ty: syn_solidity::Type = syn::parse_str("mapping(address => uint256)").unwrap();
+        assert!(SolType::try_from(ty).is_err());
+    }
+
+    #[test]
     fn maps_address_newtype_to_solidity_address() {
         let ty: syn::Type = syn::parse_str("Address").unwrap();
         let sol = SolType::from_rust_type(&ty).unwrap();
