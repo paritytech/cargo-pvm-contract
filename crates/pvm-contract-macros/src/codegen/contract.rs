@@ -434,6 +434,21 @@ fn parse_contract(
     // code, or silently dispatch to a same-named method on the wrong type.
     if let Some(expected) = &struct_name {
         for item in &content.1 {
+            // Reject generics on the contract struct itself. Contract methods
+            // are dispatched by 4-byte Solidity selectors (keccak of canonical
+            // signatures), which require concrete types. Generic contract types
+            // are not yet supported; for composability, prefer trait impls with
+            // concrete type arguments at the impl site.
+            if let syn::Item::Struct(item_struct) = item
+                && &item_struct.ident == expected
+                && !item_struct.generics.params.is_empty()
+            {
+                return Err(syn::Error::new_spanned(
+                    &item_struct.generics.params,
+                    "contract structs must not be generic",
+                ));
+            }
+
             let syn::Item::Impl(item_impl) = item else {
                 continue;
             };
@@ -466,6 +481,33 @@ fn parse_contract(
                         "All contract `impl` blocks must target the same struct; expected `{expected}`, found `{ident}`"
                     ),
                 ));
+            }
+
+            // Reject generics on the contract `impl` block.
+            if !item_impl.generics.params.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.generics.params,
+                    "contract `impl` blocks must not be generic",
+                ));
+            }
+
+            // Reject generics on contract methods — selectors are concrete.
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(func) = impl_item else {
+                    continue;
+                };
+                if !(has_pvm_attr(&func.attrs, "method")
+                    || has_pvm_attr(&func.attrs, "constructor")
+                    || has_pvm_attr(&func.attrs, "fallback"))
+                {
+                    continue;
+                }
+                if !func.sig.generics.params.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig.generics.params,
+                        "contract methods must not be generic",
+                    ));
+                }
             }
         }
     }
@@ -898,11 +940,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 }
 
 /// Rewrite the contract module body:
-/// - Inject a `host: ::pvm_contract_sdk::Host` field on the storage struct;
-///   strip any legacy `<H: HostApi>` generic params.
+/// - Inject a `host: ::pvm_contract_sdk::Host` field on the storage struct.
 /// - Strip `#[method]` / `#[constructor]` / `#[fallback]` attrs from methods.
-/// - Strip any legacy `<H: HostApi>` generic params from `impl StorageStruct`
-///   blocks (and trait impls where the self-type is the storage struct).
 /// - Emit an `impl StorageStruct { fn host(&self) -> &Host }` accessor.
 /// - If a `#[derive(SolStorage)]` struct is present in the module, inject
 ///   `let mut storage = <StorageStruct as SolStorage>::__pvm_storage(self.host().clone());`
@@ -954,13 +993,6 @@ fn strip_pvm_attrs(
                             func.block.stmts.insert(0, injection);
                         }
                     }
-                }
-                // If this impl targets the storage struct, strip any `<H>` generic
-                // params and rewrite the self-type so `impl<H: HostApi> MyToken<H>`
-                // becomes plain `impl MyToken`. No-op for impls on other types or
-                // impls already written in the new concrete style.
-                if targets_contract {
-                    strip_host_generic_from_impl(&mut new_impl);
                 }
                 items.push(quote! {
                     #[cfg(not(feature = "abi-gen"))]
@@ -1031,15 +1063,13 @@ fn has_pvm_method_attr(attrs: &[Attribute]) -> bool {
 }
 
 /// Rewrite a user-declared storage struct into `pub struct Name { host: Host, <user fields> }`.
-/// Accepts unit (`pub struct Name;`), named (`pub struct Name { ... }`), and
-/// legacy generic forms (`pub struct Name<H: HostApi = PolkaVmHost> { host: H }`).
+/// Accepts unit (`pub struct Name;`) or named (`pub struct Name { ... }`) forms.
 fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStream> {
     let attrs = &item_struct.attrs;
     let vis = &item_struct.vis;
     let name = &item_struct.ident;
 
-    // Collect user fields, dropping any legacy `host: H` (which was the manual
-    // field name in the old `<H: HostApi>` scheme).
+    // Drop any user-declared `host` field — the macro injects its own.
     let user_fields: Vec<&syn::Field> = match &item_struct.fields {
         syn::Fields::Unit => Vec::new(),
         syn::Fields::Named(named) => named
@@ -1068,9 +1098,8 @@ fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStr
     })
 }
 
-/// Whether this `impl` block targets the contract's storage struct (accepting
-/// both bare `impl StorageStruct` and legacy `impl<H> StorageStruct<H>` forms,
-/// plus trait impls like `impl Trait for StorageStruct[<H>]`).
+/// Whether this `impl` block targets the contract's storage struct, including
+/// trait impls like `impl Trait for StorageStruct`.
 fn impl_targets_storage_struct(item_impl: &syn::ItemImpl, struct_name: &Ident) -> bool {
     let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
         return false;
@@ -1081,24 +1110,6 @@ fn impl_targets_storage_struct(item_impl: &syn::ItemImpl, struct_name: &Ident) -
         .last()
         .map(|s| &s.ident == struct_name)
         .unwrap_or(false)
-}
-
-/// Drop any `<H>` / `<H: HostApi>` generic on an `impl Contract<H>` header:
-/// remove the impl-level type parameter and strip the ty-generic arg on the
-/// self-type. Legacy contract code carried this generic; new code has no
-/// generics at all, but both must produce the same output.
-fn strip_host_generic_from_impl(item_impl: &mut syn::ItemImpl) {
-    // Strip impl-level type params entirely — contract impls must not be generic.
-    item_impl.generics.params.clear();
-    item_impl.generics.where_clause = None;
-    item_impl.generics.lt_token = None;
-    item_impl.generics.gt_token = None;
-
-    if let syn::Type::Path(type_path) = item_impl.self_ty.as_mut()
-        && let Some(last) = type_path.path.segments.last_mut()
-    {
-        last.arguments = syn::PathArguments::None;
-    }
 }
 
 /// Detect a struct with `#[derive(SolStorage)]` in the module items.
@@ -1810,6 +1821,81 @@ mod tests {
             output.contains("__pvm_storage"),
             "Contract should detect fully qualified pvm_contract_macros::SolStorage.\n\
              Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_contract_struct() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<T>(::core::marker::PhantomData<T>);
+                impl<T> MyContract<T> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("contract structs must not be generic"),
+            "Expected struct-generic rejection. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_contract_impl() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl<T> MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("contract `impl` blocks must not be generic"),
+            "Expected impl-generic rejection. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_contract_method() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn echo<T: Copy>(&self, x: T) -> T { x }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("contract methods must not be generic"),
+            "Expected method-generic rejection. Got: {err}"
         );
     }
 }

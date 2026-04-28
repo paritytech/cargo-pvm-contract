@@ -3,7 +3,7 @@
 //! [`HostApi`] is the receiver-based trait that both the production
 //! [`PolkaVmHost`] (riscv64-only) and the testing [`MockHost`](super::MockHost)
 //! implement. Contracts call host operations through an injected handle
-//! (`self.host.caller(...)` in the macro path, `host.caller(...)` in the DSL
+//! (`self.host().caller(...)` in the macro path, `host.caller(...)` in the DSL
 //! path) so tests can inject a `MockHost` instance per test.
 //!
 //! **`return_value` has a cfg-gated signature** — `-> !` on `riscv64` (a
@@ -22,9 +22,10 @@ pub type HostResult = core::result::Result<(), ReturnErrorCode>;
 
 /// Receiver-based host API.
 ///
-/// Every method takes `&self` — `PolkaVmHost` is a ZST, so this compiles to
-/// identical instructions as a static call. `MockHost` uses interior mutability
-/// (`RefCell`) only where it actually mutates shared state (storage, events).
+/// Every method takes `&self` — `PolkaVmHost` is a zero-sized type, so this
+/// compiles to identical instructions as a static call. `MockHost` uses
+/// interior mutability (`RefCell`) only where it actually mutates shared state
+/// (storage, events).
 ///
 /// `return_value` has a cfg-gated signature: it diverges (`-> !`) on `riscv64`
 /// and returns `()` on host targets, where `MockHost` captures the encoded
@@ -563,13 +564,13 @@ impl HostApi for PolkaVmHost {
 #[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy)]
 pub struct Host {
-    pub inner: PolkaVmHost,
+    pub(crate) inner: PolkaVmHost,
 }
 
 #[cfg(all(not(target_arch = "riscv64"), feature = "alloc"))]
 #[derive(Clone)]
 pub struct Host {
-    pub inner: alloc::rc::Rc<dyn HostApi>,
+    pub(crate) inner: alloc::rc::Rc<dyn HostApi>,
 }
 
 #[cfg(all(not(target_arch = "riscv64"), not(feature = "alloc")))]

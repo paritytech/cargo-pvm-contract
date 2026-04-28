@@ -1172,4 +1172,54 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(&buf[..4], &[7, 7, 7, 7]);
     }
+
+    #[test]
+    fn value_transferred_roundtrip() {
+        let mut val = [0u8; 32];
+        val[31] = 77;
+
+        let host = MockHostBuilder::new().value_transferred(val).build();
+
+        let mut output = [0u8; 32];
+        host.value_transferred(&mut output);
+        assert_eq!(output[31], 77);
+    }
+
+    #[test]
+    fn get_storage_or_zero_returns_zeros_for_missing_key() {
+        let host = MockHostBuilder::new().build();
+        let key = [0xAA; 32];
+
+        let mut output = [0xFFu8; 32];
+        host.get_storage_or_zero(StorageFlags::empty(), &key, &mut output);
+        assert_eq!(output, [0u8; 32]);
+
+        host.set_storage(StorageFlags::empty(), &key, &[42u8; 32]);
+        let mut output2 = [0u8; 32];
+        host.get_storage_or_zero(StorageFlags::empty(), &key, &mut output2);
+        assert_eq!(output2, [42u8; 32]);
+    }
+
+    #[test]
+    fn block_author_and_block_number_and_block_hash() {
+        let mut bn = [0u8; 32];
+        bn[31] = 99;
+
+        let host = MockHostBuilder::new()
+            .block_author([0xBB; 20])
+            .block_number(bn)
+            .build();
+
+        let mut author = [0u8; 20];
+        host.block_author(&mut author);
+        assert_eq!(author, [0xBB; 20]);
+
+        let mut output = [0u8; 32];
+        host.block_number(&mut output);
+        assert_eq!(output[31], 99);
+
+        let mut hash = [0xFFu8; 32];
+        host.block_hash(&bn, &mut hash);
+        assert_eq!(hash, [0u8; 32]);
+    }
 }

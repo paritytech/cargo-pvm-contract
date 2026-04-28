@@ -1,6 +1,6 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-use pvm_contract_sdk::pallet_revive_uapi::StorageFlags;
+use pvm_contract_sdk::StorageFlags;
 
 pvm_contract_sdk::abi_import! {
     #![abi_import(alloc = true)]
