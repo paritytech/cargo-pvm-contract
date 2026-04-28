@@ -923,6 +923,18 @@ mod tests {
     }
 
     #[test]
+    fn delegate_call_evm_updates_return_data() {
+        let callee = [0xCC; 20];
+        let host = MockHostBuilder::new()
+            .mock_call(callee, Ok(vec![9, 8, 7]))
+            .build();
+
+        let result = host.delegate_call_evm(CallFlags::empty(), &callee, 0, &[], None);
+        assert!(result.is_ok());
+        assert_eq!(host.return_data_size(), 3);
+    }
+
+    #[test]
     fn delegate_call_updates_return_data() {
         let callee = [0xBB; 20];
         let host = MockHostBuilder::new()
