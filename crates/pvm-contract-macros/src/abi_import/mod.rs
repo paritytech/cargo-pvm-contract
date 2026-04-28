@@ -1,7 +1,6 @@
 use ctxt::Ctxt;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{self};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
@@ -32,7 +31,7 @@ pub fn expand_function(
         quote! {}
     } else {
         let args = func.parameters.iter().enumerate().map(|(index, param)| {
-            let typ = to_rust_type(&param.ty, alloc);
+            let typ = to_rust_type(&param.ty, alloc, ctxt);
             let name = &param
                 .name
                 .as_ref()
@@ -45,7 +44,7 @@ pub fn expand_function(
     };
 
     let return_type = if let Some(ret) = func.return_type() {
-        let typ = to_rust_type(&ret, alloc);
+        let typ = to_rust_type(&ret, alloc, ctxt);
         quote! { #typ}
     } else {
         quote! { () }
@@ -57,7 +56,10 @@ pub fn expand_function(
         quote! {mut self, }
     };
 
-    let types = func.parameters.types().map(|x| to_rust_type(x, alloc));
+    let types = func
+        .parameters
+        .types()
+        .map(|x| to_rust_type(x, alloc, ctxt));
     let names = func.parameters.names().map(|name| {
         let name = name.as_ref().map_or(&SolIdent::new("s"), |v| v).to_string();
         format_ident!("{}", name)
@@ -119,7 +121,7 @@ pub fn expand_function(
     (is_constructor, res)
 }
 
-fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
+fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> TokenStream {
     if !alloc && typ.is_abi_dynamic() {
         return quote! {
             compile_error!("Enable alloc to support dynamic types")
@@ -141,7 +143,7 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
             }
         }
         syn_solidity::Type::Int(_, non_zero) => {
-            let size = non_zero.unwrap().to_string();
+            let size = non_zero.map(|x| x.get()).unwrap_or(256u16).to_string();
             let mut ident = format!("i{}", size);
             if size == "256" {
                 ident = capitalize(&ident);
@@ -150,7 +152,7 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
             quote! { #ident }
         }
         syn_solidity::Type::Uint(_, non_zero) => {
-            let size = non_zero.unwrap().to_string();
+            let size = non_zero.map(|x| x.get()).unwrap_or(256u16).to_string();
 
             let mut ident = format!("u{}", size);
             if size == "256" {
@@ -160,13 +162,16 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
             quote! { #ident }
         }
         syn_solidity::Type::Tuple(type_tuple) => {
-            let args = type_tuple.types.iter().map(|x| to_rust_type(x, alloc));
+            let args = type_tuple
+                .types
+                .iter()
+                .map(|x| to_rust_type(x, alloc, ctxt));
             quote! {
                 (#(#args),*)
             }
         }
         syn_solidity::Type::Array(type_array) => {
-            let typ = to_rust_type(&type_array.ty, alloc);
+            let typ = to_rust_type(&type_array.ty, alloc, ctxt);
             if let Some(size_lit) = type_array.size() {
                 quote! {
                   [#typ; #size_lit]
@@ -174,6 +179,37 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
             } else {
                 quote! {
                     alloc::vec::Vec<#typ>
+                }
+            }
+        }
+        syn_solidity::Type::Custom(custom) => {
+            if ctxt.resolve_type(custom.clone()).is_some() {
+                let (ns, path) = if custom.len() == 1 {
+                    (None, to_pascal_case(&custom.first().to_string()))
+                } else {
+                    (
+                        Some(to_snake_case(&custom.first().to_string())),
+                        to_pascal_case(&custom.last().to_string()),
+                    )
+                };
+                let ns = ns
+                    .map(|x| {
+                        let ident = format_ident!("{}", x);
+                        quote! { super::#ident }
+                    })
+                    .or_else(|| Some(quote! {super}));
+                let path = format_ident!("{}", path);
+                let path = Some(quote! {::#path});
+                let path = [ns, path];
+                let path = path.into_iter();
+                quote! {
+                    #(#path)*
+                }
+            } else {
+                let lit = format!("unknown type: {}", typ);
+
+                quote! {
+                    compile_error!(#lit);
                 }
             }
         }
@@ -189,13 +225,73 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool) -> TokenStream {
                 compile_error!(#lit);
             }
         }
-        syn_solidity::Type::Custom(_) => {
-            let lit = format!("abi import is not supported for custom types: {}", typ);
-            quote! {
-                compile_error!(#lit);
-            }
-        }
     }
+}
+
+fn expand_items<'a>(
+    items: impl Iterator<Item = &'a syn_solidity::Item>,
+    alloc: bool,
+    ctxt: &mut Ctxt,
+) -> impl Iterator<Item = TokenStream> {
+    items.filter_map(move |x| match x {
+        syn_solidity::Item::Struct(x) => {
+            let fields = x.fields.iter().enumerate().map(|(idx, x)| {
+                let name = format_ident!(
+                    "{}",
+                    to_snake_case(
+                        &x.name
+                            .clone()
+                            .map(|x| x.as_string())
+                            .unwrap_or(format!("param_{}", idx))
+                    )
+                );
+                let typ = to_rust_type(&x.ty, alloc, ctxt);
+                quote! {
+                    #name: #typ
+                }
+            });
+            let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+            Some(quote! {
+                #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct #name {
+                    #(#fields),*
+                }
+            })
+        }
+        syn_solidity::Item::Error(x) => {
+            let fields = x.parameters.iter().enumerate().map(|(idx, x)| {
+                let name = format_ident!(
+                    "{}",
+                    to_snake_case(
+                        &x.name
+                            .clone()
+                            .map(|x| x.as_string())
+                            .unwrap_or(format!("param_{}", idx))
+                    )
+                );
+                let typ = to_rust_type(&x.ty, alloc, ctxt);
+                quote! {
+                    #name: #typ
+                }
+            });
+            let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+            Some(quote! {
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct #name {
+                    #(#fields),*
+                }
+            })
+        }
+        syn_solidity::Item::Udt(x) => {
+            let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+            let typ = to_rust_type(&x.ty, alloc, ctxt);
+            Some(quote! {
+                #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct #name(pub #typ);
+            })
+        }
+        _ => None,
+    })
 }
 
 pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
@@ -278,9 +374,16 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
             } else {
                 quote! {}
             };
+
+            let user_types = expand_items(item_contract
+            .body
+            .iter(),alloc,&mut ctxt);
+
+
             Some(quote! {
                 pub mod #contract_module {
                     use super::*;
+
 
                     #[derive(Clone, Copy)]
                     /// the code is derived from this interface
@@ -349,6 +452,8 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                             self
                         }
                     }
+
+                    #(#user_types)*
                 }
             })
         }
@@ -359,15 +464,19 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
         | syn_solidity::Item::Function(_)
         | syn_solidity::Item::Import(_)
         | syn_solidity::Item::Pragma(_)
-        | syn_solidity::Item::Struct(_)
         | syn_solidity::Item::Udt(_)
+        | syn_solidity::Item::Struct(_)
         | syn_solidity::Item::Using(_)
         | syn_solidity::Item::Variable(_) => None,
-    });
+    }).collect::<Vec<TokenStream>>();
+
+    let user_types = expand_items(file.items.iter(), alloc, &mut ctxt);
+
     quote! {
         use pvm_contract_sdk::*;
 
         #(#modules)*
+        #(#user_types)*
     }
 }
 
@@ -375,7 +484,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
 mod test {
     use crate::abi_import::expand_to_module;
     use alloy_json_abi::ToSolConfig;
-    use quote::ToTokens;
+    use quote::{ToTokens, quote};
     use std::{fs, path::PathBuf};
     use syn::parse::{Parse, Parser};
     fn test_abi_contract_dir() -> PathBuf {
@@ -1436,60 +1545,47 @@ mod test {
     }
 
     #[test]
-    fn overload() {
-        let file = r#"
-        [
-            {
-              "type": "function",
-              "name": "flip",
-              "inputs": [],
-              "outputs": [],
-              "stateMutability": "nonpayable"
-            },
-            {
-              "type": "function",
-              "name": "flip",
-              "inputs": [
-                {
-                  "name": "data",
-                  "type": "(uint64,string)"
+    fn point() {
+        let file = quote! {
+                error Test(string str);
+
+                struct Point {
+                    uint a;
+                    uint b;
                 }
-              ],
-              "outputs": [],
-              "stateMutability": "nonpayable"
-            }
-        ]
-        "#;
+
+                interface Ballot {
+                    struct Voter { // Struct
+                        uint weight;
+                        bool voted;
+                        address delegate;
+                        uint vote;
+                    }
+
+                    function sendVoterInfo(Voter voter) external;
+                    function add(Point a, Point b) external;
+                }
+        };
         let file = {
-            let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(file).unwrap();
-            let config = ToSolConfig::new()
-                .print_constructors(true)
-                .for_sol_macro(true);
-
-            let unparsed = &parsed.to_sol("flipper", Some(config));
-            let tts = syn::parse_str::<proc_macro2::TokenStream>(unparsed).unwrap();
-
-            let file = syn_solidity::parse2(quote::quote! {
-                #tts
-            })
-            .unwrap();
+            let file = syn_solidity::parse2(file).unwrap();
             let tokens = expand_to_module(&file, true).to_token_stream();
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
         expect_test::expect![[r#"
             use pvm_contract_sdk::*;
-            pub mod flipper {
+            pub mod ballot {
                 use super::*;
                 #[derive(Clone, Copy)]
                 /// the code is derived from this interface
                 /**```solidity
-            interface flipper {
-                function flip() external;
-                function flip((uint64,string) data) external;
+            interface Ballot {
+                struct Voter { uint weight; bool voted; address delegate; uint vote; }
+                function sendVoterInfo(Voter voter) external;
+                function add(Point a, Point b) external;
             }
             ```*/
                 ///
-                pub struct Flipper<
+                pub struct Ballot<
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
@@ -1502,32 +1598,36 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Flipper<Mutability, Inputs, Outputs, false> {
-                    pub fn flip_cde4efa9(mut self) -> Flipper<NonPayable, (), (), true> {
-                        Flipper::<NonPayable, (), (), true> {
+                > Ballot<Mutability, Inputs, Outputs, false> {
+                    pub fn send_voter_info(
+                        mut self,
+                        voter: super::Voter,
+                    ) -> Ballot<NonPayable, (super::Voter), (), true> {
+                        Ballot::<NonPayable, (super::Voter), (), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<NonPayable, (), ()> {
-                                payload: (),
-                                selector: [205u8, 228u8, 239u8, 169u8],
+                            call_builder: CallBuilder::<NonPayable, (super::Voter), ()> {
+                                payload: (voter),
+                                selector: [217u8, 117u8, 149u8, 186u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
                         }
                     }
-                    pub fn flip_c353ca2b(
+                    pub fn add(
                         mut self,
-                        data: (u64, alloc::string::String),
-                    ) -> Flipper<NonPayable, ((u64, alloc::string::String)), (), true> {
-                        Flipper::<NonPayable, ((u64, alloc::string::String)), (), true> {
+                        a: super::Point,
+                        b: super::Point,
+                    ) -> Ballot<NonPayable, (super::Point, super::Point), (), true> {
+                        Ballot::<NonPayable, (super::Point, super::Point), (), true> {
                             address: self.address,
                             call_builder: CallBuilder::<
                                 NonPayable,
-                                ((u64, alloc::string::String)),
+                                (super::Point, super::Point),
                                 (),
                             > {
-                                payload: (data),
-                                selector: [195u8, 83u8, 202u8, 43u8],
+                                payload: (a, b),
+                                selector: [178u8, 1u8, 18u8, 196u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
@@ -1535,9 +1635,9 @@ mod test {
                         }
                     }
                 }
-                impl Flipper<Pure, (), (), false> {
+                impl Ballot<Pure, (), (), false> {
                     /// Create api for the contract from an address
-                    pub fn from_address(address: Address) -> Flipper<Pure, (), (), false> {
+                    pub fn from_address(address: Address) -> Ballot<Pure, (), (), false> {
                         Self {
                             address,
                             call_builder: CallBuilder::<Pure, (), ()>::default(),
@@ -1548,7 +1648,7 @@ mod test {
                     Mutability: StateMutability,
                     Inputs: SolEncode,
                     Outputs: SolDecode,
-                > Flipper<Mutability, Inputs, Outputs, true> {
+                > Ballot<Mutability, Inputs, Outputs, true> {
                     /// Set call limits for the given call
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
@@ -1593,7 +1693,7 @@ mod test {
                         self.call_builder.extract_output(output_buf.as_mut_slice())
                     }
                 }
-                impl<Inputs: SolEncode, Outputs: SolDecode> Flipper<Payable, Inputs, Outputs, true> {
+                impl<Inputs: SolEncode, Outputs: SolDecode> Ballot<Payable, Inputs, Outputs, true> {
                     /// Instantiate another contract by it's code_hash
                     pub fn instantiate_raw(
                         &self,
@@ -1651,7 +1751,24 @@ mod test {
                         self
                     }
                 }
+                #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct Voter {
+                    weight: U256,
+                    voted: bool,
+                    delegate: Address,
+                    vote: U256,
+                }
             }
-        "#]].assert_eq(&file);
+            #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+            pub struct Test {
+                str: alloc::string::String,
+            }
+            #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+            pub struct Point {
+                a: U256,
+                b: U256,
+            }
+        "#]]
+        .assert_eq(&file);
     }
 }

@@ -12,6 +12,14 @@ name = "flipper_call"
 path = "src/flipper_call.rs"
 
 [[bin]]
+name = "point_adder_call"
+path = "src/point_adder_call.rs"
+
+[[bin]]
+name = "point_adder"
+path = "src/point_adder.rs"
+
+[[bin]]
 name = "flipper_delegate"
 path = "src/flipper_delegate.rs"
 
@@ -60,8 +68,10 @@ name = "constructor-args"
 path = "src/constructor-args.rs"
 
 [dependencies]
-pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = ["alloc"] }
-polkavm-derive = { version = "0.31.0" }  # required by proc macro generated code
+pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = [
+    "alloc",
+] }
+polkavm-derive = { version = "0.31.0" } # required by proc macro generated code
 picoalloc = { version = "5", default-features = false }
 
 [features]

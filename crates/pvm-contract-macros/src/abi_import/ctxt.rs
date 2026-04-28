@@ -12,9 +12,20 @@ pub struct Ctxt {
     current_ns: Option<SolIdent>,
     // ns => name => set<signature>
     overloaded_functions: HashMap<Option<SolIdent>, HashMap<String, HashSet<String>>>,
+    // ns => path => error/struct/udvt
+    types: HashMap<Option<SolIdent>, HashMap<String, syn_solidity::Item>>,
 }
 
 impl Ctxt {
+    pub fn resolve_type(&self, path: syn_solidity::SolPath) -> Option<syn_solidity::Item> {
+        let (ns, name) = if path.len() == 1 {
+            (None, path.first().to_string())
+        } else {
+            (Some(path.first().clone()), path.last().to_string())
+        };
+        self.types.get(&ns).and_then(|map| map.get(&name)).cloned()
+    }
+
     pub fn set_ns(&mut self, ns: SolIdent) {
         self.current_ns = Some(ns);
     }
@@ -37,31 +48,53 @@ impl Ctxt {
             to_snake_case(&item.name().to_string())
         }
     }
+
+    pub fn visit_item(&mut self, item: &syn_solidity::Item) {
+        let ns = self.current_ns.clone();
+        match &item {
+            Item::Error(item_error) => {
+                self.types
+                    .entry(ns)
+                    .or_default()
+                    .insert(item_error.name.to_string(), item.clone());
+            }
+            Item::Struct(item_struct) => {
+                self.types
+                    .entry(ns)
+                    .or_default()
+                    .insert(item_struct.name.to_string(), item.clone());
+            }
+            Item::Udt(item_udt) => {
+                self.types
+                    .entry(ns)
+                    .or_default()
+                    .insert(item_udt.name.to_string(), item.clone());
+            }
+            _ => (),
+        }
+    }
     pub fn visit_file(&mut self, file: &File) {
-        file.items
-            .iter()
-            .filter_map(|item| match item {
-                Item::Contract(contract) if contract.is_interface() => Some(contract),
-                _ => None,
-            })
-            .for_each(|item| {
-                self.visit_contract(item);
-            });
+        file.items.iter().for_each(|item| match item {
+            Item::Contract(contract) if contract.is_interface() => self.visit_contract(contract),
+            item => {
+                self.visit_item(item);
+            }
+        });
     }
+
     fn visit_contract(&mut self, contract: &ItemContract) {
-        contract
-            .body
-            .iter()
-            .filter_map(|item| match item {
-                Item::Function(func) => Some(func),
-                _ => None,
-            })
-            .for_each(|item| {
-                if item.name.is_some() {
-                    self.visit_function(contract.name.clone(), item);
+        contract.body.iter().for_each(|item| match item {
+            Item::Function(func) => {
+                if func.name.is_some() {
+                    self.visit_function(contract.name.clone(), func);
                 }
-            });
+            }
+            item => {
+                self.visit_item(item);
+            }
+        })
     }
+
     fn visit_function(&mut self, ns: SolIdent, function: &ItemFunction) {
         let sig = compute_function_signature(function);
         match self

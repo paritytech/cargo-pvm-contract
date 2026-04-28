@@ -31,6 +31,20 @@ fn flipper_call_toggle_state() {
 }
 
 #[test]
+fn point_adder_call() {
+    let (_anvil, cast, addr) = deploy("point_adder");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("point_adder_call", "release");
+    let caller_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+    cast.send(
+        &caller_addr,
+        "callPointAdder(address)",
+        &[&addr],
+        DEFAULT_PRIVATE_KEY,
+    );
+}
+
+#[test]
 fn flipper_delegate_call_toggle_state() {
     let (_anvil, cast, addr) = deploy("flipper");
     let c = contract("test-contracts");
@@ -182,7 +196,7 @@ fn storage_address_roundtrip() {
 #[test]
 fn storage_bytes32_roundtrip() {
     let (_anvil, cast, addr) = deploy("storage-types");
-    let val_hex = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let val_hex = "0xdeadbeefdeadb feefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
     cast.send(
         &addr,
