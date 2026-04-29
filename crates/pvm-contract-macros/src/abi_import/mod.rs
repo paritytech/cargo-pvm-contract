@@ -733,6 +733,14 @@ mod test {
                         self
                     }
                 }
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct CalldataTooLarge {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct InvalidCalldata {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct UnknownSelector {}
             }
         "#]]
         .assert_eq(&file);
@@ -946,6 +954,14 @@ mod test {
                         self
                     }
                 }
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct CalldataTooLarge {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct InvalidCalldata {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct UnknownSelector {}
             }
         "#]]
         .assert_eq(&file);
@@ -1132,6 +1148,14 @@ mod test {
                         self
                     }
                 }
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct CalldataTooLarge {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct InvalidCalldata {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct UnknownSelector {}
             }
         "#]]
         .assert_eq(&file);
@@ -1354,6 +1378,14 @@ mod test {
                         self
                     }
                 }
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct CalldataTooLarge {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct InvalidCalldata {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct UnknownSelector {}
             }
         "#]]
         .assert_eq(&file);
@@ -1545,6 +1577,14 @@ mod test {
                         self
                     }
                 }
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct CalldataTooLarge {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct InvalidCalldata {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                pub struct UnknownSelector {}
             }
         "#]]
         .assert_eq(&file);
