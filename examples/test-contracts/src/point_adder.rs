@@ -11,21 +11,26 @@ pub struct Point {
 #[pvm_contract_sdk::contract("PointAdder.sol", allocator = "pico")]
 mod point_adder {
     use super::*;
-    #[pvm_contract_sdk::constructor]
-    pub fn new() -> Result<(), pvm_contract_sdk::EmptyError> {
-        Ok(())
-    }
 
-    #[pvm_contract_sdk::method]
-    pub fn add(a: Point, b: Point) -> Point {
-        Point {
-            a: a.a + b.a,
-            b: a.b + b.b,
+    pub struct PointAdder;
+
+    impl PointAdder {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
+            Ok(())
         }
-    }
 
-    #[pvm_contract_sdk::fallback]
-    pub fn fallback() -> Result<(), pvm_contract_sdk::EmptyError> {
-        Ok(())
+        #[pvm_contract_sdk::method]
+        pub fn add(&mut self, a: Point, b: Point) -> Point {
+            Point {
+                a: a.a + b.a,
+                b: a.b + b.b,
+            }
+        }
+
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
+            Ok(())
+        }
     }
 }

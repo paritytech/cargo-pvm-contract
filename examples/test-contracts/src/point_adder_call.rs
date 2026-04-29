@@ -27,44 +27,47 @@ mod point_adder_call {
     use super::*;
     use point_adder::*;
 
+    pub struct PointAdderCall;
     sol_revert_enum! {
         pub enum Error {
             CallError(CallError)
         }
     }
-    #[pvm_contract_sdk::constructor]
-    pub fn new() -> Result<(), Error> {
-        Ok(())
-    }
+    impl PointAdderCall {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
 
-    #[pvm_contract_sdk::method]
-    pub fn call_point_adder(addr: Address) -> Result<(), Error> {
-        let adder = PointAdder::from_address(addr);
-        let call = adder
-            .add(
+        #[pvm_contract_sdk::method]
+        pub fn call_point_adder(&mut self, addr: Address) -> Result<(), Error> {
+            let adder = PointAdder::from_address(addr);
+            let call = adder
+                .add(
+                    Point {
+                        a: U256::from(2),
+                        b: U256::from(2),
+                    },
+                    Point {
+                        a: U256::from(2),
+                        b: U256::from(2),
+                    },
+                )
+                .call(self.host())?;
+
+            assert_eq!(
+                call,
                 Point {
-                    a: U256::from(2),
-                    b: U256::from(2),
-                },
-                Point {
-                    a: U256::from(2),
-                    b: U256::from(2),
-                },
-            )
-            .call()?;
+                    a: U256::from(4),
+                    b: U256::from(4),
+                }
+            );
+            Ok(())
+        }
 
-        assert_eq!(
-            call,
-            Point {
-                a: U256::from(4),
-                b: U256::from(4),
-            }
-        );
-        Ok(())
-    }
-
-    #[pvm_contract_sdk::fallback]
-    pub fn fallback() -> Result<(), Error> {
-        Ok(())
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
     }
 }
