@@ -12,18 +12,21 @@ pub struct Ctxt {
     current_ns: Option<SolIdent>,
     // ns => name => set<signature>
     overloaded_functions: HashMap<Option<SolIdent>, HashMap<String, HashSet<String>>>,
-    // ns => path => error/struct/udvt
-    types: HashMap<Option<SolIdent>, HashMap<String, syn_solidity::Item>>,
+    // ns => set[path]
+    types: HashMap<Option<SolIdent>, HashSet<String>>,
 }
 
 impl Ctxt {
-    pub fn resolve_type(&self, path: syn_solidity::SolPath) -> Option<syn_solidity::Item> {
+    pub fn resolve_type(&self, path: syn_solidity::SolPath) -> bool {
         let (ns, name) = if path.len() == 1 {
             (None, path.first().to_string())
         } else {
             (Some(path.first().clone()), path.last().to_string())
         };
-        self.types.get(&ns).and_then(|map| map.get(&name)).cloned()
+        self.types
+            .get(&ns)
+            .map(|map| map.contains(&name))
+            .unwrap_or_default()
     }
 
     pub fn set_ns(&mut self, ns: SolIdent) {
@@ -49,36 +52,38 @@ impl Ctxt {
         }
     }
 
-    pub fn visit_item(&mut self, item: &syn_solidity::Item) {
+    pub fn visit_struct(&mut self, item: &syn_solidity::ItemStruct) {
         let ns = self.current_ns.clone();
-        match &item {
-            Item::Error(item_error) => {
-                self.types
-                    .entry(ns)
-                    .or_default()
-                    .insert(item_error.name.to_string(), item.clone());
-            }
-            Item::Struct(item_struct) => {
-                self.types
-                    .entry(ns)
-                    .or_default()
-                    .insert(item_struct.name.to_string(), item.clone());
-            }
-            Item::Udt(item_udt) => {
-                self.types
-                    .entry(ns)
-                    .or_default()
-                    .insert(item_udt.name.to_string(), item.clone());
-            }
-            _ => (),
-        }
+        self.types
+            .entry(ns)
+            .or_default()
+            .insert(item.name.to_string());
+    }
+
+    pub fn visit_error(&mut self, item: &syn_solidity::ItemError) {
+        let ns = self.current_ns.clone();
+
+        self.types
+            .entry(ns)
+            .or_default()
+            .insert(item.name.to_string());
+    }
+
+    pub fn visit_udt(&mut self, item: &syn_solidity::ItemUdt) {
+        let ns = self.current_ns.clone();
+
+        self.types
+            .entry(ns)
+            .or_default()
+            .insert(item.name.to_string());
     }
     pub fn visit_file(&mut self, file: &File) {
         file.items.iter().for_each(|item| match item {
             Item::Contract(contract) if contract.is_interface() => self.visit_contract(contract),
-            item => {
-                self.visit_item(item);
-            }
+            Item::Error(err) => self.visit_error(err),
+            Item::Struct(struct_) => self.visit_struct(struct_),
+            Item::Udt(udt) => self.visit_udt(udt),
+            _ => (),
         });
     }
 
@@ -89,9 +94,10 @@ impl Ctxt {
                     self.visit_function(contract.name.clone(), func);
                 }
             }
-            item => {
-                self.visit_item(item);
-            }
+            Item::Error(err) => self.visit_error(err),
+            Item::Struct(struct_) => self.visit_struct(struct_),
+            Item::Udt(udt) => self.visit_udt(udt),
+            _ => (),
         })
     }
 

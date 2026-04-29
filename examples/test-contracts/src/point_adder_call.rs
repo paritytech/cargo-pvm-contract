@@ -8,6 +8,8 @@ pragma solidity ^0.8.0;
 error Example(string s);
 error Example2(string, uint);
 
+type P is uint;
+
 struct Point {
     uint a;
     uint b;

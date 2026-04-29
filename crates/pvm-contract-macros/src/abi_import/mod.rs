@@ -183,7 +183,7 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
             }
         }
         syn_solidity::Type::Custom(custom) => {
-            if ctxt.resolve_type(custom.clone()).is_some() {
+            if ctxt.resolve_type(custom.clone()) {
                 let (ns, path) = if custom.len() == 1 {
                     (None, to_pascal_case(&custom.first().to_string()))
                 } else {
@@ -228,68 +228,74 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
     }
 }
 
+fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
+    let fields = x.fields.iter().enumerate().map(|(idx, x)| {
+        let name = format_ident!(
+            "{}",
+            to_snake_case(
+                &x.name
+                    .clone()
+                    .map(|x| x.as_string())
+                    .unwrap_or(format!("param_{}", idx))
+            )
+        );
+        let typ = to_rust_type(&x.ty, alloc, ctxt);
+        quote! {
+            #name: #typ
+        }
+    });
+    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    quote! {
+        #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        pub struct #name {
+            #(#fields),*
+        }
+    }
+}
+
+fn expand_error(x: &syn_solidity::ItemError, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
+    let fields = x.parameters.iter().enumerate().map(|(idx, x)| {
+        let name = format_ident!(
+            "{}",
+            to_snake_case(
+                &x.name
+                    .clone()
+                    .map(|x| x.as_string())
+                    .unwrap_or(format!("param_{}", idx))
+            )
+        );
+        let typ = to_rust_type(&x.ty, alloc, ctxt);
+        quote! {
+            #name: #typ
+        }
+    });
+    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    quote! {
+        #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        pub struct #name {
+            #(#fields),*
+        }
+    }
+}
+
+fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
+    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let typ = to_rust_type(&x.ty, alloc, ctxt);
+    quote! {
+        #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        pub struct #name(pub #typ);
+    }
+}
+
 fn expand_items<'a>(
     items: impl Iterator<Item = &'a syn_solidity::Item>,
     alloc: bool,
     ctxt: &mut Ctxt,
 ) -> impl Iterator<Item = TokenStream> {
     items.filter_map(move |x| match x {
-        syn_solidity::Item::Struct(x) => {
-            let fields = x.fields.iter().enumerate().map(|(idx, x)| {
-                let name = format_ident!(
-                    "{}",
-                    to_snake_case(
-                        &x.name
-                            .clone()
-                            .map(|x| x.as_string())
-                            .unwrap_or(format!("param_{}", idx))
-                    )
-                );
-                let typ = to_rust_type(&x.ty, alloc, ctxt);
-                quote! {
-                    #name: #typ
-                }
-            });
-            let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
-            Some(quote! {
-                #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
-                pub struct #name {
-                    #(#fields),*
-                }
-            })
-        }
-        syn_solidity::Item::Error(x) => {
-            let fields = x.parameters.iter().enumerate().map(|(idx, x)| {
-                let name = format_ident!(
-                    "{}",
-                    to_snake_case(
-                        &x.name
-                            .clone()
-                            .map(|x| x.as_string())
-                            .unwrap_or(format!("param_{}", idx))
-                    )
-                );
-                let typ = to_rust_type(&x.ty, alloc, ctxt);
-                quote! {
-                    #name: #typ
-                }
-            });
-            let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
-            Some(quote! {
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
-                pub struct #name {
-                    #(#fields),*
-                }
-            })
-        }
-        syn_solidity::Item::Udt(x) => {
-            let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
-            let typ = to_rust_type(&x.ty, alloc, ctxt);
-            Some(quote! {
-                #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
-                pub struct #name(pub #typ);
-            })
-        }
+        syn_solidity::Item::Struct(x) => Some(expand_struct(x, ctxt, alloc)),
+        syn_solidity::Item::Error(x) => Some(expand_error(x, ctxt, alloc)),
+        syn_solidity::Item::Udt(x) => Some(expand_udt(x, ctxt, alloc)),
         _ => None,
     })
 }
