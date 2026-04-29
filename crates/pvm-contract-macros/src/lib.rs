@@ -949,13 +949,13 @@ pub fn sol_storage(input: TokenStream) -> TokenStream {
 /// fn example() {
 ///     use flipper::*;
 ///     // call a contract
-///     let bool: bool = Flipper::from_address(<addr>).get().call()?;
+///     let bool: bool = Flipper::from_address(<addr>).get().call(self.host())?;
 ///     // set a `value` this method is only present if the method is `payable`.
 ///     // also its possible to set a limit for the call.
-///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call()?;
+///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call(self.host())?;
 ///
 ///     // instantiate a contract
-///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(<code_hash>, <value>, <limits>, <optional salt>)?;
+///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(self.host(), <code_hash>, <value>, <limits>, <optional salt>)?;
 /// }
 /// ```
 ///

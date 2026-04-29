@@ -39,10 +39,10 @@ mod flipper_call_alloy {
             let get = flipper.get();
             let flip = flipper.flip();
 
-            let res = get.call()?;
+            let res = get.call(self.host())?;
             assert_eq!(res, false);
-            let _ = flip.call()?;
-            let res = get.call()?;
+            let _ = flip.call(self.host())?;
+            let res = get.call(self.host())?;
             assert_eq!(res, true);
             Ok(())
         }
