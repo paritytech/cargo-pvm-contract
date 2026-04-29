@@ -60,7 +60,7 @@ fn noop_handler<H: pvm_contract_types::HostApi>(
 /// Pure Rust builder for PVM smart contract dispatch.
 ///
 /// Generic over the host type so only one monomorphization lands in any given
-/// binary. In production that's `PolkaVmHost` (a ZST — the builder plus
+/// binary. In production that's `PolkaVmHost` (a zero-sized type — the builder plus
 /// dispatch loop is byte-equivalent to today's static-call version). In unit
 /// tests it's `MockHost`, compiled into the host-target test binary only.
 ///

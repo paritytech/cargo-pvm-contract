@@ -135,7 +135,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ```
 ///
 /// The contract holds a concrete `Host` whose internals are cfg-gated:
-/// on riscv64 it's a ZST wrapping `PolkaVmHost` (zero overhead), on the
+/// on riscv64 it's a zero-sized type wrapping `PolkaVmHost` (zero overhead), on the
 /// host target it wraps `Rc<dyn HostApi>` so tests can inject a `MockHost`.
 /// `HostApi::return_value` itself has a cfg-gated signature: `-> !` on
 /// `riscv64` (the `pallet_revive_uapi` syscall), `-> ()` on host targets

@@ -138,8 +138,8 @@ pub trait HostApi {
 
 /// Real host backend for PolkaVM contracts.
 ///
-/// ZST — `&self` is free; `struct MyContract<PolkaVmHost>` is itself ZST.
-/// On `riscv64`, each method delegates to `pallet_revive_uapi::HostFnImpl`.
+/// Zero-sized type — `&self` is free; `struct MyContract<PolkaVmHost>` is itself
+/// zero-sized. On `riscv64`, each method delegates to `pallet_revive_uapi::HostFnImpl`.
 /// On other targets, methods `unimplemented!()` — `PolkaVmHost` must only be
 /// constructed inside the riscv64-gated entry-point wrappers in production.
 #[derive(Clone, Copy)]
@@ -542,18 +542,18 @@ impl HostApi for PolkaVmHost {
 // ---------------------------------------------------------------------------
 //
 // Mirrors Stylus's `VM`: contracts always hold a concrete `Host`; the field
-// type swaps under cfg. On riscv64, `Host { inner: PolkaVmHost }` is ZST and
-// method calls inline to `HostFnImpl::*` — byte-equivalent to the previous
-// `<H: HostApi>` monomorphization. On host targets, `Host { inner: Box<dyn
+// type swaps under cfg. On riscv64, `Host { inner: PolkaVmHost }` is zero-sized
+// and method calls inline to `HostFnImpl::*` — byte-equivalent to the previous
+// `<H: HostApi>` monomorphization. On host targets, `Host { inner: Rc<dyn
 // HostApi> }` enables test harnesses to inject a shared `MockHost` without
 // the contract struct carrying a generic.
 
 /// Concrete host handle held by every macro-path contract.
 ///
 /// Internals are cfg-gated:
-/// - `target_arch = "riscv64"`: contains a [`PolkaVmHost`] ZST — methods
+/// - `target_arch = "riscv64"`: contains a zero-sized [`PolkaVmHost`] — methods
 ///   inline to `pallet_revive_uapi::HostFnImpl::*`, no runtime overhead.
-/// - host target with `feature = "alloc"`: contains `Box<dyn HostApi>` —
+/// - host target with `feature = "alloc"`: contains `Rc<dyn HostApi>` —
 ///   tests inject a mock via [`Host::from_dyn`].
 /// - host target without `alloc`: uninhabited (no constructor) — the type
 ///   name exists so contract structs declaring `host: Host` parse on any
@@ -581,7 +581,7 @@ pub struct Host {
 
 #[cfg(target_arch = "riscv64")]
 impl Host {
-    /// Construct the production host (ZST).
+    /// Construct the production host (zero-sized type).
     #[inline(always)]
     pub const fn new() -> Self {
         Self { inner: PolkaVmHost }
