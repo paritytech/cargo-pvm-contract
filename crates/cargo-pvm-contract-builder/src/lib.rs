@@ -304,8 +304,19 @@ fn build_elf(
 
     let mut cmd = Command::new("cargo");
     cmd.current_dir(work_dir)
+        // Avoid leaking parent-cargo state into the polkavm child build:
+        // - CARGO_ENCODED_RUSTFLAGS would override the RUSTFLAGS we set
+        // - RUSTC / RUSTC_WRAPPER / RUSTC_WORKSPACE_WRAPPER would force a
+        //   wrapped or wrong-toolchain rustc (sccache/llvm-cov instrumentation
+        //   breaks -Zbuild-std=core,alloc by injecting profiler runtime into
+        //   no_std)
+        // - CARGO points at the parent's cargo binary (was previously stripped
+        //   by tests/test_cmd.rs)
+        .env_remove("CARGO")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTC")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
         // Stripping is done later by polkavm_linker after processing relocations.
         .env("RUSTFLAGS", rustflags)

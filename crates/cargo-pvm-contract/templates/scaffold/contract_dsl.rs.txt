@@ -1,6 +1,6 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(test), no_main, no_std)]
 {% if use_alloc %}
+#[cfg(not(test))]
 extern crate alloc;
 
 struct BumpAllocator;
@@ -44,16 +44,16 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
 }
 
+#[cfg(not(test))]
 #[global_allocator]
 static ALLOC: BumpAllocator = BumpAllocator;
 {% endif %}
 
-use pvm_contract_builder_dsl::pvm_contract_types::{
-    HostApi as _, PolkaVmHost, ReturnFlags, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
-    U256,
-};
-use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};
+use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_builder_dsl::pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_builder_dsl::ruint::aliases::U256;
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe {
@@ -68,44 +68,52 @@ const {{ func.selector_const }}: [u8; 4] = solidity_selector("{{ func.solidity_s
 {% endfor %}
 {% endif %}
 
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn deploy() {}
 
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
+    let host = PolkaVmHost;
 {% if functions.is_empty() %}
     // Register your method handlers:
     // const MY_METHOD: [u8; 4] = solidity_selector("myMethod(uint256)");
-    // ContractBuilder::new()
-    //     .method(MY_METHOD, my_method_handler)
-    //     .dispatch::<PolkaVmHost, 256>()
-    PolkaVmHost::return_value(ReturnFlags::REVERT, b"NoMethods");
+    // ContractBuilder::<PolkaVmHost>::new()
+    //     .method(MY_METHOD, my_method_handler::<PolkaVmHost>)
+    //     .dispatch_impl::<256>(&host);
+    ContractBuilder::<PolkaVmHost>::new().dispatch_impl::<256>(&host);
 {% else %}
-    ContractBuilder::new()
+    ContractBuilder::<PolkaVmHost>::new()
 {% for func in functions %}
-        .method({{ func.selector_const }}, {{ func.name_snake }}_handler)
+        .method({{ func.selector_const }}, {{ func.name_snake }}_handler::<PolkaVmHost>)
 {% endfor %}
-        .dispatch::<PolkaVmHost, 256>()
+        .dispatch_impl::<256>(&host);
 {% endif %}
 }
 {% if !functions.is_empty() %}
 {% for func in functions %}
 
-fn {{ func.name_snake }}_handler({% if func.params.is_empty() %}_input{% else %}input{% endif %}: &[u8]) {
+fn {{ func.name_snake }}_handler<H: HostApi>(
+    _host: &H,
+    {% if func.params.is_empty() %}_input{% else %}input{% endif %}: &[u8],
+    output: &mut [u8],
+) -> HandlerResult {
 {% for param in func.params %}
     let {{ param.name }} = {{ param.decode_expr }};
 {% endfor %}
 {% if func.return_rust_type == "()" %}
     // TODO: implement {{ func.name_snake }}
+    let _ = output;
     todo!()
 {% else %}
     // TODO: implement {{ func.name_snake }}
     let _result: {{ func.return_rust_type }} = todo!();
-    let mut buf = [0u8; <{{ func.return_rust_type }} as StaticEncodedLen>::ENCODED_SIZE];
-    _result.encode_to(&mut buf);
-    PolkaVmHost::return_value(ReturnFlags::empty(), &buf);
+    let len = <{{ func.return_rust_type }} as StaticEncodedLen>::ENCODED_SIZE;
+    _result.encode_to(&mut output[..len]);
+    HandlerResult::Ok(len)
 {% endif %}
 }
 {% endfor %}

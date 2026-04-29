@@ -1,12 +1,12 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pvm_contract_types::{
-    Address, CallFlags, HostApi, PolkaVmHost, ReturnErrorCode, SolDecode, SolEncode, SolError,
+    Address, CallFlags, Host, HostApi, ReturnErrorCode, SolDecode, SolEncode, SolError,
     const_selector,
 };
 use ruint::aliases::U256;
 
-/// Errors returned by `PolkaVmHost::call()` / `PolkaVmHost::instantiate()`
+/// Errors returned by `HostApi::call()` / `HostApi::instantiate()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum CallError {
@@ -181,6 +181,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     /// Execute code in the context (storage, caller, value) of the current contract.
     pub fn delegate_call_raw(
         &self,
+        host: &Host,
         address: Address,
         input_buf: &mut [u8],
     ) -> Result<(), CallError> {
@@ -192,13 +193,13 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
             CallLimits::GasLimit(limit) => {
-                PolkaVmHost::delegate_call_evm(call_flags, &address.0, limit, input_buf, None)
+                host.delegate_call_evm(call_flags, &address.0, limit, input_buf, None)
             }
             CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
                 ref_time_limit,
                 proof_size_limit,
                 deposit_limit,
-            }) => PolkaVmHost::delegate_call(
+            }) => host.delegate_call(
                 call_flags,
                 &address.0,
                 ref_time_limit,
@@ -211,33 +212,36 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         .map_err(convert_error)
     }
 
-    pub fn extract_output(&self, mut output_buf: &mut [u8]) -> Result<R, CallError> {
-        if self.output_size() > output_buf.len() {
+    pub fn extract_output(&self, host: &Host, mut output_buf: &mut [u8]) -> Result<R, CallError> {
+        if self.output_size(host) > output_buf.len() {
             return Err(CallError::OutputBufTooSmall);
         }
-        PolkaVmHost::return_data_copy(&mut output_buf, 0);
+        host.return_data_copy(&mut output_buf, 0);
         Ok(R::decode(output_buf))
     }
 
-    pub fn output_size(&self) -> usize {
+    pub fn output_size(&self, host: &Host) -> usize {
         // safe as we always run on 64bit arches
-        PolkaVmHost::return_data_size() as usize
+        host.return_data_size() as usize
     }
 
     /// Execute code in the context (storage, caller, value) of the current contract.
     pub fn delegate_call(
         &self,
+        host: &Host,
         address: Address,
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        self.delegate_call_raw(address, input_buf)
-            .and_then(|_| self.extract_output(output_buf))
+        self.delegate_call_raw(host, address, input_buf)
+            .and_then(|_| self.extract_output(host, output_buf))
     }
 
     /// Call a given contract
+    #[allow(clippy::too_many_arguments)]
     pub fn instantiate_raw(
         &self,
+        host: &Host,
         limits: RefTimeAndProofSizeLimits,
         value: u128,
         code_hash: &[u8; 32],
@@ -250,7 +254,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         }
         input_buf[..32].copy_from_slice(&code_hash[..]);
         self.payload.encode_to(&mut input_buf[32..]);
-        PolkaVmHost::instantiate(
+        host.instantiate(
             limits.ref_time_limit,
             limits.proof_size_limit,
             &limits.deposit_limit,
@@ -267,6 +271,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     /// Execute code in the context (storage, caller, value) of the current contract.
     pub fn instantiate(
         &self,
+        host: &Host,
         limits: RefTimeAndProofSizeLimits,
         value: u128,
         code_hash: &[u8; 32],
@@ -275,11 +280,16 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        self.instantiate_raw(limits, value, code_hash, salt, address_buf, input_buf)
-            .and_then(|_| self.extract_output(output_buf))
+        self.instantiate_raw(host, limits, value, code_hash, salt, address_buf, input_buf)
+            .and_then(|_| self.extract_output(host, output_buf))
     }
     /// Call a given contract
-    pub fn call_raw(&self, address: Address, input_buf: &mut [u8]) -> Result<(), CallError> {
+    pub fn call_raw(
+        &self,
+        host: &Host,
+        address: Address,
+        input_buf: &mut [u8],
+    ) -> Result<(), CallError> {
         if input_buf.len() < 4 + self.payload.encode_len() {
             return Err(CallError::InputBufTooSmall);
         }
@@ -288,7 +298,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf[..4].copy_from_slice(&self.selector[..]);
         self.payload.encode_to(&mut input_buf[4..]);
         match self.call_limits {
-            CallLimits::GasLimit(limit) => PolkaVmHost::call_evm(
+            CallLimits::GasLimit(limit) => host.call_evm(
                 call_flags,
                 &address.0,
                 limit,
@@ -300,7 +310,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 ref_time_limit,
                 proof_size_limit,
                 deposit_limit,
-            }) => PolkaVmHost::call(
+            }) => host.call(
                 call_flags,
                 &address.0,
                 ref_time_limit,
@@ -317,12 +327,13 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     /// Execute code in the context (storage, caller, value) of the current contract.
     pub fn call(
         &self,
+        host: &Host,
         address: Address,
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        self.call_raw(address, input_buf)
-            .and_then(|_| self.extract_output(output_buf))
+        self.call_raw(host, address, input_buf)
+            .and_then(|_| self.extract_output(host, output_buf))
     }
 }
 

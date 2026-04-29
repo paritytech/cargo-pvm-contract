@@ -49,18 +49,27 @@ cargo build --release  (user runs this in the scaffolded project)
 
 **Macro API** (declarative, auto-ABI):
 ```rust
-#[pvm_contract_macros::contract("MyToken.sol", buffer = 256)]
+#[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> { Ok(()) }
+    pub struct MyToken;
 
-    #[pvm_contract_macros::method]
-    pub fn balance_of(account: Address) -> U256 { /* ... */ }
+    impl MyToken {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), Error> { Ok(()) }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> { Ok(()) }
+        #[pvm_contract_sdk::method]
+        pub fn balance_of(&self, account: Address) -> U256 {
+            self.host().get_storage(/* ... */);
+            /* ... */
+        }
+
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> { Ok(()) }
+    }
 }
 ```
+
+The macro injects a `pub host: Host` field on the storage struct and a `fn host(&self) -> &Host` accessor. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`.
 
 **DSL API** (explicit, manual dispatch):
 ```rust
@@ -355,7 +364,7 @@ In CI (`benchmark.yml`), PR builds are compared against `origin/main` with a 5% 
 
 ### example-mytoken
 
-Six MyToken variants as separate binaries:
+Seven MyToken variants as separate binaries:
 
 - `example-mytoken-macro-pico-alloc` — `pvm_contract_macros` with `allocator = "pico"`
 - `example-mytoken-macro-bump-alloc` — `pvm_contract_macros` with `allocator = "bump"`
@@ -424,7 +433,7 @@ examples/
   test-contracts/               9+ test contracts with .sol interfaces
 specs/
   abi.md                        ABI encoding specification (includes error encoding)
-  builder-dsl.md                Builder DSL specification (includes RevertBuffer)
+  builder-dsl.md                Builder DSL specification
 ```
 
 ## Editing Rust Code

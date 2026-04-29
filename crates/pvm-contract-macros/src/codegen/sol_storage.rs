@@ -65,20 +65,25 @@ pub fn expand_sol_storage(input: DeriveInput) -> syn::Result<TokenStream> {
         }
     }
 
-    // Generate the SolStorage trait impl
+    // Generate the SolStorage trait impl. Each field is constructed with a clone
+    // of the shared host handle so every storage cell reaches the backing store
+    // through the same `Host` instance.
     let field_inits: Vec<TokenStream> = field_entries
         .iter()
         .map(|(name, ty, slot)| {
             let slot_lit = *slot;
             quote! {
-                #name: <#ty>::new(::pvm_contract_sdk::StorageKey::from_slot(#slot_lit))
+                #name: <#ty>::new(
+                    ::pvm_contract_sdk::StorageKey::from_slot(#slot_lit),
+                    host.clone(),
+                )
             }
         })
         .collect();
 
     let storage_impl = quote! {
         impl ::pvm_contract_sdk::SolStorage for #name {
-            fn __pvm_storage() -> Self {
+            fn __pvm_storage(host: ::pvm_contract_sdk::Host) -> Self {
                 Self {
                     #(#field_inits),*
                 }

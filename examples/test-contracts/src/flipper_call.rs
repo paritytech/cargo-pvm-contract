@@ -13,36 +13,43 @@ interface Flipper {
 
 #[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_call_alloy {
+    use pvm_contract_sdk::CallError;
     use pvm_contract_sdk::*;
 
     use super::*;
     use flipper::{self, Flipper};
+
     sol_revert_enum! {
         pub enum Error {
             CallError(CallError)
         }
     }
-    #[pvm_contract_sdk::constructor]
-    pub fn new() -> Result<(), Error> {
-        Ok(())
-    }
 
-    #[pvm_contract_sdk::method]
-    pub fn call_flipper(addr: Address) -> Result<(), Error> {
-        let flipper = Flipper::from_address(addr);
-        let get = flipper.get();
-        let flip = flipper.flip();
+    pub struct FlipperCallAlloy;
 
-        let res = get.call()?;
-        assert_eq!(res, false);
-        let _ = flip.call()?;
-        let res = get.call()?;
-        assert_eq!(res, true);
-        Ok(())
-    }
+    impl FlipperCallAlloy {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
 
-    #[pvm_contract_sdk::fallback]
-    pub fn fallback() -> Result<(), Error> {
-        Ok(())
+        #[pvm_contract_sdk::method]
+        pub fn call_flipper(&mut self, addr: Address) -> Result<(), Error> {
+            let flipper = Flipper::from_address(addr);
+            let get = flipper.get();
+            let flip = flipper.flip();
+
+            let res = get.call(self.host())?;
+            assert_eq!(res, false);
+            let _ = flip.call(self.host())?;
+            let res = get.call(self.host())?;
+            assert_eq!(res, true);
+            Ok(())
+        }
+
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
     }
 }

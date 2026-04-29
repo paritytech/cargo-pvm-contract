@@ -22,13 +22,18 @@ pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
+    CallFlags, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
 };
+
+/// Re-exported so macro-generated `call()` / `deploy()` wrappers can reach it
+/// without the user's `Cargo.toml` depending on `pallet-revive-uapi` directly.
+#[doc(hidden)]
+pub use pallet_revive_uapi;
 
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]
-pub use mock_host::{MockHost, MockHostBuilder};
+pub use mock_host::{MockHost, MockHostBuilder, ReturnValue};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};
@@ -194,31 +199,32 @@ pub mod framework_errors {
 
 /// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
-/// A `Router` implementation inspects the 4-byte selector and either handles
-/// the call (returning `Some(())`) or declines it (returning `None`).
-/// When a method returns data or reverts, the handler calls
-/// `return_value()` which diverges — `Some(())` is only reached for
-/// void-success methods that use a bare `return` statement.
+/// Each contract module gets a generated `impl Router<Host> for Contract`
+/// that delegates to a free `mod_name::route(this, selector, input)` function.
+/// Dispatch arms call `host.return_value(...)` directly — `-> !` on `riscv64`
+/// (terminates execution), `-> ()` on host targets (captures into
+/// [`MockHost`](super::MockHost) for tests to inspect via
+/// [`MockHost::take_return_value`](super::MockHost::take_return_value)).
 ///
-/// The `#[contract]` macro automatically implements this trait for each
-/// contract module via a generated `Contract` unit struct. DSL contracts
-/// (`ContractBuilder`) use [`ContractBuilder::try_route`] directly instead —
-/// the static method signature here is designed for compile-time dispatch tables.
+/// # Composition and inheritance
 ///
-/// # Composition
-///
-/// Multiple `#[contract]` modules can be chained in a single entrypoint:
+/// Chain routers via `Option::or_else` — the same idiom as `main`:
 ///
 /// ```ignore
 /// pub extern "C" fn call() {
-///     let (selector, input) = read_calldata();
-///     if erc20::route(selector, input).is_some() { return; }
-///     if my_extension::route(selector, input).is_some() { return; }
+///     let mut this = Composed::default();
+///     if my_extension::route(&mut this, sel, input).is_some() { return; }
+///     if erc20::route(&mut this.parent, sel, input).is_some() { return; }
 ///     // fallback or revert
 /// }
 /// ```
-pub trait Router {
-    fn route(selector: [u8; 4], input: &[u8]) -> Option<()>;
+pub trait Router<H: HostApi> {
+    /// Dispatch `selector` against `input`. Returns `Some(())` if the selector
+    /// was handled (the dispatch arm has already called `host.return_value(...)`,
+    /// which on `riscv64` means execution has terminated). Returns `None` if
+    /// the selector did not match — the caller can try parent routers or
+    /// fall back to revert.
+    fn route(&mut self, selector: [u8; 4], input: &[u8]) -> Option<()>;
 }
 
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.

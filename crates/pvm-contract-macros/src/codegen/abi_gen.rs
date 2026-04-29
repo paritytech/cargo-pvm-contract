@@ -276,6 +276,7 @@ mod tests {
     fn returns_empty_for_sol_path_contract() {
         let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
             methods: vec![],
             has_constructor: false,
             has_fallback: false,
@@ -296,6 +297,7 @@ mod tests {
     fn sol_path_with_storage_generates_main_for_layout() {
         let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
             methods: vec![],
             has_constructor: false,
             has_fallback: false,

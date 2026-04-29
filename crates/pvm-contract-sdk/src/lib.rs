@@ -70,6 +70,7 @@ pub use pvm_contract_types::{
     ConstStr,
     // Error traits and types
     EmptyError,
+    Host,
     HostApi,
     HostResult,
     I256,
@@ -96,14 +97,19 @@ pub use pvm_contract_types::{
     sol_revert_enum,
 };
 
-// Storage
-pub use pvm_storage::{Lazy, Mapping};
-
 // Cross-contract calls
 pub use pvm_contract_core::call::{
     CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
     StateMutability, View,
 };
+
+// Typed storage helpers. The `SolStorage` trait + `StorageKey` are public user
+// surface; `Lazy`/`Mapping` are the declarable field types for
+// `#[derive(SolStorage)]`.
+pub use pvm_storage::{AsStorageKey, Lazy, Mapping, SolStorage, StorageKey};
+
+#[cfg(feature = "abi-gen")]
+pub use pvm_storage::StorageLayoutType;
 
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
@@ -128,12 +134,11 @@ pub use pvm_contract_types as types;
 #[doc(hidden)]
 pub use pvm_contract_types::const_format;
 
+/// Re-exported so macro-generated `call()` / `deploy()` boundaries can call
+/// `HostFnImpl::return_value` via the SDK without users depending on
+/// `pallet-revive-uapi` directly.
 #[doc(hidden)]
-pub use pvm_storage::{SolStorage, StorageKey};
-
-#[cfg(feature = "abi-gen")]
-#[doc(hidden)]
-pub use pvm_storage::StorageLayoutType;
+pub use pvm_contract_types::pallet_revive_uapi;
 
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]
@@ -154,6 +159,7 @@ pub mod prelude {
         // Errors
         EmptyError,
         // Host
+        Host,
         HostApi,
         I256,
         PolkaVmHost,
