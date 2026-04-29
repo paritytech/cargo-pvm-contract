@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use cargo_pvm_contract_extrinsics::{
-    CallCommandBuilder, Code, ContractBinary, ErrorVariant, ExtrinsicOptsBuilder,
+    CallCommandBuilder, Code, ContractBinary, DispatchError, ErrorVariant, ExtrinsicOptsBuilder,
     InstantiateCommandBuilder, MapAccountCommandBuilder, RemoveCommandBuilder,
     UploadCommandBuilder,
 };
@@ -44,6 +44,24 @@ fn build_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("Failed to create tokio runtime")
 }
 
+fn format_dry_run_failure(
+    prefix: &str,
+    err: &DispatchError,
+    decoded: &anyhow::Result<ErrorVariant>,
+) -> String {
+    match decoded {
+        Ok(decoded) => format!("{prefix} dry-run failed: {decoded}"),
+        Err(decode_err) => {
+            format!("{prefix} dry-run failed: {err:?} (failed to decode: {decode_err})")
+        }
+    }
+}
+
+fn print_dry_run_failure(prefix: &str, err: &DispatchError, metadata: &subxt::Metadata) {
+    let decoded = ErrorVariant::from_dispatch_error(err, metadata);
+    println!("{}", format_dry_run_failure(prefix, err, &decoded));
+}
+
 pub fn upload_command(args: UploadArgs) -> Result<()> {
     let code = std::fs::read(&args.code)
         .with_context(|| format!("Failed to read contract binary: {}", args.code.display()))?;
@@ -64,9 +82,7 @@ pub fn upload_command(args: UploadArgs) -> Result<()> {
                     println!("  Code hash: 0x{}", hex::encode(code_hash));
                 }
                 Err(ref err) => {
-                    let decoded =
-                        ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
-                    println!("Upload dry-run failed: {decoded}");
+                    print_dry_run_failure("Upload", err, &exec.client().metadata());
                 }
             }
         } else {
@@ -115,9 +131,7 @@ pub fn instantiate_command(args: CliInstantiateArgs) -> Result<()> {
                     );
                 }
                 Err(ref err) => {
-                    let decoded =
-                        ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
-                    println!("Instantiate dry-run failed: {decoded}");
+                    print_dry_run_failure("Instantiate", err, &exec.client().metadata());
                 }
             }
         } else {
@@ -158,9 +172,7 @@ pub fn call_command(args: CallArgs) -> Result<()> {
                     );
                 }
                 Err(ref err) => {
-                    let decoded =
-                        ErrorVariant::from_dispatch_error(err, &exec.client().metadata())?;
-                    println!("Call dry-run failed: {decoded}");
+                    print_dry_run_failure("Call", err, &exec.client().metadata());
                 }
             }
         } else {
@@ -339,4 +351,31 @@ pub fn account_command(args: AccountArgs) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cargo_pvm_contract_extrinsics::GenericError;
+
+    #[test]
+    fn format_dry_run_failure_uses_decoded_variant_when_decode_succeeds() {
+        let err = DispatchError::BadOrigin;
+        let decoded = Ok(ErrorVariant::Generic(GenericError::from_message(
+            "boom".into(),
+        )));
+        assert_eq!(
+            format_dry_run_failure("Upload", &err, &decoded),
+            "Upload dry-run failed: boom",
+        );
+    }
+
+    #[test]
+    fn format_dry_run_failure_falls_back_to_raw_dispatch_error_on_decode_failure() {
+        let err = DispatchError::BadOrigin;
+        let decoded = Err(anyhow::anyhow!("metadata mismatch"));
+        let out = format_dry_run_failure("Call", &err, &decoded);
+        assert!(out.starts_with("Call dry-run failed: BadOrigin"), "{out}");
+        assert!(out.contains("(failed to decode: metadata mismatch)"), "{out}");
+    }
 }

@@ -20,6 +20,7 @@ pub use contract_info::{
     fetch_contract_binary, fetch_contract_info, get_account_data, resolve_h160,
 };
 pub use error::{ErrorVariant, GenericError};
+pub use sp_runtime::DispatchError;
 pub use events::DisplayEvents;
 pub use extrinsic_calls::{Call, Instantiate, InstantiateWithCode, UploadCode};
 pub use extrinsic_opts::{ExtrinsicOpts, ExtrinsicOptsBuilder};
