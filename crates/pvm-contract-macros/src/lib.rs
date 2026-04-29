@@ -35,26 +35,30 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// Then implement the interface in Rust:
 ///
 /// ```ignore
-/// use pvm_contract::{Address, U256};
+/// use pvm_contract_sdk::{Address, U256};
 ///
-/// #[pvm_contract::contract("MyToken.sol")]
+/// #[pvm_contract_sdk::contract("MyToken.sol")]
 /// mod my_token {
 ///     use super::*;
 ///
-///     #[pvm_contract::constructor]
-///     pub fn new() -> Result<(), Error> { Ok(()) }
+///     pub struct MyToken;
 ///
-///     #[pvm_contract::method]
-///     pub fn total_supply() -> U256 { U256::ZERO }
+///     impl MyToken {
+///         #[pvm_contract_sdk::constructor]
+///         pub fn new(&mut self) -> Result<(), Error> { Ok(()) }
 ///
-///     #[pvm_contract::method]
-///     pub fn balance_of(_account: Address) -> U256 { U256::ZERO }
+///         #[pvm_contract_sdk::method]
+///         pub fn total_supply(&self) -> U256 { U256::ZERO }
 ///
-///     #[pvm_contract::method]
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///         #[pvm_contract_sdk::method]
+///         pub fn balance_of(&self, _account: Address) -> U256 { U256::ZERO }
 ///
-///     #[pvm_contract::fallback]
-///     pub fn fallback() -> Result<(), Error> { Err(Error::UnknownSelector) }
+///         #[pvm_contract_sdk::method]
+///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///
+///         #[pvm_contract_sdk::fallback]
+///         pub fn fallback(&mut self) -> Result<(), Error> { Ok(()) }
+///     }
 /// }
 /// ```
 ///
@@ -63,26 +67,30 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// You can also define contracts without a `.sol` file. Signatures are inferred from Rust types:
 ///
 /// ```ignore
-/// use pvm_contract::{Address, U256};
+/// use pvm_contract_sdk::{Address, U256};
 ///
-/// #[pvm_contract::contract]
+/// #[pvm_contract_sdk::contract]
 /// mod my_token {
 ///     use super::*;
 ///
-///     #[pvm_contract::constructor]
-///     pub fn new() -> Result<(), Error> { Ok(()) }
+///     pub struct MyToken;
 ///
-///     #[pvm_contract::method]
-///     pub fn total_supply() -> U256 { U256::ZERO }
+///     impl MyToken {
+///         #[pvm_contract_sdk::constructor]
+///         pub fn new(&mut self) -> Result<(), Error> { Ok(()) }
 ///
-///     #[pvm_contract::method]
-///     pub fn balance_of(account: Address) -> U256 { U256::ZERO }
+///         #[pvm_contract_sdk::method]
+///         pub fn total_supply(&self) -> U256 { U256::ZERO }
 ///
-///     #[pvm_contract::method]
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///         #[pvm_contract_sdk::method]
+///         pub fn balance_of(&self, account: Address) -> U256 { U256::ZERO }
 ///
-///     #[pvm_contract::fallback]
-///     pub fn fallback() -> Result<(), Error> { Err(Error::UnknownSelector) }
+///         #[pvm_contract_sdk::method]
+///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///
+///         #[pvm_contract_sdk::fallback]
+///         pub fn fallback(&mut self) -> Result<(), Error> { Ok(()) }
+///     }
 /// }
 /// ```
 ///
@@ -203,8 +211,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     #[derive(Debug, pvm_contract_macros::SolError)]
 ///     pub struct InsufficientBalance;
 ///
-///     // Single error: use the struct directly
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), InsufficientBalance> { ... }
+///     pub struct MyToken;
+///     impl MyToken {
+///         // Single error: use the struct directly
+///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> { ... }
+///     }
 ///
 ///     // Multiple errors: wrap with sol_revert_enum!
 ///     // pvm_contract_sdk::sol_revert_enum! {
@@ -230,15 +241,19 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ### Default stack generated code example
 ///
 /// ```ignore
-/// #[pvm_contract_macros::contract("MyToken.sol", buffer = 512)]
+/// #[pvm_contract_sdk::contract("MyToken.sol", buffer = 512)]
 /// mod my_token {
 ///     use super::*;
 ///
-///     #[pvm_contract::method]
-///     pub fn balance_of(account: Address) -> U256 { U256::ZERO }
+///     pub struct MyToken;
 ///
-///     #[pvm_contract::method]
-///     pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///     impl MyToken {
+///         #[pvm_contract_sdk::method]
+///         pub fn balance_of(&self, account: Address) -> U256 { U256::ZERO }
+///
+///         #[pvm_contract_sdk::method]
+///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///     }
 ///
 ///     // --- Generated inside the module: ---
 ///
@@ -302,8 +317,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn call() {
+///         let host = ::pvm_contract_sdk::Host::new();
 ///         let mut this = Contract {
-///             host: ::pvm_contract_sdk::Host::new(),
+///             // #[slot(N)] fields would be initialised here with
+///             // field: <Type>::new(StorageKey::from_slot(N), host.clone()),
+///             host,
 ///         };
 ///         let call_data_len = HostFnImpl::call_data_size() as usize;
 ///         let mut call_data = [0u8; 512];
@@ -838,33 +856,6 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match codegen::expand_sol_error(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
-
-/// Derive macro for storage declaration.
-///
-/// Implements the [`SolStorage`] trait, generating a constructor that creates
-/// each field at its declared `#[slot(N)]`. Also generates `__storage_layout_json()`
-/// behind `cfg(feature = "abi-gen")` for Solidity tooling compatibility.
-///
-/// # Example
-///
-/// ```ignore
-/// #[derive(SolStorage)]
-/// struct Storage {
-///     #[slot(0)]
-///     total_supply: Lazy<U256>,
-///     #[slot(1)]
-///     balances: Mapping<Address, U256>,
-/// }
-/// ```
-#[proc_macro_derive(SolStorage, attributes(slot))]
-pub fn sol_storage(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    match codegen::expand_sol_storage(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

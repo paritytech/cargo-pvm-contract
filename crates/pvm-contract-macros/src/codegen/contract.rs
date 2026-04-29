@@ -8,6 +8,7 @@ use super::dispatch::{
     MethodInfo, RouteItems, boundary_size_check, generate_param_decoding,
     generate_revert_encoding_boundary, generate_router,
 };
+use super::sol_storage::extract_optional_slot_attr;
 use crate::signature::{SolType, compute_selector};
 use crate::utils::{compute_function_signature, to_snake_case};
 
@@ -139,6 +140,16 @@ pub(super) struct ParsedContract {
     pub(super) fallback_returns_result: bool,
     /// Error types from `Result<T, E>` return types, for ABI generation.
     pub(super) error_types: Vec<syn::Type>,
+}
+
+/// A storage field annotated with `#[slot(N)]` on the contract struct.
+#[derive(Debug, Clone)]
+pub(super) struct SlotField {
+    pub name: Ident,
+    pub ty: syn::Type,
+    pub slot: u64,
+    /// `#[cfg(...)]` attributes on the field, propagated into construction and layout.
+    pub cfg_attrs: Vec<syn::Attribute>,
 }
 
 const VALID_PREFIXES: &[&str] = &[
@@ -699,12 +710,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
-    let storage_struct_name = find_sol_storage_struct(&input)?;
-    let (abi_gen_helper, abi_gen_main) = generate_abi_gen(
-        &parsed,
-        args.sol_path.is_some(),
-        storage_struct_name.clone(),
-    );
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
@@ -717,7 +722,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         )
     })?;
 
-    let mod_content = strip_pvm_attrs(&input, struct_name, &storage_struct_name)?;
+    let slot_fields = extract_slot_fields(&input, struct_name)?;
+    let (abi_gen_helper, abi_gen_main) =
+        generate_abi_gen(&parsed, args.sol_path.is_some(), &slot_fields);
+
+    let mod_content = strip_pvm_attrs(&input, struct_name)?;
 
     let alloc_setup = match args.allocator {
         Some(AllocatorKind::Pico) => {
@@ -779,6 +788,33 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     let buffer_size = args.buffer_size;
+
+    // Generate the `this` construction, shared by deploy() and call().
+    // When #[slot(N)] fields are present, each is initialised with a clone
+    // of the host handle so storage cells share the same backing store.
+    let slot_field_inits: Vec<TokenStream> = slot_fields
+        .iter()
+        .map(|sf| {
+            let name = &sf.name;
+            let ty = &sf.ty;
+            let slot = sf.slot;
+            let cfgs = &sf.cfg_attrs;
+            quote! {
+                #(#cfgs)*
+                #name: <#ty>::new(
+                    ::pvm_contract_sdk::StorageKey::from_slot(#slot),
+                    host.clone(),
+                )
+            }
+        })
+        .collect();
+    let this_construction = quote! {
+        let host = ::pvm_contract_sdk::Host::new();
+        let mut this = #struct_name {
+            #(#slot_field_inits,)*
+            host,
+        };
+    };
 
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
@@ -852,9 +888,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name {
-                    host: ::pvm_contract_sdk::Host::new(),
-                };
+                #this_construction
                 #read_calldata
                 #decode_and_call
             }
@@ -917,9 +951,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name {
-                    host: ::pvm_contract_sdk::Host::new(),
-                };
+                #this_construction
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
@@ -942,9 +974,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                let mut this = #struct_name {
-                    host: ::pvm_contract_sdk::Host::new(),
-                };
+                #this_construction
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
@@ -999,19 +1029,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 /// Rewrite the contract module body:
 /// - Inject a `host: ::pvm_contract_sdk::Host` field on the storage struct.
 /// - Strip `#[method]` / `#[constructor]` / `#[fallback]` attrs from methods.
+/// - Strip `#[slot(N)]` attrs from struct fields.
 /// - Emit an `impl StorageStruct { fn host(&self) -> &Host }` accessor.
-/// - If a `#[derive(SolStorage)]` struct is present in the module, inject
-///   `let mut storage = <StorageStruct as SolStorage>::__pvm_storage(self.host().clone());`
-///   at the top of every `#[method]`/`#[constructor]`/`#[fallback]` body, so
-///   contract code can read/write state via `storage.<field>.get()` etc.
 ///
 /// All user `impl` blocks are cfg-gated to `not(feature = "abi-gen")` so their
 /// bodies (which may call host APIs) are excluded from host-target ABI builds.
-fn strip_pvm_attrs(
-    input: &ItemMod,
-    struct_name: &Ident,
-    storage_struct_name: &Option<Ident>,
-) -> syn::Result<TokenStream> {
+fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStream> {
     let content = input.content.as_ref().unwrap();
     let mut items: Vec<TokenStream> = Vec::new();
     let mut struct_seen = false;
@@ -1025,10 +1048,8 @@ fn strip_pvm_attrs(
             }
             syn::Item::Impl(item_impl) => {
                 let mut new_impl = item_impl.clone();
-                let targets_contract = impl_targets_storage_struct(&new_impl, struct_name);
                 for impl_item in new_impl.items.iter_mut() {
                     if let syn::ImplItem::Fn(func) = impl_item {
-                        let is_pvm_fn = has_pvm_method_attr(&func.attrs);
                         func.attrs.retain(|attr| {
                             let segments: Vec<_> = attr.path().segments.iter().collect();
                             !(segments.len() == 2
@@ -1037,18 +1058,6 @@ fn strip_pvm_attrs(
                                     || segments[1].ident == "constructor"
                                     || segments[1].ident == "fallback"))
                         });
-                        // Inject `let mut storage = ...` only into pvm-tagged
-                        // methods on the contract struct, when a SolStorage
-                        // struct is declared in the module.
-                        if is_pvm_fn
-                            && targets_contract
-                            && let Some(storage_ident) = storage_struct_name
-                        {
-                            let injection: syn::Stmt = syn::parse_quote! {
-                                let mut storage = <#storage_ident as ::pvm_contract_sdk::SolStorage>::__pvm_storage(self.host().clone());
-                            };
-                            func.block.stmts.insert(0, injection);
-                        }
                     }
                 }
                 items.push(quote! {
@@ -1105,22 +1114,10 @@ fn strip_pvm_attrs(
     })
 }
 
-/// Whether any of the attributes is a `#[method]`, `#[constructor]`, or
-/// `#[fallback]` from one of the pvm crates. Used to decide where to inject
-/// the `storage` binding.
-fn has_pvm_method_attr(attrs: &[Attribute]) -> bool {
-    attrs.iter().any(|attr| {
-        let segments: Vec<_> = attr.path().segments.iter().collect();
-        segments.len() == 2
-            && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
-            && (segments[1].ident == "method"
-                || segments[1].ident == "constructor"
-                || segments[1].ident == "fallback")
-    })
-}
-
 /// Rewrite a user-declared storage struct into `pub struct Name { host: Host, <user fields> }`.
 /// Accepts unit (`pub struct Name;`) or named (`pub struct Name { ... }`) forms.
+/// Strips `#[slot(N)]` attributes from fields. They are consumed by
+/// [`extract_slot_fields`] for construction and ABI generation.
 fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStream> {
     let attrs = &item_struct.attrs;
     let vis = &item_struct.vis;
@@ -1142,7 +1139,21 @@ fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStr
         }
     };
 
-    let user_field_tokens: Vec<TokenStream> = user_fields.iter().map(|f| quote! { #f }).collect();
+    // Emit each user field but strip `#[slot(N)]` attributes.
+    let user_field_tokens: Vec<TokenStream> = user_fields
+        .iter()
+        .map(|f| {
+            let field_attrs: Vec<_> = f
+                .attrs
+                .iter()
+                .filter(|a| !a.path().is_ident("slot"))
+                .collect();
+            let vis = &f.vis;
+            let ident = &f.ident;
+            let ty = &f.ty;
+            quote! { #(#field_attrs)* #vis #ident: #ty }
+        })
+        .collect();
 
     Ok(quote! {
         #(#attrs)*
@@ -1155,139 +1166,94 @@ fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStr
     })
 }
 
-/// Whether this `impl` block targets the contract's storage struct, including
-/// trait impls like `impl Trait for StorageStruct`.
-fn impl_targets_storage_struct(item_impl: &syn::ItemImpl, struct_name: &Ident) -> bool {
-    let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
-        return false;
-    };
-    type_path
-        .path
-        .segments
-        .last()
-        .map(|s| &s.ident == struct_name)
-        .unwrap_or(false)
+/// Extract `#[slot(N)]` fields from the contract struct.
+///
+/// Returns an empty vec for unit structs or structs with no `#[slot]` fields.
+/// Validates there are no duplicate slot numbers.
+fn extract_slot_fields(input: &ItemMod, struct_name: &Ident) -> syn::Result<Vec<SlotField>> {
+    let content = input.content.as_ref().unwrap();
+    for item in &content.1 {
+        if let syn::Item::Struct(item_struct) = item
+            && &item_struct.ident == struct_name
+        {
+            return extract_slot_fields_from_struct(item_struct);
+        }
+    }
+    Ok(vec![])
 }
 
-/// Detect a struct with `#[derive(SolStorage)]` in the module items.
-/// Returns the struct name if found, or an error if more than one non-cfg-gated
-/// duplicate is found.
-///
-/// Proc macros see module items before `#[cfg]` evaluation, so feature-gated
-/// storage structs (e.g. `#[cfg(feature = "v1")] struct StorageV1`) are visible
-/// even when inactive. We allow multiple `SolStorage` structs as long as every
-/// duplicate carries a `#[cfg(...)]` attribute, which indicates the developer
-/// intends for exactly one to be active per build.
-fn find_sol_storage_struct(input: &ItemMod) -> syn::Result<Option<Ident>> {
-    let content = match input.content.as_ref() {
-        Some(c) => c,
-        None => return Ok(None),
+fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result<Vec<SlotField>> {
+    let named = match &item_struct.fields {
+        syn::Fields::Unit => return Ok(vec![]),
+        syn::Fields::Named(named) => named,
+        syn::Fields::Unnamed(_) => return Ok(vec![]),
     };
 
-    // Collect all structs that derive SolStorage, noting whether they have #[cfg].
-    let mut candidates: Vec<(&syn::ItemStruct, bool)> = Vec::new();
-    for item in &content.1 {
-        let syn::Item::Struct(s) = item else {
+    let mut fields = Vec::new();
+    for field in &named.named {
+        let Some(ident) = &field.ident else {
             continue;
         };
-        if !has_sol_storage_derive(s) {
-            continue;
-        }
-        let has_cfg = s.attrs.iter().any(|a| a.path().is_ident("cfg"));
-        candidates.push((s, has_cfg));
-    }
-
-    if candidates.len() <= 1 {
-        return Ok(candidates.first().map(|(s, _)| s.ident.clone()));
-    }
-
-    // Multiple candidates found.
-    //
-    // Proc macros run before #[cfg] evaluation, so feature-gated storage structs
-    // are all visible even though only one will be active per build. We allow
-    // this IF every candidate is #[cfg]-gated AND they all share the same name,
-    // because the injected code references the struct by name, which must resolve
-    // regardless of which cfg branch the compiler selects.
-    let all_cfg_gated = candidates.iter().all(|(_, has_cfg)| *has_cfg);
-
-    if all_cfg_gated {
-        let first_name = &candidates[0].0.ident;
-        for (s, _) in &candidates[1..] {
-            if s.ident != *first_name {
+        if ident == "host" {
+            if extract_optional_slot_attr(field)?.is_some() {
                 return Err(syn::Error::new_spanned(
-                    s,
-                    format!(
-                        "cfg-gated #[derive(SolStorage)] structs must share the same name \
-                         (found `{}` and `{}`); the #[contract] macro injects code that \
-                         references the struct by name, which must resolve in every cfg branch",
-                        first_name, s.ident
-                    ),
+                    field,
+                    "`host` is a reserved field name injected by the #[contract] macro. \
+                     Rename this storage field.",
                 ));
             }
+            continue;
         }
-        return Ok(Some(first_name.clone()));
+        let Some(slot) = extract_optional_slot_attr(field)? else {
+            return Err(syn::Error::new_spanned(
+                field,
+                format!(
+                    "field `{ident}` must have a `#[slot(N)]` attribute. \
+                     All non-host fields on the contract struct are storage fields \
+                     and require a slot number."
+                ),
+            ));
+        };
+        let cfg_attrs: Vec<syn::Attribute> = field
+            .attrs
+            .iter()
+            .filter(|a| a.path().is_ident("cfg"))
+            .cloned()
+            .collect();
+        fields.push(SlotField {
+            name: ident.clone(),
+            ty: field.ty.clone(),
+            slot,
+            cfg_attrs,
+        });
     }
 
-    // At least one candidate is unconditional. Reject the duplicate.
-    let first_name = &candidates[0].0.ident;
-    for (s, has_cfg) in &candidates[1..] {
-        if !has_cfg {
+    // Reject duplicate slot numbers. When both fields are #[cfg]-gated
+    // AND share the same name, we allow it. The compiler enforces that
+    // only one field with a given name exists, so exactly one cfg branch
+    // will be active. Different names with the same slot are always
+    // rejected because the compiler can't catch the aliasing.
+    for (i, a) in fields.iter().enumerate() {
+        for b in &fields[i + 1..] {
+            if a.slot != b.slot {
+                continue;
+            }
+            let both_cfg = !a.cfg_attrs.is_empty() && !b.cfg_attrs.is_empty();
+            let same_name = a.name == b.name;
+            if both_cfg && same_name {
+                continue;
+            }
             return Err(syn::Error::new_spanned(
-                s,
+                item_struct,
                 format!(
-                    "only one #[derive(SolStorage)] struct is allowed per contract module \
-                     (already found `{}`); if these are feature-gated, add #[cfg(...)] \
-                     to each variant",
-                    first_name
+                    "duplicate slot {}: fields `{}` and `{}` use the same slot number",
+                    a.slot, a.name, b.name
                 ),
             ));
         }
     }
-    // First candidate lacks cfg but later ones have it.
-    Err(syn::Error::new_spanned(
-        candidates[0].0,
-        format!(
-            "only one #[derive(SolStorage)] struct is allowed per contract module \
-             (also found `{}`); if these are feature-gated, add #[cfg(...)] \
-             to each variant",
-            candidates[1].0.ident
-        ),
-    ))
-}
 
-/// Check whether a struct has `#[derive(SolStorage)]` by parsing the derive
-/// token list and matching each path exactly (not substring).
-fn has_sol_storage_derive(s: &syn::ItemStruct) -> bool {
-    for attr in &s.attrs {
-        if let syn::Meta::List(meta_list) = &attr.meta {
-            if !meta_list.path.is_ident("derive") {
-                continue;
-            }
-            // Parse the derive arguments as a comma-separated list of paths
-            let paths: Result<syn::punctuated::Punctuated<syn::Path, syn::Token![,]>, _> =
-                meta_list.parse_args_with(syn::punctuated::Punctuated::parse_terminated);
-            if let Ok(paths) = paths {
-                for path in &paths {
-                    // Match both `SolStorage` (unqualified) and
-                    // `pvm_contract_macros::SolStorage` (fully qualified).
-                    // For multi-segment paths, verify the prefix is a known
-                    // PVM macro crate name.
-                    if path.is_ident("SolStorage") {
-                        return true;
-                    }
-                    if path.segments.len() == 2 {
-                        let prefix = path.segments[0].ident.to_string();
-                        if VALID_PREFIXES.contains(&prefix.as_str())
-                            && path.segments[1].ident == "SolStorage"
-                        {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
+    Ok(fields)
 }
 
 #[cfg(test)]
@@ -1601,17 +1567,16 @@ mod tests {
     }
 
     #[test]
-    fn contract_injects_storage_variable_when_sol_storage_present() {
+    fn slot_fields_generate_construction() {
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[derive(SolStorage)]
-                struct Storage {
+                pub struct MyContract {
                     #[slot(0)]
                     counter: Lazy<U256>,
+                    #[slot(1)]
+                    balances: Mapping<Address, U256>,
                 }
-
-                pub struct MyContract;
                 impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self) {}
@@ -1630,232 +1595,35 @@ mod tests {
             .unwrap()
             .to_string();
 
+        // Each slot field is constructed with StorageKey::from_slot(N) and host.clone()
         assert!(
-            output.contains("__pvm_storage"),
-            "Contract should inject storage variable when SolStorage struct is present.\n\
+            output.contains("from_slot (0u64") && output.contains("from_slot (1u64"),
+            "Slot fields should produce from_slot construction.\n\
+             Expanded output:\n{output}"
+        );
+        assert!(
+            output.contains("host . clone ()"),
+            "Slot fields should receive a host clone.\n\
              Expanded output:\n{output}"
         );
 
+        // #[slot(N)] attributes should not appear in the emitted struct
         assert!(
-            output.contains("as :: pvm_contract_sdk :: SolStorage")
-                && output.contains("__pvm_storage"),
-            "Storage injection should use fully-qualified SolStorage::__pvm_storage().\n\
-             Expanded output:\n{output}"
-        );
-
-        let pvm_storage_count = output.matches("__pvm_storage").count();
-        assert!(
-            pvm_storage_count >= 2,
-            "Both constructor and method should get storage injection, \
-             but found only {pvm_storage_count} occurrence(s).\n\
-             Expanded output:\n{output}"
-        );
-    }
-
-    #[test]
-    fn contract_does_not_inject_storage_without_sol_storage() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                pub struct MyContract;
-                impl MyContract {
-                    #[pvm_contract_macros::constructor]
-                    pub fn new(&mut self) {}
-
-                    #[pvm_contract_macros::method]
-                    pub fn get_value(&self) -> U256 {
-                        U256::ZERO
-                    }
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        assert!(
-            !output.contains("__pvm_storage"),
-            "Contract should not inject storage when no SolStorage struct is present"
-        );
-    }
-
-    #[test]
-    fn contract_rejects_multiple_sol_storage_structs() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[derive(SolStorage)]
-                struct StorageA {
-                    #[slot(0)]
-                    a: Lazy<U256>,
-                }
-
-                #[derive(SolStorage)]
-                struct StorageB {
-                    #[slot(1)]
-                    b: Lazy<U256>,
-                }
-
-                pub struct MyContract;
-                impl MyContract {
-                    #[pvm_contract_macros::constructor]
-                    pub fn new(&mut self) {}
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let result = expand_contract(ContractArgs::default(), item);
-        assert!(
-            result.is_err(),
-            "Should reject modules with multiple non-cfg-gated SolStorage structs"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("only one #[derive(SolStorage)]"),
-            "Error should mention the constraint. Got: {err}"
-        );
-    }
-
-    #[test]
-    fn contract_allows_cfg_gated_sol_storage_structs() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[cfg(feature = "v1")]
-                #[derive(SolStorage)]
-                struct Storage {
-                    #[slot(0)]
-                    a: Lazy<U256>,
-                }
-
-                #[cfg(not(feature = "v1"))]
-                #[derive(SolStorage)]
-                struct Storage {
-                    #[slot(0)]
-                    a: Lazy<U256>,
-                    #[slot(1)]
-                    b: Lazy<U256>,
-                }
-
-                pub struct MyContract;
-                impl MyContract {
-                    #[pvm_contract_macros::constructor]
-                    pub fn new(&mut self) {}
-
-                    #[pvm_contract_macros::method]
-                    pub fn get_value(&self) -> U256 {
-                        U256::ZERO
-                    }
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        assert!(
-            output.contains("__pvm_storage"),
-            "Contract should accept cfg-gated SolStorage structs and inject storage.\n\
+            !output.contains("# [slot"),
+            "Slot attributes should be stripped from the struct output.\n\
              Expanded output:\n{output}"
         );
     }
 
     #[test]
-    fn contract_rejects_cfg_gated_sol_storage_with_different_names() {
+    fn slot_fields_initialize_in_deploy_and_call() {
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[cfg(feature = "v1")]
-                #[derive(SolStorage)]
-                struct StorageV1 {
-                    #[slot(0)]
-                    a: Lazy<U256>,
-                }
-
-                #[cfg(not(feature = "v1"))]
-                #[derive(SolStorage)]
-                struct StorageV2 {
-                    #[slot(0)]
-                    a: Lazy<U256>,
-                }
-
-                pub struct MyContract;
-                impl MyContract {
-                    #[pvm_contract_macros::constructor]
-                    pub fn new(&mut self) {}
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let result = expand_contract(ContractArgs::default(), item);
-        assert!(
-            result.is_err(),
-            "Should reject cfg-gated SolStorage structs with different names"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("must share the same name"),
-            "Error should explain the name requirement. Got: {err}"
-        );
-    }
-
-    #[test]
-    fn contract_does_not_match_sol_storage_substring() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[derive(NotSolStorage)]
-                struct Storage {
-                    value: u32,
-                }
-
-                pub struct MyContract;
-                impl MyContract {
-                    #[pvm_contract_macros::constructor]
-                    pub fn new(&mut self) {}
-
-                    #[pvm_contract_macros::method]
-                    pub fn get_value(&self) -> U256 {
-                        U256::ZERO
-                    }
-                }
-            }
-        "#,
-        )
-        .unwrap();
-
-        let output = expand_contract(ContractArgs::default(), item)
-            .unwrap()
-            .to_string();
-
-        assert!(
-            !output.contains("__pvm_storage"),
-            "Should not match derive names that merely contain 'SolStorage' as substring"
-        );
-    }
-
-    #[test]
-    fn contract_detects_fully_qualified_sol_storage_derive() {
-        let item: ItemMod = syn::parse_str(
-            r#"
-            mod my_contract {
-                #[derive(pvm_contract_macros::SolStorage)]
-                struct Storage {
+                pub struct MyContract {
                     #[slot(0)]
                     counter: Lazy<U256>,
                 }
-
-                pub struct MyContract;
                 impl MyContract {
                     #[pvm_contract_macros::constructor]
                     pub fn new(&mut self) {}
@@ -1874,10 +1642,180 @@ mod tests {
             .unwrap()
             .to_string();
 
+        let slot_init_count = output.matches("from_slot (0u64").count();
         assert!(
-            output.contains("__pvm_storage"),
-            "Contract should detect fully qualified pvm_contract_macros::SolStorage.\n\
+            slot_init_count >= 2,
+            "Slot field should be initialized in both deploy() and call().\n\
              Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn no_slot_fields_no_storage_construction() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn get_value(&self) -> U256 {
+                        U256::ZERO
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("from_slot"),
+            "Unit struct should not produce storage construction"
+        );
+    }
+
+    #[test]
+    fn missing_slot_attr_rejected_for_non_host_fields() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    counter: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("must have a `#[slot(N)]` attribute"),
+            "Expected missing-slot validation. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn host_field_with_slot_attr_is_rejected() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[slot(0)]
+                    host: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`host` is a reserved field name"),
+            "Expected reserved-host validation. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn duplicate_slot_numbers_rejected() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[slot(0)]
+                    a: Lazy<U256>,
+                    #[slot(0)]
+                    b: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let result = expand_contract(ContractArgs::default(), item);
+        assert!(result.is_err(), "Should reject duplicate slot numbers");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("duplicate slot 0"),
+            "Error should mention the duplicate slot. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn cfg_gated_same_name_same_slot_allowed() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[cfg(feature = "v1")]
+                    #[slot(0)]
+                    data: Lazy<U256>,
+                    #[cfg(not(feature = "v1"))]
+                    #[slot(0)]
+                    data: Mapping<Address, U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        assert!(
+            expand_contract(ContractArgs::default(), item).is_ok(),
+            "Same name + same slot + both cfg-gated should be allowed"
+        );
+    }
+
+    #[test]
+    fn cfg_gated_different_name_same_slot_rejected() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[cfg(feature = "a")]
+                    #[slot(0)]
+                    balance_a: Lazy<U256>,
+                    #[cfg(feature = "b")]
+                    #[slot(0)]
+                    balance_b: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let result = expand_contract(ContractArgs::default(), item);
+        assert!(
+            result.is_err(),
+            "Different names with same slot should be rejected even when cfg-gated"
         );
     }
 

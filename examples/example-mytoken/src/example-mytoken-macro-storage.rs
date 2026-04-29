@@ -17,14 +17,6 @@ mod my_token {
     use super::*;
     use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping};
 
-    #[derive(pvm_contract_sdk::SolStorage)]
-    struct Storage {
-        #[slot(0)]
-        total_supply: Lazy<U256>,
-        #[slot(1)]
-        balances: Mapping<Address, U256>,
-    }
-
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
@@ -34,7 +26,12 @@ mod my_token {
         }
     }
 
-    pub struct MyToken;
+    pub struct MyToken {
+        #[slot(0)]
+        total_supply: Lazy<U256>,
+        #[slot(1)]
+        balances: Mapping<Address, U256>,
+    }
 
     impl MyToken {
         #[pvm_contract_sdk::constructor]
@@ -44,26 +41,26 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn total_supply(&self) -> U256 {
-            storage.total_supply.get()
+            self.total_supply.get()
         }
 
         #[pvm_contract_sdk::method]
         pub fn balance_of(&self, account: Address) -> U256 {
-            storage.balances.get(&account)
+            self.balances.get(&account)
         }
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
             let caller = self.caller();
 
-            let mut sender_cell = storage.balances.entry(&caller);
+            let mut sender_cell = self.balances.entry(&caller);
             let sender_balance = sender_cell.get();
             if sender_balance < amount {
                 return Err(InsufficientBalance.into());
             }
             sender_cell.set(&(sender_balance - amount));
 
-            let mut recipient_cell = storage.balances.entry(&to);
+            let mut recipient_cell = self.balances.entry(&to);
             let recipient_balance = recipient_cell.get();
             recipient_cell.set(&(recipient_balance + amount));
 
@@ -76,12 +73,12 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let mut recipient_cell = storage.balances.entry(&to);
+            let mut recipient_cell = self.balances.entry(&to);
             let new_balance = recipient_cell.get().saturating_add(amount);
             recipient_cell.set(&new_balance);
 
-            let new_supply = storage.total_supply.get().saturating_add(amount);
-            storage.total_supply.set(&new_supply);
+            let new_supply = self.total_supply.get().saturating_add(amount);
+            self.total_supply.set(&new_supply);
 
             let zero_address = [0u8; 20];
             let to_bytes: [u8; 20] = to.into();

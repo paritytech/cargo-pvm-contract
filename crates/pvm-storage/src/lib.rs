@@ -6,8 +6,8 @@
 //!
 //! # Usage
 //!
-//! The storage types can be used standalone or with `#[derive(SolStorage)]` for
-//! macro-integrated declaration:
+//! Inside a `#[contract]` module, declare `#[slot(N)]` fields on the contract
+//! struct. The macro handles construction automatically. Standalone usage:
 //!
 //! ```ignore
 //! use pvm_storage::{Lazy, Mapping, StorageKey};
@@ -202,19 +202,6 @@ impl_tuple_storage_key!(A: 0, B: 1);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3, E: 4);
-
-// ---------------------------------------------------------------------------
-// SolStorage trait
-// ---------------------------------------------------------------------------
-
-/// Trait implemented by `#[derive(SolStorage)]` to provide the storage constructor.
-///
-/// The `#[contract]` macro detects types implementing this trait and injects
-/// a `storage` variable into each method body, passing `self.host().clone()`
-/// so every storage cell has a host handle to reach the backing store.
-pub trait SolStorage: Sized {
-    fn __pvm_storage(host: Host) -> Self;
-}
 
 // ---------------------------------------------------------------------------
 // StorageLayoutType: for storageLayout JSON generation (abi-gen only)
@@ -672,106 +659,76 @@ mod tests {
         assert_eq!(m.get(&addr), U256::from(70));
     }
 
-    // --- SolStorage derive ---
+    // --- Multi-field storage ---
 
     #[test]
-    fn sol_storage_derive_generates_constructor() {
-        use pvm_contract_macros::SolStorage;
+    fn multi_field_storage() {
+        let host = h();
+        let mut counter = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
+        let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host);
 
-        #[derive(SolStorage)]
-        struct TestStorage {
-            #[slot(0)]
-            counter: Lazy<U256>,
-            #[slot(1)]
-            balances: Mapping<Address, U256>,
-        }
+        counter.set(&U256::from(42));
+        assert_eq!(counter.get(), U256::from(42));
 
-        let mut storage = TestStorage::__pvm_storage(h());
-
-        // counter at slot 0
-        storage.counter.set(&U256::from(42));
-        assert_eq!(storage.counter.get(), U256::from(42));
-
-        // balances at slot 1
         let addr = Address([0xFF; 20]);
-        storage.balances.insert(&addr, &U256::from(1000));
-        assert_eq!(storage.balances.get(&addr), U256::from(1000));
+        balances.insert(&addr, &U256::from(1000));
+        assert_eq!(balances.get(&addr), U256::from(1000));
     }
 
-    /// Full ERC-20-like example showing how storage is declared and used.
-    /// This mirrors the target DX from the implementation plan.
+    /// Full ERC-20-like example showing how storage fields are constructed
+    /// and used. This mirrors the `#[contract]` macro's generated code.
     #[test]
     fn erc20_storage_example() {
-        use pvm_contract_macros::SolStorage;
-
-        #[derive(SolStorage)]
-        struct Storage {
-            #[slot(0)]
-            total_supply: Lazy<U256>,
-            #[slot(1)]
-            balances: Mapping<Address, U256>,
-            #[slot(2)]
-            allowances: Mapping<Address, Mapping<Address, U256>>,
-        }
-
-        let mut storage = Storage::__pvm_storage(h());
+        let host = h();
+        let mut total_supply = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
+        let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone());
+        let mut allowances =
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host);
 
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
         let initial_supply = U256::from(10_000);
 
         // Constructor: set total supply and mint to alice
-        storage.total_supply.set(&initial_supply);
-        storage.balances.insert(&alice, &initial_supply);
+        total_supply.set(&initial_supply);
+        balances.insert(&alice, &initial_supply);
 
-        assert_eq!(storage.total_supply.get(), initial_supply);
-        assert_eq!(storage.balances.get(&alice), initial_supply);
-        assert_eq!(storage.balances.get(&bob), U256::ZERO);
+        assert_eq!(total_supply.get(), initial_supply);
+        assert_eq!(balances.get(&alice), initial_supply);
+        assert_eq!(balances.get(&bob), U256::ZERO);
 
         // Transfer: alice sends 300 to bob using entry() for read-then-write
         let amount = U256::from(300);
-        let mut alice_cell = storage.balances.entry(&alice);
+        let mut alice_cell = balances.entry(&alice);
         let alice_bal = alice_cell.get();
         alice_cell.set(&(alice_bal - amount));
 
-        let mut bob_cell = storage.balances.entry(&bob);
+        let mut bob_cell = balances.entry(&bob);
         let bob_bal = bob_cell.get();
         bob_cell.set(&(bob_bal + amount));
 
-        assert_eq!(storage.balances.get(&alice), U256::from(9_700));
-        assert_eq!(storage.balances.get(&bob), U256::from(300));
+        assert_eq!(balances.get(&alice), U256::from(9_700));
+        assert_eq!(balances.get(&bob), U256::from(300));
 
         // Approve: alice approves bob for 500
-        storage
-            .allowances
-            .entry(&alice)
-            .insert(&bob, &U256::from(500));
+        allowances.entry(&alice).insert(&bob, &U256::from(500));
 
         // Read allowance via chaining
-        assert_eq!(storage.allowances.get(&alice).get(&bob), U256::from(500));
+        assert_eq!(allowances.get(&alice).get(&bob), U256::from(500));
         // Other direction is zero
-        assert_eq!(storage.allowances.get(&bob).get(&alice), U256::ZERO);
+        assert_eq!(allowances.get(&bob).get(&alice), U256::ZERO);
     }
 
     #[test]
-    fn sol_storage_derive_slot_assignment() {
-        use pvm_contract_macros::SolStorage;
+    fn different_slots_dont_interfere() {
+        let host = h();
+        let mut value_a = Lazy::<U256>::new(StorageKey::from_slot(5), host.clone());
+        let mut value_b = Lazy::<U256>::new(StorageKey::from_slot(10), host);
 
-        #[derive(SolStorage)]
-        struct TestStorage {
-            #[slot(5)]
-            value_a: Lazy<U256>,
-            #[slot(10)]
-            value_b: Lazy<U256>,
-        }
-
-        let mut storage = TestStorage::__pvm_storage(h());
-
-        // Values at different slots don't interfere
-        storage.value_a.set(&U256::from(111));
-        storage.value_b.set(&U256::from(222));
-        assert_eq!(storage.value_a.get(), U256::from(111));
-        assert_eq!(storage.value_b.get(), U256::from(222));
+        value_a.set(&U256::from(111));
+        value_b.set(&U256::from(222));
+        assert_eq!(value_a.get(), U256::from(111));
+        assert_eq!(value_b.get(), U256::from(222));
     }
 
     // --- Solidity slot cross-checks (hardcoded values from `cast index`) ---
@@ -817,47 +774,6 @@ mod tests {
             slot.as_bytes(),
             &expected,
             "must match chained `cast index` output"
-        );
-    }
-
-    // --- StorageLayoutType / abi-gen tests ---
-    // Run with: cargo test -p pvm-storage --features abi-gen
-
-    #[test]
-    #[cfg(feature = "abi-gen")]
-    fn sol_storage_layout_json() {
-        use pvm_contract_macros::SolStorage;
-
-        #[derive(SolStorage)]
-        #[allow(dead_code)]
-        struct Storage {
-            #[slot(0)]
-            total_supply: Lazy<U256>,
-            #[slot(1)]
-            balances: Mapping<Address, U256>,
-            #[slot(2)]
-            allowances: Mapping<Address, Mapping<Address, U256>>,
-        }
-
-        let json = Storage::__storage_layout_json();
-        // Parse and verify the JSON structure
-        assert!(json.starts_with("{\"storage\":["), "bad prefix: {json}");
-        assert!(json.ends_with("]}"), "bad suffix: {json}");
-
-        // Verify each field entry
-        assert!(
-            json.contains(r#""label":"total_supply","slot":"0","type":"uint256""#),
-            "total_supply entry missing or wrong: {json}"
-        );
-        assert!(
-            json.contains(r#""label":"balances","slot":"1","type":"mapping(address,uint256)""#),
-            "balances entry missing or wrong: {json}"
-        );
-        assert!(
-            json.contains(
-                r#""label":"allowances","slot":"2","type":"mapping(address,mapping(address,uint256))""#
-            ),
-            "allowances entry missing or wrong: {json}"
         );
     }
 }

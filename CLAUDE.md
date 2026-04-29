@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolError)]`, `#[derive(SolStorage)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolError)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error traits (`SolError`, `SolRevert`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -227,17 +227,16 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 - Solidity-compatible key derivation: `keccak256(pad32(key) ++ pad32(slot))`
 - `set(&mut self)` / `insert(&mut self)` / `entry(&mut self)` take `&mut self` for future view enforcement
 - `Mapping::entry()` returns a `Lazy<V>` handle for the derived slot, allowing read-then-write on the same key with a single keccak derivation instead of two
-- Nested mappings via chaining: `storage.allowances.get(&owner).get(&spender)`
+- Nested mappings via chaining: `self.allowances.get(&owner).get(&spender)`
 
-### `#[derive(SolStorage)]`
+### Storage on the contract struct
 
-Declares storage inside a `#[contract]` module. The `#[contract]` macro detects it and injects an implicit `storage` variable into each method body:
+Declare `#[slot(N)]` fields directly on the contract struct. The `#[contract]` macro constructs each field with a `StorageKey` and a clone of the host handle. Methods access storage via `self`:
 
 ```rust
 #[contract("MyToken.sol")]
 mod my_token {
-    #[derive(SolStorage)]
-    struct MyTokenStorage {
+    pub struct MyToken {
         #[slot(0)]
         total_supply: Lazy<U256>,
         #[slot(1)]
@@ -246,25 +245,31 @@ mod my_token {
         allowances: Mapping<Address, Mapping<Address, U256>>,
     }
 
-    #[method]
-    pub fn balance_of(account: Address) -> U256 {
-        storage.balances.get(&account)
-    }
-
-    #[method]
-    pub fn transfer(to: Address, amount: U256) -> Result<(), TokenError> {
-        let caller = env::caller();
-        let mut cell = storage.balances.entry(&caller);
-        let bal = cell.get();
-        if bal < amount {
-            return Err(InsufficientBalance { required: amount, available: bal }.into());
+    impl MyToken {
+        #[method]
+        pub fn balance_of(&self, account: Address) -> U256 {
+            self.balances.get(&account)
         }
-        cell.set(&(bal - amount));
-        storage.balances.insert(&to, &(storage.balances.get(&to) + amount));
-        Ok(())
+
+        #[method]
+        pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
+            let caller = self.caller();
+            let mut cell = self.balances.entry(&caller);
+            let bal = cell.get();
+            if bal < amount {
+                return Err(InsufficientBalance { required: amount, available: bal }.into());
+            }
+            cell.set(&(bal - amount));
+            self.balances.insert(&to, &(self.balances.get(&to) + amount));
+            Ok(())
+        }
     }
 }
 ```
+
+View enforcement comes from Rust's borrow checker: `&self` methods can only call `get()` on storage fields, while `&mut self` methods can also call `set()`, `insert()`, and `entry()`.
+
+The `host` field name is reserved. The macro injects it automatically.
 
 ### Bytecode Optimization
 
@@ -370,7 +375,7 @@ Seven MyToken variants as separate binaries:
 - `example-mytoken-macro-bump-alloc` — `pvm_contract_macros` with `allocator = "bump"`
 - `example-mytoken-macro-no-alloc` — `pvm_contract_macros` default stack mode
 - `example-mytoken-macro-no-sol` — `pvm_contract_macros` without Solidity interface path
-- `example-mytoken-macro-storage` — `pvm_contract_macros` with `pvm-storage` (`Lazy`, `Mapping`, `#[derive(SolStorage)]`)
+- `example-mytoken-macro-storage` — `pvm_contract_macros` with `pvm-storage` (`Lazy`, `Mapping`, `#[slot(N)]` on contract struct)
 - `example-mytoken-dsl-no-alloc` — `pvm-contract-builder-dsl` variant
 - `example-mytoken-alloy-alloc` — alloy-based alloc variant
 

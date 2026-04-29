@@ -1238,7 +1238,6 @@ dependencies = [
  "polkavm-linker",
  "pvm-contract-types",
  "serde_json",
- "syn 2.0.117",
  "tempfile",
  "toml_edit 0.22.27",
 ]
@@ -4437,7 +4436,6 @@ dependencies = [
 name = "pvm-storage"
 version = "0.3.0"
 dependencies = [
- "pvm-contract-macros",
  "pvm-contract-types",
  "ruint",
  "trybuild",
