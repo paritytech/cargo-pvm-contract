@@ -165,9 +165,69 @@ impl SolType {
     }
 }
 
+impl TryFrom<syn_solidity::Type> for SolType {
+    type Error = String;
+    fn try_from(value: syn_solidity::Type) -> Result<Self, Self::Error> {
+        let res = match value {
+            syn_solidity::Type::Address(_, _) => Self::Address,
+            syn_solidity::Type::Bool(_) => Self::Bool,
+            syn_solidity::Type::String(_) => Self::String,
+            syn_solidity::Type::Bytes(_) => Self::DynBytes,
+            syn_solidity::Type::FixedBytes(_, size) => Self::Bytes(size.get().into()),
+            syn_solidity::Type::Int(_, non_zero) => {
+                if let Some(non_zero) = non_zero {
+                    Self::Int(non_zero.get().into())
+                } else {
+                    Self::Int(256)
+                }
+            }
+            syn_solidity::Type::Uint(_, non_zero) => {
+                if let Some(non_zero) = non_zero {
+                    Self::Uint(non_zero.get().into())
+                } else {
+                    Self::Uint(256)
+                }
+            }
+            syn_solidity::Type::Array(type_array) => {
+                if let Some(size) = type_array.size() {
+                    Self::FixedArray(Box::new((*type_array.ty).try_into()?), size)
+                } else {
+                    Self::Array(Box::new((*type_array.ty).try_into()?))
+                }
+            }
+            syn_solidity::Type::Tuple(type_tuple) => {
+                let res: Result<Vec<Self>, Self::Error> =
+                    type_tuple.types.into_iter().map(|x| x.try_into()).collect();
+                Self::Tuple(res?)
+            }
+
+            syn_solidity::Type::Custom(sol_path) => Self::Custom(sol_path.to_string()),
+            syn_solidity::Type::Function(type_function) => {
+                return Err(format!("type `function` {type_function} is not supported"));
+            }
+            syn_solidity::Type::Mapping(type_mapping) => {
+                return Err(format!("type `mapping` {type_mapping} is not supported"));
+            }
+        };
+        Ok(res)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SolType;
+
+    #[test]
+    fn syn_solidity_uint_default_size() {
+        let ty: syn_solidity::Type = syn::parse_str("uint").unwrap();
+        assert_eq!(SolType::try_from(ty).unwrap(), SolType::Uint(256));
+    }
+
+    #[test]
+    fn syn_solidity_rejects_mapping() {
+        let ty: syn_solidity::Type = syn::parse_str("mapping(address => uint256)").unwrap();
+        assert!(SolType::try_from(ty).is_err());
+    }
 
     #[test]
     fn maps_address_newtype_to_solidity_address() {

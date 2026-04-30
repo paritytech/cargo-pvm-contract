@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use syn_solidity::{File, Item, ItemContract, ItemFunction, SolIdent};
 
-use crate::{signature::compute_selector, solidity::to_snake_case};
+use crate::{
+    signature::compute_selector,
+    utils::{compute_function_signature, to_snake_case},
+};
 
 #[derive(Default)]
 pub struct Ctxt {
@@ -75,12 +78,4 @@ impl Ctxt {
             }
         }
     }
-}
-
-pub fn compute_function_signature(item: &ItemFunction) -> String {
-    let mut name = format!("{}{}", item.name(), item.call_type());
-    if name.rfind(",").is_some_and(|x| x == name.len() - 2) {
-        name.remove(name.len() - 2);
-    }
-    name
 }

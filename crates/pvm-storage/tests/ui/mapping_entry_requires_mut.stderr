@@ -1,10 +1,10 @@
 error[E0596]: cannot borrow `m` as mutable, as it is not declared as mutable
- --> tests/ui/mapping_entry_requires_mut.rs:7:17
+ --> tests/ui/mapping_entry_requires_mut.rs:9:17
   |
-7 |     let _cell = m.entry(&Address([0xAA; 20]));
+9 |     let _cell = m.entry(&Address([0xAA; 20]));
   |                 ^ cannot borrow as mutable
   |
 help: consider changing this to be mutable
   |
-6 |     let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0));
+8 |     let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), host);
   |         +++

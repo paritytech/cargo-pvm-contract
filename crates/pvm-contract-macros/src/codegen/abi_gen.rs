@@ -281,6 +281,7 @@ mod tests {
     fn returns_empty_for_sol_path_contract() {
         let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
             methods: vec![],
             has_constructor: false,
             has_fallback: false,
@@ -313,9 +314,12 @@ mod tests {
     fn payable_method_abi_has_payable_mutability() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                #[pvm_contract_macros::payable]
-                pub fn deposit() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
+                }
             }
         };
         let s = expand_to_string(input);
@@ -329,8 +333,11 @@ mod tests {
     fn non_payable_method_abi_has_nonpayable_mutability() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: Address) -> bool { false }
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
             }
         };
         let s = expand_to_string(input);
@@ -348,9 +355,12 @@ mod tests {
     fn payable_constructor_abi_has_payable_mutability() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                #[pvm_contract_macros::payable]
-                pub fn new() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    #[pvm_contract_macros::payable]
+                    pub fn new(&mut self) {}
+                }
             }
         };
         let s = expand_to_string(input);
@@ -377,6 +387,7 @@ mod tests {
     fn parsed_contract_with_method(method: MethodInfo) -> ParsedContract {
         ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
             methods: vec![method],
             has_constructor: false,
             has_fallback: false,
@@ -437,8 +448,11 @@ mod tests {
     fn non_payable_constructor_abi_has_nonpayable_mutability() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                pub fn new(initial: U256) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, initial: U256) {}
+                }
             }
         };
         let s = expand_to_string(input);
@@ -462,6 +476,7 @@ mod tests {
     fn sol_path_with_storage_generates_main_for_layout() {
         let parsed = ParsedContract {
             mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
             methods: vec![],
             has_constructor: false,
             has_fallback: false,

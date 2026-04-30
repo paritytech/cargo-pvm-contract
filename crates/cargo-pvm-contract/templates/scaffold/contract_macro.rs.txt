@@ -1,6 +1,6 @@
-#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
+#![cfg_attr(all(not(feature = "abi-gen"), not(test)), no_main, no_std)]
 
-use pvm_contract_sdk::{PolkaVmHost, ReturnFlags, StorageFlags, U256};
+use pvm_contract_sdk::U256;
 
 {% if let Some(sol_file_name) = sol_file_name %}
 {% if use_alloc -%}
@@ -17,31 +17,36 @@ use pvm_contract_sdk::{PolkaVmHost, ReturnFlags, StorageFlags, U256};
 {% endif %}
 mod contract {
     use super::*;
+    use pvm_contract_sdk::{HostApi};
 
-    #[pvm_contract_sdk::constructor]
-    pub fn new() -> Result<(), pvm_contract_sdk::EmptyError> {
-        Ok(())
-    }
+    pub struct Contract;
 
-    #[pvm_contract_sdk::fallback]
-    pub fn fallback() -> Result<(), pvm_contract_sdk::EmptyError> {
-        Ok(())
-    }
+    impl Contract {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
+            Ok(())
+        }
+
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
+            Ok(())
+        }
 
 {% if let Some(sol_file_name) = sol_file_name %}
-     // TODO: Implement the following methods from {{ sol_file_name }}:
+         // TODO: Implement the following methods from {{ sol_file_name }}:
 {% for func in functions %}
-     #[pvm_contract_sdk::method]
-     pub fn {{ func.name_snake }}({{ func.params }}) -> {{ func.return_type }} {
-         todo!()
-     }
+         #[pvm_contract_sdk::method]
+         pub fn {{ func.name_snake }}(&self, {{ func.params }}) -> {{ func.return_type }} {
+             todo!()
+         }
 {% endfor %}
 {% else %}
-    // Add your contract methods here
-    // Example:
-    // #[pvm_contract_sdk::method]
-    // pub fn my_method(param: U256) -> Result<U256, pvm_contract_sdk::EmptyError> {
-    //     Ok(param)
-    // }
+        // Add your contract methods here
+        // Example:
+        // #[pvm_contract_sdk::method]
+        // pub fn my_method(&self, param: U256) -> Result<U256, pvm_contract_sdk::EmptyError> {
+        //     Ok(param)
+        // }
 {% endif %}
+    }
 }

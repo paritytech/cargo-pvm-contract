@@ -1,14 +1,15 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Attribute, Ident, ItemMod, LitInt, LitStr, Token, parse::Parse, parse::ParseStream};
+use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, StateMutability, generate_param_decoding, generate_revert_encoding,
-    generate_router,
+    MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
+    generate_revert_encoding_boundary, generate_router,
 };
 use crate::signature::{SolType, compute_selector};
-use crate::solidity::{SolInterface, parse_solidity_interface, to_snake_case};
+use crate::utils::{compute_function_signature, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -111,17 +112,23 @@ impl Parse for ContractArgs {
     }
 }
 
-fn load_sol_interface(path: &str) -> Result<SolInterface, String> {
+fn load_sol_interface(path: &str) -> Result<syn_solidity::File, String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
         .map_err(|_| "CARGO_MANIFEST_DIR not set".to_string())?;
     let full_path = std::path::Path::new(&manifest_dir).join(path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
-    parse_solidity_interface(&source)
+    syn::parse_str(&source)
+        .and_then(syn_solidity::parse2)
+        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))
 }
 
 pub(super) struct ParsedContract {
+    /// Module name wrapping the contract (e.g. `my_token`).
     pub(super) mod_name: Ident,
+    /// Contract struct name (e.g. `MyToken`). None if the module uses the
+    /// legacy free-function form — the expander errors in that case.
+    pub(super) struct_name: Option<Ident>,
     pub(super) methods: Vec<MethodInfo>,
     pub(super) has_constructor: bool,
     pub(super) has_fallback: bool,
@@ -145,13 +152,8 @@ const VALID_PREFIXES: &[&str] = &[
     "pvm_contract_sdk",
 ];
 
-/// Verify that a Rust method's parameters are compatible with the Solidity
-/// function it implements. Checks arity strictly, and type compatibility for
-/// non-custom types. Custom types (user-defined structs) are skipped because
-/// they're resolved via trait `SOL_NAME` at runtime — we can't statically
-/// verify them without expanding the full type graph.
 fn check_signature_compatibility(
-    func: &syn::ItemFn,
+    func: &syn::ImplItemFn,
     sol_name: &str,
     sol_inputs: &[SolType],
     rust_param_types: &[syn::Type],
@@ -169,9 +171,8 @@ fn check_signature_compatibility(
 
     for (i, (sol_ty, rust_ty)) in sol_inputs.iter().zip(rust_param_types.iter()).enumerate() {
         let Some(rust_sol) = SolType::from_rust_type(rust_ty) else {
-            continue; // unknown rust type, let downstream codegen produce a better error
+            continue;
         };
-        // Skip type check if either side involves custom types — resolved via traits at runtime
         if sol_ty.has_custom_types() || rust_sol.has_custom_types() {
             continue;
         }
@@ -255,70 +256,62 @@ fn is_result_return_type(output: &syn::ReturnType) -> bool {
     }
 }
 
-/// Collect the error type from a `Result<T, E>` return type, deduplicating by type name.
 fn collect_error_type(
     output: &syn::ReturnType,
     error_types: &mut Vec<syn::Type>,
-    seen: &mut Vec<String>,
+    seen_error_names: &mut Vec<String>,
 ) {
-    if let Some(err_ty) = extract_error_type(output) {
-        let name = quote::quote!(#err_ty).to_string();
-        if !seen.contains(&name) {
-            seen.push(name);
-            error_types.push(err_ty);
+    if let syn::ReturnType::Type(_, ty) = output
+        && let syn::Type::Path(type_path) = ty.as_ref()
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+    {
+        let type_args: Vec<_> = args
+            .args
+            .iter()
+            .filter_map(|a| {
+                if let syn::GenericArgument::Type(t) = a {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if type_args.len() >= 2 {
+            let error_ty = type_args[1].clone();
+            let name = quote! { #error_ty }.to_string();
+            if !seen_error_names.contains(&name) {
+                seen_error_names.push(name);
+                error_types.push(error_ty);
+            }
         }
     }
 }
 
-/// Extract the error type `E` from a `Result<T, E>` return type.
-fn extract_error_type(output: &syn::ReturnType) -> Option<syn::Type> {
-    let syn::ReturnType::Type(_, ty) = output else {
-        return None;
-    };
-    let syn::Type::Path(type_path) = ty.as_ref() else {
-        return None;
-    };
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Result" {
-        return None;
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return None;
-    };
-    // Result<T, E> — E is the second generic argument
-    let mut iter = args.args.iter();
-    iter.next()?; // skip T
-    let syn::GenericArgument::Type(error_ty) = iter.next()? else {
-        return None;
-    };
-    Some(error_ty.clone())
-}
-
-fn to_camel_case(s: &str) -> String {
+fn to_camel_case(snake: &str) -> String {
     let mut result = String::new();
-    let mut capitalize_next = false;
-
-    for (i, c) in s.chars().enumerate() {
+    let mut next_upper = false;
+    for (i, c) in snake.chars().enumerate() {
         if c == '_' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.push(c.to_ascii_uppercase());
-            capitalize_next = false;
+            next_upper = true;
         } else if i == 0 {
-            result.push(c.to_ascii_lowercase());
+            result.push(c);
+        } else if next_upper {
+            result.push(c.to_ascii_uppercase());
+            next_upper = false;
         } else {
             result.push(c);
         }
     }
-
     result
 }
 
-fn extract_return_types(func: &syn::ItemFn) -> Vec<syn::Type> {
-    match &func.sig.output {
+fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
+    match output {
         syn::ReturnType::Default => vec![],
         syn::ReturnType::Type(_, ty) => {
-            if is_result_return_type(&func.sig.output) {
+            if is_result_return_type(output) {
                 extract_result_ok_type(ty).into_iter().collect()
             } else {
                 extract_output_types(ty)
@@ -352,13 +345,47 @@ fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
     None
 }
 
-fn extract_typed_params(
+/// Extract typed params from an impl-method's `FnArg` list.
+///
+/// Requires the first parameter to be a `self` receiver (`&self`, `&mut self`,
+/// or owned `self`) — without one, dispatch can't call `this.method(...)` on
+/// the generated contract struct, so we error loudly here instead of producing
+/// a cryptic "method not found" error from expanded code.
+fn extract_typed_params_impl(
+    func: &syn::ImplItemFn,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
 ) -> syn::Result<Vec<(Ident, syn::Type)>> {
+    let Some(first) = inputs.first() else {
+        return Err(syn::Error::new_spanned(
+            &func.sig,
+            "Contract methods must take `&self` or `&mut self` as the first parameter",
+        ));
+    };
+    match first {
+        syn::FnArg::Receiver(r) if r.reference.is_none() => {
+            return Err(syn::Error::new_spanned(
+                r,
+                "Contract methods must take a borrowed self (`&self` / `&mut self`); owning `self` would consume the contract instance",
+            ));
+        }
+        syn::FnArg::Receiver(_) => {}
+        syn::FnArg::Typed(_) => {
+            return Err(syn::Error::new_spanned(
+                first,
+                "Contract methods must take `&self` or `&mut self` as the first parameter",
+            ));
+        }
+    }
+
     inputs
         .iter()
-        .map(|arg| {
-            if let syn::FnArg::Typed(pat_type) = arg {
+        .skip(1)
+        .map(|arg| match arg {
+            syn::FnArg::Receiver(r) => Err(syn::Error::new_spanned(
+                r,
+                "Only the first parameter may be a `self` receiver",
+            )),
+            syn::FnArg::Typed(pat_type) => {
                 let ident = if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                     pat_ident.ident.clone()
                 } else {
@@ -368,42 +395,61 @@ fn extract_typed_params(
                     ));
                 };
                 Ok((ident, (*pat_type.ty).clone()))
-            } else {
-                Err(syn::Error::new_spanned(arg, "Unexpected `self` parameter"))
             }
         })
         .collect()
 }
 
-/// Shared helper that reads `value_transferred` and reverts if nonzero.
-/// Emitted once per contract module; call sites reduce to a single function
-/// call instead of duplicating the read + compare + revert sequence.
-fn build_assert_non_payable_fn() -> TokenStream {
+/// Shared payable helpers emitted once per contract module so call sites
+/// collapse to a single function call. Split into two leaf functions
+/// (`__pvm_value_transferred` reads the host buffer; `__pvm_assert_value_zero`
+/// reverts when nonzero) so mixed-payability dispatchers can share the read
+/// across all non-payable arms while each arm tail-calls the assert. The
+/// `__pvm_assert_non_payable` combinator is used by the deploy / fallback
+/// boundaries and by the all-non-payable router prelude.
+fn build_payable_helpers_fn() -> TokenStream {
     quote! {
+        #[cfg(not(feature = "abi-gen"))]
         #[inline(never)]
-        fn __pvm_assert_non_payable() {
+        fn __pvm_value_transferred(host: &::pvm_contract_sdk::Host) -> [u8; 32] {
             let mut __value_buf = [0u8; 32];
-            ::pvm_contract_sdk::PolkaVmHost::value_transferred(&mut __value_buf);
-            if __value_buf != [0u8; 32] {
-                ::pvm_contract_sdk::PolkaVmHost::return_value(
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::value_transferred(
+                host, &mut __value_buf);
+            __value_buf
+        }
+
+        #[cfg(not(feature = "abi-gen"))]
+        #[inline(never)]
+        fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, buf: &[u8; 32]) {
+            if buf != &[0u8; 32] {
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                    host,
                     ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
             }
         }
+
+        #[cfg(not(feature = "abi-gen"))]
+        #[inline(never)]
+        fn __pvm_assert_non_payable(host: &::pvm_contract_sdk::Host) {
+            let __value_buf = __pvm_value_transferred(host);
+            __pvm_assert_value_zero(host, &__value_buf);
+        }
     }
 }
 
-/// Emit a call to the shared non-payable assertion helper.
+/// Emit a call to the shared non-payable assertion helper. Used by deploy /
+/// fallback boundaries (which already have `this` in scope).
 fn build_assert_non_payable_call(emit: bool) -> TokenStream {
     if !emit {
         return quote! {};
     }
-    quote! { __pvm_assert_non_payable(); }
+    quote! { __pvm_assert_non_payable(this.host()); }
 }
 
 fn parse_contract(
     input: &ItemMod,
-    sol_interface: Option<&SolInterface>,
+    sol_interface: Option<&syn_solidity::File>,
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
     let content = input
@@ -411,6 +457,116 @@ fn parse_contract(
         .as_ref()
         .ok_or_else(|| syn::Error::new_spanned(input, "Contract module must have a body"))?;
 
+    // The contract struct is the self-type of the first `impl` block that
+    // contains `#[method]` / `#[constructor]` / `#[fallback]` methods.
+    let struct_name = content.1.iter().find_map(|item| {
+        let syn::Item::Impl(item_impl) = item else {
+            return None;
+        };
+        let has_contract_attrs = item_impl.items.iter().any(|ii| {
+            if let syn::ImplItem::Fn(f) = ii {
+                has_pvm_attr(&f.attrs, "method")
+                    || has_pvm_attr(&f.attrs, "constructor")
+                    || has_pvm_attr(&f.attrs, "fallback")
+            } else {
+                false
+            }
+        });
+        if !has_contract_attrs {
+            return None;
+        }
+        // Extract the struct ident from `impl<G> StructName<G> { ... }`
+        let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+            return None;
+        };
+        type_path.path.segments.last().map(|s| s.ident.clone())
+    });
+
+    // A contract is a single type — the dispatcher constructs one `this` and
+    // calls every method on it. Methods scattered across different structs
+    // would either fail with a confusing "no method" error from macro-generated
+    // code, or silently dispatch to a same-named method on the wrong type.
+    if let Some(expected) = &struct_name {
+        for item in &content.1 {
+            // Reject generics on the contract struct itself. Contract methods
+            // are dispatched by 4-byte Solidity selectors (keccak of canonical
+            // signatures), which require concrete types. Generic contract types
+            // are not yet supported; for composability, prefer trait impls with
+            // concrete type arguments at the impl site.
+            if let syn::Item::Struct(item_struct) = item
+                && &item_struct.ident == expected
+                && !item_struct.generics.params.is_empty()
+            {
+                return Err(syn::Error::new_spanned(
+                    &item_struct.generics.params,
+                    "contract structs must not be generic",
+                ));
+            }
+
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            let has_contract_attrs = item_impl.items.iter().any(|ii| {
+                if let syn::ImplItem::Fn(f) = ii {
+                    has_pvm_attr(&f.attrs, "method")
+                        || has_pvm_attr(&f.attrs, "constructor")
+                        || has_pvm_attr(&f.attrs, "fallback")
+                } else {
+                    false
+                }
+            });
+            if !has_contract_attrs {
+                continue;
+            }
+            let ident = match item_impl.self_ty.as_ref() {
+                syn::Type::Path(type_path) => type_path.path.segments.last().map(|s| &s.ident),
+                _ => None,
+            };
+            let Some(ident) = ident else {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    "Contract `impl` target must be a named struct type",
+                ));
+            };
+            if ident != expected {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    format!(
+                        "All contract `impl` blocks must target the same struct; expected `{expected}`, found `{ident}`"
+                    ),
+                ));
+            }
+
+            // Reject generics on the contract `impl` block.
+            if !item_impl.generics.params.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.generics.params,
+                    "contract `impl` blocks must not be generic",
+                ));
+            }
+
+            // Reject generics on contract methods — selectors are concrete.
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(func) = impl_item else {
+                    continue;
+                };
+                if !(has_pvm_attr(&func.attrs, "method")
+                    || has_pvm_attr(&func.attrs, "constructor")
+                    || has_pvm_attr(&func.attrs, "fallback"))
+                {
+                    continue;
+                }
+                if !func.sig.generics.params.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig.generics.params,
+                        "contract methods must not be generic",
+                    ));
+                }
+            }
+        }
+    }
+
+    // Collect methods from every `impl` block in the module.
     let mut methods = Vec::new();
     let mut has_constructor = false;
     let mut has_fallback = false;
@@ -426,13 +582,20 @@ fn parse_contract(
     let mut seen_error_names: Vec<String> = Vec::new();
 
     for item in &content.1 {
-        if let syn::Item::Fn(func) = item {
+        let syn::Item::Impl(item_impl) = item else {
+            continue;
+        };
+        for impl_item in &item_impl.items {
+            let syn::ImplItem::Fn(func) = impl_item else {
+                continue;
+            };
+
             if has_pvm_attr(&func.attrs, "constructor") {
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
                 constructor_is_payable = has_pvm_attr(&func.attrs, "payable");
-                constructor_inputs = extract_typed_params(&func.sig.inputs)?;
+                constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
@@ -441,26 +604,44 @@ fn parse_contract(
                 fallback_is_payable = has_pvm_attr(&func.attrs, "payable");
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
-                let typed_params = extract_typed_params(&func.sig.inputs)?;
+                let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
                 let is_payable = has_pvm_attr(&func.attrs, "payable");
-                let param_names: Vec<Ident> =
-                    typed_params.iter().map(|(name, _)| name.clone()).collect();
+                let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
-                    typed_params.iter().map(|(_, ty)| ty.clone()).collect();
+                    typed_params.into_iter().map(|(_, t)| t).collect();
 
                 let returns_result = is_result_return_type(&func.sig.output);
-                let return_types = extract_return_types(func);
+                let return_types = extract_return_types(&func.sig.output);
 
                 let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
                     sol_interface
+                    && let Some(sol_iface) = {
+                        let mut items = sol_iface.items.iter().filter_map(|x| match x {
+                            Item::Contract(item_contract) if item_contract.is_interface() => {
+                                Some(item_contract)
+                            }
+                            _ => None,
+                        });
+                        if let i_face @ Some(_) = items.next()
+                            && items.next().is_none()
+                        {
+                            i_face
+                        } else {
+                            return Err(syn::Error::new_spanned(
+                                input,
+                                "Only one contract interface per file is supported",
+                            ));
+                        }
+                    }
                 {
                     let rust_fn_name = func.sig.ident.to_string();
                     let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
-                        .functions
-                        .iter()
-                        .find(|f| f.name == rename || to_snake_case(&f.name) == rust_fn_name)
+                        .body.iter().find_map(|f| match f {
+                            syn_solidity::Item::Function(item_function)  if item_function.name.as_ref().is_some_and(|name| name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name) => Some(item_function),
+                           _ => None
+                        })
                         .ok_or_else(|| {
                             syn::Error::new_spanned(
                                 func,
@@ -469,18 +650,30 @@ fn parse_contract(
                                 ),
                             )
                         })?;
+                    let sig = sol_func
+                        .parameters
+                        .types()
+                        .map(|x| x.clone().try_into())
+                        .collect::<Result<Vec<SolType>, String>>();
                     check_signature_compatibility(
                         func,
-                        &sol_func.name,
-                        &sol_func.signature.inputs,
+                        &sol_func.name().to_string(),
+                        &sig.map_err(|x| {
+                            syn::Error::new_spanned(
+                                func,
+                                format!(
+                                    "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
+                                ),
+                            )
+                        })?,
                         &param_types,
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&sol_func.signature.canonical_signature());
-                    let sol_mutability = match sol_func.state_mutability.as_deref() {
-                        Some("view") => StateMutability::View,
-                        Some("pure") => StateMutability::Pure,
-                        Some("payable") => StateMutability::Payable,
+                    let selector = compute_selector(&compute_function_signature(sol_func));
+                    let sol_mutability = match sol_func.attributes.mutability() {
+                        Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
+                        Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
+                        Some(syn_solidity::Mutability::Payable(_)) => StateMutability::Payable,
                         _ => StateMutability::NonPayable,
                     };
                     let sol_is_payable = sol_mutability == StateMutability::Payable;
@@ -501,7 +694,7 @@ fn parse_contract(
                             ),
                         ));
                     }
-                    (sol_func.name.clone(), Some(selector), sol_mutability)
+                    (sol_func.name().to_string(), Some(selector), sol_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
@@ -528,12 +721,35 @@ fn parse_contract(
         }
     }
 
-    if let Some(sol_iface) = sol_interface {
+    if let Some(sol_iface) = sol_interface
+        && let Some(sol_iface) = {
+            let mut items = sol_iface.items.iter().filter_map(|x| match x {
+                Item::Contract(item_contract) if item_contract.is_interface() => {
+                    Some(item_contract)
+                }
+                _ => None,
+            });
+            if let i_face @ Some(_) = items.next()
+                && items.next().is_none()
+            {
+                i_face
+            } else {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "Only one contract interface per file is supported",
+                ));
+            }
+        }
+    {
         let missing: Vec<_> = sol_iface
-            .functions
+            .body
             .iter()
+            .filter_map(|f| match f {
+                syn_solidity::Item::Function(item_function) => Some(item_function),
+                _ => None,
+            })
             .filter(|f| !implemented_sol_methods.contains(&f.name))
-            .map(|f| f.name.as_str())
+            .map(|f| f.name().to_string())
             .collect();
 
         if !missing.is_empty() {
@@ -549,6 +765,7 @@ fn parse_contract(
 
     Ok(ParsedContract {
         mod_name,
+        struct_name,
         methods,
         has_constructor,
         has_fallback,
@@ -583,7 +800,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
 
-    let mod_content = strip_pvm_attrs(&input, &storage_struct_name)?;
+    let struct_name = parsed.struct_name.as_ref().ok_or_else(|| {
+        syn::Error::new_spanned(
+            &input,
+            "Contract module must contain a storage struct (e.g. `pub struct Foo;`)",
+        )
+    })?;
+
+    let mod_content = strip_pvm_attrs(&input, struct_name, &storage_struct_name)?;
 
     let alloc_setup = match args.allocator {
         Some(AllocatorKind::Pico) => {
@@ -644,6 +868,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
+    let buffer_size = args.buffer_size;
+
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
 
@@ -660,34 +886,33 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
-            size_check,
+            min_size_expr,
             decode_statements,
             call_args,
+            has_params,
         } = decoding;
+        let size_check = boundary_size_check(has_params, &min_size_expr);
 
-        // Constructor calldata has no 4-byte selector prefix (unlike `call()`),
-        // so the entire calldata is ABI-encoded args.
         let read_calldata = if param_names.is_empty() {
             quote! {}
         } else if use_alloc {
             quote! {
-                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
                 let input = &call_data[..];
                 #size_check
             }
         } else {
-            let buffer_size = args.buffer_size;
             quote! {
-                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
                         ::pvm_contract_sdk::ReturnFlags::REVERT,
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
                 let input = &call_data[..call_data_len];
                 #size_check
             }
@@ -695,8 +920,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
 
-        let call_expr = quote! { #constructor_name(#(#call_args),*) };
-        let revert_err = generate_revert_encoding(use_alloc);
+        let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
+        let revert_err = generate_revert_encoding_boundary(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -715,8 +940,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         };
 
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
+                };
                 #deploy_assert
                 #read_calldata
                 #decode_and_call
@@ -726,18 +956,21 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         // No user-declared constructor — emit a default payable-guarded deploy so
         // deployments with value revert, matching Solidity's default behaviour.
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn deploy() {
-                __pvm_assert_non_payable();
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
+                };
+                __pvm_assert_non_payable(this.host());
             }
         }
     };
 
-    let (route_items, router_impl) = generate_router(&parsed.methods, mod_name, use_alloc);
-    let RouteItems {
-        contract_struct,
-        route_fn,
-    } = route_items;
+    let (route_items, router_impl) =
+        generate_router(&parsed.methods, mod_name, struct_name, use_alloc);
+    let RouteItems { route_fn } = route_items;
     let router_impl = router_impl.tokens;
 
     let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
@@ -746,10 +979,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
 
         let handler = if parsed.fallback_returns_result {
-            let revert_err = generate_revert_encoding(use_alloc);
+            let revert_err = generate_revert_encoding_boundary(use_alloc);
             quote! {
                 #fallback_assert
-                match #fallback_name() {
+                match this.#fallback_name() {
                     Ok(()) => return,
                     Err(e) => {
                         #revert_err
@@ -759,7 +992,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         } else {
             quote! {
                 #fallback_assert
-                #fallback_name();
+                this.#fallback_name();
                 return;
             }
         };
@@ -767,25 +1000,35 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_sdk::PolkaVmHost::return_value(
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
                     ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
             },
         )
     };
 
+    // `call()` is the riscv64 boundary: read calldata, dispatch via `route()`.
+    // Each matched dispatch arm calls `host.return_value(...)` directly
+    // (diverges via syscall) — no buffer round-trip, no result enum to
+    // translate. If `route()` returns `None`, no selector matched and we
+    // fall through to the fallback or unknown-selector handler.
     let call_fn = if use_alloc {
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
+                };
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = alloc::vec![0u8; call_data_len];
-                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data, 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -794,27 +1037,28 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                if route(selector, input).is_some() {
-                    ::pvm_contract_sdk::PolkaVmHost::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::empty(), &[]);
+                if route(&mut this, selector, input).is_none() {
+                    #unknown_selector_handler
                 }
-
-                #unknown_selector_handler
             }
         }
     } else {
-        let buffer_size = args.buffer_size;
         quote! {
+            #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
             pub extern "C" fn call() {
-                let call_data_len = ::pvm_contract_sdk::PolkaVmHost::call_data_size() as usize;
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let mut this = #struct_name {
+                    host: ::pvm_contract_sdk::Host::new(),
+                };
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::PolkaVmHost::return_value(
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
                         ::pvm_contract_sdk::ReturnFlags::REVERT,
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
-                ::pvm_contract_sdk::PolkaVmHost::call_data_copy(&mut call_data[..call_data_len], 0);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
                     #no_selector_handler
@@ -823,17 +1067,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                if route(selector, input).is_some() {
-                    ::pvm_contract_sdk::PolkaVmHost::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::empty(), &[]);
+                if route(&mut this, selector, input).is_none() {
+                    #unknown_selector_handler
                 }
-
-                #unknown_selector_handler
             }
         }
     };
 
-    let assert_non_payable_fn = build_assert_non_payable_fn();
+    let payable_helpers_fn = build_payable_helpers_fn();
 
     Ok(quote! {
         #alloc_setup
@@ -844,10 +1085,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #mod_vis mod #mod_name {
             #mod_content
 
-            #contract_struct
-
-            #[cfg(not(feature = "abi-gen"))]
-            #assert_non_payable_fn
+            #payable_helpers_fn
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
@@ -866,6 +1104,179 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         #abi_gen_main
     })
+}
+
+/// Rewrite the contract module body:
+/// - Inject a `host: ::pvm_contract_sdk::Host` field on the storage struct.
+/// - Strip `#[method]` / `#[constructor]` / `#[fallback]` attrs from methods.
+/// - Emit an `impl StorageStruct { fn host(&self) -> &Host }` accessor.
+/// - If a `#[derive(SolStorage)]` struct is present in the module, inject
+///   `let mut storage = <StorageStruct as SolStorage>::__pvm_storage(self.host().clone());`
+///   at the top of every `#[method]`/`#[constructor]`/`#[fallback]` body, so
+///   contract code can read/write state via `storage.<field>.get()` etc.
+///
+/// All user `impl` blocks are cfg-gated to `not(feature = "abi-gen")` so their
+/// bodies (which may call host APIs) are excluded from host-target ABI builds.
+fn strip_pvm_attrs(
+    input: &ItemMod,
+    struct_name: &Ident,
+    storage_struct_name: &Option<Ident>,
+) -> syn::Result<TokenStream> {
+    let content = input.content.as_ref().unwrap();
+    let mut items: Vec<TokenStream> = Vec::new();
+    let mut struct_seen = false;
+
+    for item in &content.1 {
+        match item {
+            syn::Item::Struct(item_struct) if &item_struct.ident == struct_name => {
+                struct_seen = true;
+                let rewritten = rewrite_storage_struct(item_struct)?;
+                items.push(rewritten);
+            }
+            syn::Item::Impl(item_impl) => {
+                let mut new_impl = item_impl.clone();
+                let targets_contract = impl_targets_storage_struct(&new_impl, struct_name);
+                for impl_item in new_impl.items.iter_mut() {
+                    if let syn::ImplItem::Fn(func) = impl_item {
+                        let is_pvm_fn = has_pvm_method_attr(&func.attrs);
+                        func.attrs.retain(|attr| {
+                            let segments: Vec<_> = attr.path().segments.iter().collect();
+                            !(segments.len() == 2
+                                && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
+                                && (segments[1].ident == "method"
+                                    || segments[1].ident == "constructor"
+                                    || segments[1].ident == "fallback"))
+                        });
+                        // Inject `let mut storage = ...` only into pvm-tagged
+                        // methods on the contract struct, when a SolStorage
+                        // struct is declared in the module.
+                        if is_pvm_fn
+                            && targets_contract
+                            && let Some(storage_ident) = storage_struct_name
+                        {
+                            let injection: syn::Stmt = syn::parse_quote! {
+                                let mut storage = <#storage_ident as ::pvm_contract_sdk::SolStorage>::__pvm_storage(self.host().clone());
+                            };
+                            func.block.stmts.insert(0, injection);
+                        }
+                    }
+                }
+                items.push(quote! {
+                    #[cfg(not(feature = "abi-gen"))]
+                    #new_impl
+                });
+            }
+            syn::Item::Use(use_item) => {
+                let use_str = quote! { #use_item }.to_string();
+                if use_str.contains("alloc ::") || use_str.contains("alloc::") {
+                    items.push(quote! {
+                        #[cfg(not(feature = "abi-gen"))]
+                        #use_item
+                    });
+                } else {
+                    items.push(quote! { #use_item });
+                }
+            }
+            other => items.push(quote! { #other }),
+        }
+    }
+
+    if !struct_seen {
+        return Err(syn::Error::new_spanned(
+            input,
+            format!(
+                "Storage struct `{struct_name}` declaration not found in contract module. \
+                 Declare it as `pub struct {struct_name};` (the macro injects the `host` field).",
+            ),
+        ));
+    }
+
+    // Inject the `host()` accessor. The generated struct has a private `host`
+    // field; contract method bodies reach the host via `self.host()`, mirroring
+    // Stylus's `self.vm()` and ink!'s `self.env()`.
+    let host_accessor = quote! {
+        #[cfg(not(feature = "abi-gen"))]
+        impl #struct_name {
+            #[inline(always)]
+            pub fn host(&self) -> &::pvm_contract_sdk::Host {
+                &self.host
+            }
+        }
+    };
+
+    Ok(quote! {
+        #[cfg(not(feature = "abi-gen"))]
+        #[allow(unused_imports)]
+        use ::pvm_contract_sdk::HostApi as _;
+
+        #(#items)*
+
+        #host_accessor
+    })
+}
+
+/// Whether any of the attributes is a `#[method]`, `#[constructor]`, or
+/// `#[fallback]` from one of the pvm crates. Used to decide where to inject
+/// the `storage` binding.
+fn has_pvm_method_attr(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        let segments: Vec<_> = attr.path().segments.iter().collect();
+        segments.len() == 2
+            && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
+            && (segments[1].ident == "method"
+                || segments[1].ident == "constructor"
+                || segments[1].ident == "fallback")
+    })
+}
+
+/// Rewrite a user-declared storage struct into `pub struct Name { host: Host, <user fields> }`.
+/// Accepts unit (`pub struct Name;`) or named (`pub struct Name { ... }`) forms.
+fn rewrite_storage_struct(item_struct: &syn::ItemStruct) -> syn::Result<TokenStream> {
+    let attrs = &item_struct.attrs;
+    let vis = &item_struct.vis;
+    let name = &item_struct.ident;
+
+    // Drop any user-declared `host` field — the macro injects its own.
+    let user_fields: Vec<&syn::Field> = match &item_struct.fields {
+        syn::Fields::Unit => Vec::new(),
+        syn::Fields::Named(named) => named
+            .named
+            .iter()
+            .filter(|f| f.ident.as_ref().map(|i| i != "host").unwrap_or(true))
+            .collect(),
+        syn::Fields::Unnamed(_) => {
+            return Err(syn::Error::new_spanned(
+                item_struct,
+                "Storage struct must be a unit struct (`pub struct Foo;`) or have named fields.",
+            ));
+        }
+    };
+
+    let user_field_tokens: Vec<TokenStream> = user_fields.iter().map(|f| quote! { #f }).collect();
+
+    Ok(quote! {
+        #(#attrs)*
+        #vis struct #name {
+            /// Host handle. Use [`Self::host`] in contract code; tests may
+            /// construct the struct directly with `Host::from_dyn(...)`.
+            pub host: ::pvm_contract_sdk::Host,
+            #(#user_field_tokens,)*
+        }
+    })
+}
+
+/// Whether this `impl` block targets the contract's storage struct, including
+/// trait impls like `impl Trait for StorageStruct`.
+fn impl_targets_storage_struct(item_impl: &syn::ItemImpl, struct_name: &Ident) -> bool {
+    let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+        return false;
+    };
+    type_path
+        .path
+        .segments
+        .last()
+        .map(|s| &s.ident == struct_name)
+        .unwrap_or(false)
 }
 
 /// Detect a struct with `#[derive(SolStorage)]` in the module items.
@@ -989,96 +1400,30 @@ fn has_sol_storage_derive(s: &syn::ItemStruct) -> bool {
     false
 }
 
-fn strip_pvm_attrs(
-    input: &ItemMod,
-    storage_struct_name: &Option<Ident>,
-) -> syn::Result<TokenStream> {
-    let content = input.content.as_ref().unwrap();
-
-    let items: Vec<_> = content
-        .1
-        .iter()
-        .map(|item| match item {
-            syn::Item::Fn(func) => {
-                let mut new_func = func.clone();
-
-                // Inject `let storage = &mut StructName::__pvm_storage();` if
-                // the function has a pvm method/constructor/fallback attribute
-                // and a SolStorage struct was found in the module.
-                if let Some(struct_name) = storage_struct_name {
-                    let is_pvm_fn = has_pvm_attr(&func.attrs, "method")
-                        || has_pvm_attr(&func.attrs, "constructor")
-                        || has_pvm_attr(&func.attrs, "fallback");
-
-                    if is_pvm_fn {
-                        let injection: syn::Stmt = syn::parse_quote! {
-                            let storage = &mut <#struct_name as ::pvm_contract_sdk::SolStorage>::__pvm_storage();
-                        };
-                        new_func.block.stmts.insert(0, injection);
-                    }
-                }
-
-                new_func.attrs.retain(|attr| {
-                    let segments: Vec<_> = attr.path().segments.iter().collect();
-                    !(segments.len() == 2
-                        && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
-                        && (segments[1].ident == "method"
-                            || segments[1].ident == "constructor"
-                            || segments[1].ident == "fallback"
-                            || segments[1].ident == "payable"))
-                });
-                // Gate user functions behind not(abi-gen): abi-gen only needs
-                // type info (`SolEncode::SOL_NAME`) — function bodies may call
-                // host APIs that don't exist on the native target used for
-                // abi-gen compilation.
-                quote! {
-                    #[cfg(not(feature = "abi-gen"))]
-                    #new_func
-                }
-            }
-            syn::Item::Use(use_item) => {
-                // Gate `use alloc::*` imports behind not(abi-gen): when the
-                // allocator's `extern crate alloc` is cfg-gated out, these
-                // would fail to resolve on the host target.
-                let use_str = quote! { #use_item }.to_string();
-                if use_str.contains("alloc ::") || use_str.contains("alloc::") {
-                    quote! {
-                        #[cfg(not(feature = "abi-gen"))]
-                        #use_item
-                    }
-                } else {
-                    quote! { #use_item }
-                }
-            }
-            other => quote! { #other },
-        })
-        .collect();
-
-    Ok(quote! {
-        #[cfg(not(feature = "abi-gen"))]
-        #[allow(unused_imports)]
-        use ::pvm_contract_sdk::HostApi as _;
-
-        #(#items)*
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::dispatch::StateMutability;
     use super::{ContractArgs, expand_contract, parse_contract};
     use syn::ItemMod;
 
+    fn parse_sol(src: &str) -> syn_solidity::File {
+        let ts: proc_macro2::TokenStream = syn::parse_str(src).expect("solidity source parses");
+        syn_solidity::parse2(ts).expect("syn_solidity parses")
+    }
+
     #[test]
     fn parse_contract_detects_payable_attribute() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                #[pvm_contract_macros::payable]
-                pub fn deposit(to: Address) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self, to: Address) {}
 
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: Address, amount: U256) -> bool { false }
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) -> bool { false }
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1100,9 +1445,12 @@ mod tests {
     fn parse_contract_payable_attribute_keeps_all_params() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                #[pvm_contract_macros::payable]
-                pub fn deposit(to: Address) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self, to: Address) {}
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1121,9 +1469,12 @@ mod tests {
     fn parse_contract_payable_constructor() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                #[pvm_contract_macros::payable]
-                pub fn new(initial: U256) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    #[pvm_contract_macros::payable]
+                    pub fn new(&mut self, initial: U256) {}
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1135,8 +1486,11 @@ mod tests {
     fn parse_contract_non_payable_constructor() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                pub fn new(initial: U256) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, initial: U256) {}
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1147,9 +1501,12 @@ mod tests {
     fn parse_contract_payable_fallback() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::fallback]
-                #[pvm_contract_macros::payable]
-                pub fn any() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::fallback]
+                    #[pvm_contract_macros::payable]
+                    pub fn any(&mut self) {}
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1158,16 +1515,20 @@ mod tests {
 
     #[test]
     fn parse_contract_view_from_sol() {
-        let src = r#"
+        let iface = parse_sol(
+            r#"
             interface I {
                 function balance() external view returns (uint256);
             }
-        "#;
-        let iface = crate::solidity::parse_solidity_interface(src).unwrap();
+        "#,
+        );
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                pub fn balance() -> U256 { U256::ZERO }
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&self) -> U256 { U256::ZERO }
+                }
             }
         };
         let parsed = parse_contract(&input, Some(&iface)).unwrap();
@@ -1181,16 +1542,20 @@ mod tests {
 
     #[test]
     fn parse_contract_pure_from_sol() {
-        let src = r#"
+        let iface = parse_sol(
+            r#"
             interface I {
                 function add(uint256 a, uint256 b) external pure returns (uint256);
             }
-        "#;
-        let iface = crate::solidity::parse_solidity_interface(src).unwrap();
+        "#,
+        );
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                pub fn add(a: U256, b: U256) -> U256 { U256::ZERO }
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn add(&self, a: U256, b: U256) -> U256 { U256::ZERO }
+                }
             }
         };
         let parsed = parse_contract(&input, Some(&iface)).unwrap();
@@ -1200,16 +1565,20 @@ mod tests {
 
     #[test]
     fn parse_contract_nonpayable_from_sol_leaves_flags_false() {
-        let src = r#"
+        let iface = parse_sol(
+            r#"
             interface I {
                 function transfer(address to, uint256 amount) external returns (bool);
             }
-        "#;
-        let iface = crate::solidity::parse_solidity_interface(src).unwrap();
+        "#,
+        );
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: Address, amount: U256) -> bool { false }
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) -> bool { false }
+                }
             }
         };
         let parsed = parse_contract(&input, Some(&iface)).unwrap();
@@ -1225,8 +1594,11 @@ mod tests {
     fn parse_contract_without_sol_leaves_view_pure_false() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                pub fn balance() -> U256 { U256::ZERO }
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&self) -> U256 { U256::ZERO }
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1242,8 +1614,11 @@ mod tests {
     fn parse_contract_non_payable_fallback() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::fallback]
-                pub fn any() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::fallback]
+                    pub fn any(&mut self) {}
+                }
             }
         };
         let parsed = parse_contract(&input, None).unwrap();
@@ -1291,6 +1666,57 @@ mod tests {
     }
 
     #[test]
+    fn errors_when_module_has_no_struct() {
+        let input: ItemMod = syn::parse_quote! {
+            mod empty { }
+        };
+        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        assert!(err.to_string().contains("must contain a storage struct"));
+    }
+
+    #[test]
+    fn errors_when_method_missing_self() {
+        // A `#[method]` without a `self` receiver would expand into
+        // `this.foo(args)` where `foo` is a free associated function — producing
+        // a cryptic "no method named" error. Catch it at parse time instead.
+        let input: ItemMod = syn::parse_quote! {
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::method]
+                    pub fn foo(value: u32) -> u32 { value }
+                }
+            }
+        };
+        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        assert!(
+            err.to_string().contains("&self"),
+            "error should mention &self: {err}"
+        );
+    }
+
+    #[test]
+    fn errors_when_method_takes_owning_self() {
+        // Owning `self` would consume the contract; dispatch must be able to
+        // call multiple methods on the same instance, so only borrowing
+        // receivers are allowed.
+        let input: ItemMod = syn::parse_quote! {
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::method]
+                    pub fn foo(self) -> u32 { 0 }
+                }
+            }
+        };
+        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        assert!(
+            err.to_string().contains("borrowed self"),
+            "error should mention borrowed self: {err}"
+        );
+    }
+
+    #[test]
     fn accepts_allocator_size_with_bump() {
         let args = syn::parse_str::<ContractArgs>("allocator = \"bump\", allocator_size = 2048")
             .expect("allocator_size should be accepted with bump allocator");
@@ -1310,8 +1736,11 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new(owner: Address, supply: U256) {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, owner: Address, supply: U256) {}
+                }
             }
         "#,
         )
@@ -1321,12 +1750,9 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // deploy() is generated with param decoding
         assert!(output.contains("deploy"));
-        // param names are used in decode statements
         assert!(output.contains("\"owner\""));
         assert!(output.contains("\"supply\""));
-        // route function is generated
         assert!(output.contains("fn route"));
     }
 
@@ -1335,12 +1761,15 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn balance_of(account: Address) -> U256 {
-                    U256::ZERO
+                    #[pvm_contract_macros::method]
+                    pub fn balance_of(&self, account: Address) -> U256 {
+                        U256::ZERO
+                    }
                 }
             }
         "#,
@@ -1351,16 +1780,21 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Router struct is generated inside the module
-        assert!(output.contains("pub struct Contract"));
-        // route() function is generated
+        // Generated route() takes a `&mut Contract` and returns Option<()>
         assert!(
-            output.contains("fn route (selector : [u8 ; 4] , input : & [u8]) -> Option < () >")
+            output.contains("fn route"),
+            "route() function should be generated"
         );
-        // Router trait impl references the module
-        assert!(output.contains("impl :: pvm_contract_sdk :: Router for my_contract :: Contract"));
-        // call() delegates to route()
-        assert!(output.contains("route (selector , input)"));
+        // The Router trait is instantiated at the concrete Host type
+        assert!(
+            output.contains("Router :: < :: pvm_contract_sdk :: Host >")
+                || output.contains(":: pvm_contract_sdk :: Router"),
+            "Router impl should target concrete Host"
+        );
+        // call() delegates to route() with the constructed `this` and falls
+        // through to the unknown-selector handler when the Option is None.
+        assert!(output.contains("route (& mut this , selector , input)"));
+        assert!(output.contains("is_none ()"));
     }
 
     #[test]
@@ -1368,9 +1802,12 @@ mod tests {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new(owner: Address) -> Result<(), Error> {
-                    Ok(())
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, owner: Address) -> Result<(), Error> {
+                        Ok(())
+                    }
                 }
             }
         "#,
@@ -1381,24 +1818,25 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Should have decode logic for the input
         assert!(output.contains("\"owner\""));
-        // Should have match for Result error handling
         assert!(output.contains("Err (e)"));
         assert!(output.contains("REVERT"));
     }
 
     #[test]
-    fn user_functions_are_cfg_gated_for_abi_gen() {
+    fn user_impl_is_cfg_gated_for_abi_gen() {
         let item: syn::ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn do_something(value: U256) -> U256 {
-                    value
+                    #[pvm_contract_macros::method]
+                    pub fn do_something(&self, value: U256) -> U256 {
+                        value
+                    }
                 }
             }
         "#,
@@ -1407,21 +1845,18 @@ mod tests {
 
         let tokens = expand_contract(ContractArgs::default(), item).unwrap();
         let output = tokens.to_string();
-        let pretty = prettyplease::unparse(
-            &syn::parse_file(&output).expect("expanded output should be valid Rust"),
-        );
 
-        // User functions should be gated behind not(abi-gen) so they don't
-        // compile on the host target (they may call host APIs).
+        // User impl blocks are gated behind not(abi-gen) so method bodies
+        // (which may call host APIs) are excluded from host-target ABI builds.
         assert!(
             output.contains("not (feature = \"abi-gen\")"),
-            "user functions must be cfg-gated for abi-gen.\nExpanded output:\n{pretty}"
+            "user impl must be cfg-gated for abi-gen"
         );
 
-        // The abi-gen helper should still reference the type for SOL_NAME
+        // The abi-gen helper still references the type for SOL_NAME
         assert!(
             output.contains("SOL_NAME"),
-            "abi-gen helper must reference SOL_NAME.\nExpanded output:\n{pretty}"
+            "abi-gen helper must reference SOL_NAME"
         );
     }
 
@@ -1430,19 +1865,22 @@ mod tests {
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() -> Result<(), MyError> {
-                    Ok(())
-                }
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) -> Result<(), MyError> {
+                        Ok(())
+                    }
 
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: u64) -> Result<(), MyError> {
-                    Ok(())
-                }
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: u64) -> Result<(), MyError> {
+                        Ok(())
+                    }
 
-                #[pvm_contract_macros::fallback]
-                pub fn fallback() -> Result<(), MyError> {
-                    Ok(())
+                    #[pvm_contract_macros::fallback]
+                    pub fn fallback(&mut self) -> Result<(), MyError> {
+                        Ok(())
+                    }
                 }
             }
         "#,
@@ -1453,7 +1891,6 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Error paths must not use raw bytes (e.as_ref()) — regression guard
         assert!(
             !output.contains("as_ref"),
             "Generated dispatch should not use as_ref for error encoding"
@@ -1464,8 +1901,11 @@ mod tests {
     fn call_body_always_emits_value_guard_for_non_payable_methods() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: Address) -> bool { false }
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1488,9 +1928,12 @@ mod tests {
     fn call_body_omits_value_code_when_all_payable() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                #[pvm_contract_macros::payable]
-                pub fn deposit() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1503,8 +1946,8 @@ mod tests {
             .unwrap_or(route_after.len());
         let route_body = &route_after[..route_end];
         assert!(
-            !route_body.contains("__has_value"),
-            "all-payable route must not emit __has_value; got:\n{route_body}"
+            !route_body.contains("__value_buf"),
+            "all-payable route must not emit __value_buf; got:\n{route_body}"
         );
         assert!(
             !route_body.contains("__pvm_assert_non_payable"),
@@ -1516,18 +1959,24 @@ mod tests {
     fn mixed_contract_emits_guard_for_non_payable_arms_only() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                #[pvm_contract_macros::payable]
-                pub fn deposit() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: Address) -> bool { false }
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
         let s = tokens.to_string();
         assert!(s.contains("__value_buf"), "hoist missing: {s}");
-        assert!(s.contains("__has_value"), "has_value missing: {s}");
+        assert!(
+            s.contains("__pvm_assert_value_zero"),
+            "per-arm assert call missing: {s}"
+        );
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
             "non-payable guard missing: {s}"
@@ -1538,8 +1987,11 @@ mod tests {
     fn deploy_non_payable_constructor_always_has_guard() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                pub fn new(initial: U256) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, initial: U256) {}
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1564,9 +2016,12 @@ mod tests {
     fn deploy_payable_constructor_omits_guard() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                #[pvm_contract_macros::payable]
-                pub fn new(initial: U256) {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    #[pvm_contract_macros::payable]
+                    pub fn new(&mut self, initial: U256) {}
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1587,8 +2042,14 @@ mod tests {
     fn fallback_non_payable_always_has_guard() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::fallback]
-                pub fn any() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    pub fn any(&mut self) {}
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1603,9 +2064,15 @@ mod tests {
     fn fallback_payable_omits_guard() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::fallback]
-                #[pvm_contract_macros::payable]
-                pub fn any() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    #[pvm_contract_macros::payable]
+                    pub fn any(&mut self) {}
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1627,11 +2094,14 @@ mod tests {
     fn contract_without_msg_value_still_guards_value() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn get() -> U256 { U256::ZERO }
+                    #[pvm_contract_macros::method]
+                    pub fn get(&self) -> U256 { U256::ZERO }
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1654,12 +2124,15 @@ mod tests {
     fn mixed_contract_guards_non_payable_methods() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
-                #[pvm_contract_macros::method]
-                #[pvm_contract_macros::payable]
-                pub fn deposit() {}
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn transfer(to: Address) -> bool { false }
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
             }
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
@@ -1679,11 +2152,14 @@ mod tests {
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::fallback]
-                pub fn fallback() {}
+                    #[pvm_contract_macros::fallback]
+                    pub fn fallback(&mut self) {}
+                }
             }
         "#,
         )
@@ -1693,20 +2169,20 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Unit-return fallback should generate a plain call, not a match on Ok/Err
+        // Unit-return fallback should generate a plain method call
         assert!(
-            output.contains("fallback ()"),
-            "Unit-return fallback should generate a direct call"
+            output.contains("this . fallback ()"),
+            "Unit-return fallback should generate a direct method call on `this`"
         );
         assert!(
-            !output.contains("match fallback"),
+            !output.contains("match this . fallback"),
             "Unit-return fallback should not generate a match expression"
         );
     }
 
     #[test]
     fn contract_injects_storage_variable_when_sol_storage_present() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
                 #[derive(SolStorage)]
@@ -1715,12 +2191,15 @@ mod tests {
                     counter: Lazy<U256>,
                 }
 
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn get_counter() -> U256 {
-                    U256::ZERO
+                    #[pvm_contract_macros::method]
+                    pub fn get_counter(&self) -> U256 {
+                        U256::ZERO
+                    }
                 }
             }
         "#,
@@ -1731,14 +2210,12 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // The storage injection should be present in method bodies
         assert!(
             output.contains("__pvm_storage"),
             "Contract should inject storage variable when SolStorage struct is present.\n\
              Expanded output:\n{output}"
         );
 
-        // Verify the injection uses fully-qualified trait method call
         assert!(
             output.contains("as :: pvm_contract_sdk :: SolStorage")
                 && output.contains("__pvm_storage"),
@@ -1746,7 +2223,6 @@ mod tests {
              Expanded output:\n{output}"
         );
 
-        // Both constructor and method should get the injection
         let pvm_storage_count = output.matches("__pvm_storage").count();
         assert!(
             pvm_storage_count >= 2,
@@ -1758,15 +2234,18 @@ mod tests {
 
     #[test]
     fn contract_does_not_inject_storage_without_sol_storage() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn get_value() -> U256 {
-                    U256::ZERO
+                    #[pvm_contract_macros::method]
+                    pub fn get_value(&self) -> U256 {
+                        U256::ZERO
+                    }
                 }
             }
         "#,
@@ -1785,7 +2264,7 @@ mod tests {
 
     #[test]
     fn contract_rejects_multiple_sol_storage_structs() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
                 #[derive(SolStorage)]
@@ -1800,8 +2279,11 @@ mod tests {
                     b: Lazy<U256>,
                 }
 
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
             }
         "#,
         )
@@ -1821,7 +2303,7 @@ mod tests {
 
     #[test]
     fn contract_allows_cfg_gated_sol_storage_structs() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
                 #[cfg(feature = "v1")]
@@ -1840,12 +2322,15 @@ mod tests {
                     b: Lazy<U256>,
                 }
 
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn get_value() -> U256 {
-                    U256::ZERO
+                    #[pvm_contract_macros::method]
+                    pub fn get_value(&self) -> U256 {
+                        U256::ZERO
+                    }
                 }
             }
         "#,
@@ -1856,7 +2341,6 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Should accept multiple SolStorage structs when all cfg-gated with same name
         assert!(
             output.contains("__pvm_storage"),
             "Contract should accept cfg-gated SolStorage structs and inject storage.\n\
@@ -1866,7 +2350,7 @@ mod tests {
 
     #[test]
     fn contract_rejects_cfg_gated_sol_storage_with_different_names() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
                 #[cfg(feature = "v1")]
@@ -1883,8 +2367,11 @@ mod tests {
                     a: Lazy<U256>,
                 }
 
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
             }
         "#,
         )
@@ -1904,7 +2391,7 @@ mod tests {
 
     #[test]
     fn contract_does_not_match_sol_storage_substring() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
                 #[derive(NotSolStorage)]
@@ -1912,12 +2399,15 @@ mod tests {
                     value: u32,
                 }
 
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn get_value() -> U256 {
-                    U256::ZERO
+                    #[pvm_contract_macros::method]
+                    pub fn get_value(&self) -> U256 {
+                        U256::ZERO
+                    }
                 }
             }
         "#,
@@ -1936,7 +2426,7 @@ mod tests {
 
     #[test]
     fn contract_detects_fully_qualified_sol_storage_derive() {
-        let item: syn::ItemMod = syn::parse_str(
+        let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
                 #[derive(pvm_contract_macros::SolStorage)]
@@ -1945,12 +2435,15 @@ mod tests {
                     counter: Lazy<U256>,
                 }
 
-                #[pvm_contract_macros::constructor]
-                pub fn new() {}
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
 
-                #[pvm_contract_macros::method]
-                pub fn get_counter() -> U256 {
-                    U256::ZERO
+                    #[pvm_contract_macros::method]
+                    pub fn get_counter(&self) -> U256 {
+                        U256::ZERO
+                    }
                 }
             }
         "#,
@@ -1965,6 +2458,81 @@ mod tests {
             output.contains("__pvm_storage"),
             "Contract should detect fully qualified pvm_contract_macros::SolStorage.\n\
              Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_contract_struct() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract<T>(::core::marker::PhantomData<T>);
+                impl<T> MyContract<T> {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("contract structs must not be generic"),
+            "Expected struct-generic rejection. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_contract_impl() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl<T> MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("contract `impl` blocks must not be generic"),
+            "Expected impl-generic rejection. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_generic_contract_method() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn echo<T: Copy>(&self, x: T) -> T { x }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("contract methods must not be generic"),
+            "Expected method-generic rejection. Got: {err}"
         );
     }
 }

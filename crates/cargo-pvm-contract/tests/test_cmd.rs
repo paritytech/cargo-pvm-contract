@@ -72,6 +72,30 @@ fn build_project(project_dir: &Path, profile: &str) {
     );
 }
 
+fn run_cli_test(project_dir: &Path) {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(project_dir)
+        .arg("pvm-contract")
+        .arg("test")
+        .arg("--")
+        .arg("--nocapture")
+        .assert()
+        .success();
+}
+
+fn run_cli_test_with_manifest(manifest_path: &Path, cwd: &Path) {
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(cwd)
+        .arg("pvm-contract")
+        .arg("test")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("--")
+        .arg("--nocapture")
+        .assert()
+        .success();
+}
+
 fn verify_build_artifacts(project_dir: &Path, binary_name: &str, profile: &str) {
     verify_polkavm_binary(project_dir, binary_name, profile);
     verify_abi_json(project_dir, binary_name, profile);
@@ -332,4 +356,21 @@ fn polkavm_binary_is_valid() {
         "Release binary should be reasonably small (got {} bytes)",
         binary.len()
     );
+}
+
+#[test]
+fn cli_test_is_end_to_end_for_scaffolded_macro_project() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-macro", "macro", None);
+
+    run_cli_test(&project_dir);
+}
+
+#[test]
+fn cli_test_supports_manifest_path_from_outside_project_dir() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-manifest", "macro", None);
+    let manifest_path = project_dir.join("Cargo.toml");
+
+    run_cli_test_with_manifest(&manifest_path, temp_dir.path());
 }

@@ -14,8 +14,6 @@ interface Flipper {
 
 #[pvm_contract_sdk::contract("FlipperCallAlloy.sol", allocator = "pico")]
 mod flipper_instantiate {
-
-    use pvm_contract_sdk::PolkaVmHost;
     use pvm_contract_sdk::*;
     use pvm_contract_sdk::{CallError, RefTimeAndProofSizeLimits};
 
@@ -28,52 +26,56 @@ mod flipper_instantiate {
         }
     }
 
-    #[pvm_contract_sdk::constructor]
-    pub fn new() -> Result<(), Error> {
-        Ok(())
-    }
+    pub struct FlipperInstantiate;
 
-    #[pvm_contract_sdk::method]
-    pub fn call_flipper(addr: Address) -> Result<(), Error> {
-        let flipper = Flipper::from_address(addr);
-        let get = flipper.get();
-        let flip = flipper.flip();
+    impl FlipperInstantiate {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
 
-        let res = get.call()?;
-        assert_eq!(res, false);
-        let _ = flip.call()?;
-        let res = get.call()?;
-        assert_eq!(res, true);
-        // test deployed
-        let mut code_hash = [0; 32];
-        let _ = PolkaVmHost::code_hash(&addr.0, &mut code_hash);
-        let f = flipper::new_flipper();
-        let deposit_limit = pvm_contract_sdk::U256::from(u128::MAX);
-        let deposit_limit = deposit_limit.to_be_bytes();
-        let (addr, _) = f.instantiate(
-            &code_hash,
-            0,
-            RefTimeAndProofSizeLimits {
-                ref_time_limit: u64::MAX,
-                proof_size_limit: u64::MAX,
-                deposit_limit: deposit_limit,
-            },
-            None,
-        )?;
-        let flipper = Flipper::from_address(addr);
-        let get = flipper.get();
-        let flip = flipper.flip();
+        #[pvm_contract_sdk::method]
+        pub fn call_flipper(&mut self, addr: Address) -> Result<(), Error> {
+            let flipper = Flipper::from_address(addr);
+            let get = flipper.get();
+            let flip = flipper.flip();
 
-        let res = get.call()?;
-        assert_eq!(res, false);
-        let _ = flip.call()?;
-        let res = get.call()?;
-        assert_eq!(res, true);
-        Ok(())
-    }
+            let res = get.call(self.host())?;
+            assert_eq!(res, false);
+            let _ = flip.call(self.host())?;
+            let res = get.call(self.host())?;
+            assert_eq!(res, true);
+            let mut code_hash = [0; 32];
+            let _ = self.host().code_hash(&addr.0, &mut code_hash);
+            let f = flipper::new_flipper();
+            let deposit_limit = ruint::aliases::U256::from(u128::MAX);
+            let deposit_limit = deposit_limit.to_be_bytes();
+            let (addr, _) = f.instantiate(
+                self.host(),
+                &code_hash,
+                0,
+                RefTimeAndProofSizeLimits {
+                    ref_time_limit: u64::MAX,
+                    proof_size_limit: u64::MAX,
+                    deposit_limit,
+                },
+                None,
+            )?;
+            let flipper = Flipper::from_address(addr);
+            let get = flipper.get();
+            let flip = flipper.flip();
 
-    #[pvm_contract_sdk::fallback]
-    pub fn fallback() -> Result<(), Error> {
-        Ok(())
+            let res = get.call(self.host())?;
+            assert_eq!(res, false);
+            let _ = flip.call(self.host())?;
+            let res = get.call(self.host())?;
+            assert_eq!(res, true);
+            Ok(())
+        }
+
+        #[pvm_contract_sdk::fallback]
+        pub fn fallback(&mut self) -> Result<(), Error> {
+            Ok(())
+        }
     }
 }

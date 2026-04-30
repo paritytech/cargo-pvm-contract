@@ -1,26 +1,27 @@
 #![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
-#[pvm_contract_macros::contract]
+#[pvm_contract_sdk::contract]
 mod my_contract {
-    use pvm_contract_sdk::Address;
-    use pvm_contract_sdk::U256;
+    use pvm_contract_sdk::{Address};
+    use ruint::aliases::U256;
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() {}
+    pub struct MyContract;
 
-    /// Method with no return type
-    #[pvm_contract_macros::method]
-    pub fn set_flag(flag: bool) {}
+    impl MyContract {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
 
-    /// Method with multiple params of different sizes
-    #[pvm_contract_macros::method]
-    pub fn transfer(to: Address, amount: U256, nonce: u32) -> bool {
-        true
-    }
+        #[pvm_contract_sdk::method]
+        pub fn set_flag(&mut self, flag: bool) {}
 
-    /// Method with no params but a return
-    #[pvm_contract_macros::method]
-    pub fn get_count() -> u64 {
-        0
+        #[pvm_contract_sdk::method]
+        pub fn transfer(&mut self, to: Address, amount: U256, nonce: u32) -> bool {
+            true
+        }
+
+        #[pvm_contract_sdk::method]
+        pub fn get_count(&self) -> u64 {
+            0
+        }
     }
 }
