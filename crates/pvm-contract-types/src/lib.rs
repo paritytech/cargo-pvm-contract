@@ -14,7 +14,10 @@ pub use alloc_types::Bytes;
 #[cfg(feature = "abi-gen")]
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
-pub use abi_gen::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
+pub use abi_gen::{
+    AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json, parse_type_str,
+    storage_layout_to_json,
+};
 
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]

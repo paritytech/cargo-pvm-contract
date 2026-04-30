@@ -114,7 +114,10 @@ pub use pvm_storage::StorageLayoutType;
 pub use pvm_contract_types::Bytes;
 
 #[cfg(feature = "abi-gen")]
-pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
+pub use pvm_contract_types::{
+    AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json, parse_type_str,
+    storage_layout_to_json,
+};
 
 #[cfg(feature = "std")]
 pub use pvm_contract_types::{MockHost, MockHostBuilder};

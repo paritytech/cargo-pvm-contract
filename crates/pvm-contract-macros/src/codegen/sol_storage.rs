@@ -1,39 +1,27 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-/// Generate the TokenStream for a single storage layout JSON entry.
+/// Generate the TokenStream that constructs a `StorageLayoutEntry` for one field.
 ///
 /// Used by the `#[contract]` slot-field layout generation in `abi_gen.rs`.
 pub(super) fn generate_layout_entry(name_str: &str, ty: &syn::Type, slot: u64) -> TokenStream {
     let slot_str = format!("{}", slot);
     quote! {
-        {
-            let mut entry = ::std::string::String::from("{\"label\":\"");
-            entry.push_str(#name_str);
-            entry.push_str("\",\"slot\":\"");
-            entry.push_str(#slot_str);
-            entry.push_str("\",\"type\":\"");
-            entry.push_str(&<#ty as ::pvm_contract_sdk::StorageLayoutType>::sol_type_name());
-            entry.push_str("\"}");
-            entry
+        ::pvm_contract_sdk::StorageLayoutEntry {
+            label: ::std::string::String::from(#name_str),
+            slot: ::std::string::String::from(#slot_str),
+            ty: <#ty as ::pvm_contract_sdk::StorageLayoutType>::sol_type_name(),
         }
     }
 }
 
-/// Generate the JSON assembly from a `Vec<String>` of entries.
+/// Generate the JSON serialization from a `Vec<StorageLayoutEntry>`.
 ///
 /// Used by the `#[contract]` slot-field layout generation.
 pub(super) fn layout_json_from_entries() -> TokenStream {
     quote! {
-        let mut json = ::std::string::String::from("{\"storage\":[");
-        for (i, entry) in entries.iter().enumerate() {
-            if i > 0 {
-                json.push(',');
-            }
-            json.push_str(entry);
-        }
-        json.push_str("]}");
-        json
+        let layout = ::pvm_contract_sdk::StorageLayout { storage: entries };
+        ::pvm_contract_sdk::storage_layout_to_json(&layout)
     }
 }
 

@@ -67,7 +67,7 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
         pub fn __storage_layout_json() -> ::std::string::String {
-            let mut entries: ::std::vec::Vec<::std::string::String> = ::std::vec::Vec::new();
+            let mut entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> = ::std::vec::Vec::new();
             #(#layout_pushes)*
             #json_assembly
         }
