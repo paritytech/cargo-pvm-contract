@@ -33,7 +33,7 @@ pub use pallet_revive_uapi;
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]
-pub use mock_host::{MockHost, MockHostBuilder, ReturnValue};
+pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};

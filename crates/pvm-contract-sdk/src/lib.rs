@@ -118,7 +118,7 @@ pub use pvm_contract_types::Bytes;
 pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;
