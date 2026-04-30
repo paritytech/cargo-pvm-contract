@@ -120,11 +120,23 @@ pub fn remove(key: &StorageKey) {
     api::set_storage(StorageFlags::empty(), key, &[]);
 }
 
-/// Check if a key exists in storage.
+/// Check if a key has a value stored at it.
+///
+/// Returns `false` after a prior [`remove`] of the same key. Today this
+/// matters because `remove` calls `api::set_storage(.., &[])`, which the
+/// host stores as a 0-byte trie row rather than deleting it (see `remove`
+/// for context). The host's `get_storage` then returns `Ok` for that row
+/// even though it has no content — so checking `is_ok()` alone is not
+/// enough; we also require `output` to be non-empty. Once the host treats
+/// empty-value writes as deletes, the `Ok` + empty-output case becomes
+/// unreachable; the check is then structurally redundant but stays correct.
 pub fn contains(key: &StorageKey) -> bool {
     let mut buffer = [0u8; 1];
     let mut output = buffer.as_mut_slice();
-    api::get_storage(StorageFlags::empty(), key, &mut output).is_ok()
+    match api::get_storage(StorageFlags::empty(), key, &mut output) {
+        Ok(()) => !output.is_empty(),
+        Err(_) => false,
+    }
 }
 
 // ============================================================================
