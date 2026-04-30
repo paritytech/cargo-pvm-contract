@@ -400,6 +400,15 @@ fn extract_typed_params_impl(
         .collect()
 }
 
+/// `true` iff the function's first parameter is `&mut self`.
+fn receiver_is_mut(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) -> bool {
+    matches!(
+        inputs.first(),
+        Some(syn::FnArg::Receiver(r))
+            if r.reference.is_some() && r.mutability.is_some()
+    )
+}
+
 /// Shared payable helpers emitted once per contract module so call sites
 /// collapse to a single function call. `__pvm_assert_value_zero` reverts on a
 /// boolean flag so mixed-payability dispatchers can read `value_transferred`
@@ -590,6 +599,12 @@ fn parse_contract(
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
                 constructor_is_payable = has_pvm_attr(&func.attrs, "payable");
+                if constructor_is_payable && !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "constructor is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                    ));
+                }
                 constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
@@ -597,10 +612,22 @@ fn parse_contract(
                 fallback_name = Some(func.sig.ident.clone());
                 fallback_returns_result = is_result_return_type(&func.sig.output);
                 fallback_is_payable = has_pvm_attr(&func.attrs, "payable");
+                if fallback_is_payable && !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "fallback is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                    ));
+                }
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
                 let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
                 let is_payable = has_pvm_attr(&func.attrs, "payable");
+                if is_payable && !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "method is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                    ));
+                }
                 let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
                     typed_params.into_iter().map(|(_, t)| t).collect();
