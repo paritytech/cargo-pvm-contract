@@ -95,6 +95,7 @@ pub use pvm_contract_types::{
     // Framework errors
     framework_errors,
     sol_revert_enum,
+    value_transferred_is_nonzero,
 };
 
 // Cross-contract calls

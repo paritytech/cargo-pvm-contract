@@ -241,7 +241,7 @@ pub fn generate_dispatch_arm(
         quote! {}
     } else {
         quote! {
-            __pvm_assert_value_zero(this.host(), &__value_buf);
+            __pvm_assert_value_zero(this.host(), __has_value);
         }
     };
 
@@ -326,8 +326,8 @@ pub struct RouterImpl {
 ///
 /// When every method is non-payable the value-transfer guard collapses into a
 /// single `__pvm_assert_non_payable()` call before the match. Mixed payability
-/// reads `value_transferred` once into `__value_buf` and each non-payable arm
-/// calls `__pvm_assert_value_zero(&__value_buf)`.
+/// reads `value_transferred` once into `__has_value` and each non-payable arm
+/// calls `__pvm_assert_value_zero(host, __has_value)`.
 pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
@@ -351,7 +351,7 @@ pub fn generate_router(
         quote! { __pvm_assert_non_payable(this.host()); }
     } else if any_non_payable {
         quote! {
-            let __value_buf = __pvm_value_transferred(this.host());
+            let __has_value = ::pvm_contract_sdk::value_transferred_is_nonzero(this.host());
         }
     } else {
         quote! {}
@@ -545,7 +545,7 @@ mod tests {
             fn __w(selector: [u8; 4], input: &[u8], this: &mut Contract) {
                 match selector {
                     __SEL_transfer => {
-                        __pvm_assert_value_zero(this.host(), &__value_buf);
+                        __pvm_assert_value_zero(this.host(), __has_value);
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
                             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(

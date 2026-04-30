@@ -171,14 +171,10 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
             let (sel, handler) = self.methods[i];
             if sel == selector {
                 let is_payable = (self.payable_bits >> i) & 1 == 1;
-                if !is_payable {
-                    let mut value_buf = [0u8; 32];
-                    host.value_transferred(&mut value_buf);
-                    if value_buf != [0u8; 32] {
-                        let err = pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED;
-                        output[..4].copy_from_slice(&err);
-                        return Some(HandlerResult::Revert(4));
-                    }
+                if !is_payable && pvm_contract_types::value_transferred_is_nonzero(host) {
+                    let err = pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED;
+                    output[..4].copy_from_slice(&err);
+                    return Some(HandlerResult::Revert(4));
                 }
                 return Some(handler(host, input, output));
             }

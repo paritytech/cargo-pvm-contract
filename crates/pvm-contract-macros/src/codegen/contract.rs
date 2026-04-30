@@ -401,27 +401,20 @@ fn extract_typed_params_impl(
 }
 
 /// Shared payable helpers emitted once per contract module so call sites
-/// collapse to a single function call. Split into two leaf functions
-/// (`__pvm_value_transferred` reads the host buffer; `__pvm_assert_value_zero`
-/// reverts when nonzero) so mixed-payability dispatchers can share the read
-/// across all non-payable arms while each arm tail-calls the assert. The
-/// `__pvm_assert_non_payable` combinator is used by the deploy / fallback
-/// boundaries and by the all-non-payable router prelude.
+/// collapse to a single function call. `__pvm_assert_value_zero` reverts on a
+/// boolean flag so mixed-payability dispatchers can read `value_transferred`
+/// once into `__has_value` and have each non-payable arm tail-call the assert.
+/// `__pvm_assert_non_payable` is the read+assert combinator used by the
+/// deploy / fallback boundaries and by the all-non-payable router prelude;
+/// the read itself goes through
+/// `pvm_contract_sdk::value_transferred_is_nonzero`, which folds the 32-byte
+/// buffer with a 4-word OR on riscv64 (smaller bytecode than `memcmp`).
 fn build_payable_helpers_fn() -> TokenStream {
     quote! {
         #[cfg(not(feature = "abi-gen"))]
         #[inline(never)]
-        fn __pvm_value_transferred(host: &::pvm_contract_sdk::Host) -> [u8; 32] {
-            let mut __value_buf = [0u8; 32];
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::value_transferred(
-                host, &mut __value_buf);
-            __value_buf
-        }
-
-        #[cfg(not(feature = "abi-gen"))]
-        #[inline(never)]
-        fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, buf: &[u8; 32]) {
-            if buf != &[0u8; 32] {
+        fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, has_value: bool) {
+            if has_value {
                 <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                     host,
                     ::pvm_contract_sdk::ReturnFlags::REVERT,
@@ -432,8 +425,10 @@ fn build_payable_helpers_fn() -> TokenStream {
         #[cfg(not(feature = "abi-gen"))]
         #[inline(never)]
         fn __pvm_assert_non_payable(host: &::pvm_contract_sdk::Host) {
-            let __value_buf = __pvm_value_transferred(host);
-            __pvm_assert_value_zero(host, &__value_buf);
+            __pvm_assert_value_zero(
+                host,
+                ::pvm_contract_sdk::value_transferred_is_nonzero(host),
+            );
         }
     }
 }
@@ -1945,8 +1940,8 @@ mod tests {
             .unwrap_or(route_after.len());
         let route_body = &route_after[..route_end];
         assert!(
-            !route_body.contains("__value_buf"),
-            "all-payable route must not emit __value_buf; got:\n{route_body}"
+            !route_body.contains("__has_value"),
+            "all-payable route must not emit __has_value; got:\n{route_body}"
         );
         assert!(
             !route_body.contains("__pvm_assert_non_payable"),
@@ -1971,7 +1966,7 @@ mod tests {
         };
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
         let s = tokens.to_string();
-        assert!(s.contains("__value_buf"), "hoist missing: {s}");
+        assert!(s.contains("__has_value"), "hoist missing: {s}");
         assert!(
             s.contains("__pvm_assert_value_zero"),
             "per-arm assert call missing: {s}"
@@ -2137,8 +2132,8 @@ mod tests {
         let tokens = expand_contract(ContractArgs::default(), input).unwrap();
         let s = tokens.to_string();
         assert!(
-            s.contains("__value_buf"),
-            "mixed contract should hoist __value_buf"
+            s.contains("__has_value"),
+            "mixed contract should hoist __has_value"
         );
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
