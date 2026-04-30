@@ -196,7 +196,7 @@ fn storage_address_roundtrip() {
 #[test]
 fn storage_bytes32_roundtrip() {
     let (_anvil, cast, addr) = deploy("storage-types");
-    let val_hex = "0xdeadbeefdeadb feefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    let val_hex = "0xdeadbeefdeadbfeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
     cast.send(
         &addr,
