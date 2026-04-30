@@ -632,8 +632,7 @@ fn parse_contract(
                                 "Only one contract interface per file is supported",
                             ));
                         }
-                    }
-                {
+                    } {
                     let rust_fn_name = func.sig.ident.to_string();
                     let rename = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
