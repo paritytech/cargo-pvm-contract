@@ -76,6 +76,15 @@ pub const fn raw_key(bytes: [u8; 32]) -> StorageKey {
 // ============================================================================
 
 /// Get a value from storage with the given key.
+///
+/// Returns `None` after a prior [`remove`] of the same key. Today this works
+/// indirectly: `remove` calls `api::set_storage(.., &[])`, which the host
+/// stores as a 0-byte trie row rather than deleting it (see `remove` for
+/// context), so `api::get_storage` returns `Ok` with `output.len() == 0`
+/// and `T::decode(&[])` then fails for any non-trivial `T` — yielding
+/// `None`. Once the host treats empty-value writes as deletes,
+/// `api::get_storage` will return `Err(KeyNotFound)` and the `Err` arm
+/// will produce `None` directly. Same result either way.
 pub fn get<T: Decode>(key: &StorageKey) -> Option<T> {
     get_with_buffer::<T, DEFAULT_READ_BUFFER_SIZE>(key)
 }
@@ -102,9 +111,13 @@ pub fn set<T: Encode>(key: &StorageKey, value: &T) {
 }
 
 /// Remove a value from storage.
+///
+/// Uses `set_storage` with an empty value rather than `set_storage_or_clear`,
+/// because the former operates on the variable-length storage area that
+/// `set`/`get` use, while the latter targets the Ethereum-style fixed 32-byte
+/// SSTORE area. Mixing them silently leaves data behind.
 pub fn remove(key: &StorageKey) {
-    let zero = [0u8; 32];
-    api::set_storage_or_clear(StorageFlags::empty(), key, &zero);
+    api::set_storage(StorageFlags::empty(), key, &[]);
 }
 
 /// Check if a key exists in storage.
