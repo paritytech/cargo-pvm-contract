@@ -1686,6 +1686,8 @@ mod test {
         let file = quote! {
                 error Test(string str);
 
+                type Example is uint256;
+
                 struct Point {
                     uint a;
                     uint b;
@@ -1908,6 +1910,37 @@ mod test {
             #[derive(SolError, PartialEq, Eq, Debug)]
             pub struct Test {
                 pub str: alloc::string::String,
+            }
+            #[derive(PartialEq, Eq, Debug)]
+            pub struct Example(pub U256);
+            impl From<U256> for Example {
+                fn from(value: U256) -> Example {
+                    Example(value)
+                }
+            }
+            impl From<Example> for U256 {
+                fn from(value: Example) -> U256 {
+                    value.0
+                }
+            }
+            impl SolEncode for Example {
+                const IS_DYNAMIC: bool = false;
+                const SOL_NAME: &'static str = "uint256";
+                #[inline]
+                fn encode_body_len(&self) -> usize {
+                    32
+                }
+                fn encode_body_to(&self, buf: &mut [u8]) {
+                    U256::encode_body_to(&self.0, buf)
+                }
+            }
+            impl StaticEncodedLen for Example {
+                const ENCODED_SIZE: usize = 32;
+            }
+            impl SolDecode for Example {
+                fn decode_at(input: &[u8], offset: usize) -> Self {
+                    U256::decode_at(input, offset).into()
+                }
             }
             #[derive(SolType, PartialEq, Eq, Debug)]
             pub struct Point {
