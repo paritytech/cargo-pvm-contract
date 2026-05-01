@@ -884,6 +884,13 @@ pub fn sol_storage(input: TokenStream) -> TokenStream {
 ///
 /// - #[abi_import(alloc = <true/false>)] - higher level bindings and dynamic type support, default value is [false].
 ///
+/// # Support for custom types
+///
+/// - structs: present
+/// - errors: present
+/// - udts: present
+/// - enums: currently not supported
+///
 /// # Example of usage
 /// - `solidity` literal
 ///
