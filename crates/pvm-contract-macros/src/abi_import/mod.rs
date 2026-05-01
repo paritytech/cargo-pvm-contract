@@ -205,6 +205,12 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
                 quote! {
                     #(#path)*
                 }
+            } else if ctxt.is_enum(custom.clone()) {
+                let lit = format!(
+                    "Solidity `enum` types {} are not yet supported by abi_import!",
+                    &custom
+                );
+                quote! { compile_error!(#lit); }
             } else {
                 let lit = format!("unknown type: {}", typ);
 
@@ -241,12 +247,12 @@ fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> 
         );
         let typ = to_rust_type(&x.ty, alloc, ctxt);
         quote! {
-            #name: #typ
+            pub #name: #typ
         }
     });
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
     quote! {
-        #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        #[derive(SolType, PartialEq, Eq,  Debug)]
         pub struct #name {
             #(#fields),*
         }
@@ -266,12 +272,12 @@ fn expand_error(x: &syn_solidity::ItemError, ctxt: &mut Ctxt, alloc: bool) -> To
         );
         let typ = to_rust_type(&x.ty, alloc, ctxt);
         quote! {
-            #name: #typ
+            pub #name: #typ
         }
     });
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
     quote! {
-        #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        #[derive(SolError, PartialEq, Eq, Debug)]
         pub struct #name {
             #(#fields),*
         }
@@ -281,9 +287,46 @@ fn expand_error(x: &syn_solidity::ItemError, ctxt: &mut Ctxt, alloc: bool) -> To
 fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
     let typ = to_rust_type(&x.ty, alloc, ctxt);
+    let sol_typ = x.ty.abi_name();
     quote! {
-        #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+        #[derive(PartialEq, Eq, Debug)]
         pub struct #name(pub #typ);
+
+        impl From<#typ> for #name {
+            fn from(value: #typ) -> #name {
+                #name(value)
+            }
+        }
+
+        impl From<#name> for #typ {
+            fn from(value: #name) -> #typ {
+                value.0
+            }
+        }
+
+        impl SolEncode for #name {
+            const IS_DYNAMIC: bool = false;
+            const SOL_NAME: &'static str = #sol_typ;
+
+            #[inline]
+            fn encode_body_len(&self) -> usize {
+                32
+            }
+
+            fn encode_body_to(&self, buf: &mut [u8]) {
+                #typ::encode_body_to(&self.0, buf)
+            }
+        }
+
+        impl StaticEncodedLen for #name {
+            const ENCODED_SIZE: usize = 32;
+        }
+
+        impl SolDecode for #name {
+            fn decode_at(input: &[u8], offset: usize) -> Self {
+                #typ::decode_at(input, offset).into()
+            }
+        }
     }
 }
 
@@ -307,7 +350,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));
             let contract_module = format_ident!("{}", to_snake_case(&item_contract.name.to_string()));
-            ctxt.set_ns(item_contract.name.clone());
+            ctxt.with_ns(item_contract.name.clone(), |ctxt: &mut Ctxt| {
             let repr = format!("```solidity\n{}\n```", item_contract);
             let funcs = item_contract
                 .body
@@ -324,7 +367,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     },
                     _ => None,
                 })
-                .map(|(x, is_constructor)| expand_function(&mut ctxt, contract_name.clone(), x, is_constructor, alloc));
+                .map(|(x, is_constructor)| expand_function(ctxt, contract_name.clone(), x, is_constructor, alloc));
             type Funcs = Vec<(bool, TokenStream)>;
             let (constructor, funcs): (Funcs, Funcs) = funcs.partition(|(is_constructor, _)| *is_constructor);
             let funcs = funcs.into_iter().map(|x| x.1);
@@ -384,7 +427,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
 
             let user_types = expand_items(item_contract
             .body
-            .iter(),alloc,&mut ctxt);
+            .iter(),alloc, ctxt);
 
 
             Some(quote! {
@@ -464,6 +507,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     #(#user_types)*
                 }
             })
+        })
         }
         syn_solidity::Item::Contract(_)
         | syn_solidity::Item::Enum(_)
@@ -744,13 +788,13 @@ mod test {
                         self
                     }
                 }
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct CalldataTooLarge {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct InvalidCalldata {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -974,13 +1018,13 @@ mod test {
                         self
                     }
                 }
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct CalldataTooLarge {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct InvalidCalldata {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1177,13 +1221,13 @@ mod test {
                         self
                     }
                 }
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct CalldataTooLarge {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct InvalidCalldata {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1416,13 +1460,13 @@ mod test {
                         self
                     }
                 }
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct CalldataTooLarge {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct InvalidCalldata {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1624,13 +1668,13 @@ mod test {
                         self
                     }
                 }
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct CalldataTooLarge {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct InvalidCalldata {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
-                #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1853,22 +1897,22 @@ mod test {
                         self
                     }
                 }
-                #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+                #[derive(SolType, PartialEq, Eq, Debug)]
                 pub struct Voter {
-                    weight: U256,
-                    voted: bool,
-                    delegate: Address,
-                    vote: U256,
+                    pub weight: U256,
+                    pub voted: bool,
+                    pub delegate: Address,
+                    pub vote: U256,
                 }
             }
-            #[derive(SolError, PartialEq, Eq, PartialOrd, Ord, Debug)]
+            #[derive(SolError, PartialEq, Eq, Debug)]
             pub struct Test {
-                str: alloc::string::String,
+                pub str: alloc::string::String,
             }
-            #[derive(SolType, PartialEq, Eq, PartialOrd, Ord, Debug)]
+            #[derive(SolType, PartialEq, Eq, Debug)]
             pub struct Point {
-                a: U256,
-                b: U256,
+                pub a: U256,
+                pub b: U256,
             }
         "#]]
         .assert_eq(&file);

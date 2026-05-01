@@ -15,6 +15,8 @@ struct Point {
     uint b;
 }
 
+type Ass is uint256;
+
 interface PointAdder {
     function add(Point a, Point b) external returns (Point);
 }
