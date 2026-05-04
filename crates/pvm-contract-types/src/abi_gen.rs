@@ -47,6 +47,26 @@ pub enum AbiItem {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AbiJson(pub Vec<AbiItem>);
 
+/// A single entry in the `storageLayout.storage` array.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageLayoutEntry {
+    pub label: String,
+    pub slot: String,
+    #[serde(rename = "type")]
+    pub ty: String,
+}
+
+/// The top-level `storageLayout` object.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageLayout {
+    pub storage: Vec<StorageLayoutEntry>,
+}
+
+/// Serialize a [`StorageLayout`] to a JSON string.
+pub fn storage_layout_to_json(layout: &StorageLayout) -> String {
+    serde_json::to_string(layout).expect("StorageLayout serialization failed")
+}
+
 /// Serialize a list of ABI items to a JSON string.
 pub fn abi_to_json(items: &[AbiItem]) -> String {
     serde_json::to_string_pretty(items).expect("ABI serialization failed")
@@ -207,5 +227,33 @@ mod tests {
         let json = abi_to_json(&items);
         let parsed: Vec<AbiItem> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, items);
+    }
+
+    #[test]
+    fn storage_layout_to_json_matches_expected_shape() {
+        let layout = StorageLayout {
+            storage: vec![
+                StorageLayoutEntry {
+                    label: "total_supply".into(),
+                    slot: "0".into(),
+                    ty: "uint256".into(),
+                },
+                StorageLayoutEntry {
+                    label: "balances".into(),
+                    slot: "1".into(),
+                    ty: "mapping(address,uint256)".into(),
+                },
+            ],
+        };
+        let json = storage_layout_to_json(&layout);
+
+        assert_eq!(
+            json,
+            r#"{"storage":[{"label":"total_supply","slot":"0","type":"uint256"},{"label":"balances","slot":"1","type":"mapping(address,uint256)"}]}"#
+        );
+
+        // Roundtrip.
+        let parsed: StorageLayout = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, layout);
     }
 }

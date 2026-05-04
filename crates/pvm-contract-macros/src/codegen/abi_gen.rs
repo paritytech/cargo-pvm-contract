@@ -1,8 +1,9 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 
-use super::contract::ParsedContract;
+use super::contract::{ParsedContract, SlotField};
 use super::dispatch::{MethodInfo, StateMutability};
+use super::sol_storage::{generate_layout_entry, layout_json_from_entries};
 
 /// Generate both the in-module ABI helper and the top-level `main()`.
 ///
@@ -11,13 +12,13 @@ use super::dispatch::{MethodInfo, StateMutability};
 ///
 /// When a `.sol` file is provided, the builder derives the ABI from the Solidity
 /// interface at build time. However, `storageLayout` is always Rust-side, so
-/// `main()` is still generated when a `SolStorage` struct exists.
+/// `main()` is still generated when `#[slot]` fields exist.
 pub fn generate_abi_gen(
     parsed: &ParsedContract,
     has_sol_path: bool,
-    storage_struct: Option<syn::Ident>,
+    slot_fields: &[SlotField],
 ) -> (TokenStream, TokenStream) {
-    if has_sol_path && storage_struct.is_none() {
+    if has_sol_path && slot_fields.is_empty() {
         // .sol path, no storage: builder gets everything from the .sol file.
         return (quote! {}, quote! {});
     }
@@ -26,7 +27,7 @@ pub fn generate_abi_gen(
         // .sol path with storage: builder gets ABI from .sol, but needs
         // main() to output storage layout from the Rust side.
         let mod_name = &parsed.mod_name;
-        let helper = storage_layout_helper(storage_struct.as_ref().unwrap());
+        let helper = storage_layout_helper(slot_fields);
         let main_fn = quote! {
             #[cfg(feature = "abi-gen")]
             fn main() {
@@ -37,7 +38,7 @@ pub fn generate_abi_gen(
     }
 
     // Non-.sol path: generate both ABI and optional storage layout.
-    match generate_abi_gen_impl(parsed, storage_struct) {
+    match generate_abi_gen_impl(parsed, slot_fields) {
         Ok((helper, main_fn)) => (helper, main_fn),
         Err(err) => {
             let err = err.to_compile_error();
@@ -46,22 +47,36 @@ pub fn generate_abi_gen(
     }
 }
 
-/// Generate a module-level `__storage_layout_json()` wrapper that delegates
-/// to the (private) storage struct's method. Lives inside the module so it
-/// can access the struct; declared `pub` so `main()` can call it from outside.
-fn storage_layout_helper(struct_name: &syn::Ident) -> TokenStream {
+/// Generate a module-level `__storage_layout_json()` function that builds the
+/// JSON layout from the `#[slot(N)]` fields on the contract struct.
+fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
+    let layout_pushes: Vec<TokenStream> = slot_fields
+        .iter()
+        .map(|sf| {
+            let entry = generate_layout_entry(&sf.name.to_string(), &sf.ty, sf.slot);
+            let cfgs = &sf.cfg_attrs;
+            quote! {
+                #(#cfgs)*
+                entries.push(#entry);
+            }
+        })
+        .collect();
+    let json_assembly = layout_json_from_entries();
+
     quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
         pub fn __storage_layout_json() -> ::std::string::String {
-            #struct_name::__storage_layout_json()
+            let mut entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> = ::std::vec::Vec::new();
+            #(#layout_pushes)*
+            #json_assembly
         }
     }
 }
 
 fn generate_abi_gen_impl(
     parsed: &ParsedContract,
-    storage_struct: Option<syn::Ident>,
+    slot_fields: &[SlotField],
 ) -> syn::Result<(TokenStream, TokenStream)> {
     let constructor_entry = if parsed.has_constructor {
         let ctor_params: Vec<TokenStream> = parsed
@@ -202,16 +217,22 @@ fn generate_abi_gen_impl(
 
     let mod_name = &parsed.mod_name;
 
-    let combined_helper = match &storage_struct {
-        Some(struct_name) => {
-            let sh = storage_layout_helper(struct_name);
-            quote! { #helper #sh }
-        }
-        None => helper,
+    let combined_helper = if slot_fields.is_empty() {
+        helper
+    } else {
+        let sh = storage_layout_helper(slot_fields);
+        quote! { #helper #sh }
     };
 
-    let main_fn = match storage_struct {
-        Some(_) => quote! {
+    let main_fn = if slot_fields.is_empty() {
+        quote! {
+            #[cfg(feature = "abi-gen")]
+            fn main() {
+                ::std::println!("{}", #mod_name::__abi_json());
+            }
+        }
+    } else {
+        quote! {
             #[cfg(feature = "abi-gen")]
             fn main() {
                 let abi = #mod_name::__abi_json();
@@ -223,13 +244,7 @@ fn generate_abi_gen_impl(
                 ::std::print!("{}", layout);
                 ::std::println!("}}");
             }
-        },
-        None => quote! {
-            #[cfg(feature = "abi-gen")]
-            fn main() {
-                ::std::println!("{}", #mod_name::__abi_json());
-            }
-        },
+        }
     };
 
     Ok((combined_helper, main_fn))
@@ -295,7 +310,7 @@ mod tests {
             error_types: vec![],
         };
 
-        let (helper, main_fn) = generate_abi_gen(&parsed, true, None);
+        let (helper, main_fn) = generate_abi_gen(&parsed, true, &[]);
         assert!(helper.is_empty());
         assert!(main_fn.is_empty());
     }
@@ -415,7 +430,7 @@ mod tests {
             precomputed_selector: None,
         };
         let parsed = parsed_contract_with_method(method);
-        let (helper, _main_fn) = generate_abi_gen(&parsed, false, None);
+        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
         let s = helper.to_string();
         assert!(
             s.contains(&mutability_token("view")),
@@ -436,7 +451,7 @@ mod tests {
             precomputed_selector: None,
         };
         let parsed = parsed_contract_with_method(method);
-        let (helper, _main_fn) = generate_abi_gen(&parsed, false, None);
+        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
         let s = helper.to_string();
         assert!(
             s.contains(&mutability_token("pure")),
@@ -490,8 +505,13 @@ mod tests {
             error_types: vec![],
         };
 
-        let storage_name: syn::Ident = syn::parse_str("Storage").unwrap();
-        let (helper, main_fn) = generate_abi_gen(&parsed, true, Some(storage_name));
+        let slot_fields = vec![SlotField {
+            name: syn::parse_str("total_supply").unwrap(),
+            ty: syn::parse_str("Lazy<U256>").unwrap(),
+            slot: 0,
+            cfg_attrs: vec![],
+        }];
+        let (helper, main_fn) = generate_abi_gen(&parsed, true, &slot_fields);
         // Helper contains the __storage_layout_json wrapper; main() calls it.
         assert!(
             !helper.is_empty(),
@@ -510,6 +530,103 @@ mod tests {
         assert!(
             main_str.contains("__storage_layout_json"),
             "main() should call __storage_layout_json(). Got: {main_str}"
+        );
+    }
+
+    #[test]
+    fn no_sol_path_no_slots_generates_abi_only() {
+        let parsed = ParsedContract {
+            mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
+            methods: vec![],
+            has_constructor: false,
+            has_fallback: false,
+            constructor_name: None,
+            constructor_returns_result: false,
+            constructor_inputs: vec![],
+            constructor_is_payable: false,
+            fallback_name: None,
+            fallback_returns_result: false,
+            fallback_is_payable: false,
+            error_types: vec![],
+        };
+
+        let (helper, main_fn) = generate_abi_gen(&parsed, false, &[]);
+        let helper_str = helper.to_string();
+        let main_str = main_fn.to_string();
+        assert!(
+            helper_str.contains("__abi_json"),
+            "should generate __abi_json helper. Got: {helper_str}"
+        );
+        assert!(
+            !helper_str.contains("__storage_layout_json"),
+            "should not generate storage layout without slots. Got: {helper_str}"
+        );
+        assert!(
+            main_str.contains("__abi_json"),
+            "main() should print ABI. Got: {main_str}"
+        );
+        assert!(
+            !main_str.contains("__storage_layout_json"),
+            "main() should not reference storage layout. Got: {main_str}"
+        );
+    }
+
+    #[test]
+    fn no_sol_path_with_slots_generates_abi_and_layout() {
+        let parsed = ParsedContract {
+            mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
+            methods: vec![],
+            has_constructor: false,
+            has_fallback: false,
+            constructor_name: None,
+            constructor_returns_result: false,
+            constructor_inputs: vec![],
+            constructor_is_payable: false,
+            fallback_name: None,
+            fallback_returns_result: false,
+            fallback_is_payable: false,
+            error_types: vec![],
+        };
+
+        let slot_fields = vec![SlotField {
+            name: syn::parse_str("balances").unwrap(),
+            ty: syn::parse_str("Mapping<Address, U256>").unwrap(),
+            slot: 1,
+            cfg_attrs: vec![],
+        }];
+        let (helper, main_fn) = generate_abi_gen(&parsed, false, &slot_fields);
+        let helper_str = helper.to_string();
+        let main_str = main_fn.to_string();
+        assert!(
+            helper_str.contains("__abi_json"),
+            "should generate __abi_json. Got: {helper_str}"
+        );
+        assert!(
+            helper_str.contains("__storage_layout_json"),
+            "should generate storage layout with slots. Got: {helper_str}"
+        );
+        assert!(
+            main_str.contains("__storage_layout_json"),
+            "main() should output storage layout. Got: {main_str}"
+        );
+    }
+
+    #[test]
+    fn cfg_attrs_propagated_into_layout() {
+        let cfg_attr: syn::Attribute = syn::parse_quote! { #[cfg(feature = "v2")] };
+        let slot_fields = vec![SlotField {
+            name: syn::parse_str("data").unwrap(),
+            ty: syn::parse_str("Lazy<U256>").unwrap(),
+            slot: 0,
+            cfg_attrs: vec![cfg_attr],
+        }];
+        let helper = storage_layout_helper(&slot_fields);
+        let helper_str = helper.to_string();
+        assert!(
+            helper_str.contains("feature") && helper_str.contains("v2"),
+            "cfg attr should be propagated into layout. Got: {helper_str}"
         );
     }
 }

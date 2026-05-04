@@ -43,7 +43,7 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolStorage, SolType, abi_import, constructor, contract, fallback, method, payable,
+    SolError, SolType, abi_import, constructor, contract, fallback, method, payable,
 };
 
 // ---------------------------------------------------------------------------
@@ -104,10 +104,9 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
-// Typed storage helpers. The `SolStorage` trait + `StorageKey` are public user
-// surface; `Lazy`/`Mapping` are the declarable field types for
-// `#[derive(SolStorage)]`.
-pub use pvm_storage::{AsStorageKey, Lazy, Mapping, SolStorage, StorageKey};
+// Typed storage helpers. `Lazy`/`Mapping` are the declarable field types for
+// `#[slot(N)]` fields on the contract struct.
+pub use pvm_storage::{AsStorageKey, Lazy, Mapping, StorageKey};
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_storage::StorageLayoutType;
@@ -116,7 +115,10 @@ pub use pvm_storage::StorageLayoutType;
 pub use pvm_contract_types::Bytes;
 
 #[cfg(feature = "abi-gen")]
-pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, abi_to_json, parse_type_str};
+pub use pvm_contract_types::{
+    AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json, parse_type_str,
+    storage_layout_to_json,
+};
 
 #[cfg(feature = "std")]
 pub use pvm_contract_types::{MockHost, MockHostBuilder};
