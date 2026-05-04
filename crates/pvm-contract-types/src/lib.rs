@@ -306,17 +306,16 @@ pub trait SolEncode {
     ///   followed by the body from [`encode_body_to`](SolEncode::encode_body_to).
     /// - **Static non-tuples**: body directly — no offset needed since the
     ///   size is known at compile time.
+    #[inline]
     fn encode_to(&self, buf: &mut [u8]) {
-        if Self::IS_TUPLE {
+        if Self::IS_TUPLE || !Self::IS_DYNAMIC {
             self.encode_body_to(buf);
-        } else if Self::IS_DYNAMIC {
+        } else {
             // Dynamic non-tuple: prepend a 32-byte offset pointer.
             // The offset value is always 32 (0x20) — "data starts at byte 32".
             buf[..24].fill(0);
             buf[24..32].copy_from_slice(&32u64.to_be_bytes());
             self.encode_body_to(&mut buf[32..]);
-        } else {
-            self.encode_body_to(buf);
         }
     }
 }
@@ -333,6 +332,7 @@ pub trait SolDecode: SolEncode + Sized {
     /// - Tuples (IS_TUPLE=true): decode body directly
     /// - Dynamic non-tuples: read offset pointer at position 0, decode body at offset
     /// - Static non-tuples: decode body directly
+    #[inline]
     fn decode(input: &[u8]) -> Self {
         if Self::IS_TUPLE || !Self::IS_DYNAMIC {
             Self::decode_at(input, 0)
@@ -348,6 +348,7 @@ pub trait SolDecode: SolEncode + Sized {
     fn decode_at(input: &[u8], offset: usize) -> Self;
 
     /// Tail decode helper used by dynamic container decoding.
+    #[inline(always)]
     fn decode_tail(input: &[u8], offset: usize) -> Self {
         Self::decode_at(input, offset)
     }
@@ -709,6 +710,7 @@ macro_rules! impl_static_type {
                 32
             }
 
+            #[inline]
             fn encode_body_to(&self, buf: &mut [u8]) {
                 $encode_fn(self, buf)
             }
@@ -719,6 +721,7 @@ macro_rules! impl_static_type {
         }
 
         impl SolDecode for $ty {
+            #[inline]
             fn decode_at(input: &[u8], offset: usize) -> Self {
                 $decode_fn(input, offset)
             }
@@ -1049,16 +1052,16 @@ impl<T: SolArrayElement + StaticEncodedLen, const N: usize> StaticEncodedLen for
 
 impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
     fn decode_at(input: &[u8], offset: usize) -> Self {
-        core::array::from_fn(|i| {
-            if T::IS_DYNAMIC {
+        if T::IS_DYNAMIC {
+            core::array::from_fn(|i| {
                 let ho = offset + i * T::SLOT_SIZE;
                 let field_offset =
                     u64::from_be_bytes(input[ho + 24..ho + 32].try_into().unwrap()) as usize;
                 T::decode_tail(input, offset + field_offset)
-            } else {
-                T::decode_at(input, offset + i * T::SLOT_SIZE)
-            }
-        })
+            })
+        } else {
+            core::array::from_fn(|i| T::decode_at(input, offset + i * T::SLOT_SIZE))
+        }
     }
 }
 
@@ -1087,11 +1090,13 @@ macro_rules! impl_tuple_sol {
             const HEAD_SIZE: usize = 0 $(+ $T::SLOT_SIZE)+;
             const IS_TUPLE: bool = true;
 
+            #[inline]
             fn encode_body_len(&self) -> usize {
                 Self::HEAD_SIZE
                     $(+ if $T::IS_DYNAMIC { self.$idx.encode_body_len() } else { 0 })+
             }
 
+            #[inline]
             fn encode_body_to(&self, buf: &mut [u8]) {
                 let mut __ho = 0usize;
                 let mut __to = Self::HEAD_SIZE;
@@ -1131,6 +1136,7 @@ macro_rules! impl_tuple_sol {
         impl<$($T: SolEncode),+> SolArrayElement for ($($T,)+) {}
 
         impl<$($T: SolDecode),+> SolDecode for ($($T,)+) {
+            #[inline]
             fn decode_at(input: &[u8], offset: usize) -> Self {
                 let mut __ho = offset;
                 ($(

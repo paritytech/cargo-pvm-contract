@@ -868,7 +868,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let revert_err = generate_revert_encoding_boundary(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
-                #(#decode_statements)*
+                #decode_statements
                 match #call_expr {
                     Ok(()) => {}
                     Err(e) => {
@@ -878,7 +878,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         } else {
             quote! {
-                #(#decode_statements)*
+                #decode_statements
                 #call_expr;
             }
         };

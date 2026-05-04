@@ -76,7 +76,7 @@ pub(super) struct ParamDecoding {
     /// `HostFnImpl::return_value` for constructors, or
     /// `host.return_value(REVERT, ...)` for dispatch arms).
     pub min_size_expr: TokenStream,
-    pub decode_statements: Vec<TokenStream>,
+    pub decode_statements: TokenStream,
     pub call_args: Vec<TokenStream>,
     /// True when decoding is non-empty (i.e. there are params to check/decode).
     pub has_params: bool,
@@ -86,26 +86,9 @@ pub(super) fn generate_param_decoding(
     param_names: &[syn::Ident],
     param_types: &[syn::Type],
 ) -> ParamDecoding {
-    let decodes = generate_decode_params(param_types);
+    let decode_statements = generate_decode_params(param_names, param_types);
     let min_size_expr = calculate_min_input_size(param_types);
     let has_params = !param_types.is_empty();
-
-    let offset_init = if has_params {
-        quote! { let mut __decode_offset: usize = 0; }
-    } else {
-        quote! {}
-    };
-
-    let decode_statements = std::iter::once(offset_init)
-        .chain(
-            param_names
-                .iter()
-                .zip(decodes.iter())
-                .map(|(name, decode)| {
-                    quote! { let #name = #decode; }
-                }),
-        )
-        .collect();
 
     let call_args = param_names
         .iter()
@@ -258,7 +241,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     let match_arm = quote! {
         #sel_ident => {
             #size_check
-            #(#decode_statements)*
+            #decode_statements
             #body
         }
     };
