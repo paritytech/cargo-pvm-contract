@@ -1328,6 +1328,30 @@ mod tests {
     }
 
     #[test]
+    fn run_until_halt_preserves_state_written_before_terminate() {
+        let host = MockHostBuilder::new().build();
+        let key = [7u8; 32];
+        let value = [42u8; 32];
+
+        let halt = host.run_until_halt(|| {
+            host.set_storage(StorageFlags::empty(), &key, &value);
+            host.terminate(&[0xCD; 20]);
+        });
+
+        assert_eq!(
+            halt,
+            Some(Halt::Terminate {
+                beneficiary: [0xCD; 20]
+            })
+        );
+        let mut buf = [0u8; 32];
+        let mut out = &mut buf[..];
+        let result = host.get_storage(StorageFlags::empty(), &key, &mut out);
+        assert!(result.is_ok());
+        assert_eq!(buf, value);
+    }
+
+    #[test]
     fn run_until_halt_rethrows_non_halt_panic() {
         let host = MockHostBuilder::new().build();
         // Suppress the default panic hook so the expected non-halt panic
