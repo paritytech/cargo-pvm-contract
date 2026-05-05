@@ -799,6 +799,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1030,6 +1032,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1233,6 +1237,8 @@ mod test {
                 pub struct InvalidCalldata {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
@@ -1474,6 +1480,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1682,6 +1690,8 @@ mod test {
                 pub struct InvalidCalldata {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
