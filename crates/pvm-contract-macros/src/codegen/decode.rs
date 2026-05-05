@@ -11,7 +11,9 @@ pub fn generate_decode_params(names: &[syn::Ident], types: &[syn::Type]) -> Toke
         quote! {}
     } else {
         quote! {
-            let (#(#names),*) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input);
+            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+                return revert(this);
+            };
         }
     }
 }

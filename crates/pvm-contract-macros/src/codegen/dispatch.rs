@@ -144,13 +144,7 @@ fn dispatch_size_check(has_params: bool, min_size_expr: &TokenStream) -> TokenSt
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                    this.host(),
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
-                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
-                );
-                #[allow(unreachable_code)]
-                return ::core::option::Option::Some(());
+                return revert(this);
             }
         }
     } else {
@@ -164,9 +158,7 @@ pub(super) fn boundary_size_check(has_params: bool, min_size_expr: &TokenStream)
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
-                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
+                return revert(this);
             }
         }
     } else {
@@ -279,7 +271,22 @@ pub fn generate_router(
         .iter()
         .map(|m| generate_dispatch_arm(m, use_alloc))
         .unzip();
-
+    let has_params = !methods.iter().all(|m| m.param_names.is_empty());
+    let revert = if has_params {
+        quote! {
+            fn revert(this: &mut #struct_name) -> ::core::option::Option<()> {
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                    this.host(),
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                );
+                #[allow(unreachable_code)]
+                return ::core::option::Option::Some(());
+            }
+        }
+    } else {
+        quote! {}
+    };
     let route_items = RouteItems {
         route_fn: quote! {
             #[allow(non_upper_case_globals, unreachable_code)]
@@ -289,6 +296,7 @@ pub fn generate_router(
                 input: &[u8],
             ) -> ::core::option::Option<()> {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                #revert
                 #(#selector_consts)*
 
                 match selector {

@@ -2,7 +2,7 @@
 #![no_std]
 
 use pvm_contract_sdk::U256;
-
+static STR: &str = "Something went horribly wrong!";
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;
@@ -14,6 +14,7 @@ mod my_token {
     pvm_contract_sdk::sol_revert_enum! {
         pub enum TokenError {
             InsufficientBalance(InsufficientBalance),
+            DecodeError(pvm_contract_sdk::DecodeError),
         }
     }
 
@@ -31,13 +32,13 @@ mod my_token {
         }
 
         #[pvm_contract_sdk::method]
-        pub fn total_supply(&self) -> U256 {
-            self.total_supply.get()
+        pub fn total_supply(&self) -> Result<U256, TokenError> {
+            Ok(self.total_supply.get()?)
         }
 
         #[pvm_contract_sdk::method]
-        pub fn balance_of(&self, account: Address) -> U256 {
-            self.balances.get(&account)
+        pub fn balance_of(&self, account: Address) -> Result<U256, TokenError> {
+            Ok(self.balances.get(&account)?)
         }
 
         #[pvm_contract_sdk::method]
@@ -45,14 +46,14 @@ mod my_token {
             let caller = self.caller();
 
             let mut sender_cell = self.balances.entry(&caller);
-            let sender_balance = sender_cell.get();
+            let sender_balance = sender_cell.get()?;
             if sender_balance < amount {
                 return Err(InsufficientBalance.into());
             }
             sender_cell.set(&(sender_balance - amount));
 
             let mut recipient_cell = self.balances.entry(&to);
-            let recipient_balance = recipient_cell.get();
+            let recipient_balance = recipient_cell.get()?;
             recipient_cell.set(&(recipient_balance + amount));
 
             Ok(())
@@ -61,10 +62,10 @@ mod my_token {
         #[pvm_contract_sdk::method]
         pub fn mint(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
             let mut recipient_cell = self.balances.entry(&to);
-            let new_balance = recipient_cell.get().saturating_add(amount);
+            let new_balance = recipient_cell.get()?.saturating_add(amount);
             recipient_cell.set(&new_balance);
 
-            let new_supply = self.total_supply.get().saturating_add(amount);
+            let new_supply = self.total_supply.get()?.saturating_add(amount);
             self.total_supply.set(&new_supply);
             Ok(())
         }

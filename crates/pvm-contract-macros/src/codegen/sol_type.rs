@@ -82,7 +82,7 @@ fn expand_static_sol_type(
         }
 
         impl ::pvm_contract_sdk::SolDecode for #name {
-            fn decode_at(input: &[u8], offset: usize) -> Self {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError>  {
                 #decode_body
             }
         }
@@ -126,11 +126,11 @@ fn expand_dynamic_sol_type(
         }
 
         impl ::pvm_contract_sdk::SolDecode for #name {
-            fn decode_at(input: &[u8], offset: usize) -> Self {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError> {
                 #decode_body
             }
 
-            fn decode_tail(input: &[u8], offset: usize) -> Self {
+            fn decode_tail(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError>  {
                 Self::decode_at(input, offset)
             }
         }
@@ -373,7 +373,7 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
                 pre_stmts.push(quote! {
                     let #tmp = {
-                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset);
+                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset)?;
                         __offset += <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
                         __val
                     };
@@ -396,7 +396,7 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
                 pre_stmts.push(quote! {
                     let #tmp = {
-                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset);
+                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset)?;
                         __offset += <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
                         __val
                     };
@@ -616,7 +616,7 @@ fn generate_dynamic_decode_body(
                 .collect();
 
             quote! {
-                Self { #(#field_decodes),* }
+                Ok(Self { #(#field_decodes),* })
             }
         }
         Fields::Unnamed(unnamed) => {
@@ -634,7 +634,7 @@ fn generate_dynamic_decode_body(
                 .collect();
 
             quote! {
-                Self(#(#field_decodes),*)
+                Ok(Self(#(#field_decodes),*))
             }
         }
         Fields::Unit => quote! { Self },
@@ -652,11 +652,11 @@ fn generate_dynamic_field_decode(
             let __field_offset =
                 u64::from_be_bytes(input[offset + __ho + 24..offset + __ho + 32].try_into().unwrap())
                     as usize;
-            <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)
+            <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)?
         }},
         Some(false) => quote! {{
             let __ho = #head_offset_expr;
-            <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)
+            <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)?
         }},
         None => quote! {{
             let __ho = #head_offset_expr;
@@ -664,9 +664,9 @@ fn generate_dynamic_field_decode(
                 let __field_offset =
                     u64::from_be_bytes(input[offset + __ho + 24..offset + __ho + 32].try_into().unwrap())
                         as usize;
-                <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)
+                <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)?
             } else {
-                <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)
+                <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)?
             }
         }},
     }

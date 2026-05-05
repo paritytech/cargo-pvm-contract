@@ -2,9 +2,11 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
-use pvm_contract_builder_dsl::pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen,
+};
 use pvm_contract_builder_dsl::ruint::aliases::U256;
+use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
 
 const ADD_SELECTOR: [u8; 4] = solidity_selector("add(uint32,uint32)");
 const MULTIPLY_SELECTOR: [u8; 4] = solidity_selector("multiply(uint64,uint64)");
@@ -48,8 +50,9 @@ pub extern "C" fn call() {
 }
 
 fn add_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u32::decode_at(input, 0);
-    let b = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = u32::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let b = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE)
+        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = a.wrapping_add(b);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -57,8 +60,9 @@ fn add_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handle
 }
 
 fn multiply_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u64::decode_at(input, 0);
-    let b = u64::decode_at(input, <u64 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = u64::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let b = u64::decode_at(input, <u64 as StaticEncodedLen>::ENCODED_SIZE)
+        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = a.wrapping_mul(b);
     let len = <u64 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -66,7 +70,7 @@ fn multiply_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> H
 }
 
 fn is_even_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0);
+    let n = u32::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = (n & 1) == 0;
     let len = <bool as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -74,7 +78,8 @@ fn is_even_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn negate_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let value = U256::decode_at(input, 0);
+    let value =
+        U256::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = !value + U256::from(1u8);
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -82,8 +87,9 @@ fn negate_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Han
 }
 
 fn max_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = U256::decode_at(input, 0);
-    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = U256::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE)
+        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = if a > b { a } else { b };
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -91,7 +97,8 @@ fn max_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handle
 }
 
 fn hash_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <[u8; 20]>::decode_at(input, 0);
+    let account = <[u8; 20]>::decode_at(input, 0)
+        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let mut bytes = [0u8; 32];
     bytes[12..].copy_from_slice(&account);
     let result = U256::from_be_bytes::<32>(bytes);
@@ -101,9 +108,8 @@ fn hash_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handl
 }
 
 fn sum3_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u32::decode_at(input, 0);
-    let b = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE);
-    let c = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE * 2);
+    let (a, b, c) = <(u32, u32, u32)>::decode(&input)
+        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = a.wrapping_add(b).wrapping_add(c);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -111,8 +117,8 @@ fn sum3_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handl
 }
 
 fn bit_and_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = U256::decode_at(input, 0);
-    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE);
+    let (a, b) =
+        <(u32, u32)>::decode(&input).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = a & b;
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -120,7 +126,8 @@ fn bit_and_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn is_zero_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let value = U256::decode_at(input, 0);
+    let (value) =
+        <U256>::decode(&input).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = value == U256::ZERO;
     let len = <bool as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -128,7 +135,7 @@ fn is_zero_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn increment_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0);
+    let n = u32::decode(input).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
     let result = n.wrapping_add(1);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);

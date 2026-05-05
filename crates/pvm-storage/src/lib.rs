@@ -278,7 +278,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     ///
     /// Returns the zero value for `T` if the slot was never written,
     /// matching Solidity's default-to-zero semantics.
-    pub fn get(&self) -> T {
+    pub fn get(&self) -> Result<T, pvm_contract_types::DecodeError> {
         let buf = storage_get_32(&self.host, self.key.as_bytes());
         T::decode(&buf)
     }
@@ -290,8 +290,10 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     ///
     /// Note: writing an all-zero value deletes the key (Solidity semantics),
     /// so `try_get()` returns `None` after writing zero.
-    pub fn try_get(&self) -> Option<T> {
-        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode(&buf))
+    pub fn try_get(&self) -> Result<T, pvm_contract_types::DecodeError> {
+        storage_try_get_32(&self.host, self.key.as_bytes())
+            .ok_or(pvm_contract_types::DecodeError::InvalidPayload)
+            .and_then(|buf| T::decode(&buf))
     }
 
     /// Write a value to storage.
@@ -358,12 +360,12 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
     /// Read the value at the given key.
     ///
     /// Returns the zero value if the key was never written.
-    pub fn get(&self, key: &K) -> V {
+    pub fn get(&self, key: &K) -> Result<V, pvm_contract_types::DecodeError> {
         Lazy::new(self.slot_of(key), self.host.clone()).get()
     }
 
     /// Read the value, returning `None` if the key was never written.
-    pub fn try_get(&self, key: &K) -> Option<V> {
+    pub fn try_get(&self, key: &K) -> Result<V, pvm_contract_types::DecodeError> {
         Lazy::new(self.slot_of(key), self.host.clone()).try_get()
     }
 

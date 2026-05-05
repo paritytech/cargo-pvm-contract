@@ -19,6 +19,7 @@ pub use abi_gen::{
     storage_layout_to_json,
 };
 
+use framework_errors::INVALID_CALLDATA;
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]
 pub use serde_json;
@@ -44,6 +45,28 @@ pub use i256::{I256, ParseI256Error};
 #[doc(hidden)]
 pub use const_format;
 pub use ruint::aliases::U256;
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub enum DecodeError {
+    InvalidString,
+    InvalidPayload,
+    InvalidLength,
+}
+
+impl SolError for DecodeError {
+    const SELECTOR: [u8; 4] = INVALID_CALLDATA;
+
+    const SIGNATURE: &'static str = framework_errors::NAMES[0];
+
+    fn encode_params(&self, _buf: &mut [u8]) -> usize {
+        0
+    }
+
+    fn encoded_size(&self) -> usize {
+        4
+    }
+}
 
 /// Fixed-size buffer for compile-time string concatenation.
 ///
@@ -333,7 +356,7 @@ pub trait SolDecode: SolEncode + Sized {
     /// - Dynamic non-tuples: read offset pointer at position 0, decode body at offset
     /// - Static non-tuples: decode body directly
     #[inline]
-    fn decode(input: &[u8]) -> Self {
+    fn decode(input: &[u8]) -> Result<Self, DecodeError> {
         if Self::IS_TUPLE || !Self::IS_DYNAMIC {
             Self::decode_at(input, 0)
         } else {
@@ -345,11 +368,11 @@ pub trait SolDecode: SolEncode + Sized {
     }
 
     /// Offset-based decode helper used by generated code and custom decoders.
-    fn decode_at(input: &[u8], offset: usize) -> Self;
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError>;
 
     /// Tail decode helper used by dynamic container decoding.
     #[inline(always)]
-    fn decode_tail(input: &[u8], offset: usize) -> Self {
+    fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
         Self::decode_at(input, offset)
     }
 }
@@ -722,7 +745,7 @@ macro_rules! impl_static_type {
 
         impl SolDecode for $ty {
             #[inline]
-            fn decode_at(input: &[u8], offset: usize) -> Self {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
                 $decode_fn(input, offset)
             }
         }
@@ -738,7 +761,11 @@ impl_static_type!(
     U256,
     "uint256",
     |val: &U256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes::<32>()),
-    |input: &[u8], offset: usize| U256::from_be_slice(&input[offset..offset + 32]),
+    |input: &[u8], offset: usize| Ok(U256::from_be_slice(
+        input
+            .get(offset..offset + 32)
+            .ok_or(DecodeError::InvalidPayload)?
+    )),
     array_element
 );
 
@@ -746,7 +773,11 @@ impl_static_type!(
     I256,
     "int256",
     |val: &I256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes()),
-    |input: &[u8], offset: usize| I256::from_be_slice(&input[offset..offset + 32]),
+    |input: &[u8], offset: usize| Ok(I256::from_be_slice(
+        input
+            .get(offset..offset + 32)
+            .ok_or(DecodeError::InvalidPayload)?
+    )),
     array_element
 );
 
@@ -758,8 +789,13 @@ impl_static_type!(
         buf[16..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
-        u128::from_be_bytes(bytes)
+        TryInto::<[u8; 16]>::try_into(
+            input
+                .get(offset + 16..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        )
+        .map_err(|_| DecodeError::InvalidPayload)
+        .map(|bytes| u128::from_be_bytes(bytes))
     },
     array_element
 );
@@ -772,8 +808,13 @@ impl_static_type!(
         buf[24..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
-        u64::from_be_bytes(bytes)
+        TryInto::<[u8; 8]>::try_into(
+            input
+                .get(offset + 24..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        )
+        .map_err(|_| DecodeError::InvalidPayload)
+        .map(|bytes| u64::from_be_bytes(bytes))
     },
     array_element
 );
@@ -786,8 +827,13 @@ impl_static_type!(
         buf[28..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
-        u32::from_be_bytes(bytes)
+        TryInto::<[u8; 4]>::try_into(
+            input
+                .get(offset + 28..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        )
+        .map_err(|_| DecodeError::InvalidPayload)
+        .map(|bytes| u32::from_be_bytes(bytes))
     },
     array_element
 );
@@ -799,7 +845,10 @@ impl_static_type!(
         buf[..30].fill(0);
         buf[30..32].copy_from_slice(&val.to_be_bytes());
     },
-    |input: &[u8], offset: usize| u16::from_be_bytes([input[offset + 30], input[offset + 31]]),
+    |input: &[u8], offset: usize| Ok(u16::from_be_bytes([
+        *input.get(offset + 30).ok_or(DecodeError::InvalidPayload)?,
+        *input.get(offset + 31).ok_or(DecodeError::InvalidPayload)?
+    ])),
     array_element
 );
 
@@ -810,7 +859,7 @@ impl_static_type!(
         buf[..31].fill(0);
         buf[31] = *val;
     },
-    |input: &[u8], offset: usize| input[offset + 31]
+    |input: &[u8], offset: usize| Ok(*input.get(offset + 31).ok_or(DecodeError::InvalidPayload)?)
 );
 
 impl_static_type!(
@@ -822,8 +871,13 @@ impl_static_type!(
         buf[16..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
-        i128::from_be_bytes(bytes)
+        TryInto::<[u8; 16]>::try_into(
+            input
+                .get(offset + 16..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        )
+        .map_err(|_| DecodeError::InvalidPayload)
+        .map(|bytes| i128::from_be_bytes(bytes))
     },
     array_element
 );
@@ -837,8 +891,13 @@ impl_static_type!(
         buf[24..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
-        i64::from_be_bytes(bytes)
+        TryInto::<[u8; 8]>::try_into(
+            input
+                .get(offset + 24..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        )
+        .map_err(|_| DecodeError::InvalidPayload)
+        .map(|bytes| i64::from_be_bytes(bytes))
     },
     array_element
 );
@@ -852,8 +911,13 @@ impl_static_type!(
         buf[28..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
-        i32::from_be_bytes(bytes)
+        TryInto::<[u8; 4]>::try_into(
+            input
+                .get(offset + 28..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        )
+        .map_err(|_| DecodeError::InvalidPayload)
+        .map(|bytes| i32::from_be_bytes(bytes))
     },
     array_element
 );
@@ -866,7 +930,10 @@ impl_static_type!(
         buf[..30].fill(fill);
         buf[30..32].copy_from_slice(&val.to_be_bytes());
     },
-    |input: &[u8], offset: usize| i16::from_be_bytes([input[offset + 30], input[offset + 31]]),
+    |input: &[u8], offset: usize| Ok(i16::from_be_bytes([
+        *input.get(offset + 30).ok_or(DecodeError::InvalidPayload)?,
+        *input.get(offset + 31).ok_or(DecodeError::InvalidPayload)?
+    ])),
     array_element
 );
 
@@ -878,7 +945,9 @@ impl_static_type!(
         buf[..31].fill(fill);
         buf[31] = *val as u8;
     },
-    |input: &[u8], offset: usize| input[offset + 31] as i8,
+    |input: &[u8], offset: usize| (*input.get(offset + 31).ok_or(DecodeError::InvalidPayload)?)
+        .try_into()
+        .map_err(|_| DecodeError::InvalidPayload),
     array_element
 );
 
@@ -889,7 +958,9 @@ impl_static_type!(
         buf[..31].fill(0);
         buf[31] = if *val { 1 } else { 0 };
     },
-    |input: &[u8], offset: usize| input[offset + 31] != 0,
+    |input: &[u8], offset: usize| Ok(
+        *input.get(offset + 31).ok_or(DecodeError::InvalidPayload)? != 0
+    ),
     array_element
 );
 
@@ -902,8 +973,12 @@ impl_static_type!(
     },
     |input: &[u8], offset: usize| {
         let mut result = [0u8; 20];
-        result.copy_from_slice(&input[offset + 12..offset + 32]);
-        Address(result)
+        result.copy_from_slice(
+            &input
+                .get(offset + 12..offset + 32)
+                .ok_or(DecodeError::InvalidPayload)?,
+        );
+        Ok(Address(result))
     },
     array_element
 );
@@ -943,7 +1018,9 @@ impl SolEncode for () {
 }
 
 impl SolDecode for () {
-    fn decode_at(_input: &[u8], _offset: usize) -> Self {}
+    fn decode_at(_input: &[u8], _offset: usize) -> Result<Self, DecodeError> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -979,11 +1056,15 @@ impl<const N: usize> StaticEncodedLen for [u8; N] {
 }
 
 impl<const N: usize> SolDecode for [u8; N] {
-    fn decode_at(input: &[u8], offset: usize) -> Self {
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
         const { assert!(N >= 1 && N <= 32, "bytesN only valid for N in 1..=32") };
         let mut result = [0u8; N];
-        result.copy_from_slice(&input[offset..offset + N]);
-        result
+        result.copy_from_slice(
+            &input
+                .get(offset..offset + N)
+                .ok_or(DecodeError::InvalidPayload)?,
+        );
+        Ok(result)
     }
 }
 
@@ -1051,17 +1132,26 @@ impl<T: SolArrayElement + StaticEncodedLen, const N: usize> StaticEncodedLen for
 }
 
 impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
-    fn decode_at(input: &[u8], offset: usize) -> Self {
-        if T::IS_DYNAMIC {
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
+        // array::try_from_fn is unstable
+        Ok(if T::IS_DYNAMIC {
             core::array::from_fn(|i| {
                 let ho = offset + i * T::SLOT_SIZE;
                 let field_offset =
                     u64::from_be_bytes(input[ho + 24..ho + 32].try_into().unwrap()) as usize;
-                T::decode_tail(input, offset + field_offset)
+                let Ok(res) = T::decode_tail(input, offset + field_offset) else {
+                    panic!("array::try_from_fn is unstable")
+                };
+                res
             })
         } else {
-            core::array::from_fn(|i| T::decode_at(input, offset + i * T::SLOT_SIZE))
-        }
+            core::array::from_fn(|i| {
+                let Ok(res) = T::decode_at(input, offset + i * T::SLOT_SIZE) else {
+                    panic!("array::try_from_fn is unstable")
+                };
+                res
+            })
+        })
     }
 }
 
@@ -1137,22 +1227,28 @@ macro_rules! impl_tuple_sol {
 
         impl<$($T: SolDecode),+> SolDecode for ($($T,)+) {
             #[inline]
-            fn decode_at(input: &[u8], offset: usize) -> Self {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
                 let mut __ho = offset;
-                ($(
+                Ok(($(
                     {
                         let __val = if $T::IS_DYNAMIC {
-                            let __fo = u64::from_be_bytes(
-                                input[__ho + 24..__ho + 32].try_into().unwrap(),
-                            ) as usize;
-                            $T::decode_tail(input, offset + __fo)
+                            let __fo =   TryInto::<[u8; 8]>::try_into(
+                                input
+                                    .get(__ho + 24..__ho + 32)
+                                    .ok_or(DecodeError::InvalidPayload)?,
+                            )
+                            .map_err(|_| DecodeError::InvalidPayload)
+                            .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+
+                            $T::decode_tail(input, offset + __fo)?
                         } else {
-                            $T::decode_at(input, __ho)
+                            $T::decode_at(input, __ho)?
                         };
                         __ho += $T::SLOT_SIZE;
                         __val
                     },
-                )+)
+                )+))
+
             }
         }
     };
