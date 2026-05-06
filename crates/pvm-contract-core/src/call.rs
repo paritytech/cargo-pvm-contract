@@ -142,12 +142,30 @@ impl Default for CallLimits {
 
 /// Call builder to construct and configure calls.
 /// depending on the [StateMutability] param can have additional methods.
+///
+/// ## Reentrancy
+///
+/// By default, pallet-revive rejects reentrant calls. If contract A calls
+/// contract B, B (and its callees) cannot call back into A. To opt in to
+/// reentrancy, use [`allow_reentry()`](CallBuilder::allow_reentry):
+///
+/// ```ignore
+/// let result = foo.bar()
+///     .allow_reentry()
+///     .call(self.host())?;
+/// ```
+///
+/// Only enable this when your contract is designed to handle callbacks
+/// (e.g., flash loans, ERC-777 hooks). The runtime protection exists to
+/// prevent the classic reentrancy attack where a callee re-enters the
+/// caller before state updates are complete.
 #[derive(Clone, Copy)]
 pub struct CallBuilder<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> {
     pub selector: [u8; 4],
     pub payload: Inputs,
     pub witness: Mutability,
     pub call_limits: CallLimits,
+    pub allow_reentry: bool,
     pub _ret: PhantomData<Outputs>,
 }
 
@@ -158,6 +176,7 @@ impl Default for CallBuilder<Pure, (), ()> {
             payload: (),
             witness: Pure,
             call_limits: Default::default(),
+            allow_reentry: false,
             _ret: PhantomData,
         }
     }
@@ -175,6 +194,20 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     /// Set call limits for the given call
     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
         self.call_limits = limits;
+        self
+    }
+
+    /// Allow the callee to re-enter this contract.
+    ///
+    /// Without this, pallet-revive rejects any call from the callee (or its
+    /// callees) back into the current contract. Enable only when the contract
+    /// is designed to handle callbacks safely.
+    ///
+    /// Applies to `call` and `call_raw` only. Delegate calls ignore this
+    /// flag because pallet-revive requires `ALLOW_REENTRY` to be unset for
+    /// delegate calls and returns `InvalidCallFlags` otherwise.
+    pub fn allow_reentry(mut self) -> Self {
+        self.allow_reentry = true;
         self
     }
 
@@ -293,7 +326,11 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         if input_buf.len() < 4 + self.payload.encode_len() {
             return Err(CallError::InputBufTooSmall);
         }
-        let call_flags = self.witness.call_flags();
+        let call_flags = if self.allow_reentry {
+            self.witness.call_flags() | CallFlags::ALLOW_REENTRY
+        } else {
+            self.witness.call_flags()
+        };
         let value = self.witness.value();
         input_buf[..4].copy_from_slice(&self.selector[..]);
         self.payload.encode_to(&mut input_buf[4..]);
@@ -350,9 +387,26 @@ mod test {
             payload: (),
             witness: super::Payable { value: None },
             call_limits: Default::default(),
+            allow_reentry: false,
             _ret: PhantomData::<()>,
         };
 
         let _ = builder.set_value(0);
+    }
+
+    #[test]
+    fn allow_reentry_sets_flag() {
+        let builder = CallBuilder {
+            selector: [0; 4],
+            payload: (),
+            witness: super::NonPayable,
+            call_limits: Default::default(),
+            allow_reentry: false,
+            _ret: PhantomData::<()>,
+        };
+
+        assert!(!builder.allow_reentry);
+        let builder = builder.allow_reentry();
+        assert!(builder.allow_reentry);
     }
 }
