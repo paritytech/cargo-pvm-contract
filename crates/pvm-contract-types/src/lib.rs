@@ -194,25 +194,20 @@ impl AsRef<[u8]> for Address {
 /// types like `Address` or `#[derive(SolType)]` structs for other semantics.
 pub trait SolArrayElement: SolEncode {}
 
+/// Computes keccak256 of arbitrary bytes at compile time.
+pub const fn const_keccak256(data: &[u8]) -> [u8; 32] {
+    keccak_const::Keccak256::new().update(data).finalize()
+}
+
 /// Computes the 4-byte Solidity function selector at compile time.
 pub const fn const_selector(sig: &str) -> [u8; 4] {
-    let hash = keccak_const::Keccak256::new()
-        .update(sig.as_bytes())
-        .finalize();
+    let hash = const_keccak256(sig.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
 }
 
-/// Computes the full 32-byte keccak256 hash of an event signature at compile time.
-pub const fn const_event_topic(sig: &str) -> [u8; 32] {
-    keccak_const::Keccak256::new()
-        .update(sig.as_bytes())
-        .finalize()
-}
-
-/// Computes keccak256 of arbitrary bytes. Used by `SolEvent` to hash dynamic
-/// indexed fields at runtime.
+/// Computes keccak256 of arbitrary bytes at runtime.
 pub fn keccak256(data: &[u8]) -> [u8; 32] {
-    keccak_const::Keccak256::new().update(data).finalize()
+    const_keccak256(data)
 }
 
 /// ABI-compatible parameterless custom errors for framework-level reverts.

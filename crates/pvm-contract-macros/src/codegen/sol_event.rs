@@ -249,13 +249,13 @@ fn build_topic_expr(event_name: &str, field_info: &[(Option<syn::Ident>, SolType
             .map(|(_, sol_type)| sol_type.canonical_name())
             .collect();
         let sig = format!("{}({})", event_name, field_types.join(","));
-        let hash = pvm_contract_types::const_event_topic(&sig);
+        let hash = pvm_contract_types::const_keccak256(sig.as_bytes());
         let bytes = hash.iter().map(|b| quote! { #b });
         return quote! { [#(#bytes),*] };
     }
 
     let sig_expr = build_signature_expr(event_name, field_info);
-    quote! { ::pvm_contract_types::const_event_topic(#sig_expr) }
+    quote! { ::pvm_contract_types::const_keccak256((#sig_expr).as_bytes()) }
 }
 
 fn generate_topics_body(
@@ -557,7 +557,7 @@ mod tests {
         let topic = build_topic_expr("Transfer", &fields);
         let topic_str = topic.to_string();
         assert!(
-            !topic_str.contains("const_event_topic"),
+            !topic_str.contains("const_keccak256"),
             "Known types should use literal topic: {topic_str}"
         );
     }
@@ -615,7 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn topic_for_custom_types_uses_const_event_topic() {
+    fn topic_for_custom_types_uses_const_keccak256() {
         let fields = vec![(
             Some(syn::parse_str("data").unwrap()),
             SolType::Custom("MyStruct".to_string()),
@@ -623,8 +623,8 @@ mod tests {
         let topic = build_topic_expr("MyEvent", &fields);
         let topic_str = topic.to_string();
         assert!(
-            topic_str.contains("const_event_topic"),
-            "Custom types should use const_event_topic: {topic_str}"
+            topic_str.contains("const_keccak256"),
+            "Custom types should use const_keccak256: {topic_str}"
         );
     }
 }

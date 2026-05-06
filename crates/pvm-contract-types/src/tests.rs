@@ -1777,15 +1777,15 @@ fn i256_display_matches_signed_decimal() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn const_event_topic_matches_keccak256() {
+fn const_keccak256_matches_keccak256() {
     use alloy_core::primitives::keccak256;
 
     let sig = "Transfer(address,address,uint256)";
     let expected = keccak256(sig.as_bytes());
-    let got = const_event_topic(sig);
+    let got = const_keccak256(sig.as_bytes());
     assert_eq!(
         got, expected.0,
-        "const_event_topic should match alloy keccak256"
+        "const_keccak256 should match alloy keccak256"
     );
 }
 
@@ -1800,7 +1800,7 @@ fn sol_event_transfer_topic0_is_signature_hash() {
     }
 
     impl SolEvent for Transfer {
-        const TOPIC: [u8; 32] = const_event_topic("Transfer(address,address,uint256)");
+        const TOPIC: [u8; 32] = const_keccak256(b"Transfer(address,address,uint256)");
         const NAME: &'static str = "Transfer";
         const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
         const INDEXED_COUNT: usize = 2;
@@ -1835,7 +1835,7 @@ fn sol_event_transfer_topics_pack_addresses_correctly() {
     }
 
     impl SolEvent for Transfer {
-        const TOPIC: [u8; 32] = const_event_topic("Transfer(address,address,uint256)");
+        const TOPIC: [u8; 32] = const_keccak256(b"Transfer(address,address,uint256)");
         const NAME: &'static str = "Transfer";
         const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
         const INDEXED_COUNT: usize = 2;
@@ -1887,7 +1887,7 @@ fn sol_event_transfer_data_encodes_non_indexed() {
     }
 
     impl SolEvent for Transfer {
-        const TOPIC: [u8; 32] = const_event_topic("Transfer(address,address,uint256)");
+        const TOPIC: [u8; 32] = const_keccak256(b"Transfer(address,address,uint256)");
         const NAME: &'static str = "Transfer";
         const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
         const INDEXED_COUNT: usize = 2;
@@ -1926,7 +1926,7 @@ fn sol_event_no_indexed_fields() {
     }
 
     impl SolEvent for Log {
-        const TOPIC: [u8; 32] = const_event_topic("Log(uint64)");
+        const TOPIC: [u8; 32] = const_keccak256(b"Log(uint64)");
         const NAME: &'static str = "Log";
         const SIGNATURE: &'static str = "Log(uint64)";
         const INDEXED_COUNT: usize = 0;

@@ -15,7 +15,7 @@ struct Transfer {
 
 #[test]
 fn topic0_matches_keccak256_of_signature() {
-    let expected = pvm_contract_types::const_event_topic("Transfer(address,address,uint256)");
+    let expected = pvm_contract_types::const_keccak256(b"Transfer(address,address,uint256)");
     assert_eq!(Transfer::TOPIC, expected);
 }
 
