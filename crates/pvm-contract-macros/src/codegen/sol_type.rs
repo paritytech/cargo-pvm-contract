@@ -113,6 +113,7 @@ fn expand_dynamic_sol_type(
             const IS_DYNAMIC: bool = #is_dynamic_expr;
             const SOL_NAME: &'static str = #sol_name_expr;
             const HEAD_SIZE: usize = #head_size_expr;
+            const IS_TUPLE: bool = true;
 
             fn encode_body_len(&self) -> usize {
                 #encode_len_body
