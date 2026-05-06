@@ -85,8 +85,9 @@ pub(super) struct ParamDecoding {
 pub(super) fn generate_param_decoding(
     param_names: &[syn::Ident],
     param_types: &[syn::Type],
+    unit_return: bool,
 ) -> ParamDecoding {
-    let decode_statements = generate_decode_params(param_names, param_types);
+    let decode_statements = generate_decode_params(param_names, param_types, unit_return);
     let min_size_expr = calculate_min_input_size(param_types);
     let has_params = !param_types.is_empty();
 
@@ -158,7 +159,9 @@ pub(super) fn boundary_size_check(has_params: bool, min_size_expr: &TokenStream)
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                return revert(this);
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
             }
         }
     } else {
@@ -171,7 +174,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     let const_def = build_selector_const(method);
 
     let fn_name = &method.fn_name;
-    let decoding = generate_param_decoding(&method.param_names, &method.param_types);
+    let decoding = generate_param_decoding(&method.param_names, &method.param_types, false);
     let ParamDecoding {
         min_size_expr,
         decode_statements,
@@ -271,22 +274,7 @@ pub fn generate_router(
         .iter()
         .map(|m| generate_dispatch_arm(m, use_alloc))
         .unzip();
-    let has_params = !methods.iter().all(|m| m.param_names.is_empty());
-    let revert = if has_params {
-        quote! {
-            fn revert(this: &mut #struct_name) -> ::core::option::Option<()> {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                    this.host(),
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
-                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
-                );
-                #[allow(unreachable_code)]
-                return ::core::option::Option::Some(());
-            }
-        }
-    } else {
-        quote! {}
-    };
+
     let route_items = RouteItems {
         route_fn: quote! {
             #[allow(non_upper_case_globals, unreachable_code)]
@@ -296,7 +284,6 @@ pub fn generate_router(
                 input: &[u8],
             ) -> ::core::option::Option<()> {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
-                #revert
                 #(#selector_consts)*
 
                 match selector {

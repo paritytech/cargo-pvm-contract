@@ -6,14 +6,27 @@ use quote::quote;
 /// Each expression reads from `input` at `__decode_offset` and advances
 /// `__decode_offset` by the type's `HEAD_SIZE`. The caller must emit
 /// `let mut __decode_offset: usize = 0;` before using these.
-pub fn generate_decode_params(names: &[syn::Ident], types: &[syn::Type]) -> TokenStream {
+pub fn generate_decode_params(
+    names: &[syn::Ident],
+    types: &[syn::Type],
+    unit_return: bool,
+) -> TokenStream {
     if names.is_empty() {
         quote! {}
     } else {
-        quote! {
-            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
-                return revert(this);
-            };
+        if unit_return {
+            quote! {
+                let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+                     revert(this);
+                     return();
+                };
+            }
+        } else {
+            quote! {
+                let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+                    return revert(this);
+                };
+            }
         }
     }
 }

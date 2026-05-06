@@ -323,8 +323,8 @@ fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenS
         }
 
         impl SolDecode for #name {
-            fn decode_at(input: &[u8], offset: usize) -> Self {
-                #typ::decode_at(input, offset).into()
+            fn decode_at(input: &[u8], offset: usize) -> Result<#name, DecodeError> {
+                #typ::decode_at(input, offset).map(|x| x.into())
             }
         }
     }
@@ -1938,8 +1938,8 @@ mod test {
                 const ENCODED_SIZE: usize = 32;
             }
             impl SolDecode for Example {
-                fn decode_at(input: &[u8], offset: usize) -> Self {
-                    U256::decode_at(input, offset).into()
+                fn decode_at(input: &[u8], offset: usize) -> Result<Example, DecodeError> {
+                    U256::decode_at(input, offset).map(|x| x.into())
                 }
             }
             #[derive(SolType, PartialEq, Eq, Debug)]

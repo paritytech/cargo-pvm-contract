@@ -28,7 +28,8 @@ mod constructor_args {
             let addr: [u8; 20] = owner.into();
             let mut buf = [0u8; 32];
             buf[12..32].copy_from_slice(&addr);
-            self.host().set_storage(StorageFlags::empty(), &OWNER_KEY, &buf);
+            self.host()
+                .set_storage(StorageFlags::empty(), &OWNER_KEY, &buf);
             self.host().set_storage(
                 StorageFlags::empty(),
                 &SUPPLY_KEY,
@@ -58,7 +59,10 @@ mod constructor_args {
         fn read_slot(&self, key: &[u8; 32]) -> [u8; 32] {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host().get_storage(StorageFlags::empty(), key, &mut out) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), key, &mut out)
+            {
                 Ok(_) => buf,
                 Err(_) => [0u8; 32],
             }
