@@ -15,11 +15,8 @@ use crate::signature::SolType;
 /// - Static primitives (address, uintN, bool, bytesN): encoded directly into the topic slot.
 /// - Dynamic primitives (string, bytes): `keccak256(raw_bytes)`.
 /// - Arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
-/// - Custom types (type aliases): resolved at compile time via `indexed_topic()`.
-///   Aliases to primitives encode directly. Aliases to dynamic types hash.
-///   Custom structs (from `#[derive(SolType)]`) that fit in 32 bytes will use
-///   direct encoding rather than Solidity's `keccak256(abi.encode(value))`
-///   convention for indexed structs. This is a known limitation.
+/// - Custom/alias types: rejected at compile time. Use the concrete
+///   Solidity-mapped type directly (e.g. `Address` instead of `type Owner = Address`).
 ///
 /// Anonymous events are supported via `#[anonymous]` on the struct. Anonymous
 /// events skip topic\[0\] (the signature hash) and allow up to 4 indexed fields.
@@ -77,6 +74,28 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
                 }
             ),
         ));
+    }
+
+    // Reject #[indexed] on custom/alias types. The proc macro cannot
+    // distinguish type aliases (type Owner = Address) from actual custom
+    // structs (#[derive(SolType)]). For aliases, indexed_topic() would
+    // produce correct output, but for custom structs it produces topics
+    // incompatible with Solidity (direct encoding instead of
+    // keccak256(abi.encode(value))), and dynamic custom structs panic at
+    // runtime. Reject all Custom types to guarantee correctness.
+    if let Fields::Named(named) = fields {
+        for (i, field) in named.named.iter().enumerate() {
+            if !indexed_flags[i] {
+                continue;
+            }
+            if matches!(field_info[i].1, SolType::Custom(_)) {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "#[indexed] does not support custom/alias types; \
+                     use the concrete Solidity-mapped type directly",
+                ));
+            }
+        }
     }
 
     let sig_expr = build_signature_expr(&name_str, &field_info);
@@ -287,8 +306,7 @@ fn generate_indexed_topic_pack(
     rust_type: &syn::Type,
 ) -> TokenStream {
     // Arrays, fixed arrays, and tuples use keccak256(abi.encode(value)) per Solidity spec.
-    // Custom types use indexed_topic() which handles both type aliases to primitives
-    // (direct encoding) and aliases to dynamic types (keccak via override).
+    // Custom types are rejected at validation time, so only primitives reach the else branch.
     let needs_abi_encode_hash = matches!(
         sol_type,
         SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_)
@@ -577,12 +595,11 @@ mod tests {
         assert!(expand_sol_event(input).is_ok());
     }
 
-    // Custom-typed indexed fields use indexed_topic() (direct encoding), not
-    // keccak256(abi.encode(value)). This is correct for type aliases to primitives
-    // (like `type Owner = Address`). Custom structs that fit in 32 bytes will
-    // produce topics that don't match Solidity's hashing convention.
+    // Custom/alias types are rejected as indexed fields. The proc macro
+    // cannot distinguish type aliases from actual custom structs, so all
+    // Custom types are rejected to guarantee correctness.
     #[test]
-    fn accepts_indexed_custom_type_at_derive_time() {
+    fn rejects_indexed_custom_type() {
         let input: DeriveInput = syn::parse_str(
             r#"struct Ownership {
                 #[indexed] inner: MyAlias,
@@ -590,7 +607,11 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert!(expand_sol_event(input).is_ok());
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(
+            err.contains("custom/alias"),
+            "should reject indexed custom types: {err}"
+        );
     }
 
     #[test]

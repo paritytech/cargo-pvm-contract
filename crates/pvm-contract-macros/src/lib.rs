@@ -1127,10 +1127,8 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 /// signature hash is computed at compile time as topic0 (skipped for `#[anonymous]`).
 ///
 /// Indexed arrays, fixed arrays, and tuples use `keccak256(abi.encode(value))`.
-/// Type aliases to primitives work as indexed fields. Custom structs from
-/// `#[derive(SolType)]` used as indexed fields are a known limitation: static
-/// structs that fit in 32 bytes produce direct encoding (not Solidity-compatible
-/// hashing), and dynamic structs will panic at runtime.
+/// Custom and alias types (e.g. `type Owner = Address`) are not supported as
+/// indexed fields. Use the concrete Solidity-mapped type directly.
 ///
 /// # Example
 ///

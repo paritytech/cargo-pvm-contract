@@ -423,13 +423,10 @@ Arrays, fixed arrays, and tuples: the topic is `keccak256(abi.encode(value))`.
 The full ABI encoding is hashed, matching Solidity's convention for indexed
 reference types.
 
-Custom types (type aliases like `type Owner = Address`): resolved via
-`indexed_topic()` at compile time. Aliases to primitives encode correctly.
-Custom structs from `#[derive(SolType)]` that fit in 32 bytes use direct
-encoding rather than Solidity's `keccak256(abi.encode(value))` convention.
-Dynamic custom structs will panic at runtime. This is a known limitation.
-Composite static structs (`HEAD_SIZE > 32`) are rejected by a compile-time
-assertion on `SolEncode`.
+Custom and alias types (e.g. `type Owner = Address`) are not supported as
+indexed fields. The proc macro cannot distinguish type aliases from custom
+structs at expansion time, so all custom types are rejected to guarantee
+correctness. Use the concrete Solidity-mapped type directly.
 
 ### Canonical Signature
 

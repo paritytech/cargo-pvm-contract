@@ -441,50 +441,29 @@ mod alloy_decode_roundtrip_mixed {
     }
 }
 
+// Custom/alias types are rejected as indexed fields by design.
+// The proc macro cannot distinguish type aliases from custom structs,
+// so all Custom types are rejected to guarantee correctness.
+
+// Note: alias types still work as non-indexed fields. Only #[indexed]
+// on a custom/alias type is rejected.
+
 type Owner = Address;
 
 #[derive(SolEvent)]
-struct Ownership {
-    #[indexed]
+struct OwnershipNonIndexed {
     owner: Owner,
     value: U256,
 }
 
 #[test]
-fn alias_to_static_primitive_is_accepted_and_right_aligned() {
-    let event = Ownership {
+fn alias_as_non_indexed_field_is_accepted() {
+    let event = OwnershipNonIndexed {
         owner: Address([0xCC; 20]),
         value: U256::from(1u64),
     };
-    let topics = event.topics();
-    assert_eq!(topics.len(), 2);
-    assert_eq!(&topics[1][..12], &[0u8; 12]);
-    assert_eq!(&topics[1][12..], &[0xCC; 20]);
-    assert_eq!(Ownership::SIGNATURE, "Ownership(address,uint256)");
-}
-
-type TagAlias = alloc::string::String;
-
-#[derive(SolEvent)]
-struct AliasedTag {
-    #[indexed]
-    tag: TagAlias,
-    value: U256,
-}
-
-#[test]
-fn alias_to_dynamic_primitive_hashes_raw_bytes() {
-    use alloc::string::ToString;
-
-    let event = AliasedTag {
-        tag: "category-A".to_string(),
-        value: U256::from(7u64),
-    };
-    let topics = event.topics();
-    assert_eq!(topics.len(), 2);
-
-    let expected = alloy_core::primitives::keccak256("category-A".as_bytes()).0;
-    assert_eq!(topics[1], expected);
+    let data = event.data();
+    assert!(!data.is_empty());
 }
 
 // ---------------------------------------------------------------------------
