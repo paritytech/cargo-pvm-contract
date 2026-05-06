@@ -1122,9 +1122,9 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 /// Derive the [`SolEvent`] trait for a struct, enabling Solidity-compatible
 /// event emission with automatic topic hashing and indexed field packing.
 ///
-/// Fields marked with `#[indexed]` become log topics (max 3). Remaining fields
-/// are ABI-encoded as the log data blob. The event signature hash is computed
-/// at compile time as topic0.
+/// Fields marked with `#[indexed]` become log topics (max 3, or 4 for anonymous
+/// events). Remaining fields are ABI-encoded as the log data blob. The event
+/// signature hash is computed at compile time as topic0 (skipped for `#[anonymous]`).
 ///
 /// # Example
 ///
@@ -1163,7 +1163,7 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 ///     }
 /// }
 /// ```
-#[proc_macro_derive(SolEvent, attributes(indexed))]
+#[proc_macro_derive(SolEvent, attributes(indexed, anonymous))]
 pub fn sol_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 

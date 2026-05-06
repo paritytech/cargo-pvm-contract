@@ -21,9 +21,8 @@ use crate::signature::SolType;
 ///   direct encoding rather than Solidity's `keccak256(abi.encode(value))`
 ///   convention for indexed structs. This is a known limitation.
 ///
-/// Limitations:
-/// - Anonymous events are not supported. The derive always emits
-///   `anonymous: false` in the ABI and pushes the signature hash as topic[0].
+/// Anonymous events are supported via `#[anonymous]` on the struct. Anonymous
+/// events skip topic\[0\] (the signature hash) and allow up to 4 indexed fields.
 pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
     let name_str = name.to_string();
@@ -47,22 +46,47 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     let indexed_flags = collect_indexed_flags(fields)?;
     let field_info = extract_field_info(fields)?;
 
+    let is_anonymous = {
+        let mut found = false;
+        for attr in &input.attrs {
+            if attr.path().is_ident("anonymous") {
+                if !matches!(attr.meta, syn::Meta::Path(_)) {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "#[anonymous] takes no arguments",
+                    ));
+                }
+                found = true;
+            }
+        }
+        found
+    };
+
     let indexed_count = indexed_flags.iter().filter(|&&b| b).count();
-    if indexed_count > 3 {
+    let max_indexed = if is_anonymous { 4 } else { 3 };
+    if indexed_count > max_indexed {
         return Err(syn::Error::new_spanned(
             name,
-            "SolEvent supports at most 3 #[indexed] fields (EVM limit: 4 topics including topic0)",
+            format!(
+                "SolEvent supports at most {} #[indexed] fields{}",
+                max_indexed,
+                if is_anonymous {
+                    " (anonymous event: 4 topics)"
+                } else {
+                    " (EVM limit: 4 topics including topic0)"
+                }
+            ),
         ));
     }
-
 
     let sig_expr = build_signature_expr(&name_str, &field_info);
     let topic_expr = build_topic_expr(&name_str, &field_info);
     let indexed_count_lit = indexed_count;
 
-    let topics_body = generate_topics_body(fields, &field_info, &indexed_flags);
+    let topics_body = generate_topics_body(fields, &field_info, &indexed_flags, is_anonymous);
     let data_body = generate_data_body(fields, &field_info, &indexed_flags);
-    let abi_entry_expr = build_abi_entry_expr(&name_str, fields, &field_info, &indexed_flags);
+    let abi_entry_expr =
+        build_abi_entry_expr(&name_str, fields, &field_info, &indexed_flags, is_anonymous);
 
     Ok(quote! {
         impl #name {
@@ -95,6 +119,7 @@ fn build_abi_entry_expr(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
     indexed_flags: &[bool],
+    is_anonymous: bool,
 ) -> TokenStream {
     let mut parts: Vec<TokenStream> = Vec::new();
 
@@ -133,7 +158,12 @@ fn build_abi_entry_expr(
         }
     }
 
-    parts.push(quote! { "],\"anonymous\":false}" });
+    let anon_str = if is_anonymous {
+        "],\"anonymous\":true}"
+    } else {
+        "],\"anonymous\":false}"
+    };
+    parts.push(quote! { #anon_str });
 
     quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
 }
@@ -213,9 +243,14 @@ fn generate_topics_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
     indexed_flags: &[bool],
+    is_anonymous: bool,
 ) -> TokenStream {
     let indexed_count = indexed_flags.iter().filter(|&&b| b).count();
-    let capacity = indexed_count + 1;
+    let capacity = if is_anonymous {
+        indexed_count
+    } else {
+        indexed_count + 1
+    };
 
     let mut topic_pushes = Vec::new();
 
@@ -232,9 +267,15 @@ fn generate_topics_body(
         }
     }
 
+    let topic0_push = if is_anonymous {
+        quote! {}
+    } else {
+        quote! { __topics.push(Self::TOPIC); }
+    };
+
     quote! {
         let mut __topics = alloc::vec::Vec::with_capacity(#capacity);
-        __topics.push(Self::TOPIC);
+        #topic0_push
         #(#topic_pushes)*
         __topics
     }
@@ -402,6 +443,40 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("3"), "Should mention the limit: {err}");
+    }
+
+    #[test]
+    fn anonymous_allows_four_indexed() {
+        let input: DeriveInput = syn::parse_str(
+            r#"
+            #[anonymous]
+            struct Anon {
+                #[indexed] a: Address,
+                #[indexed] b: Address,
+                #[indexed] c: Address,
+                #[indexed] d: Address,
+            }"#,
+        )
+        .unwrap();
+        assert!(expand_sol_event(input).is_ok());
+    }
+
+    #[test]
+    fn anonymous_rejects_five_indexed() {
+        let input: DeriveInput = syn::parse_str(
+            r#"
+            #[anonymous]
+            struct Anon {
+                #[indexed] a: Address,
+                #[indexed] b: Address,
+                #[indexed] c: Address,
+                #[indexed] d: Address,
+                #[indexed] e: Address,
+            }"#,
+        )
+        .unwrap();
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(err.contains("4"), "Should mention the limit of 4: {err}");
     }
 
     #[test]

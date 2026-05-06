@@ -557,3 +557,71 @@ fn indexed_tuple_topic_matches_alloy_keccak_abi_encode() {
         "indexed tuple topic must match keccak256(abi.encode(pair))"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Anonymous events
+// ---------------------------------------------------------------------------
+
+#[derive(SolEvent)]
+#[anonymous]
+struct AnonymousDeposit {
+    #[indexed]
+    who: Address,
+    amount: U256,
+}
+
+#[test]
+fn anonymous_event_skips_topic0() {
+    let event = AnonymousDeposit {
+        who: Address([0xAA; 20]),
+        amount: U256::from(500u64),
+    };
+    let topics = event.topics();
+    // Anonymous events have no signature topic, just indexed fields
+    assert_eq!(
+        topics.len(),
+        1,
+        "anonymous event should have 1 topic (no topic0)"
+    );
+    // The single topic is the indexed address, right-aligned
+    assert_eq!(&topics[0][..12], &[0u8; 12]);
+    assert_eq!(&topics[0][12..], &[0xAA; 20]);
+}
+
+#[test]
+fn anonymous_event_abi_entry_has_anonymous_true() {
+    let abi = AnonymousDeposit::ABI_ENTRY;
+    assert!(
+        abi.contains("\"anonymous\":true"),
+        "anonymous event ABI should have anonymous:true, got: {abi}"
+    );
+}
+
+#[derive(SolEvent)]
+#[anonymous]
+struct AnonymousFourIndexed {
+    #[indexed]
+    a: Address,
+    #[indexed]
+    b: Address,
+    #[indexed]
+    c: Address,
+    #[indexed]
+    d: Address,
+}
+
+#[test]
+fn anonymous_event_allows_four_indexed_fields() {
+    let event = AnonymousFourIndexed {
+        a: Address([0x01; 20]),
+        b: Address([0x02; 20]),
+        c: Address([0x03; 20]),
+        d: Address([0x04; 20]),
+    };
+    let topics = event.topics();
+    assert_eq!(
+        topics.len(),
+        4,
+        "anonymous event should allow 4 indexed fields"
+    );
+}
