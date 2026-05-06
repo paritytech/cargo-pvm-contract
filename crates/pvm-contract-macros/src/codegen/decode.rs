@@ -13,20 +13,18 @@ pub fn generate_decode_params(
 ) -> TokenStream {
     if names.is_empty() {
         quote! {}
+    } else if unit_return {
+        quote! {
+            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+                 revert(this);
+                 return();
+            };
+        }
     } else {
-        if unit_return {
-            quote! {
-                let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
-                     revert(this);
-                     return();
-                };
-            }
-        } else {
-            quote! {
-                let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
-                    return revert(this);
-                };
-            }
+        quote! {
+            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+                return revert(this);
+            };
         }
     }
 }
