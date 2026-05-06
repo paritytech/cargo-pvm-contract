@@ -799,11 +799,13 @@ macro_rules! sol_revert_enum {
 ///
 /// # Topic layout
 ///
-/// - `topics()[0]` is always `keccak256(SIGNATURE)` (the event selector).
+/// - `topics()[0]` is `keccak256(SIGNATURE)` (skipped for anonymous events).
 /// - `topics()[1..=3]` are the indexed fields, packed into 32-byte slots:
 ///   - Static types (address, uintN, bool, bytesN): ABI-encoded directly.
-///   - Dynamic types (string, bytes, arrays): `keccak256(abi_encode(value))`.
-/// - Maximum 3 indexed fields (4 topics total including the selector).
+///   - Dynamic primitives (string, bytes): `keccak256(raw_bytes)`.
+///   - Arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
+/// - Maximum 3 indexed fields (4 topics including the selector), or 4 for
+///   anonymous events (no selector topic).
 ///
 /// # Data layout
 ///

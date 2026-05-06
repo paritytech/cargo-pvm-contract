@@ -559,6 +559,36 @@ fn indexed_tuple_topic_matches_alloy_keccak_abi_encode() {
 }
 
 // ---------------------------------------------------------------------------
+// Parameterless events
+// ---------------------------------------------------------------------------
+
+#[derive(SolEvent)]
+struct Paused;
+
+#[test]
+fn parameterless_event_has_only_topic0() {
+    let event = Paused;
+    let topics = event.topics();
+    assert_eq!(
+        topics.len(),
+        1,
+        "parameterless event should have only topic0"
+    );
+    assert_eq!(topics[0], Paused::TOPIC);
+
+    let data = event.data();
+    assert!(
+        data.is_empty(),
+        "parameterless event should have empty data"
+    );
+}
+
+#[test]
+fn parameterless_event_signature() {
+    assert_eq!(Paused::SIGNATURE, "Paused()");
+}
+
+// ---------------------------------------------------------------------------
 // Anonymous events
 // ---------------------------------------------------------------------------
 

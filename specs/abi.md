@@ -418,9 +418,10 @@ raw payload hashed directly, with no length prefix or ABI wrapper. The raw
 value is not recoverable from the topic; indexed dynamic fields are for
 filtering only.
 
-Arrays, fixed arrays, and tuples are rejected as indexed fields at derive
-time. Composite static structs (`HEAD_SIZE > 32`) are rejected by a
-compile-time assertion on `SolEncode`.
+Arrays, fixed arrays, and tuples: the topic is `keccak256(abi.encode(value))`.
+The full ABI encoding is hashed, matching Solidity's convention for indexed
+reference types. Composite static structs (`HEAD_SIZE > 32`) are rejected by
+a compile-time assertion on `SolEncode`.
 
 ### Canonical Signature
 
