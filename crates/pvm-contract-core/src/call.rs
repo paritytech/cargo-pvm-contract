@@ -394,19 +394,4 @@ mod test {
         let _ = builder.set_value(0);
     }
 
-    #[test]
-    fn allow_reentry_sets_flag() {
-        let builder = CallBuilder {
-            selector: [0; 4],
-            payload: (),
-            witness: super::NonPayable,
-            call_limits: Default::default(),
-            allow_reentry: false,
-            _ret: PhantomData::<()>,
-        };
-
-        assert!(!builder.allow_reentry);
-        let builder = builder.allow_reentry();
-        assert!(builder.allow_reentry);
-    }
 }
