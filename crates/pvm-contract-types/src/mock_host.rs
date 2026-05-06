@@ -667,7 +667,6 @@ impl MockHost {
 // Keccak-256 (minimal implementation for mock use)
 // ---------------------------------------------------------------------------
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
