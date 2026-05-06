@@ -9,7 +9,8 @@ use crate::signature::SolType;
 ///
 /// Requires an allocator (`topics()` and `data()` return `Vec`).
 /// Inside `#[contract]` modules with an allocator, `alloc` is already in scope.
-/// For standalone use, the generated code emits `extern crate alloc` in each method body.
+/// The generated code wraps the trait impl in `const _: () = { extern crate alloc; ... }`
+/// to scope the alloc import and avoid conflicts with user code.
 ///
 /// Indexed field handling:
 /// - Static primitives (address, uintN, bool, bytesN): encoded directly into the topic slot.
@@ -113,22 +114,26 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
             pub const ABI_ENTRY: &'static str = #abi_entry_expr;
         }
 
-        impl ::pvm_contract_sdk::SolEvent for #name {
-            const TOPIC: [u8; 32] = #topic_expr;
-            const NAME: &'static str = #name_str;
-            const SIGNATURE: &'static str = #sig_expr;
-            const INDEXED_COUNT: usize = #indexed_count_lit;
+        // Wrap in a const block to scope the `extern crate alloc` and
+        // avoid conflicts with other derives or user code.
+        const _: () = {
+            extern crate alloc;
 
-            fn topics(&self) -> alloc::vec::Vec<[u8; 32]> {
-                extern crate alloc;
-                #topics_body
-            }
+            impl ::pvm_contract_sdk::types::SolEvent for #name {
+                const TOPIC: [u8; 32] = #topic_expr;
+                const NAME: &'static str = #name_str;
+                const SIGNATURE: &'static str = #sig_expr;
+                const INDEXED_COUNT: usize = #indexed_count_lit;
 
-            fn data(&self) -> alloc::vec::Vec<u8> {
-                extern crate alloc;
-                #data_body
+                fn topics(&self) -> alloc::vec::Vec<[u8; 32]> {
+                    #topics_body
+                }
+
+                fn data(&self) -> alloc::vec::Vec<u8> {
+                    #data_body
+                }
             }
-        }
+        };
 
     })
 }
@@ -317,7 +322,6 @@ fn generate_indexed_topic_pack(
         // This handles arrays, fixed arrays, and tuples.
         quote! {
             {
-                extern crate alloc;
                 let __enc_len = <#rust_type as ::pvm_contract_sdk::SolEncode>::encode_len(&self.#field_name);
                 let mut __enc_buf = alloc::vec![0u8; __enc_len];
                 <#rust_type as ::pvm_contract_sdk::SolEncode>::encode_to(&self.#field_name, &mut __enc_buf);
