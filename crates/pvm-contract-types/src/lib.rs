@@ -46,7 +46,7 @@ pub use i256::{I256, ParseI256Error};
 pub use const_format;
 pub use ruint::aliases::U256;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DecodeError;
 
 impl SolError for DecodeError {
@@ -963,7 +963,7 @@ impl_static_type!(
     |input: &[u8], offset: usize| input
         .get(offset + 31)
         .copied()
-        .and_then(|x| Some(i8::from_be_bytes([x])))
+        .map(|x| i8::from_be_bytes([x]))
         .ok_or(DecodeError),
     array_element
 );
