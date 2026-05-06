@@ -279,17 +279,13 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         } else if line.starts_with("function ")
             || line.starts_with("constructor")
             || line.starts_with("error ")
+            || line.starts_with("event ")
         {
             if has_balanced_parens(line) {
                 try_parse_decl(line, &mut items);
             } else {
                 pending = Some(line.to_string());
             }
-        }
-        if line.starts_with("event ")
-            && let Some(evt) = parse_sol_event_line(line)
-        {
-            items.push(evt);
         }
     }
 
@@ -328,6 +324,10 @@ fn try_parse_decl(line: &str, items: &mut Vec<AbiItem>) {
         && let Some(err) = parse_sol_error_line(line)
     {
         items.push(err);
+    } else if line.starts_with("event ")
+        && let Some(evt) = parse_sol_event_line(line)
+    {
+        items.push(evt);
     }
 }
 
@@ -1365,6 +1365,40 @@ interface Token {{
         assert_eq!(inputs[1]["indexed"], false);
         assert_eq!(inputs[2]["name"], "newValue");
         assert_eq!(inputs[2]["type"], "uint256");
+        assert_eq!(inputs[2]["indexed"], false);
+    }
+
+    #[test]
+    fn generate_abi_from_sol_parses_multiline_events() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Events.sol");
+        let mut f = std::fs::File::create(&sol_path).unwrap();
+        writeln!(
+            f,
+            r#"interface IEvents {{
+    event Transfer(
+        address indexed from,
+        address indexed to,
+        uint256 value
+    );
+}}"#
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let json = serde_json::to_value(&abi).unwrap();
+        let arr = json.as_array().unwrap();
+
+        let event = arr.iter().find(|item| item["type"] == "event").unwrap();
+        assert_eq!(event["name"], "Transfer");
+
+        let inputs = event["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0]["name"], "from");
+        assert_eq!(inputs[0]["indexed"], true);
+        assert_eq!(inputs[1]["name"], "to");
+        assert_eq!(inputs[1]["indexed"], true);
+        assert_eq!(inputs[2]["name"], "value");
         assert_eq!(inputs[2]["indexed"], false);
     }
 }

@@ -401,9 +401,10 @@ Topics and data follow Solidity's event wire format.
 An event log consists of:
 
 - **Topics**: A list of 32-byte values, up to 4 entries.
-  - `topic0` is always `keccak256(canonical_signature)` (non-anonymous events).
-  - `topic1..topic3` are the ABI-packed values of fields marked `#[indexed]`.
-  - Maximum 3 indexed fields per event (4-topic EVM limit including topic0).
+  - Non-anonymous events: `topic0` is `keccak256(canonical_signature)`, followed
+    by up to 3 indexed field values.
+  - Anonymous events (`#[anonymous]`): no signature topic. Up to 4 indexed fields
+    occupy all available topic slots.
 - **Data**: ABI-encoded concatenation of the non-indexed fields, laid out as a
   flat tuple (head + tail, matching `(T1,T2,...)` encoding rules).
 
@@ -420,8 +421,15 @@ filtering only.
 
 Arrays, fixed arrays, and tuples: the topic is `keccak256(abi.encode(value))`.
 The full ABI encoding is hashed, matching Solidity's convention for indexed
-reference types. Composite static structs (`HEAD_SIZE > 32`) are rejected by
-a compile-time assertion on `SolEncode`.
+reference types.
+
+Custom types (type aliases like `type Owner = Address`): resolved via
+`indexed_topic()` at compile time. Aliases to primitives encode correctly.
+Custom structs from `#[derive(SolType)]` that fit in 32 bytes use direct
+encoding rather than Solidity's `keccak256(abi.encode(value))` convention.
+Dynamic custom structs will panic at runtime. This is a known limitation.
+Composite static structs (`HEAD_SIZE > 32`) are rejected by a compile-time
+assertion on `SolEncode`.
 
 ### Canonical Signature
 
