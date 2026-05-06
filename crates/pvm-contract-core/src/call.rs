@@ -393,5 +393,4 @@ mod test {
 
         let _ = builder.set_value(0);
     }
-
 }
