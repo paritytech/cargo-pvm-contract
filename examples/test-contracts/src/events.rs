@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Events.sol", allocator = "pico")]
 mod events {
     use super::*;
-    use pvm_contract_sdk::StorageFlags;
+    use pvm_contract_sdk::{SolEvent as _, StorageFlags};
 
     #[derive(pvm_contract_sdk::SolEvent)]
     pub struct ValueChanged {
