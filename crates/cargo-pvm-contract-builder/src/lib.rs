@@ -368,12 +368,9 @@ fn build_elf(
 
     eprintln!("Building PolkaVM binary with profile: {profile}");
 
-    let output = cmd.output().with_context(|| {
-        format!(
-            "Failed to spawn cargo build (cwd: {})",
-            work_dir.display()
-        )
-    })?;
+    let output = cmd
+        .output()
+        .with_context(|| format!("Failed to spawn cargo build (cwd: {})", work_dir.display()))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
