@@ -118,7 +118,7 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
 fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
     let to = <Address>::decode_at(input, 0).unwrap();
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE).unwrap();
 
     let recipient_key = balance_key(host, &to);
     let mut recipient_balance_bytes = [0u8; 32];
