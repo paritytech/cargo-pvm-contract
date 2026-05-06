@@ -178,10 +178,11 @@ pub fn build_contract(
     bins: &[String],
     message_format: Option<&str>,
 ) -> Result<()> {
+    let manifest_path = canonicalize_manifest(manifest_path)?;
     let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
     let build_dir = output_dir.join("pvmbuild");
 
-    build_elf(manifest_path, &build_dir, profile, bins, message_format)?;
+    build_elf(&manifest_path, &build_dir, profile, bins, message_format)?;
 
     let elf_dir = build_dir
         .join("riscv64emac-unknown-none-polkavm")
@@ -207,13 +208,14 @@ fn build_project(
     let profile = Profile::detect();
     let build_dir = get_build_dir();
     let target_root = get_target_root();
+    let project_cargo_toml = canonicalize_manifest(project_cargo_toml)?;
     let manifest_dir = project_cargo_toml
         .parent()
         .context("Invalid manifest path")?;
 
     let bins_to_build = match bin_names {
         Some(names) => names,
-        None => get_bin_targets(project_cargo_toml)?,
+        None => get_bin_targets(&project_cargo_toml)?,
     };
 
     if bins_to_build.is_empty() {
@@ -221,7 +223,7 @@ fn build_project(
     }
 
     build_elf(
-        project_cargo_toml,
+        &project_cargo_toml,
         &build_dir,
         &profile,
         &bins_to_build,
@@ -276,6 +278,19 @@ fn process_elf_binaries(
     }
 
     Ok(())
+}
+
+/// Resolve a `Cargo.toml` path to an absolute path so downstream `parent()`
+/// calls always yield a real working directory (not the empty `OsStr` returned
+/// for bare `"Cargo.toml"`, which would make `Command::current_dir` fail with
+/// ENOENT before cargo is even spawned).
+fn canonicalize_manifest(manifest_path: &Path) -> Result<PathBuf> {
+    manifest_path.canonicalize().with_context(|| {
+        format!(
+            "Could not canonicalize manifest path: {}",
+            manifest_path.display()
+        )
+    })
 }
 
 /// Build the ELF binary using cargo (shared by both CLI and build.rs paths).
@@ -353,7 +368,12 @@ fn build_elf(
 
     eprintln!("Building PolkaVM binary with profile: {profile}");
 
-    let output = cmd.output().context("Failed to execute cargo build")?;
+    let output = cmd.output().with_context(|| {
+        format!(
+            "Failed to spawn cargo build (cwd: {})",
+            work_dir.display()
+        )
+    })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
