@@ -15,14 +15,14 @@ pub fn generate_decode_params(
         quote! {}
     } else if unit_return {
         quote! {
-            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input,0) else {
                  revert(this);
                  return();
             };
         }
     } else {
         quote! {
-            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input) else {
+            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode_at(&input,0) else {
                 return revert(this);
             };
         }

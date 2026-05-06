@@ -258,6 +258,9 @@ fn dynamic_tuple_with_custom_roundtrip() {
 
     let mut buf = vec![0u8; 512];
     s.encode_to(&mut buf);
+    let repro = <((Point, String),) as SolDecode>::decode(&buf).unwrap();
+    // fails
+    assert_eq!(repro, ((s.pair.clone()),));
     let decoded = TupleCustomDynamic::decode(&buf).unwrap();
 
     assert_eq!(decoded, s);
