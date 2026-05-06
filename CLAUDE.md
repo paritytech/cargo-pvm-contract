@@ -288,9 +288,8 @@ PolkaVmHost::set_storage_or_clear(StorageFlags::empty(), &key, &data)
 
 pallet-revive rejects reentrant calls by default. When contract A calls contract B, B (and its callees) cannot call back into A. The runtime returns `ReentranceDenied` if reentrancy is attempted.
 
-Three protection levels exist at the runtime level:
-- **Strict** (default, `CallFlags::empty()`): callee and its recursive callees cannot re-enter the caller.
-- **AllowNext**: direct callee can be the same contract, but its callees cannot re-enter. Used for value transfers with stipend gas.
+Two modes are available to contracts:
+- **Default** (`CallFlags::empty()`): callee and its recursive callees cannot re-enter the caller.
 - **AllowReentry** (`CallFlags::ALLOW_REENTRY`): no restriction, callee can call back freely.
 
 ### Macro path (abi_import / CallBuilder)
