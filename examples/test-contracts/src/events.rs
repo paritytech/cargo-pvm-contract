@@ -2,18 +2,18 @@
 
 use pvm_contract_sdk::U256;
 
-#[derive(pvm_contract_sdk::SolEvent)]
-struct ValueChanged {
-    #[indexed]
-    who: pvm_contract_sdk::Address,
-    old_value: U256,
-    new_value: U256,
-}
-
 #[pvm_contract_sdk::contract("Events.sol", allocator = "pico")]
 mod events {
     use super::*;
     use pvm_contract_sdk::StorageFlags;
+
+    #[derive(pvm_contract_sdk::SolEvent)]
+    pub struct ValueChanged {
+        #[indexed]
+        pub who: pvm_contract_sdk::Address,
+        pub old_value: U256,
+        pub new_value: U256,
+    }
 
     const VALUE_KEY: [u8; 32] = [0u8; 32];
 

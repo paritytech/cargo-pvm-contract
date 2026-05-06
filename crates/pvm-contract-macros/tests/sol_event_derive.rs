@@ -486,3 +486,74 @@ fn alias_to_dynamic_primitive_hashes_raw_bytes() {
     let expected = alloy_core::primitives::keccak256("category-A".as_bytes()).0;
     assert_eq!(topics[1], expected);
 }
+
+// ---------------------------------------------------------------------------
+// Indexed array/tuple cross-checks against alloy
+// ---------------------------------------------------------------------------
+
+#[derive(SolEvent)]
+struct FixedArrayEvent {
+    #[indexed]
+    values: [u64; 3],
+    extra: U256,
+}
+
+#[test]
+fn indexed_fixed_array_topic_matches_alloy_keccak_abi_encode() {
+    use alloy_core::primitives::keccak256;
+    use alloy_core::sol_types::SolValue;
+
+    let event = FixedArrayEvent {
+        values: [10, 20, 30],
+        extra: U256::from(1u64),
+    };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2);
+
+    // Solidity: keccak256(abi.encode(values))
+    // alloy encodes [u64; 3] as three 32-byte words
+    let alloy_values: [alloy_core::primitives::U256; 3] = [
+        alloy_core::primitives::U256::from(10u64),
+        alloy_core::primitives::U256::from(20u64),
+        alloy_core::primitives::U256::from(30u64),
+    ];
+    let encoded = alloy_values.abi_encode();
+    let expected = keccak256(&encoded).0;
+
+    assert_eq!(
+        topics[1], expected,
+        "indexed fixed array topic must match keccak256(abi.encode(values))"
+    );
+}
+
+#[derive(SolEvent)]
+struct TupleEvent {
+    #[indexed]
+    pair: (u64, u64),
+    extra: U256,
+}
+
+#[test]
+fn indexed_tuple_topic_matches_alloy_keccak_abi_encode() {
+    use alloy_core::primitives::keccak256;
+    use alloy_core::sol_types::SolValue;
+
+    let event = TupleEvent {
+        pair: (100, 200),
+        extra: U256::from(1u64),
+    };
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2);
+
+    let alloy_tuple = (
+        alloy_core::primitives::U256::from(100u64),
+        alloy_core::primitives::U256::from(200u64),
+    );
+    let encoded = alloy_tuple.abi_encode();
+    let expected = keccak256(&encoded).0;
+
+    assert_eq!(
+        topics[1], expected,
+        "indexed tuple topic must match keccak256(abi.encode(pair))"
+    );
+}

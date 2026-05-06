@@ -124,11 +124,13 @@ pub use pvm_storage::StorageLayoutType;
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
 
+#[cfg(feature = "alloc")]
+pub use pvm_contract_types::SolEvent;
+
 #[cfg(feature = "abi-gen")]
 pub use pvm_contract_types::{
     AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
-    parse_type_str,
-    storage_layout_to_json,
+    parse_type_str, storage_layout_to_json,
 };
 
 #[cfg(feature = "std")]

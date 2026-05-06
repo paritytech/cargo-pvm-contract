@@ -5,6 +5,25 @@ use syn::{DeriveInput, Fields};
 use super::sol_type::{extract_field_info, sol_type_name_parts};
 use crate::signature::SolType;
 
+/// Expand `#[derive(SolEvent)]` into a `SolEvent` trait impl.
+///
+/// Requires an allocator (`topics()` and `data()` return `Vec`).
+/// Inside `#[contract]` modules with an allocator, `alloc` is already in scope.
+/// For standalone use, the generated code emits `extern crate alloc` in each method body.
+///
+/// Indexed field handling:
+/// - Static primitives (address, uintN, bool, bytesN): encoded directly into the topic slot.
+/// - Dynamic primitives (string, bytes): `keccak256(raw_bytes)`.
+/// - Arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
+/// - Custom types (type aliases): resolved at compile time via `indexed_topic()`.
+///   Aliases to primitives encode directly. Aliases to dynamic types hash.
+///   Custom structs (from `#[derive(SolType)]`) that fit in 32 bytes will use
+///   direct encoding rather than Solidity's `keccak256(abi.encode(value))`
+///   convention for indexed structs. This is a known limitation.
+///
+/// Limitations:
+/// - Anonymous events are not supported. The derive always emits
+///   `anonymous: false` in the ABI and pushes the signature hash as topic[0].
 pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
     let name_str = name.to_string();
@@ -36,7 +55,6 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
-    validate_indexed_field_types(fields, &indexed_flags, &field_info)?;
 
     let sig_expr = build_signature_expr(&name_str, &field_info);
     let topic_expr = build_topic_expr(&name_str, &field_info);
@@ -59,10 +77,12 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
             const INDEXED_COUNT: usize = #indexed_count_lit;
 
             fn topics(&self) -> alloc::vec::Vec<[u8; 32]> {
+                extern crate alloc;
                 #topics_body
             }
 
             fn data(&self) -> alloc::vec::Vec<u8> {
+                extern crate alloc;
                 #data_body
             }
         }
@@ -116,38 +136,6 @@ fn build_abi_entry_expr(
     parts.push(quote! { "],\"anonymous\":false}" });
 
     quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
-}
-
-fn validate_indexed_field_types(
-    fields: &Fields,
-    indexed_flags: &[bool],
-    field_info: &[(Option<syn::Ident>, SolType)],
-) -> syn::Result<()> {
-    let Fields::Named(named) = fields else {
-        return Ok(());
-    };
-
-    for (i, field) in named.named.iter().enumerate() {
-        if !indexed_flags[i] {
-            continue;
-        }
-        let sol_type = &field_info[i].1;
-        let unsupported = matches!(
-            sol_type,
-            SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_)
-        );
-        if unsupported {
-            return Err(syn::Error::new_spanned(
-                &field.ty,
-                format!(
-                    "SolEvent does not support `{}` as an indexed type. \
-                     Arrays, fixed arrays, and tuples cannot be indexed.",
-                    sol_type.canonical_name()
-                ),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn collect_indexed_flags(fields: &Fields) -> syn::Result<Vec<bool>> {
@@ -254,20 +242,43 @@ fn generate_topics_body(
 
 fn generate_indexed_topic_pack(
     field_name: &syn::Ident,
-    _sol_type: &SolType,
+    sol_type: &SolType,
     rust_type: &syn::Type,
 ) -> TokenStream {
-    quote! {
-        {
-            const _: () = assert!(
-                <#rust_type as ::pvm_contract_types::SolEncode>::IS_DYNAMIC
-                    || <#rust_type as ::pvm_contract_types::SolEncode>::HEAD_SIZE <= 32,
-                "SolEvent: #[indexed] static fields must fit in 32 bytes. \
-                 Use the underlying primitive, or remove #[indexed]."
-            );
-            __topics.push(
-                <#rust_type as ::pvm_contract_types::SolEncode>::indexed_topic(&self.#field_name)
-            );
+    // Arrays, fixed arrays, and tuples use keccak256(abi.encode(value)) per Solidity spec.
+    // Custom types use indexed_topic() which handles both type aliases to primitives
+    // (direct encoding) and aliases to dynamic types (keccak via override).
+    let needs_abi_encode_hash = matches!(
+        sol_type,
+        SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_)
+    );
+
+    if needs_abi_encode_hash {
+        // Solidity hashes indexed reference types via keccak256(abi.encode(value)).
+        // This handles arrays, fixed arrays, and tuples.
+        quote! {
+            {
+                extern crate alloc;
+                let __enc_len = <#rust_type as ::pvm_contract_types::SolEncode>::encode_len(&self.#field_name);
+                let mut __enc_buf = alloc::vec![0u8; __enc_len];
+                <#rust_type as ::pvm_contract_types::SolEncode>::encode_to(&self.#field_name, &mut __enc_buf);
+                __topics.push(::pvm_contract_types::keccak256(&__enc_buf));
+            }
+        }
+    } else {
+        // Static and dynamic primitives use indexed_topic() directly.
+        quote! {
+            {
+                const _: () = assert!(
+                    <#rust_type as ::pvm_contract_types::SolEncode>::IS_DYNAMIC
+                        || <#rust_type as ::pvm_contract_types::SolEncode>::HEAD_SIZE <= 32,
+                    "SolEvent: #[indexed] static fields must fit in 32 bytes. \
+                     Use the underlying primitive, or remove #[indexed]."
+                );
+                __topics.push(
+                    <#rust_type as ::pvm_contract_types::SolEncode>::indexed_topic(&self.#field_name)
+                );
+            }
         }
     }
 }
@@ -459,54 +470,42 @@ mod tests {
     }
 
     #[test]
-    fn rejects_indexed_dynamic_array() {
+    fn accepts_indexed_dynamic_array() {
         let input: DeriveInput = syn::parse_str(
-            r#"struct Bad {
+            r#"struct Ev {
                 #[indexed] items: Vec<u64>,
             }"#,
         )
         .unwrap();
-        let err = expand_sol_event(input).unwrap_err().to_string();
-        assert!(
-            err.contains("indexed") && err.contains("uint64[]"),
-            "Should reject Vec<_> indexed with a clear message: {err}"
-        );
+        assert!(expand_sol_event(input).is_ok());
     }
 
     #[test]
-    fn rejects_indexed_fixed_array() {
+    fn accepts_indexed_fixed_array() {
         let input: DeriveInput = syn::parse_str(
-            r#"struct Bad {
+            r#"struct Ev {
                 #[indexed] items: [u64; 3],
             }"#,
         )
         .unwrap();
-        let err = expand_sol_event(input).unwrap_err().to_string();
-        assert!(
-            err.contains("indexed") && err.contains("uint64[3]"),
-            "Should reject fixed array indexed with a clear message: {err}"
-        );
+        assert!(expand_sol_event(input).is_ok());
     }
 
     #[test]
-    fn rejects_indexed_tuple() {
+    fn accepts_indexed_tuple() {
         let input: DeriveInput = syn::parse_str(
-            r#"struct Bad {
+            r#"struct Ev {
                 #[indexed] pair: (u64, u64),
             }"#,
         )
         .unwrap();
-        let err = expand_sol_event(input).unwrap_err().to_string();
-        assert!(
-            err.contains("indexed") && err.contains("(uint64,uint64)"),
-            "Should reject tuple indexed with a clear message: {err}"
-        );
+        assert!(expand_sol_event(input).is_ok());
     }
 
-    // Custom-typed indexed fields pass derive-time validation because `Custom`
-    // also covers type aliases like `type Owner = Address;`. Incompatible
-    // custom types (dynamic, or composite > 32 bytes) are rejected by a
-    // `const _: () = assert!(...)` in the generated code.
+    // Custom-typed indexed fields use indexed_topic() (direct encoding), not
+    // keccak256(abi.encode(value)). This is correct for type aliases to primitives
+    // (like `type Owner = Address`). Custom structs that fit in 32 bytes will
+    // produce topics that don't match Solidity's hashing convention.
     #[test]
     fn accepts_indexed_custom_type_at_derive_time() {
         let input: DeriveInput = syn::parse_str(
