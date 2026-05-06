@@ -113,7 +113,7 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
             pub const ABI_ENTRY: &'static str = #abi_entry_expr;
         }
 
-        impl ::pvm_contract_types::SolEvent for #name {
+        impl ::pvm_contract_sdk::SolEvent for #name {
             const TOPIC: [u8; 32] = #topic_expr;
             const NAME: &'static str = #name_str;
             const SIGNATURE: &'static str = #sig_expr;
@@ -161,7 +161,7 @@ fn build_abi_entry_expr(
             if sol_type.has_custom_types() {
                 let field_ty = &field.ty;
                 parts.push(quote! {
-                    <#field_ty as ::pvm_contract_types::SolEncode>::SOL_NAME
+                    <#field_ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME
                 });
             } else {
                 let canonical = sol_type.canonical_name();
@@ -184,7 +184,7 @@ fn build_abi_entry_expr(
     };
     parts.push(quote! { #anon_str });
 
-    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 fn collect_indexed_flags(fields: &Fields) -> syn::Result<Vec<bool>> {
@@ -237,7 +237,7 @@ fn build_signature_expr(
     }
 
     parts.push(quote! { ")" });
-    quote! { ::pvm_contract_types::const_format::concatcp!(#(#parts),*) }
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 fn build_topic_expr(event_name: &str, field_info: &[(Option<syn::Ident>, SolType)]) -> TokenStream {
@@ -255,7 +255,7 @@ fn build_topic_expr(event_name: &str, field_info: &[(Option<syn::Ident>, SolType
     }
 
     let sig_expr = build_signature_expr(event_name, field_info);
-    quote! { ::pvm_contract_types::const_keccak256((#sig_expr).as_bytes()) }
+    quote! { ::pvm_contract_sdk::const_keccak256((#sig_expr).as_bytes()) }
 }
 
 fn generate_topics_body(
@@ -318,10 +318,10 @@ fn generate_indexed_topic_pack(
         quote! {
             {
                 extern crate alloc;
-                let __enc_len = <#rust_type as ::pvm_contract_types::SolEncode>::encode_len(&self.#field_name);
+                let __enc_len = <#rust_type as ::pvm_contract_sdk::SolEncode>::encode_len(&self.#field_name);
                 let mut __enc_buf = alloc::vec![0u8; __enc_len];
-                <#rust_type as ::pvm_contract_types::SolEncode>::encode_to(&self.#field_name, &mut __enc_buf);
-                __topics.push(::pvm_contract_types::keccak256(&__enc_buf));
+                <#rust_type as ::pvm_contract_sdk::SolEncode>::encode_to(&self.#field_name, &mut __enc_buf);
+                __topics.push(::pvm_contract_sdk::keccak256(&__enc_buf));
             }
         }
     } else {
@@ -329,13 +329,13 @@ fn generate_indexed_topic_pack(
         quote! {
             {
                 const _: () = assert!(
-                    <#rust_type as ::pvm_contract_types::SolEncode>::IS_DYNAMIC
-                        || <#rust_type as ::pvm_contract_types::SolEncode>::HEAD_SIZE <= 32,
+                    <#rust_type as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC
+                        || <#rust_type as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE <= 32,
                     "SolEvent: #[indexed] static fields must fit in 32 bytes. \
                      Use the underlying primitive, or remove #[indexed]."
                 );
                 __topics.push(
-                    <#rust_type as ::pvm_contract_types::SolEncode>::indexed_topic(&self.#field_name)
+                    <#rust_type as ::pvm_contract_sdk::SolEncode>::indexed_topic(&self.#field_name)
                 );
             }
         }
@@ -375,16 +375,16 @@ fn generate_data_body(
         let ft = field_types[0];
         let fn_ = field_names[0];
         return quote! {
-            let __len = <#ft as ::pvm_contract_types::SolEncode>::encode_len(&self.#fn_);
+            let __len = <#ft as ::pvm_contract_sdk::SolEncode>::encode_len(&self.#fn_);
             let mut __buf = alloc::vec![0u8; __len];
-            <#ft as ::pvm_contract_types::SolEncode>::encode_to(&self.#fn_, &mut __buf);
+            <#ft as ::pvm_contract_sdk::SolEncode>::encode_to(&self.#fn_, &mut __buf);
             __buf
         };
     }
 
     let head_size_parts: Vec<TokenStream> = field_types
         .iter()
-        .map(|ft| quote! { <#ft as ::pvm_contract_types::SolEncode>::SLOT_SIZE })
+        .map(|ft| quote! { <#ft as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE })
         .collect();
 
     let len_parts: Vec<TokenStream> = field_types
@@ -392,8 +392,8 @@ fn generate_data_body(
         .zip(field_names.iter())
         .map(|(ft, fn_)| {
             quote! {
-                if <#ft as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
-                    <#ft as ::pvm_contract_types::SolEncode>::encode_body_len(&self.#fn_)
+                if <#ft as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
+                    <#ft as ::pvm_contract_sdk::SolEncode>::encode_body_len(&self.#fn_)
                 } else {
                     0
                 }
@@ -406,18 +406,18 @@ fn generate_data_body(
         .zip(field_names.iter())
         .map(|(ft, fn_)| {
             quote! {
-                if <#ft as ::pvm_contract_types::SolEncode>::IS_DYNAMIC {
+                if <#ft as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
                     __buf[__head_offset + 24..__head_offset + 32]
                         .copy_from_slice(&(__tail_offset as u64).to_be_bytes());
-                    let __body_len = <#ft as ::pvm_contract_types::SolEncode>::encode_body_len(&self.#fn_);
-                    <#ft as ::pvm_contract_types::SolEncode>::encode_body_to(
+                    let __body_len = <#ft as ::pvm_contract_sdk::SolEncode>::encode_body_len(&self.#fn_);
+                    <#ft as ::pvm_contract_sdk::SolEncode>::encode_body_to(
                         &self.#fn_, &mut __buf[__tail_offset..__tail_offset + __body_len]);
                     __tail_offset += __body_len;
                 } else {
-                    <#ft as ::pvm_contract_types::SolEncode>::encode_body_to(
+                    <#ft as ::pvm_contract_sdk::SolEncode>::encode_body_to(
                         &self.#fn_, &mut __buf[__head_offset..__head_offset + 32]);
                 }
-                __head_offset += <#ft as ::pvm_contract_types::SolEncode>::SLOT_SIZE;
+                __head_offset += <#ft as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
             }
         })
         .collect();

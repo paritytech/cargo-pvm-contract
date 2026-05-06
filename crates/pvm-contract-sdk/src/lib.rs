@@ -96,7 +96,9 @@ pub use pvm_contract_types::{
     StaticEncodedLen,
     StorageFlags,
     U256,
+    const_keccak256,
     const_selector,
+    keccak256,
     // Framework errors
     framework_errors,
     sol_revert_enum,
