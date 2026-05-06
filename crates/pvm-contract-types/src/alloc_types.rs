@@ -35,24 +35,20 @@ impl crate::SolArrayElement for Bytes {}
 
 impl SolDecode for Bytes {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = TryInto::<[u8; 8]>::try_into(
-            input
-                .get(offset + 24..offset + 32)
-                .ok_or(DecodeError::InvalidPayload)?,
-        )
-        .map_err(|_| DecodeError::InvalidLength)
-        .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+        let data_offset = input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)? as usize;
         Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let len = TryInto::<[u8; 8]>::try_into(
-            input
-                .get(offset + 24..offset + 32)
-                .ok_or(DecodeError::InvalidPayload)?,
-        )
-        .map_err(|_| DecodeError::InvalidLength)
-        .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+        let len = input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)? as usize;
         let data = &input[offset + 32..offset + 32 + len];
         Ok(Bytes(data.to_vec()))
     }
@@ -97,28 +93,24 @@ impl crate::SolArrayElement for alloc::string::String {}
 
 impl SolDecode for alloc::string::String {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = TryInto::<[u8; 8]>::try_into(
-            input
-                .get(offset + 24..offset + 32)
-                .ok_or(DecodeError::InvalidPayload)?,
-        )
-        .map_err(|_| DecodeError::InvalidLength)
-        .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+        let data_offset = input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)? as usize;
         Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let len = TryInto::<[u8; 8]>::try_into(
-            input
-                .get(offset + 24..offset + 32)
-                .ok_or(DecodeError::InvalidPayload)?,
-        )
-        .map_err(|_| DecodeError::InvalidLength)
-        .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+        let len = input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)? as usize;
         let data = &input
             .get(offset + 32..offset + 32 + len)
-            .ok_or(DecodeError::InvalidPayload)?;
-        alloc::string::String::from_utf8(data.to_vec()).map_err(|_| DecodeError::InvalidString)
+            .ok_or(DecodeError)?;
+        alloc::string::String::from_utf8(data.to_vec()).map_err(|_| DecodeError)
     }
 }
 
@@ -185,37 +177,32 @@ impl<T: SolEncode> crate::SolArrayElement for alloc::vec::Vec<T> {}
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = TryInto::<[u8; 8]>::try_into(
-            input
-                .get(offset + 24..offset + 32)
-                .ok_or(DecodeError::InvalidPayload)?,
-        )
-        .map_err(|_| DecodeError::InvalidLength)
-        .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+        let data_offset = input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)? as usize;
         Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let len = TryInto::<[u8; 8]>::try_into(
-            input
-                .get(offset + 24..offset + 32)
-                .ok_or(DecodeError::InvalidPayload)?,
-        )
-        .map_err(|_| DecodeError::InvalidLength)
-        .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+        let len = input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)? as usize;
 
         let mut result = alloc::vec::Vec::with_capacity(len);
         let array_data_start = offset + 32;
 
         if T::IS_DYNAMIC {
             for i in 0..len {
-                let elem_offset = TryInto::<[u8; 8]>::try_into(
-                    input
-                        .get(array_data_start + i * 32 + 24..array_data_start + i * 32 + 32)
-                        .ok_or(DecodeError::InvalidPayload)?,
-                )
-                .map_err(|_| DecodeError::InvalidLength)
-                .map(|bytes| u64::from_be_bytes(bytes))? as usize;
+                let elem_offset = input
+                    .get(array_data_start + i * 32 + 24..array_data_start + i * 32 + 32)
+                    .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+                    .ok_or(DecodeError)
+                    .map(u64::from_be_bytes)? as usize;
+
                 result.push(T::decode_tail(input, array_data_start + elem_offset)?);
             }
         } else {

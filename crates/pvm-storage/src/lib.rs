@@ -292,7 +292,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// so `try_get()` returns `None` after writing zero.
     pub fn try_get(&self) -> Result<T, pvm_contract_types::DecodeError> {
         storage_try_get_32(&self.host, self.key.as_bytes())
-            .ok_or(pvm_contract_types::DecodeError::InvalidPayload)
+            .ok_or(pvm_contract_types::DecodeError)
             .and_then(|buf| T::decode(&buf))
     }
 

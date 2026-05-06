@@ -1,13 +1,13 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pvm_contract_types::{
-    const_selector, Address, CallFlags, DecodeError, Host, HostApi, ReturnErrorCode, SolDecode,
-    SolEncode, SolError,
+    Address, CallFlags, DecodeError, Host, HostApi, ReturnErrorCode, SolDecode, SolEncode,
+    SolError, const_selector,
 };
 use ruint::aliases::U256;
 
 /// Errors returned by `HostApi::call()` / `HostApi::instantiate()`.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum CallError {
     /// The called function trapped and has its state changes reverted.

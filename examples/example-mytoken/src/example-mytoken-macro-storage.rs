@@ -43,14 +43,14 @@ mod my_token {
         pub fn total_supply(&self) -> U256 {
             self.total_supply
                 .get()
-                .unwrap_or_else(|_| panic!("Something went horribly wrong!"))
+                .unwrap()
         }
 
         #[pvm_contract_sdk::method]
         pub fn balance_of(&self, account: Address) -> U256 {
             self.balances
                 .get(&account)
-                .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+                .unwrap();
         }
 
         #[pvm_contract_sdk::method]
@@ -60,7 +60,7 @@ mod my_token {
             let mut sender_cell = self.balances.entry(&caller);
             let sender_balance = sender_cell
                 .get()
-                .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+                .unwrap();
             if sender_balance < amount {
                 return Err(InsufficientBalance.into());
             }
@@ -69,7 +69,7 @@ mod my_token {
             let mut recipient_cell = self.balances.entry(&to);
             let recipient_balance = recipient_cell
                 .get()
-                .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+                .unwrap();
             recipient_cell.set(&(recipient_balance + amount));
 
             let caller_bytes: [u8; 20] = caller.into();
@@ -84,14 +84,14 @@ mod my_token {
             let mut recipient_cell = self.balances.entry(&to);
             let new_balance = recipient_cell
                 .get()
-                .unwrap_or_else(|_| panic!("Something went horribly wrong!"))
+                .unwrap()
                 .saturating_add(amount);
             recipient_cell.set(&new_balance);
 
             let new_supply = self
                 .total_supply
                 .get()
-                .unwrap_or_else(|_| panic!("Something went horribly wrong!"))
+                .unwrap()
                 .saturating_add(amount);
             self.total_supply.set(&new_supply);
 

@@ -31,7 +31,7 @@ pub extern "C" fn call() {
 }
 
 fn fibonacci_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let n = u32::decode_at(input, 0).unwrap();
     let result = fibonacci(n);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);

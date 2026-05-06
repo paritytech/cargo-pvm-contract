@@ -383,7 +383,7 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
             quote! {
                 #(#pre_stmts)*
-                Self { #(#field_lets),* }
+                Ok(Self { #(#field_lets),* })
             }
         }
         Fields::Unnamed(unnamed) => {
@@ -406,10 +406,10 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
             quote! {
                 #(#pre_stmts)*
-                Self(#(#field_tmps),*)
+                Ok(Self(#(#field_tmps),*))
             }
         }
-        Fields::Unit => quote! { Self },
+        Fields::Unit => quote! { Ok(Self) },
     }
 }
 

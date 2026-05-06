@@ -78,7 +78,7 @@ fn route_matches_selector_and_returns_encoded_u64() {
         .take_return_value()
         .expect("contract called return_value");
     assert_eq!(rv.flags, ReturnFlags::empty());
-    let returned = u64::decode_at(&rv.data, 0);
+    let returned = u64::decode_at(&rv.data, 0).unwrap();
     assert_eq!(returned, 42);
 }
 
@@ -141,6 +141,6 @@ fn router_trait_impl_delegates_to_module_route() {
         .take_return_value()
         .expect("contract called return_value");
     assert_eq!(rv.flags, ReturnFlags::empty());
-    let returned = U256::decode_at(&rv.data, 0);
+    let returned = U256::decode_at(&rv.data, 0).unwrap();
     assert_eq!(returned, U256::from(42u64));
 }

@@ -57,8 +57,7 @@ fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) 
 }
 
 fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <[u8; 20]>::decode_at(input, 0)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let account = <[u8; 20]>::decode_at(input, 0).unwrap();
     let key = balance_key(host, &account);
     let mut balance_bytes = [0u8; 32];
     let mut balance_slice = &mut balance_bytes[..];
@@ -73,10 +72,7 @@ fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> 
 }
 
 fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let to = <[u8; 20]>::decode_at(input, 0)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
-    let amount = U256::decode_at(input, <[u8; 20] as StaticEncodedLen>::ENCODED_SIZE)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let (to, amount) = <([u8; 20], U256)>::decode(input).unwrap();
 
     let caller = get_caller(host);
     let sender_key = balance_key(host, &caller);
@@ -118,10 +114,7 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let to = <[u8; 20]>::decode_at(input, 0)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
-    let amount = U256::decode_at(input, <[u8; 20] as StaticEncodedLen>::ENCODED_SIZE)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let (to, amount) = <([u8; 20], U256)>::decode(input).unwrap();
 
     let recipient_key = balance_key(host, &to);
     let mut recipient_balance_bytes = [0u8; 32];

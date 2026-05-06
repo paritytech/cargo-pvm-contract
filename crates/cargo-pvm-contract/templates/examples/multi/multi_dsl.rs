@@ -83,9 +83,8 @@ fn negate_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Han
 }
 
 fn max_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = U256::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
-    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let a = U256::decode_at(input, 0).unwrap();
+    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE).unwrap();
     let result = if a > b { a } else { b };
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -93,8 +92,7 @@ fn max_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handle
 }
 
 fn hash_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <[u8; 20]>::decode_at(input, 0)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let account = <[u8; 20]>::decode_at(input, 0).unwrap();
     let mut bytes = [0u8; 32];
     bytes[12..].copy_from_slice(&account);
     let result = U256::from_be_bytes::<32>(bytes);
@@ -104,11 +102,9 @@ fn hash_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handl
 }
 
 fn sum3_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u32::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
-    let b = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
-    let c = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE * 2)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let a = u32::decode_at(input, 0).unwrap();
+    let b = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE).unwrap();
+    let c = u32::decode_at(input, <u32 as StaticEncodedLen>::ENCODED_SIZE * 2).unwrap();
     let result = a.wrapping_add(b).wrapping_add(c);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -116,9 +112,8 @@ fn sum3_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handl
 }
 
 fn bit_and_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = U256::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
-    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE)
-        .unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let a = U256::decode_at(input, 0).unwrap();
+    let b = U256::decode_at(input, <U256 as StaticEncodedLen>::ENCODED_SIZE).unwrap();
     let result = a & b;
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -126,8 +121,7 @@ fn bit_and_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn is_zero_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let value =
-        U256::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let value = U256::decode_at(input, 0).unwrap();
     let result = value == U256::ZERO;
     let len = <bool as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -135,7 +129,7 @@ fn is_zero_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn increment_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0).unwrap_or_else(|_| panic!("Something went horribly wrong!"));
+    let n = u32::decode_at(input, 0).unwrap();
     let result = n.wrapping_add(1);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
