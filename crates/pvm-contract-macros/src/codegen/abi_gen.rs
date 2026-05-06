@@ -429,6 +429,7 @@ mod tests {
             fallback_returns_result: false,
             fallback_is_payable: false,
             error_types: vec![],
+            event_idents: vec![],
         }
     }
 
@@ -518,6 +519,7 @@ mod tests {
             fallback_returns_result: false,
             fallback_is_payable: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -564,6 +566,7 @@ mod tests {
             fallback_returns_result: false,
             fallback_is_payable: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[]);
@@ -603,6 +606,7 @@ mod tests {
             fallback_returns_result: false,
             fallback_is_payable: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let slot_fields = vec![SlotField {

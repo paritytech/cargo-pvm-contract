@@ -3,7 +3,7 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
-pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, parse_type_str};
+pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam, parse_type_str};
 
 pub fn generate_abi_for_bin(
     manifest_dir: &Path,

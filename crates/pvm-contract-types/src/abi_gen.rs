@@ -41,6 +41,23 @@ pub enum AbiItem {
         name: String,
         inputs: Vec<AbiParam>,
     },
+    Event {
+        name: String,
+        inputs: Vec<AbiEventParam>,
+        anonymous: bool,
+    },
+}
+
+/// A parameter in a Solidity ABI event signature.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AbiEventParam {
+    /// Parameter name.
+    pub name: String,
+    /// Solidity type name.
+    #[serde(rename = "type")]
+    pub param_type: String,
+    /// Whether this parameter is indexed (becomes a log topic).
+    pub indexed: bool,
 }
 
 /// Wrapper for a complete ABI JSON array.
