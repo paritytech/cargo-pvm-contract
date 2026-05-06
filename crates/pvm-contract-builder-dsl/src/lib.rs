@@ -64,6 +64,12 @@ fn noop_handler<H: pvm_contract_types::HostApi>(
 /// dispatch loop is byte-equivalent to today's static-call version). In unit
 /// tests it's `MockHost`, compiled into the host-target test binary only.
 ///
+/// Methods registered via [`method`](Self::method) are non-payable: the
+/// dispatcher reverts with
+/// [`pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED`] when
+/// called with a non-zero value transfer. Methods registered via
+/// [`payable_method`](Self::payable_method) accept any value.
+///
 /// # Example
 ///
 /// ```ignore
@@ -83,13 +89,12 @@ fn noop_handler<H: pvm_contract_types::HostApi>(
 ///     ContractBuilder::<PolkaVmHost>::new()
 ///         .method(FIB, fibonacci::<PolkaVmHost>)
 ///         .dispatch_impl::<256>(&host);
-///     // unreachable on riscv64: every dispatch path calls
-///     // host.return_value(...) which is `-> !` (the syscall).
 /// }
 /// ```
 pub struct ContractBuilder<H: pvm_contract_types::HostApi> {
     methods: [(Selector, MethodHandler<H>); MAX_METHODS],
     len: usize,
+    payable_bits: u64,
     _marker: PhantomData<fn(&H)>,
 }
 
@@ -105,15 +110,16 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
         Self {
             methods: [([0; 4], noop_handler::<H> as MethodHandler<H>); MAX_METHODS],
             len: 0,
+            payable_bits: 0,
             _marker: PhantomData,
         }
     }
 
-    /// Register a method handler for the given selector.
+    /// Register a non-payable method handler for the given selector.
     ///
     /// # Panics
     ///
-    /// Panics if more than 16 methods are registered.
+    /// Panics if more than MAX_METHODS methods are registered.
     pub fn method(mut self, selector: Selector, handler: MethodHandler<H>) -> Self {
         assert!(
             self.len < MAX_METHODS,
@@ -125,10 +131,33 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
         self
     }
 
-    /// Try to route a call by selector without reading calldata.
+    /// Register a payable method handler for the given selector.
     ///
-    /// Returns `Some((flags, bytes_written))` if a handler matched. The caller
-    /// owns `output` and sees the handler's writes in-place.
+    /// Unlike [`method`](Self::method), payable handlers accept calls carrying
+    /// any value transfer (including zero).
+    ///
+    /// # Panics
+    ///
+    /// Panics if more than MAX_METHODS methods are registered.
+    pub fn payable_method(mut self, selector: Selector, handler: MethodHandler<H>) -> Self {
+        assert!(
+            self.len < MAX_METHODS,
+            "ContractBuilder: exceeded MAX_METHODS ({})",
+            MAX_METHODS
+        );
+        self.methods[self.len] = (selector, handler);
+        self.payable_bits |= 1u64 << self.len;
+        self.len += 1;
+        self
+    }
+
+    /// Try to route a call by selector.
+    ///
+    /// When the matched method is non-payable and `value_transferred` is
+    /// non-zero, writes the `NON_PAYABLE_VALUE_RECEIVED` selector into
+    /// `output[..4]` and returns `HandlerResult::Revert(4)` — `output` must be
+    /// at least 4 bytes long. Otherwise calls the handler and returns its
+    /// result.
     #[inline(always)]
     pub fn try_route(
         &self,
@@ -141,6 +170,12 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
         while i < self.len {
             let (sel, handler) = self.methods[i];
             if sel == selector {
+                let is_payable = (self.payable_bits >> i) & 1 == 1;
+                if !is_payable && pvm_contract_types::value_transferred_is_nonzero(host) {
+                    let err = pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED;
+                    output[..4].copy_from_slice(&err);
+                    return Some(HandlerResult::Revert(4));
+                }
                 return Some(handler(host, input, output));
             }
             i += 1;
@@ -190,8 +225,6 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
                         HandlerResult::Ok(n) => (ReturnFlags::empty(), n),
                         HandlerResult::Revert(n) => (ReturnFlags::REVERT, n),
                     };
-                    // Clamp to BUF_SIZE so a buggy handler returning a bogus
-                    // length cannot panic on the slice that follows.
                     let len = if raw_len > BUF_SIZE {
                         BUF_SIZE
                     } else {
@@ -214,6 +247,9 @@ mod tests {
     use super::*;
     use pvm_contract_types::MockHost;
 
+    const DEPOSIT: Selector = [0xde, 0x00, 0x00, 0x01];
+    const TRANSFER: Selector = [0x7f, 0x00, 0x00, 0x02];
+
     fn dummy_handler<H: pvm_contract_types::HostApi>(
         _host: &H,
         _input: &[u8],
@@ -229,5 +265,43 @@ mod tests {
         for i in 0..=MAX_METHODS {
             builder = builder.method([i as u8, 0, 0, 0], dummy_handler::<MockHost>);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "MAX_METHODS")]
+    fn payable_method_panics_on_overflow() {
+        let mut builder = ContractBuilder::<MockHost>::new();
+        for i in 0..=MAX_METHODS {
+            builder = builder.payable_method([i as u8, 0, 0, 0], dummy_handler::<MockHost>);
+        }
+    }
+
+    #[test]
+    fn payable_bit_set_correctly() {
+        let builder = ContractBuilder::<MockHost>::new()
+            .method(TRANSFER, dummy_handler::<MockHost>)
+            .payable_method(DEPOSIT, dummy_handler::<MockHost>);
+        assert_eq!(builder.payable_bits, 0b10);
+    }
+
+    #[test]
+    fn payable_bit_survives_for_high_index() {
+        let mut builder = ContractBuilder::<MockHost>::new();
+        for i in 0..(MAX_METHODS - 1) {
+            builder = builder.method([i as u8, 0, 0, 0xaa], dummy_handler::<MockHost>);
+        }
+        builder = builder.payable_method(
+            [(MAX_METHODS - 1) as u8, 0, 0, 0xaa],
+            dummy_handler::<MockHost>,
+        );
+        assert_eq!(builder.payable_bits, 1u64 << (MAX_METHODS - 1));
+    }
+
+    #[test]
+    fn non_payable_contract_has_zero_payable_bits() {
+        let builder = ContractBuilder::<MockHost>::new()
+            .method(TRANSFER, dummy_handler::<MockHost>)
+            .method(DEPOSIT, dummy_handler::<MockHost>);
+        assert_eq!(builder.payable_bits, 0);
     }
 }

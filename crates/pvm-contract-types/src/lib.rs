@@ -37,7 +37,7 @@ pub use pallet_revive_uapi;
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]
-pub use mock_host::{MockHost, MockHostBuilder, ReturnValue};
+pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};
@@ -207,6 +207,8 @@ pub mod framework_errors {
     pub const NO_SELECTOR: [u8; 4] = const_selector("NoSelector()");
     /// The 4-byte selector does not match any method in the contract.
     pub const UNKNOWN_SELECTOR: [u8; 4] = const_selector("UnknownSelector()");
+    /// A non-payable entry point received a non-zero value transfer.
+    pub const NON_PAYABLE_VALUE_RECEIVED: [u8; 4] = const_selector("NonPayableValueReceived()");
 
     /// Error names for ABI JSON generation. Single source of truth used by both
     /// the proc macro (`abi_gen.rs`) and the builder (`abi.rs`).
@@ -215,7 +217,33 @@ pub mod framework_errors {
         "CalldataTooLarge",
         "NoSelector",
         "UnknownSelector",
+        "NonPayableValueReceived",
     ];
+}
+
+/// Read `value_transferred` from the host and report whether any byte is
+/// non-zero. On riscv64 the buffer is backed by `[u64; 4]` so the
+/// non-zero check is a 4-word OR-fold rather than a 32-byte memcmp against a
+/// zero constant — meaningfully smaller bytecode for the payable enforcement
+/// hot path.
+#[inline]
+pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let mut words = [0u64; 4];
+        // SAFETY: `[u64; 4]` and `[u8; 32]` have the same size; `[u8]` has
+        // looser alignment than `[u64]`, so casting to `&mut [u8; 32]` is
+        // sound and the host's byte writes produce valid `u64` values.
+        let buf: &mut [u8; 32] = unsafe { &mut *(words.as_mut_ptr() as *mut [u8; 32]) };
+        host.value_transferred(buf);
+        words[0] | words[1] | words[2] | words[3] != 0
+    }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let mut buf = [0u8; 32];
+        host.value_transferred(&mut buf);
+        buf != [0u8; 32]
+    }
 }
 
 /// Selector-based dispatch trait for composable `#[contract]` routing.

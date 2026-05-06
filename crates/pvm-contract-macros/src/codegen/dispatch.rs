@@ -59,6 +59,26 @@ fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     }
 }
 
+/// Solidity's state mutability classifications. Mutually exclusive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateMutability {
+    Pure,
+    View,
+    NonPayable,
+    Payable,
+}
+
+impl StateMutability {
+    pub fn as_abi_str(self) -> &'static str {
+        match self {
+            StateMutability::Pure => "pure",
+            StateMutability::View => "view",
+            StateMutability::NonPayable => "nonpayable",
+            StateMutability::Payable => "payable",
+        }
+    }
+}
+
 pub struct MethodInfo {
     pub fn_name: syn::Ident,
     pub sol_name: String,
@@ -66,6 +86,7 @@ pub struct MethodInfo {
     pub param_types: Vec<syn::Type>,
     pub return_types: Vec<syn::Type>,
     pub returns_result: bool,
+    pub mutability: StateMutability,
     /// When set, the selector is precomputed (e.g. from a `.sol` file).
     pub precomputed_selector: Option<[u8; 4]>,
 }
@@ -82,6 +103,9 @@ pub(super) struct ParamDecoding {
     pub has_params: bool,
 }
 
+/// Generate parameter decoding for a method: input size check, decode
+/// statements that bind each ABI param to a local, and the `call_args` list
+/// used when invoking the user function.
 pub(super) fn generate_param_decoding(
     param_names: &[syn::Ident],
     param_types: &[syn::Type],
@@ -169,7 +193,11 @@ pub(super) fn boundary_size_check(has_params: bool, min_size_expr: &TokenStream)
     }
 }
 
-pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStream, TokenStream) {
+pub fn generate_dispatch_arm(
+    method: &MethodInfo,
+    use_alloc: bool,
+    guard_hoisted: bool,
+) -> (TokenStream, TokenStream) {
     let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
     let const_def = build_selector_const(method);
 
@@ -186,6 +214,14 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
     let encode_and_return = generate_encode_and_return(&method.return_types, use_alloc);
 
     let revert_err = generate_revert_via_host(use_alloc);
+
+    let payable_guard = if guard_hoisted || method.mutability == StateMutability::Payable {
+        quote! {}
+    } else {
+        quote! {
+            __pvm_assert_value_zero(this.host(), __has_value);
+        }
+    };
 
     let body = if method.returns_result {
         if has_return {
@@ -235,6 +271,7 @@ pub fn generate_dispatch_arm(method: &MethodInfo, use_alloc: bool) -> (TokenStre
 
     let match_arm = quote! {
         #sel_ident => {
+            #payable_guard
             #size_check
             #decode_statements
             #body
@@ -264,16 +301,39 @@ pub struct RouterImpl {
 /// `riscv64`, observed by the test harness on host targets). Unmatched
 /// selectors return `None`, allowing composition via `Option::or_else` for
 /// inheritance / parent-router fallthrough.
+///
+/// When every method is non-payable the value-transfer guard collapses into a
+/// single `__pvm_assert_non_payable()` call before the match. Mixed payability
+/// reads `value_transferred` once into `__has_value` and each non-payable arm
+/// calls `__pvm_assert_value_zero(host, __has_value)`.
 pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
     struct_name: &syn::Ident,
     use_alloc: bool,
 ) -> (RouteItems, RouterImpl) {
+    let all_non_payable = !methods.is_empty()
+        && methods
+            .iter()
+            .all(|m| m.mutability != StateMutability::Payable);
+    let any_non_payable = methods
+        .iter()
+        .any(|m| m.mutability != StateMutability::Payable);
+
     let (selector_consts, dispatch_arms): (Vec<_>, Vec<_>) = methods
         .iter()
-        .map(|m| generate_dispatch_arm(m, use_alloc))
+        .map(|m| generate_dispatch_arm(m, use_alloc, all_non_payable))
         .unzip();
+
+    let prelude = if all_non_payable {
+        quote! { __pvm_assert_non_payable(this.host()); }
+    } else if any_non_payable {
+        quote! {
+            let __has_value = ::pvm_contract_sdk::value_transferred_is_nonzero(this.host());
+        }
+    } else {
+        quote! {}
+    };
 
     let route_items = RouteItems {
         route_fn: quote! {
@@ -285,6 +345,8 @@ pub fn generate_router(
             ) -> ::core::option::Option<()> {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
                 #(#selector_consts)*
+
+                #prelude
 
                 match selector {
                     #(#dispatch_arms)*
@@ -374,12 +436,6 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
 }
 
 fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
-    // Single `host.return_value(...)` call site shared between static and
-    // dynamic returns. Each branch fills a different buffer (heap Vec for
-    // dynamic, stack array for static) and exposes the encoded bytes via a
-    // shared `&[u8]`. LLVM DCEs the dead branch after monomorphization on
-    // `IS_DYNAMIC` (a const bool), and consolidating the syscall site cuts
-    // the per-arm prologue/epilogue cost vs. emitting two separate calls.
     if outputs.len() == 1 {
         let ty = &outputs[0];
         return quote! {{
@@ -427,4 +483,159 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         #[allow(unreachable_code)]
         return ::core::option::Option::Some(());
     }}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pretty(ts: &TokenStream) -> String {
+        let file: syn::File = syn::parse2(quote! {
+            fn __w(selector: [u8; 4], input: &[u8], this: &mut Contract) {
+                match selector {
+                    #ts
+                    _ => {}
+                }
+            }
+        })
+        .expect("dispatch arm parses inside a match expression");
+        prettyplease::unparse(&file)
+    }
+
+    fn sample_method(name: &str, mutability: StateMutability) -> MethodInfo {
+        MethodInfo {
+            fn_name: quote::format_ident!("{name}"),
+            sol_name: name.to_string(),
+            param_names: vec![quote::format_ident!("to")],
+            param_types: vec![syn::parse_quote!(Address)],
+            return_types: vec![],
+            returns_result: false,
+            mutability,
+            precomputed_selector: Some([0xde, 0xad, 0xbe, 0xef]),
+        }
+    }
+
+    #[test]
+    fn non_payable_arm_emits_value_zero_assert() {
+        let m = sample_method("transfer", StateMutability::NonPayable);
+        let (_, arm) = generate_dispatch_arm(&m, false, false);
+        let expected = expect_test::expect![[r#"
+            fn __w(selector: [u8; 4], input: &[u8], this: &mut Contract) {
+                match selector {
+                    __SEL_transfer => {
+                        __pvm_assert_value_zero(this.host(), __has_value);
+                        if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
+                        {
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                this.host(),
+                                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                            );
+                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                        }
+                        let mut __decode_offset: usize = 0;
+                        let to = {
+                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                                &input,
+                                __decode_offset,
+                            );
+                            __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                            __value
+                        };
+                        this.transfer(::core::convert::Into::into(to));
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            this.host(),
+                            ::pvm_contract_sdk::ReturnFlags::empty(),
+                            &[],
+                        );
+                        #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                    }
+                    _ => {}
+                }
+            }
+        "#]];
+        expected.assert_eq(&pretty(&arm));
+    }
+
+    #[test]
+    fn payable_arm_omits_value_zero_assert() {
+        let m = sample_method("deposit", StateMutability::Payable);
+        let (_, arm) = generate_dispatch_arm(&m, false, false);
+        let expected = expect_test::expect![[r#"
+            fn __w(selector: [u8; 4], input: &[u8], this: &mut Contract) {
+                match selector {
+                    __SEL_deposit => {
+                        if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
+                        {
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                this.host(),
+                                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                            );
+                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                        }
+                        let mut __decode_offset: usize = 0;
+                        let to = {
+                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                                &input,
+                                __decode_offset,
+                            );
+                            __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                            __value
+                        };
+                        this.deposit(::core::convert::Into::into(to));
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            this.host(),
+                            ::pvm_contract_sdk::ReturnFlags::empty(),
+                            &[],
+                        );
+                        #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                    }
+                    _ => {}
+                }
+            }
+        "#]];
+        expected.assert_eq(&pretty(&arm));
+    }
+
+    #[test]
+    fn hoisted_non_payable_arm_omits_value_zero_assert() {
+        let m = sample_method("transfer", StateMutability::NonPayable);
+        let (_, arm) = generate_dispatch_arm(&m, false, true);
+        let expected = expect_test::expect![[r#"
+            fn __w(selector: [u8; 4], input: &[u8], this: &mut Contract) {
+                match selector {
+                    __SEL_transfer => {
+                        if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
+                        {
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                this.host(),
+                                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                            );
+                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                        }
+                        let mut __decode_offset: usize = 0;
+                        let to = {
+                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                                &input,
+                                __decode_offset,
+                            );
+                            __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                            __value
+                        };
+                        this.transfer(::core::convert::Into::into(to));
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            this.host(),
+                            ::pvm_contract_sdk::ReturnFlags::empty(),
+                            &[],
+                        );
+                        #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                    }
+                    _ => {}
+                }
+            }
+        "#]];
+        expected.assert_eq(&pretty(&arm));
+    }
 }

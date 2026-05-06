@@ -1,0 +1,8 @@
+error: method 'deposit' is declared payable in the Solidity interface but the Rust signature is not marked `#[payable]`
+ --> tests/ui/sol_payable_rust_missing_payable_attr.rs:6:9
+  |
+6 | /         #[pvm_contract_macros::method]
+7 | |         pub fn deposit(&mut self, to: pvm_contract_types::Address) {
+8 | |             let _ = to;
+9 | |         }
+  | |_________^

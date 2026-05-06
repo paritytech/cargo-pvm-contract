@@ -2,8 +2,8 @@
 //!
 //! [`MockHost`] implements [`HostApi`](super::HostApi) using plain per-instance
 //! state. Tests construct their own `MockHost` via [`MockHostBuilder`] and
-//! inject it into the contract — no thread-locals, no global setup, no panic
-//! capture. Run tests in parallel without contention.
+//! inject it into the contract — no thread-locals, no global setup. Run tests
+//! in parallel without contention.
 //!
 //! # Shared state via `Rc<RefCell<...>>`
 //!
@@ -13,10 +13,11 @@
 //! handle that mutates the same storage, events, and return-data buffers.
 //!
 //! ```ignore
+//! use std::rc::Rc;
 //! use pvm_contract_types::{Host, HostApi, MockHostBuilder};
 //!
 //! let mock = MockHostBuilder::new().caller([0xAA; 20]).build();
-//! let host = Host::from_dyn(alloc::boxed::Box::new(mock.clone()));
+//! let host = Host::from_dyn(Rc::new(mock.clone()));
 //! // `mock` still observes writes done through `host`.
 //! ```
 //!
@@ -28,13 +29,24 @@
 //! // `HostApi::call` to [0xBB; 20] now returns Ok(()) with the mock data.
 //! ```
 //!
-//! # Return values
+//! # Diverging host operations
 //!
-//! `return_value` is deliberately NOT on [`HostApi`](super::HostApi). Contract
-//! code returns `Result<T, E: SolRevert>` natively and the macro-/DSL-generated
-//! `call()` wrapper encodes the result to `pallet_revive_uapi::HostFnImpl::return_value`
-//! at the boundary. Tests assert on the returned `Result` directly — no
-//! `catch_unwind` required.
+//! Two different mechanisms, by role:
+//!
+//! - [`HostApi::return_value`](super::HostApi::return_value) is called only
+//!   from macro/DSL dispatch glue. On host targets `MockHost` captures the
+//!   `(flags, data)` pair into a [`ReturnValue`] and returns normally; the
+//!   dispatch wrapper exits via its generated `return Some(())` and tests
+//!   inspect the result via [`MockHost::take_return_value`].
+//!
+//! - [`HostApi::terminate`](super::HostApi::terminate) and
+//!   [`HostApi::consume_all_gas`](super::HostApi::consume_all_gas) can be
+//!   called from arbitrary positions in user code. On host targets
+//!   `MockHost` panics with a typed payload so user code after the call
+//!   doesn't run (matching on-chain semantics). Tests recover the captured
+//!   [`Halt`] via [`MockHost::run_until_halt`], which downcasts the panic
+//!   and re-throws non-halt panics so contract bugs aren't silently
+//!   swallowed.
 
 use core::cell::RefCell;
 use std::collections::HashMap;
@@ -69,6 +81,26 @@ struct MockInstantiateReturn {
     address: [u8; 20],
     output: Vec<u8>,
 }
+
+/// Captured halt event from a [`HostApi::terminate`] or
+/// [`HostApi::consume_all_gas`] call on a [`MockHost`].
+///
+/// Returned by [`MockHost::run_until_halt`] when the contract method called
+/// one of the diverging mid-execution host operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Halt {
+    /// Contract called [`HostApi::terminate`] with this beneficiary address.
+    Terminate { beneficiary: [u8; 20] },
+    /// Contract called [`HostApi::consume_all_gas`].
+    ConsumeAllGas,
+}
+
+/// Typed panic payload used by [`MockHost`] to halt execution on host targets.
+///
+/// Private — [`MockHost::run_until_halt`] is the only sanctioned way to
+/// recover from this panic. Other panics propagate so contract bugs aren't
+/// silently swallowed.
+struct HaltPanic(Halt);
 
 /// Shared inner state of a [`MockHost`]. Lives behind `Rc<RefCell<_>>`.
 struct MockState {
@@ -185,6 +217,27 @@ impl MockHost {
     /// prevents stale captures from leaking across calls on the same mock.
     pub fn take_return_value(&self) -> Option<ReturnValue> {
         self.state.borrow_mut().return_value.take()
+    }
+
+    /// Run `f`, returning the captured [`Halt`] if it called
+    /// [`HostApi::terminate`] or [`HostApi::consume_all_gas`].
+    ///
+    /// Returns `None` if `f` completed without halting. Non-halt panics from
+    /// `f` (overflow, `unwrap`, `BorrowMutError`, etc.) propagate via
+    /// [`std::panic::resume_unwind`] so contract bugs surface as test
+    /// failures rather than being silently captured as halts.
+    ///
+    /// `f` is wrapped in [`std::panic::AssertUnwindSafe`] internally so test
+    /// authors don't need to thread the bound through their closures.
+    pub fn run_until_halt<F: FnOnce()>(&self, f: F) -> Option<Halt> {
+        use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+        match catch_unwind(AssertUnwindSafe(f)) {
+            Ok(()) => None,
+            Err(payload) => match payload.downcast::<HaltPanic>() {
+                Ok(halt) => Some(halt.0),
+                Err(other) => resume_unwind(other),
+            },
+        }
     }
 }
 
@@ -571,6 +624,16 @@ impl HostApi for MockHost {
             flags,
             data: data.to_vec(),
         });
+    }
+
+    fn consume_all_gas(&self) -> ! {
+        std::panic::panic_any(HaltPanic(Halt::ConsumeAllGas))
+    }
+
+    fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
+        std::panic::panic_any(HaltPanic(Halt::Terminate {
+            beneficiary: *beneficiary,
+        }))
     }
 }
 
@@ -1233,5 +1296,75 @@ mod tests {
         let mut hash = [0xFFu8; 32];
         host.block_hash(&bn, &mut hash);
         assert_eq!(hash, [0u8; 32]);
+    }
+
+    #[test]
+    fn mock_terminate_captures_beneficiary() {
+        let host = MockHostBuilder::new().build();
+        let halt = host.run_until_halt(|| host.terminate(&[0xAB; 20]));
+        assert_eq!(
+            halt,
+            Some(Halt::Terminate {
+                beneficiary: [0xAB; 20]
+            })
+        );
+    }
+
+    #[test]
+    fn mock_consume_all_gas_captured() {
+        let host = MockHostBuilder::new().build();
+        let halt = host.run_until_halt(|| host.consume_all_gas());
+        assert_eq!(halt, Some(Halt::ConsumeAllGas));
+    }
+
+    #[test]
+    fn run_until_halt_returns_none_when_closure_completes() {
+        let host = MockHostBuilder::new().build();
+        let halt = host.run_until_halt(|| {
+            // No halt call — closure completes normally.
+            let _ = host.events();
+        });
+        assert_eq!(halt, None);
+    }
+
+    #[test]
+    fn run_until_halt_preserves_state_written_before_terminate() {
+        let host = MockHostBuilder::new().build();
+        let key = [7u8; 32];
+        let value = [42u8; 32];
+
+        let halt = host.run_until_halt(|| {
+            host.set_storage(StorageFlags::empty(), &key, &value);
+            host.terminate(&[0xCD; 20]);
+        });
+
+        assert_eq!(
+            halt,
+            Some(Halt::Terminate {
+                beneficiary: [0xCD; 20]
+            })
+        );
+        let mut buf = [0u8; 32];
+        let mut out = &mut buf[..];
+        let result = host.get_storage(StorageFlags::empty(), &key, &mut out);
+        assert!(result.is_ok());
+        assert_eq!(buf, value);
+    }
+
+    #[test]
+    fn run_until_halt_rethrows_non_halt_panic() {
+        let host = MockHostBuilder::new().build();
+        // Suppress the default panic hook so the expected non-halt panic
+        // doesn't pollute test output. Restore it after.
+        let original_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            host.run_until_halt(|| panic!("real bug"));
+        }));
+        std::panic::set_hook(original_hook);
+        assert!(
+            outer.is_err(),
+            "non-halt panic must propagate out of run_until_halt"
+        );
     }
 }

@@ -5,7 +5,7 @@ use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, boundary_size_check, generate_param_decoding,
+    MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
     generate_revert_encoding_boundary, generate_router,
 };
 use super::sol_storage::extract_optional_slot_attr;
@@ -136,8 +136,12 @@ pub(super) struct ParsedContract {
     pub(super) constructor_name: Option<Ident>,
     pub(super) constructor_returns_result: bool,
     pub(super) constructor_inputs: Vec<(Ident, syn::Type)>,
+    /// True iff the constructor is marked `#[payable]`.
+    pub(super) constructor_is_payable: bool,
     pub(super) fallback_name: Option<Ident>,
     pub(super) fallback_returns_result: bool,
+    /// True iff the fallback is marked `#[payable]`.
+    pub(super) fallback_is_payable: bool,
     /// Error types from `Result<T, E>` return types, for ABI generation.
     pub(super) error_types: Vec<syn::Type>,
 }
@@ -407,6 +411,57 @@ fn extract_typed_params_impl(
         .collect()
 }
 
+/// `true` iff the function's first parameter is `&mut self`.
+fn receiver_is_mut(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) -> bool {
+    matches!(
+        inputs.first(),
+        Some(syn::FnArg::Receiver(r))
+            if r.reference.is_some() && r.mutability.is_some()
+    )
+}
+
+/// Shared payable helpers emitted once per contract module so call sites
+/// collapse to a single function call. `__pvm_assert_value_zero` reverts on a
+/// boolean flag so mixed-payability dispatchers can read `value_transferred`
+/// once into `__has_value` and have each non-payable arm tail-call the assert.
+/// `__pvm_assert_non_payable` is the read+assert combinator used by the
+/// deploy / fallback boundaries and by the all-non-payable router prelude;
+/// the read itself goes through
+/// `pvm_contract_sdk::value_transferred_is_nonzero`, which folds the 32-byte
+/// buffer with a 4-word OR on riscv64 (smaller bytecode than `memcmp`).
+fn build_payable_helpers_fn() -> TokenStream {
+    quote! {
+        #[cfg(not(feature = "abi-gen"))]
+        #[inline(never)]
+        fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, has_value: bool) {
+            if has_value {
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                    host,
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
+            }
+        }
+
+        #[cfg(not(feature = "abi-gen"))]
+        #[inline(never)]
+        fn __pvm_assert_non_payable(host: &::pvm_contract_sdk::Host) {
+            __pvm_assert_value_zero(
+                host,
+                ::pvm_contract_sdk::value_transferred_is_nonzero(host),
+            );
+        }
+    }
+}
+
+/// Emit a call to the shared non-payable assertion helper. Used by deploy /
+/// fallback boundaries (which already have `this` in scope).
+fn build_assert_non_payable_call(emit: bool) -> TokenStream {
+    if !emit {
+        return quote! {};
+    }
+    quote! { __pvm_assert_non_payable(this.host()); }
+}
+
 fn parse_contract(
     input: &ItemMod,
     sol_interface: Option<&syn_solidity::File>,
@@ -533,8 +588,10 @@ fn parse_contract(
     let mut constructor_name = None;
     let mut constructor_returns_result = false;
     let mut constructor_inputs = Vec::new();
+    let mut constructor_is_payable = false;
     let mut fallback_name = None;
     let mut fallback_returns_result = false;
+    let mut fallback_is_payable = false;
     let mut implemented_sol_methods = Vec::new();
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
@@ -552,15 +609,36 @@ fn parse_contract(
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
+                constructor_is_payable = has_pvm_attr(&func.attrs, "payable");
+                if constructor_is_payable && !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "constructor is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                    ));
+                }
                 constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
                 fallback_name = Some(func.sig.ident.clone());
                 fallback_returns_result = is_result_return_type(&func.sig.output);
+                fallback_is_payable = has_pvm_attr(&func.attrs, "payable");
+                if fallback_is_payable && !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "fallback is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                    ));
+                }
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
                 let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
+                let is_payable = has_pvm_attr(&func.attrs, "payable");
+                if is_payable && !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "method is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                    ));
+                }
                 let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
                     typed_params.into_iter().map(|(_, t)| t).collect();
@@ -568,7 +646,8 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
 
-                let (sol_name, precomputed_selector) = if let Some(sol_iface) = sol_interface
+                let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
+                    sol_interface
                     && let Some(sol_iface) = {
                         let mut items = sol_iface.items.iter().filter_map(|x| match x {
                             Item::Contract(item_contract) if item_contract.is_interface() => {
@@ -623,11 +702,40 @@ fn parse_contract(
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
                     let selector = compute_selector(&compute_function_signature(sol_func));
-                    (sol_func.name().to_string(), Some(selector))
+                    let sol_mutability = match sol_func.attributes.mutability() {
+                        Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
+                        Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
+                        Some(syn_solidity::Mutability::Payable(_)) => StateMutability::Payable,
+                        _ => StateMutability::NonPayable,
+                    };
+                    let sol_is_payable = sol_mutability == StateMutability::Payable;
+                    let fn_name = func.sig.ident.to_string();
+                    if sol_is_payable && !is_payable {
+                        return Err(syn::Error::new_spanned(
+                            func,
+                            format!(
+                                "method '{fn_name}' is declared payable in the Solidity interface but the Rust signature is not marked `#[payable]`"
+                            ),
+                        ));
+                    }
+                    if !sol_is_payable && is_payable {
+                        return Err(syn::Error::new_spanned(
+                            func,
+                            format!(
+                                "method '{fn_name}' is not declared payable in the Solidity interface but the Rust signature is marked `#[payable]`"
+                            ),
+                        ));
+                    }
+                    (sol_func.name().to_string(), Some(selector), sol_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    (sol_name, None)
+                    let mutability = if is_payable {
+                        StateMutability::Payable
+                    } else {
+                        StateMutability::NonPayable
+                    };
+                    (sol_name, None, mutability)
                 };
 
                 methods.push(MethodInfo {
@@ -637,6 +745,7 @@ fn parse_contract(
                     param_types,
                     return_types,
                     returns_result,
+                    mutability,
                     precomputed_selector,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
@@ -695,8 +804,10 @@ fn parse_contract(
         constructor_name,
         constructor_returns_result,
         constructor_inputs,
+        constructor_is_payable,
         fallback_name,
         fallback_returns_result,
+        fallback_is_payable,
         error_types,
     })
 }
@@ -882,6 +993,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         };
 
+        let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
+
         let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
         let revert_err = generate_revert_encoding_boundary(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
@@ -909,15 +1022,22 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             pub extern "C" fn deploy() {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
                 #this_construction
+                #deploy_assert
                 #read_calldata
                 #decode_and_call
             }
         }
     } else {
+        // No user-declared constructor — emit a default payable-guarded deploy so
+        // deployments with value revert, matching Solidity's default behaviour.
         quote! {
             #[cfg(target_arch = "riscv64")]
             #[polkavm_derive::polkavm_export]
-            pub extern "C" fn deploy() -> {}
+            pub extern "C" fn deploy() {
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                #this_construction
+                __pvm_assert_non_payable(this.host());
+            }
         }
     };
 
@@ -928,9 +1048,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
+
+        let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
+
         let handler = if parsed.fallback_returns_result {
             let revert_err = generate_revert_encoding_boundary(use_alloc);
             quote! {
+                #fallback_assert
                 match this.#fallback_name() {
                     Ok(()) => return,
                     Err(e) => {
@@ -940,6 +1064,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         } else {
             quote! {
+                #fallback_assert
                 this.#fallback_name();
                 return;
             }
@@ -1018,6 +1143,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
+    let payable_helpers_fn = build_payable_helpers_fn();
+
     Ok(quote! {
         #alloc_setup
 
@@ -1026,6 +1153,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
             #mod_content
+
+            #payable_helpers_fn
 
             #[cfg(not(feature = "abi-gen"))]
             #revert
@@ -1281,8 +1410,228 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
 
 #[cfg(test)]
 mod tests {
-    use super::{ContractArgs, expand_contract};
+    use super::super::dispatch::StateMutability;
+    use super::{ContractArgs, expand_contract, parse_contract};
     use syn::ItemMod;
+
+    fn parse_sol(src: &str) -> syn_solidity::File {
+        let ts: proc_macro2::TokenStream = syn::parse_str(src).expect("solidity source parses");
+        syn_solidity::parse2(ts).expect("syn_solidity parses")
+    }
+
+    #[test]
+    fn parse_contract_detects_payable_attribute() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self, to: Address) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) -> bool { false }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        let deposit = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "deposit")
+            .unwrap();
+        let transfer = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "transfer")
+            .unwrap();
+        assert_eq!(deposit.mutability, StateMutability::Payable);
+        assert_eq!(transfer.mutability, StateMutability::NonPayable);
+    }
+
+    #[test]
+    fn parse_contract_payable_attribute_keeps_all_params() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self, to: Address) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        let deposit = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "deposit")
+            .unwrap();
+        assert_eq!(deposit.sol_name, "deposit");
+        assert_eq!(deposit.param_names.len(), 1);
+        assert_eq!(deposit.param_names[0].to_string(), "to");
+        assert_eq!(deposit.param_types.len(), 1);
+    }
+
+    #[test]
+    fn parse_contract_payable_constructor() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    #[pvm_contract_macros::payable]
+                    pub fn new(&mut self, initial: U256) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(parsed.constructor_is_payable);
+        assert_eq!(parsed.constructor_inputs.len(), 1);
+    }
+
+    #[test]
+    fn parse_contract_non_payable_constructor() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, initial: U256) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(!parsed.constructor_is_payable);
+    }
+
+    #[test]
+    fn parse_contract_payable_fallback() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::fallback]
+                    #[pvm_contract_macros::payable]
+                    pub fn any(&mut self) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(parsed.fallback_is_payable);
+    }
+
+    #[test]
+    fn parse_contract_view_from_sol() {
+        let iface = parse_sol(
+            r#"
+            interface I {
+                function balance() external view returns (uint256);
+            }
+        "#,
+        );
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, Some(&iface)).unwrap();
+        let method = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "balance")
+            .unwrap();
+        assert_eq!(method.mutability, StateMutability::View);
+    }
+
+    #[test]
+    fn parse_contract_pure_from_sol() {
+        let iface = parse_sol(
+            r#"
+            interface I {
+                function add(uint256 a, uint256 b) external pure returns (uint256);
+            }
+        "#,
+        );
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn add(&self, a: U256, b: U256) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, Some(&iface)).unwrap();
+        let method = parsed.methods.iter().find(|m| m.fn_name == "add").unwrap();
+        assert_eq!(method.mutability, StateMutability::Pure);
+    }
+
+    #[test]
+    fn parse_contract_nonpayable_from_sol_leaves_flags_false() {
+        let iface = parse_sol(
+            r#"
+            interface I {
+                function transfer(address to, uint256 amount) external returns (bool);
+            }
+        "#,
+        );
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) -> bool { false }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, Some(&iface)).unwrap();
+        let method = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "transfer")
+            .unwrap();
+        assert_eq!(method.mutability, StateMutability::NonPayable);
+    }
+
+    #[test]
+    fn parse_contract_without_sol_leaves_view_pure_false() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        let method = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "balance")
+            .unwrap();
+        assert_eq!(method.mutability, StateMutability::NonPayable);
+    }
+
+    #[test]
+    fn parse_contract_non_payable_fallback() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::fallback]
+                    pub fn any(&mut self) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(!parsed.fallback_is_payable);
+    }
 
     #[test]
     fn parses_no_alloc_with_nested_buffer() {
@@ -1553,6 +1902,256 @@ mod tests {
         assert!(
             !output.contains("as_ref"),
             "Generated dispatch should not use as_ref for error encoding"
+        );
+    }
+
+    #[test]
+    fn call_body_always_emits_value_guard_for_non_payable_methods() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        assert!(
+            s.contains("__pvm_assert_non_payable"),
+            "non-payable contract must emit the shared value-assertion helper"
+        );
+        assert!(
+            s.contains("value_transferred"),
+            "non-payable helper must call value_transferred to enforce rejection"
+        );
+        assert!(
+            s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "non-payable helper must revert with NON_PAYABLE_VALUE_RECEIVED when value attached"
+        );
+    }
+
+    #[test]
+    fn call_body_omits_value_code_when_all_payable() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        let route_start = s.find("fn route").unwrap();
+        let route_after = &s[route_start..];
+        let route_end = route_after[4..]
+            .find("fn ")
+            .map(|i| i + 4)
+            .unwrap_or(route_after.len());
+        let route_body = &route_after[..route_end];
+        assert!(
+            !route_body.contains("__has_value"),
+            "all-payable route must not emit __has_value; got:\n{route_body}"
+        );
+        assert!(
+            !route_body.contains("__pvm_assert_non_payable"),
+            "all-payable route must not invoke the non-payable helper; got:\n{route_body}"
+        );
+    }
+
+    #[test]
+    fn mixed_contract_emits_guard_for_non_payable_arms_only() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        assert!(s.contains("__has_value"), "hoist missing: {s}");
+        assert!(
+            s.contains("__pvm_assert_value_zero"),
+            "per-arm assert call missing: {s}"
+        );
+        assert!(
+            s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "non-payable guard missing: {s}"
+        );
+    }
+
+    #[test]
+    fn deploy_non_payable_constructor_always_has_guard() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, initial: U256) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        assert!(
+            s.contains("fn deploy"),
+            "contract should emit deploy entry point"
+        );
+        let after_deploy = &s[s.find("fn deploy").unwrap()..];
+        let deploy_end = after_deploy[4..]
+            .find("fn ")
+            .map(|i| i + 4)
+            .unwrap_or(after_deploy.len());
+        let deploy_body = &after_deploy[..deploy_end];
+        assert!(
+            deploy_body.contains("__pvm_assert_non_payable"),
+            "non-payable constructor must invoke the shared value-assertion helper; got:\n{deploy_body}"
+        );
+    }
+
+    #[test]
+    fn deploy_payable_constructor_omits_guard() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    #[pvm_contract_macros::payable]
+                    pub fn new(&mut self, initial: U256) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        let after_deploy = &s[s.find("fn deploy").unwrap()..];
+        let deploy_end = after_deploy[4..]
+            .find("fn ")
+            .map(|i| i + 4)
+            .unwrap_or(after_deploy.len());
+        let deploy_body = &after_deploy[..deploy_end];
+        assert!(
+            !deploy_body.contains("__pvm_assert_non_payable"),
+            "payable constructor must not invoke the non-payable helper; got:\n{deploy_body}"
+        );
+    }
+
+    #[test]
+    fn fallback_non_payable_always_has_guard() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    pub fn any(&mut self) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        assert!(
+            s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "non-payable fallback must always emit guard; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn fallback_payable_omits_guard() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    #[pvm_contract_macros::payable]
+                    pub fn any(&mut self) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        let call_start = s.find("fn call").unwrap();
+        let call_after = &s[call_start..];
+        let call_end = call_after[4..]
+            .find("fn ")
+            .map(|i| i + 4)
+            .unwrap_or(call_after.len());
+        let call_body = &call_after[..call_end];
+        assert!(
+            !call_body.contains("__pvm_assert_non_payable"),
+            "payable fallback must not invoke the non-payable helper in call(); got:\n{call_body}"
+        );
+    }
+
+    #[test]
+    fn contract_without_msg_value_still_guards_value() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn get(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        assert!(
+            s.contains("__pvm_assert_non_payable"),
+            "non-payable contract must invoke the shared value-assertion helper"
+        );
+        assert!(
+            s.contains("value_transferred"),
+            "non-payable contract must call value_transferred through the helper"
+        );
+        assert!(
+            s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "non-payable contract must revert with NON_PAYABLE_VALUE_RECEIVED when value attached"
+        );
+    }
+
+    #[test]
+    fn mixed_contract_guards_non_payable_methods() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = tokens.to_string();
+        assert!(
+            s.contains("__has_value"),
+            "mixed contract should hoist __has_value"
+        );
+        assert!(
+            s.contains("NON_PAYABLE_VALUE_RECEIVED"),
+            "mixed contract should guard non-payable arms"
         );
     }
 

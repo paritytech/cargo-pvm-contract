@@ -2,7 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::contract::{ParsedContract, SlotField};
-use super::dispatch::MethodInfo;
+use super::dispatch::{MethodInfo, StateMutability};
 use super::sol_storage::{generate_layout_entry, layout_json_from_entries};
 
 /// Generate both the in-module ABI helper and the top-level `main()`.
@@ -90,10 +90,16 @@ fn generate_abi_gen_impl(
             })
             .collect();
 
+        let mutability = if parsed.constructor_is_payable {
+            StateMutability::Payable
+        } else {
+            StateMutability::NonPayable
+        }
+        .as_abi_str();
         quote! {
             __items.push(::pvm_contract_sdk::AbiItem::Constructor {
                 inputs: vec![#(#ctor_params),*],
-                state_mutability: Some("payable".into()),
+                state_mutability: Some(#mutability.into()),
             });
         }
     } else {
@@ -269,16 +275,14 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // All methods are emitted with `"stateMutability":"payable"` because we don't yet
-    // support `payable`/`nonpayable`/`view`/`pure` attributes on Rust methods.
-    // Once state mutability attributes are added, this should be derived from the
-    // method annotation instead of hardcoded.
+    let mutability = method.mutability.as_abi_str();
+
     Ok(quote! {
         __items.push(::pvm_contract_sdk::AbiItem::Function {
             name: #method_name.into(),
             inputs: vec![#(#input_params),*],
             outputs: vec![#(#output_params),*],
-            state_mutability: Some("payable".into()),
+            state_mutability: Some(#mutability.into()),
         });
     })
 }
@@ -286,6 +290,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codegen::contract::{ContractArgs, expand_contract};
 
     #[test]
     fn returns_empty_for_sol_path_contract() {
@@ -298,14 +303,188 @@ mod tests {
             constructor_name: None,
             constructor_returns_result: false,
             constructor_inputs: vec![],
+            constructor_is_payable: false,
             fallback_name: None,
             fallback_returns_result: false,
+            fallback_is_payable: false,
             error_types: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[]);
         assert!(helper.is_empty());
         assert!(main_fn.is_empty());
+    }
+
+    fn expand_to_string(input: syn::ItemMod) -> String {
+        expand_contract(ContractArgs::default(), input)
+            .unwrap()
+            .to_string()
+    }
+
+    fn mutability_token(m: &str) -> String {
+        format!(r#"Some ("{m}""#)
+    }
+
+    #[test]
+    fn payable_method_abi_has_payable_mutability() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&mut self) {}
+                }
+            }
+        };
+        let s = expand_to_string(input);
+        assert!(
+            s.contains(&mutability_token("payable")),
+            "payable method ABI must declare stateMutability = payable; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn non_payable_method_abi_has_nonpayable_mutability() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address) -> bool { false }
+                }
+            }
+        };
+        let s = expand_to_string(input);
+        assert!(
+            s.contains(&mutability_token("nonpayable")),
+            "non-payable method ABI must declare stateMutability = nonpayable; got:\n{s}"
+        );
+        assert!(
+            !s.contains(&mutability_token("payable")),
+            "non-payable-only contract must not declare any payable mutability; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn payable_constructor_abi_has_payable_mutability() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    #[pvm_contract_macros::payable]
+                    pub fn new(&mut self) {}
+                }
+            }
+        };
+        let s = expand_to_string(input);
+        let ctor_marker = "AbiItem :: Constructor";
+        assert!(
+            s.contains(ctor_marker),
+            "constructor entry marker missing; got:\n{s}"
+        );
+        let after_ctor = &s[s.find(ctor_marker).unwrap()..];
+        assert!(
+            after_ctor.contains(&mutability_token("payable")),
+            "payable constructor must declare payable; got:\n{after_ctor}"
+        );
+    }
+
+    #[test]
+    fn state_mutability_abi_str() {
+        assert_eq!(StateMutability::NonPayable.as_abi_str(), "nonpayable");
+        assert_eq!(StateMutability::View.as_abi_str(), "view");
+        assert_eq!(StateMutability::Pure.as_abi_str(), "pure");
+        assert_eq!(StateMutability::Payable.as_abi_str(), "payable");
+    }
+
+    fn parsed_contract_with_method(method: MethodInfo) -> ParsedContract {
+        ParsedContract {
+            mod_name: syn::parse_str("contract").unwrap(),
+            struct_name: None,
+            methods: vec![method],
+            has_constructor: false,
+            has_fallback: false,
+            constructor_name: None,
+            constructor_returns_result: false,
+            constructor_inputs: vec![],
+            constructor_is_payable: false,
+            fallback_name: None,
+            fallback_returns_result: false,
+            fallback_is_payable: false,
+            error_types: vec![],
+        }
+    }
+
+    #[test]
+    fn view_method_abi_has_view_mutability() {
+        let method = MethodInfo {
+            fn_name: quote::format_ident!("balance"),
+            sol_name: "balance".to_string(),
+            param_names: vec![],
+            param_types: vec![],
+            return_types: vec![syn::parse_quote!(U256)],
+            returns_result: false,
+            mutability: StateMutability::View,
+            precomputed_selector: None,
+        };
+        let parsed = parsed_contract_with_method(method);
+        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
+        let s = helper.to_string();
+        assert!(
+            s.contains(&mutability_token("view")),
+            "view method ABI must declare stateMutability = view; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn pure_method_abi_has_pure_mutability() {
+        let method = MethodInfo {
+            fn_name: quote::format_ident!("add"),
+            sol_name: "add".to_string(),
+            param_names: vec![quote::format_ident!("a"), quote::format_ident!("b")],
+            param_types: vec![syn::parse_quote!(U256), syn::parse_quote!(U256)],
+            return_types: vec![syn::parse_quote!(U256)],
+            returns_result: false,
+            mutability: StateMutability::Pure,
+            precomputed_selector: None,
+        };
+        let parsed = parsed_contract_with_method(method);
+        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
+        let s = helper.to_string();
+        assert!(
+            s.contains(&mutability_token("pure")),
+            "pure method ABI must declare stateMutability = pure; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn non_payable_constructor_abi_has_nonpayable_mutability() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self, initial: U256) {}
+                }
+            }
+        };
+        let s = expand_to_string(input);
+        let ctor_marker = "AbiItem :: Constructor";
+        assert!(
+            s.contains(ctor_marker),
+            "constructor entry marker missing; got:\n{s}"
+        );
+        let after_ctor = &s[s.find(ctor_marker).unwrap()..];
+        assert!(
+            after_ctor.contains(&mutability_token("nonpayable")),
+            "non-payable constructor must declare nonpayable; got:\n{after_ctor}"
+        );
+        assert!(
+            !after_ctor.contains(&mutability_token("payable")),
+            "non-payable-only contract must not emit stateMutability = payable; got:\n{after_ctor}"
+        );
     }
 
     #[test]
@@ -319,8 +498,10 @@ mod tests {
             constructor_name: None,
             constructor_returns_result: false,
             constructor_inputs: vec![],
+            constructor_is_payable: false,
             fallback_name: None,
             fallback_returns_result: false,
+            fallback_is_payable: false,
             error_types: vec![],
         };
 
@@ -363,8 +544,10 @@ mod tests {
             constructor_name: None,
             constructor_returns_result: false,
             constructor_inputs: vec![],
+            constructor_is_payable: false,
             fallback_name: None,
             fallback_returns_result: false,
+            fallback_is_payable: false,
             error_types: vec![],
         };
 
@@ -400,8 +583,10 @@ mod tests {
             constructor_name: None,
             constructor_returns_result: false,
             constructor_inputs: vec![],
+            constructor_is_payable: false,
             fallback_name: None,
             fallback_returns_result: false,
+            fallback_is_payable: false,
             error_types: vec![],
         };
 

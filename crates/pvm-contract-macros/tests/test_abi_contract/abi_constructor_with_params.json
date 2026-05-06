@@ -10,7 +10,7 @@
         "type": "uint256"
       }
     ],
-    "stateMutability": "payable",
+    "stateMutability": "nonpayable",
     "type": "constructor"
   },
   {
@@ -27,7 +27,7 @@
         "type": "uint256"
       }
     ],
-    "stateMutability": "payable",
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -48,6 +48,11 @@
   {
     "inputs": [],
     "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
     "type": "error"
   }
 ]

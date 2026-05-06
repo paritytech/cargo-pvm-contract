@@ -88,6 +88,79 @@ impl CastClient {
             .to_string()
     }
 
+    /// Deploy a contract with a value transfer and return the contract address on success.
+    pub fn deploy_with_value(
+        &self,
+        bytecode_hex: &str,
+        constructor_sig: &str,
+        args: &[&str],
+        private_key: &str,
+        value: &str,
+    ) -> Result<String, String> {
+        let bytecode = if !constructor_sig.is_empty() {
+            let mut cmd = Command::new("cast");
+            cmd.args(["abi-encode", constructor_sig]);
+            for arg in args {
+                cmd.arg(arg);
+            }
+            let output = cmd.output().expect("cast abi-encode failed to execute");
+            assert!(
+                output.status.success(),
+                "cast abi-encode failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let encoded_args = String::from_utf8(output.stdout)
+                .unwrap()
+                .trim()
+                .trim_start_matches("0x")
+                .to_string();
+            format!("{bytecode_hex}{encoded_args}")
+        } else {
+            bytecode_hex.to_string()
+        };
+
+        let output = Command::new("cast")
+            .args([
+                "send",
+                "--rpc-url",
+                &self.rpc_url,
+                "--private-key",
+                private_key,
+                "--gas-limit",
+                "9999999999999",
+                "--json",
+                "--value",
+                value,
+                "--create",
+                &bytecode,
+            ])
+            .output()
+            .expect("cast send --create failed to execute");
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout).expect("Failed to parse cast deploy output as JSON");
+
+        let status = json["status"].as_str().unwrap_or("0x0");
+        if status != "0x1" {
+            return Err(format!(
+                "Deploy transaction reverted: {}",
+                json.get("revertReason")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("unknown")
+            ));
+        }
+
+        Ok(json["contractAddress"]
+            .as_str()
+            .expect("No contractAddress in cast output")
+            .to_string())
+    }
+
     /// Call a read-only function and return the raw output string.
     pub fn call(&self, contract: &str, sig: &str, args: &[&str]) -> String {
         let mut cmd = Command::new("cast");
@@ -140,6 +213,71 @@ impl CastClient {
             .as_str()
             .expect("No transactionHash in cast output")
             .to_string()
+    }
+
+    /// Send a write transaction with a value transfer. Returns the transaction hash.
+    pub fn send_with_value(
+        &self,
+        contract: &str,
+        sig: &str,
+        args: &[&str],
+        private_key: &str,
+        value: &str,
+    ) -> String {
+        let mut cmd = Command::new("cast");
+        cmd.args(["send", contract, sig]);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        cmd.args([
+            "--rpc-url",
+            &self.rpc_url,
+            "--private-key",
+            private_key,
+            "--value",
+            value,
+            "--json",
+        ]);
+
+        let output = cmd.output().expect("cast send failed to execute");
+        assert!(
+            output.status.success(),
+            "cast send '{sig}' failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .expect("Failed to parse cast send output as JSON");
+        json["transactionHash"]
+            .as_str()
+            .expect("No transactionHash in cast output")
+            .to_string()
+    }
+
+    /// Send a write transaction with a value transfer, expect it to revert. Returns raw output.
+    pub fn send_with_value_expect_revert(
+        &self,
+        contract: &str,
+        sig: &str,
+        args: &[&str],
+        private_key: &str,
+        value: &str,
+    ) -> Output {
+        let mut cmd = Command::new("cast");
+        cmd.args(["send", contract, sig]);
+        for arg in args {
+            cmd.arg(arg);
+        }
+        cmd.args([
+            "--rpc-url",
+            &self.rpc_url,
+            "--private-key",
+            private_key,
+            "--value",
+            value,
+        ]);
+
+        cmd.output().expect("cast send failed to execute")
     }
 
     /// Send a write transaction, expect it to revert. Returns raw output.

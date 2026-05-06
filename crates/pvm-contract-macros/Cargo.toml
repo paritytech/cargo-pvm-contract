@@ -35,3 +35,4 @@ pvm-contract-sdk = { path = "../pvm-contract-sdk", features = ["alloc", "std"] }
 proptest = "1"
 expect-test = { version = "1.5.1" }
 prettyplease = { version = "0.2" }
+trybuild = "1.0"

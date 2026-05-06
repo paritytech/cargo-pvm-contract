@@ -522,3 +522,88 @@ fn constructor_args_zero_supply() {
     let got_supply = cast.call(&addr, "getInitialSupply()(uint256)", &[]);
     assert_eq!(got_supply, "0", "Constructor should handle zero supply");
 }
+
+// --- Payable Enforcement ---
+
+#[test]
+fn payable_deposit_accepts_value() {
+    let (_anvil, cast, addr) = deploy("payable");
+    cast.send_with_value(&addr, "deposit()", &[], DEFAULT_PRIVATE_KEY, "100");
+    let bal = cast.call(&addr, "balanceOf(address)(uint256)", &[DEFAULT_ADDRESS]);
+    assert_eq!(bal, "100");
+}
+
+#[test]
+fn payable_deposit_to_accepts_value() {
+    let (_anvil, cast, addr) = deploy("payable");
+    let recipient = "0x0000000000000000000000000000000000000001";
+    cast.send_with_value(
+        &addr,
+        "depositTo(address)",
+        &[recipient],
+        DEFAULT_PRIVATE_KEY,
+        "50",
+    );
+    let bal = cast.call(&addr, "balanceOf(address)(uint256)", &[recipient]);
+    assert_eq!(bal, "50");
+}
+
+#[test]
+fn payable_deposit_with_zero_value_ok() {
+    let (_anvil, cast, addr) = deploy("payable");
+    cast.send_with_value(&addr, "deposit()", &[], DEFAULT_PRIVATE_KEY, "0");
+    let bal = cast.call(&addr, "balanceOf(address)(uint256)", &[DEFAULT_ADDRESS]);
+    assert_eq!(bal, "0");
+}
+
+#[test]
+fn non_payable_transfer_rejects_value() {
+    let (_anvil, cast, addr) = deploy("payable");
+    let output = cast.send_with_value_expect_revert(
+        &addr,
+        "transfer(address,uint256)",
+        &["0x0000000000000000000000000000000000000001", "0"],
+        DEFAULT_PRIVATE_KEY,
+        "1",
+    );
+    assert!(
+        !output.status.success(),
+        "non-payable transfer should revert when value is sent",
+    );
+}
+
+#[test]
+fn non_payable_transfer_accepts_zero_value() {
+    let (_anvil, cast, addr) = deploy("payable");
+    cast.send_with_value(&addr, "deposit()", &[], DEFAULT_PRIVATE_KEY, "100");
+    let recipient = "0x0000000000000000000000000000000000000001";
+    cast.send(
+        &addr,
+        "transfer(address,uint256)",
+        &[recipient, "50"],
+        DEFAULT_PRIVATE_KEY,
+    );
+    let bal = cast.call(&addr, "balanceOf(address)(uint256)", &[recipient]);
+    assert_eq!(bal, "50");
+}
+
+#[test]
+fn non_payable_constructor_rejects_value() {
+    let c = contract("test-contracts");
+    c.build();
+    let anvil = AnvilPolkadot::start();
+    let cast = CastClient::new(&anvil.rpc_url);
+    let hex = c.bytecode_hex("payable", "release");
+    let result = cast.deploy_with_value(&hex, "", &[], DEFAULT_PRIVATE_KEY, "1");
+    assert!(
+        result.is_err(),
+        "non-payable constructor should reject value"
+    );
+    drop(anvil);
+}
+
+#[test]
+fn non_payable_constructor_accepts_zero_value() {
+    let (_anvil, _cast, addr) = deploy("payable");
+    assert!(!addr.is_empty(), "deploy without value should succeed");
+}

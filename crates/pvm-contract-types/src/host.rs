@@ -6,14 +6,22 @@
 //! (`self.host().caller(...)` in the macro path, `host.caller(...)` in the DSL
 //! path) so tests can inject a `MockHost` instance per test.
 //!
-//! **`return_value` has a cfg-gated signature** — `-> !` on `riscv64` (a
-//! diverging syscall via `pallet_revive_uapi::HostFnImpl::return_value`), and
-//! `-> ()` on host targets (the [`MockHost`](super::MockHost) implementation
-//! captures `(flags, data)` so route-driving tests can inspect the result
-//! after `route()` returns). This mirrors ink!'s pattern: contract dispatch
-//! looks the same on both targets, but on chain it terminates execution and
-//! in tests it returns control with the encoded result available via
-//! `MockHost::take_return_value()`.
+//! Diverging host operations split by role:
+//!
+//! - **Boundary operations** ([`HostApi::return_value`]) are called only from
+//!   macro/DSL dispatch glue at the end of a method invocation. The signature
+//!   is cfg-gated: `-> !` on `riscv64` and `-> ()` on host targets, where
+//!   [`MockHost`](super::MockHost) captures the encoded result instead of
+//!   terminating. Tests inspect the captured result via
+//!   [`MockHost::take_return_value`](super::MockHost::take_return_value).
+//!
+//! - **Mid-execution operations** ([`HostApi::consume_all_gas`],
+//!   [`HostApi::terminate`]) can be called from arbitrary positions in user
+//!   method bodies. The signature is `-> !` on both targets — a syscall on
+//!   `riscv64`, and a typed-payload panic on host targets. Tests recover the
+//!   captured halt via [`MockHost::run_until_halt`](super::MockHost::run_until_halt),
+//!   which downcasts the panic payload and re-throws non-halt panics so
+//!   contract bugs aren't silently swallowed.
 
 pub use pallet_revive_uapi::{CallFlags, ReturnErrorCode, ReturnFlags, StorageFlags};
 
@@ -29,9 +37,10 @@ pub type HostResult = core::result::Result<(), ReturnErrorCode>;
 ///
 /// `return_value` has a cfg-gated signature: it diverges (`-> !`) on `riscv64`
 /// and returns `()` on host targets, where `MockHost` captures the encoded
-/// result instead of terminating. Other diverging operations (`consume_all_gas`,
-/// `terminate`) remain off the trait — they're production-only and used
-/// directly from macro-generated `call()` / `deploy()` wrappers.
+/// result instead of terminating. The mid-execution diverging operations
+/// `consume_all_gas` and `terminate` are `-> !` on both targets — a syscall
+/// on `riscv64`, a typed-payload panic on host targets that
+/// [`MockHost::run_until_halt`](super::MockHost::run_until_halt) catches.
 #[allow(clippy::too_many_arguments)]
 pub trait HostApi {
     fn address(&self, output: &mut [u8; 20]);
@@ -134,6 +143,19 @@ pub trait HostApi {
     /// for the test to inspect after the dispatch returns.
     #[cfg(not(target_arch = "riscv64"))]
     fn return_value(&self, flags: ReturnFlags, data: &[u8]);
+
+    /// Halt execution and consume all remaining gas.
+    ///
+    /// On `riscv64` this is a syscall and never returns. On host targets the
+    /// mock implementation panics with a typed payload that
+    /// [`MockHost::run_until_halt`](super::MockHost::run_until_halt) catches.
+    fn consume_all_gas(&self) -> !;
+
+    /// Terminate the contract, transferring its remaining balance to
+    /// `beneficiary`.
+    ///
+    /// Same divergence semantics as [`Self::consume_all_gas`].
+    fn terminate(&self, beneficiary: &[u8; 20]) -> !;
 }
 
 /// Real host backend for PolkaVM contracts.
@@ -369,6 +391,14 @@ impl HostApi for PolkaVmHost {
     fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> ! {
         pallet_revive_uapi::HostFnImpl::return_value(flags, data)
     }
+    #[inline(always)]
+    fn consume_all_gas(&self) -> ! {
+        pallet_revive_uapi::HostFnImpl::consume_all_gas()
+    }
+    #[inline(always)]
+    fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
+        pallet_revive_uapi::HostFnImpl::terminate(beneficiary)
+    }
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -534,6 +564,12 @@ impl HostApi for PolkaVmHost {
     }
     fn return_value(&self, _flags: ReturnFlags, _data: &[u8]) {
         unimplemented!("PolkaVmHost::return_value is only available on PolkaVM")
+    }
+    fn consume_all_gas(&self) -> ! {
+        unimplemented!("PolkaVmHost::consume_all_gas is only available on PolkaVM")
+    }
+    fn terminate(&self, _beneficiary: &[u8; 20]) -> ! {
+        unimplemented!("PolkaVmHost::terminate is only available on PolkaVM")
     }
 }
 
@@ -839,6 +875,14 @@ impl HostApi for Host {
     fn return_value(&self, flags: ReturnFlags, data: &[u8]) {
         self.inner.return_value(flags, data)
     }
+    #[inline(always)]
+    fn consume_all_gas(&self) -> ! {
+        self.inner.consume_all_gas()
+    }
+    #[inline(always)]
+    fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
+        self.inner.terminate(beneficiary)
+    }
 }
 
 // `Host` on a non-riscv64 target without `alloc` is uninhabited — every
@@ -1007,6 +1051,12 @@ impl HostApi for Host {
         match self._never {}
     }
     fn return_value(&self, _flags: ReturnFlags, _data: &[u8]) {
+        match self._never {}
+    }
+    fn consume_all_gas(&self) -> ! {
+        match self._never {}
+    }
+    fn terminate(&self, _beneficiary: &[u8; 20]) -> ! {
         match self._never {}
     }
 }

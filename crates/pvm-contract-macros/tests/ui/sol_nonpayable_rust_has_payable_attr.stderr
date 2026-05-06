@@ -1,0 +1,9 @@
+error: method 'transfer' is not declared payable in the Solidity interface but the Rust signature is marked `#[payable]`
+  --> tests/ui/sol_nonpayable_rust_has_payable_attr.rs:6:9
+   |
+ 6 | /         #[pvm_contract_macros::method]
+ 7 | |         #[pvm_contract_macros::payable]
+ 8 | |         pub fn transfer(&mut self, to: pvm_contract_types::Address) {
+ 9 | |             let _ = to;
+10 | |         }
+   | |_________^

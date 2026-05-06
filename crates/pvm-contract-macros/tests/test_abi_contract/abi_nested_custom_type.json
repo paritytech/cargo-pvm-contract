@@ -1,7 +1,7 @@
 [
   {
     "inputs": [],
-    "stateMutability": "payable",
+    "stateMutability": "nonpayable",
     "type": "constructor"
   },
   {
@@ -78,7 +78,7 @@
         "type": "tuple"
       }
     ],
-    "stateMutability": "payable",
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -100,7 +100,7 @@
         "type": "tuple"
       }
     ],
-    "stateMutability": "payable",
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -121,6 +121,11 @@
   {
     "inputs": [],
     "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
     "type": "error"
   }
 ]

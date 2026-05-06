@@ -584,11 +584,12 @@ mod test {
                 error CalldataTooLarge();
                 error InvalidCalldata();
                 error NoSelector();
+                error NonPayableValueReceived();
                 error UnknownSelector();
-                constructor() payable;
-                function getCount() external payable returns (uint64);
-                function setFlag(bool flag) external payable;
-                function transfer(address to, uint256 amount, uint32 nonce) external payable returns (bool);
+                constructor();
+                function getCount() external returns (uint64);
+                function setFlag(bool flag) external;
+                function transfer(address to, uint256 amount, uint32 nonce) external returns (bool);
             }
             ```*/
                 ///
@@ -606,25 +607,28 @@ mod test {
                     Inputs: SolEncode,
                     Outputs: SolDecode,
                 > MultiMethod<Mutability, Inputs, Outputs, false> {
-                    pub fn get_count(mut self) -> MultiMethod<Payable, (), (u64), true> {
-                        MultiMethod::<Payable, (), (u64), true> {
+                    pub fn get_count(mut self) -> MultiMethod<NonPayable, (), (u64), true> {
+                        MultiMethod::<NonPayable, (), (u64), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, (), (u64)> {
+                            call_builder: CallBuilder::<NonPayable, (), (u64)> {
                                 payload: (),
                                 selector: [168u8, 125u8, 148u8, 44u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
                         }
                     }
-                    pub fn set_flag(mut self, flag: bool) -> MultiMethod<Payable, (bool), (), true> {
-                        MultiMethod::<Payable, (bool), (), true> {
+                    pub fn set_flag(
+                        mut self,
+                        flag: bool,
+                    ) -> MultiMethod<NonPayable, (bool), (), true> {
+                        MultiMethod::<NonPayable, (bool), (), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, (bool), ()> {
+                            call_builder: CallBuilder::<NonPayable, (bool), ()> {
                                 payload: (flag),
                                 selector: [57u8, 39u8, 246u8, 175u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -635,13 +639,13 @@ mod test {
                         to: Address,
                         amount: U256,
                         nonce: u32,
-                    ) -> MultiMethod<Payable, (Address, U256, u32), (bool), true> {
-                        MultiMethod::<Payable, (Address, U256, u32), (bool), true> {
+                    ) -> MultiMethod<NonPayable, (Address, U256, u32), (bool), true> {
+                        MultiMethod::<NonPayable, (Address, U256, u32), (bool), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, (Address, U256, u32), (bool)> {
+                            call_builder: CallBuilder::<NonPayable, (Address, U256, u32), (bool)> {
                                 payload: (to, amount, nonce),
                                 selector: [103u8, 215u8, 9u8, 208u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -795,6 +799,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -815,10 +821,11 @@ mod test {
                 error CalldataTooLarge();
                 error InvalidCalldata();
                 error NoSelector();
+                error NonPayableValueReceived();
                 error UnknownSelector();
-                constructor() payable;
-                function origin() external payable returns ((uint64,uint64) memory);
-                function reflect(((uint64,uint64),(uint64,uint64)) memory line) external payable returns (((uint64,uint64),(uint64,uint64)) memory);
+                constructor();
+                function origin() external returns ((uint64,uint64) memory);
+                function reflect(((uint64,uint64),(uint64,uint64)) memory line) external returns (((uint64,uint64),(uint64,uint64)) memory);
             }
             ```*/
                 ///
@@ -836,13 +843,13 @@ mod test {
                     Inputs: SolEncode,
                     Outputs: SolDecode,
                 > NestedCustomType<Mutability, Inputs, Outputs, false> {
-                    pub fn origin(mut self) -> NestedCustomType<Payable, (), ((u64, u64)), true> {
-                        NestedCustomType::<Payable, (), ((u64, u64)), true> {
+                    pub fn origin(mut self) -> NestedCustomType<NonPayable, (), ((u64, u64)), true> {
+                        NestedCustomType::<NonPayable, (), ((u64, u64)), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, (), ((u64, u64))> {
+                            call_builder: CallBuilder::<NonPayable, (), ((u64, u64))> {
                                 payload: (),
                                 selector: [147u8, 139u8, 95u8, 50u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -852,26 +859,26 @@ mod test {
                         mut self,
                         line: ((u64, u64), (u64, u64)),
                     ) -> NestedCustomType<
-                        Payable,
+                        NonPayable,
                         (((u64, u64), (u64, u64))),
                         (((u64, u64), (u64, u64))),
                         true,
                     > {
                         NestedCustomType::<
-                            Payable,
+                            NonPayable,
                             (((u64, u64), (u64, u64))),
                             (((u64, u64), (u64, u64))),
                             true,
                         > {
                             address: self.address,
                             call_builder: CallBuilder::<
-                                Payable,
+                                NonPayable,
                                 (((u64, u64), (u64, u64))),
                                 (((u64, u64), (u64, u64))),
                             > {
                                 payload: (line),
                                 selector: [5u8, 150u8, 191u8, 142u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -1025,6 +1032,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1045,9 +1054,10 @@ mod test {
                 error CalldataTooLarge();
                 error InvalidCalldata();
                 error NoSelector();
+                error NonPayableValueReceived();
                 error UnknownSelector();
-                constructor() payable;
-                function touch((uint256,uint256) memory value) external payable returns ((uint256,uint256) memory);
+                constructor();
+                function touch((uint256,uint256) memory value) external returns ((uint256,uint256) memory);
             }
             ```*/
                 ///
@@ -1068,13 +1078,13 @@ mod test {
                     pub fn touch(
                         mut self,
                         value: (U256, U256),
-                    ) -> CustomTypeMethod<Payable, ((U256, U256)), ((U256, U256)), true> {
-                        CustomTypeMethod::<Payable, ((U256, U256)), ((U256, U256)), true> {
+                    ) -> CustomTypeMethod<NonPayable, ((U256, U256)), ((U256, U256)), true> {
+                        CustomTypeMethod::<NonPayable, ((U256, U256)), ((U256, U256)), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, ((U256, U256)), ((U256, U256))> {
+                            call_builder: CallBuilder::<NonPayable, ((U256, U256)), ((U256, U256))> {
                                 payload: (value),
                                 selector: [184u8, 219u8, 195u8, 2u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -1228,6 +1238,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1248,10 +1260,11 @@ mod test {
                 error CalldataTooLarge();
                 error InvalidCalldata();
                 error NoSelector();
+                error NonPayableValueReceived();
                 error UnknownSelector();
-                constructor() payable;
-                function getNamed() external payable returns ((uint64,string) memory);
-                function process((uint64,string) memory data, bool flag) external payable returns (uint64);
+                constructor();
+                function getNamed() external returns ((uint64,string) memory);
+                function process((uint64,string) memory data, bool flag) external returns (uint64);
             }
             ```*/
                 ///
@@ -1271,17 +1284,17 @@ mod test {
                 > DynamicCustomReturn<Mutability, Inputs, Outputs, false> {
                     pub fn get_named(
                         mut self,
-                    ) -> DynamicCustomReturn<Payable, (), ((u64, alloc::string::String)), true> {
-                        DynamicCustomReturn::<Payable, (), ((u64, alloc::string::String)), true> {
+                    ) -> DynamicCustomReturn<NonPayable, (), ((u64, alloc::string::String)), true> {
+                        DynamicCustomReturn::<NonPayable, (), ((u64, alloc::string::String)), true> {
                             address: self.address,
                             call_builder: CallBuilder::<
-                                Payable,
+                                NonPayable,
                                 (),
                                 ((u64, alloc::string::String)),
                             > {
                                 payload: (),
                                 selector: [233u8, 148u8, 217u8, 223u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -1292,26 +1305,26 @@ mod test {
                         data: (u64, alloc::string::String),
                         flag: bool,
                     ) -> DynamicCustomReturn<
-                        Payable,
+                        NonPayable,
                         ((u64, alloc::string::String), bool),
                         (u64),
                         true,
                     > {
                         DynamicCustomReturn::<
-                            Payable,
+                            NonPayable,
                             ((u64, alloc::string::String), bool),
                             (u64),
                             true,
                         > {
                             address: self.address,
                             call_builder: CallBuilder::<
-                                Payable,
+                                NonPayable,
                                 ((u64, alloc::string::String), bool),
                                 (u64),
                             > {
                                 payload: (data, flag),
                                 selector: [57u8, 253u8, 73u8, 204u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -1467,6 +1480,8 @@ mod test {
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }
         "#]]
@@ -1487,9 +1502,10 @@ mod test {
                 error CalldataTooLarge();
                 error InvalidCalldata();
                 error NoSelector();
+                error NonPayableValueReceived();
                 error UnknownSelector();
-                constructor(address owner, uint256 supply) payable;
-                function balanceOf(address account) external payable returns (uint256);
+                constructor(address owner, uint256 supply);
+                function balanceOf(address account) external returns (uint256);
             }
             ```*/
                 ///
@@ -1510,13 +1526,13 @@ mod test {
                     pub fn balance_of(
                         mut self,
                         account: Address,
-                    ) -> ConstructorWithParams<Payable, (Address), (U256), true> {
-                        ConstructorWithParams::<Payable, (Address), (U256), true> {
+                    ) -> ConstructorWithParams<NonPayable, (Address), (U256), true> {
+                        ConstructorWithParams::<NonPayable, (Address), (U256), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<Payable, (Address), (U256)> {
+                            call_builder: CallBuilder::<NonPayable, (Address), (U256)> {
                                 payload: (account),
                                 selector: [112u8, 160u8, 130u8, 49u8],
-                                witness: Payable::default(),
+                                witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 _ret: core::marker::PhantomData,
                             },
@@ -1674,6 +1690,8 @@ mod test {
                 pub struct InvalidCalldata {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
                 #[derive(SolError, PartialEq, Eq, Debug)]
                 pub struct UnknownSelector {}
             }

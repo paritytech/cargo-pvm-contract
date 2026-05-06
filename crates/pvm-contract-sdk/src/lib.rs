@@ -43,7 +43,7 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolType, abi_import, constructor, contract, fallback, method,
+    SolError, SolType, abi_import, constructor, contract, fallback, method, payable,
 };
 
 // ---------------------------------------------------------------------------
@@ -96,6 +96,7 @@ pub use pvm_contract_types::{
     // Framework errors
     framework_errors,
     sol_revert_enum,
+    value_transferred_is_nonzero,
 };
 
 // Cross-contract calls
@@ -121,7 +122,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;
