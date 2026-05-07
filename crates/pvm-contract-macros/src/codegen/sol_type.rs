@@ -52,7 +52,8 @@ fn expand_static_sol_type(
     let sol_name_expr = build_sol_name_expr(field_info);
     let total_size_expr = build_total_size_expr(field_info);
     let encode_body = generate_static_encode_body(fields);
-    let decode_body = generate_static_decode_body(fields);
+    let decode_body = generate_static_decode_body(fields, false);
+    let decode_body_unchecked = generate_static_decode_body(fields, true);
 
     #[cfg(feature = "abi-gen")]
     let abi_param_fn = generate_abi_param_fn(fields, field_info);
@@ -79,6 +80,12 @@ fn expand_static_sol_type(
 
         impl ::pvm_contract_sdk::StaticEncodedLen for #name {
             const ENCODED_SIZE: usize = #total_size_expr;
+        }
+
+        impl ::pvm_contract_sdk::StaticDecode for #name {
+            fn decode_unchecked(input: &[u8], offset: usize) -> Self  {
+                #decode_body_unchecked
+            }
         }
 
         impl ::pvm_contract_sdk::SolDecode for #name {
@@ -360,8 +367,19 @@ fn generate_static_encode_body(fields: &Fields) -> TokenStream {
     quote! { #(#stmts)* }
 }
 
-fn generate_static_decode_body(fields: &Fields) -> TokenStream {
-    match fields {
+fn generate_static_decode_body(fields: &Fields, unchecked: bool) -> TokenStream {
+    let decoder = |ty: TokenStream| {
+        if unchecked {
+            quote! {
+                let __val = <#ty as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(input, offset + __offset);
+            }
+        } else {
+            quote! {
+                let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset)?;
+            }
+        }
+    };
+    let res = match fields {
         Fields::Named(named) => {
             let mut pre_stmts: Vec<TokenStream> = vec![quote! { let mut __offset: usize = 0; }];
             let mut field_lets = Vec::new();
@@ -370,10 +388,10 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
                 let name = field.ident.as_ref().unwrap();
                 let ty = &field.ty;
                 let tmp = quote::format_ident!("__field_{}", name);
-
+                let decoder = decoder(quote! {#ty});
                 pre_stmts.push(quote! {
                     let #tmp = {
-                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset)?;
+                        #decoder
                         __offset += <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
                         __val
                     };
@@ -383,7 +401,7 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
             quote! {
                 #(#pre_stmts)*
-                Ok(Self { #(#field_lets),* })
+                Self { #(#field_lets),* }
             }
         }
         Fields::Unnamed(unnamed) => {
@@ -393,10 +411,11 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
             for (i, field) in unnamed.unnamed.iter().enumerate() {
                 let ty = &field.ty;
                 let tmp = quote::format_ident!("__field_{}", i);
+                let decoder = decoder(quote! {#ty});
 
                 pre_stmts.push(quote! {
                     let #tmp = {
-                        let __val = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __offset)?;
+                        #decoder
                         __offset += <#ty as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
                         __val
                     };
@@ -406,10 +425,19 @@ fn generate_static_decode_body(fields: &Fields) -> TokenStream {
 
             quote! {
                 #(#pre_stmts)*
-                Ok(Self(#(#field_tmps),*))
+                Self(#(#field_tmps),*)
             }
         }
-        Fields::Unit => quote! { Ok(Self) },
+        Fields::Unit => quote! { Self },
+    };
+    if unchecked {
+        quote! {
+            #res
+        }
+    } else {
+        quote! {
+            Ok({ #res })
+        }
     }
 }
 
