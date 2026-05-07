@@ -1014,153 +1014,101 @@ macro_rules! impl_static_type_decode {
             }
         }
     };
-    // Variant that also emits SolArrayElement
-    ($ty:ty, $decode_fn:expr, array_element) => {
-        impl_static_type_decode!($ty, $decode_fn);
-    };
 }
 
-impl_static_type_decode!(
-    U256,
-    |input: &[u8], offset: usize| unsafe {
-        U256::from_be_slice(input.get_unchecked(offset..offset + 32))
-    },
-    array_element
-);
+impl_static_type_decode!(U256, |input: &[u8], offset: usize| unsafe {
+    U256::from_be_slice(input.get_unchecked(offset..offset + 32))
+});
 
-impl_static_type_decode!(
-    I256,
-    |input: &[u8], offset: usize| unsafe {
-        I256::from_be_slice(input.get_unchecked(offset..offset + 32))
-    },
-    array_element
-);
+impl_static_type_decode!(I256, |input: &[u8], offset: usize| unsafe {
+    I256::from_be_slice(input.get_unchecked(offset..offset + 32))
+});
 
-impl_static_type_decode!(
-    u128,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
-                .map(u128::from_be_bytes)
-                .unwrap()
-        }
-    },
-    array_element
-);
+impl_static_type_decode!(u128, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
+            .map(u128::from_be_bytes)
+            .unwrap()
+    }
+});
 
-impl_static_type_decode!(
-    u64,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
-                .map(u64::from_be_bytes)
-                .unwrap()
-        }
-    },
-    array_element
-);
+impl_static_type_decode!(u64, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
+            .map(u64::from_be_bytes)
+            .unwrap()
+    }
+});
 
-impl_static_type_decode!(
-    u32,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            TryInto::<[u8; 4]>::try_into(input.get_unchecked(offset + 28..offset + 32))
-                .map(u32::from_be_bytes)
-                .unwrap()
-        }
-    },
-    array_element
-);
+impl_static_type_decode!(u32, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 4]>::try_into(input.get_unchecked(offset + 28..offset + 32))
+            .map(u32::from_be_bytes)
+            .unwrap()
+    }
+});
 
-impl_static_type_decode!(
-    u16,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            u16::from_be_bytes([
-                *input.get_unchecked(offset + 30),
-                *input.get_unchecked(offset + 31),
-            ])
-        }
-    },
-    array_element
-);
+impl_static_type_decode!(u16, |input: &[u8], offset: usize| {
+    unsafe {
+        u16::from_be_bytes([
+            *input.get_unchecked(offset + 30),
+            *input.get_unchecked(offset + 31),
+        ])
+    }
+});
 
 impl_static_type_decode!(u8, |input: &[u8], offset: usize| unsafe {
     *input.get_unchecked(offset + 31)
 });
 
-impl_static_type_decode!(
-    i128,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
-                .map(i128::from_be_bytes)
-                .unwrap()
-        }
-    },
-    array_element
-);
-
-impl_static_type_decode!(
-    i64,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
-                .map(i64::from_be_bytes)
-                .unwrap()
-        }
-    },
-    array_element
-);
-
-impl_static_type_decode!(
-    i32,
-    |input: &[u8], offset: usize| {
-        input
-            .get(offset + 28..offset + 32)
-            .and_then(|x| TryInto::<[u8; 4]>::try_into(x).ok())
-            .map(i32::from_be_bytes)
+impl_static_type_decode!(i128, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
+            .map(i128::from_be_bytes)
             .unwrap()
-    },
-    array_element
-);
+    }
+});
 
-impl_static_type_decode!(
-    i16,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            i16::from_be_bytes([
-                *input.get_unchecked(offset + 30),
-                *input.get_unchecked(offset + 31),
-            ])
-        }
-    },
-    array_element
-);
+impl_static_type_decode!(i64, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
+            .map(i64::from_be_bytes)
+            .unwrap()
+    }
+});
 
-impl_static_type_decode!(
-    i8,
-    |input: &[u8], offset: usize| unsafe { i8::from_be_bytes([*input.get_unchecked(offset + 31)]) },
-    array_element
-);
+impl_static_type_decode!(i32, |input: &[u8], offset: usize| {
+    input
+        .get(offset + 28..offset + 32)
+        .and_then(|x| TryInto::<[u8; 4]>::try_into(x).ok())
+        .map(i32::from_be_bytes)
+        .unwrap()
+});
 
-impl_static_type_decode!(
-    bool,
-    |input: &[u8], offset: usize| unsafe { *input.get_unchecked(offset + 31) != 0 },
-    array_element
-);
+impl_static_type_decode!(i16, |input: &[u8], offset: usize| {
+    unsafe {
+        i16::from_be_bytes([
+            *input.get_unchecked(offset + 30),
+            *input.get_unchecked(offset + 31),
+        ])
+    }
+});
 
-impl_static_type_decode!(
-    Address,
-    |input: &[u8], offset: usize| {
-        unsafe {
-            let mut result = [0u8; 20];
-            result.copy_from_slice(input.get_unchecked(offset + 12..offset + 32));
-            Address(result)
-        }
-    },
-    array_element
-);
+impl_static_type_decode!(i8, |input: &[u8], offset: usize| unsafe {
+    i8::from_be_bytes([*input.get_unchecked(offset + 31)])
+});
+
+impl_static_type_decode!(bool, |input: &[u8], offset: usize| unsafe {
+    *input.get_unchecked(offset + 31) != 0
+});
+
+impl_static_type_decode!(Address, |input: &[u8], offset: usize| {
+    unsafe {
+        let mut result = [0u8; 20];
+        result.copy_from_slice(input.get_unchecked(offset + 12..offset + 32));
+        Address(result)
+    }
+});
 
 impl SolEncode for &str {
     const IS_DYNAMIC: bool = true;
