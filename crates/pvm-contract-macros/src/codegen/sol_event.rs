@@ -72,9 +72,9 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
                 "SolEvent supports at most {} #[indexed] fields{}",
                 max_indexed,
                 if is_anonymous {
-                    " (anonymous event: 4 topics)"
+                    " for anonymous events"
                 } else {
-                    " (EVM limit: 4 topics including topic0)"
+                    ""
                 }
             ),
         ));
@@ -84,9 +84,7 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     // distinguish type aliases (type Owner = Address) from actual custom
     // structs (#[derive(SolType)]). For aliases, indexed_topic() would
     // produce correct output, but for custom structs it produces topics
-    // incompatible with Solidity (direct encoding instead of
-    // keccak256(abi.encode(value))), and dynamic custom structs panic at
-    // runtime. Reject all Custom types to guarantee correctness.
+    // incompatible with Solidity. Reject all to guarantee correctness.
     if let Fields::Named(named) = fields {
         for (i, field) in named.named.iter().enumerate() {
             if !indexed_flags[i] {
