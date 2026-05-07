@@ -6,27 +6,25 @@ use quote::quote;
 /// Each expression reads from `input` at `__decode_offset` and advances
 /// `__decode_offset` by the type's `HEAD_SIZE`. The caller must emit
 /// `let mut __decode_offset: usize = 0;` before using these.
-pub fn generate_decode_params(
-    names: &[syn::Ident],
-    types: &[syn::Type],
-    unit_return: bool,
-) -> TokenStream {
-    if names.is_empty() {
-        quote! {}
-    } else if unit_return {
-        quote! {
-            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode(&input,0) else {
-                 revert(this);
-                 return();
-            };
-        }
-    } else {
-        quote! {
-            let Ok((#(#names),*)) = <(#(#types),*) as ::pvm_contract_sdk::SolDecode>::decode_at(&input,0) else {
-                return revert(this);
-            };
-        }
-    }
+pub fn generate_decode_params(types: &[syn::Type]) -> Vec<TokenStream> {
+    types
+        .iter()
+        .map(|ty| {
+            quote! {{
+                let Ok(__value) = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(&input, __decode_offset) else {
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                        this.host(),
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                    );
+                    #[allow(unreachable_code)]
+                    return ::core::option::Option::Some(());
+                };
+                __decode_offset += <#ty as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                __value
+            }}
+        })
+        .collect()
 }
 
 /// Build a compile-time expression for the minimum required input size.

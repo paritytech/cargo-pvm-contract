@@ -97,7 +97,7 @@ pub(super) struct ParamDecoding {
     /// `HostFnImpl::return_value` for constructors, or
     /// `host.return_value(REVERT, ...)` for dispatch arms).
     pub min_size_expr: TokenStream,
-    pub decode_statements: TokenStream,
+    pub decode_statements: Vec<TokenStream>,
     pub call_args: Vec<TokenStream>,
     /// True when decoding is non-empty (i.e. there are params to check/decode).
     pub has_params: bool,
@@ -109,11 +109,27 @@ pub(super) struct ParamDecoding {
 pub(super) fn generate_param_decoding(
     param_names: &[syn::Ident],
     param_types: &[syn::Type],
-    unit_return: bool,
 ) -> ParamDecoding {
-    let decode_statements = generate_decode_params(param_names, param_types, unit_return);
+    let decodes = generate_decode_params(param_types);
     let min_size_expr = calculate_min_input_size(param_types);
     let has_params = !param_types.is_empty();
+
+    let offset_init = if has_params {
+        quote! { let mut __decode_offset: usize = 0; }
+    } else {
+        quote! {}
+    };
+
+    let decode_statements = std::iter::once(offset_init)
+        .chain(
+            param_names
+                .iter()
+                .zip(decodes.iter())
+                .map(|(name, decode)| {
+                    quote! { let #name = #decode; }
+                }),
+        )
+        .collect();
 
     let call_args = param_names
         .iter()
@@ -169,7 +185,13 @@ fn dispatch_size_check(has_params: bool, min_size_expr: &TokenStream) -> TokenSt
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                return revert(this);
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                    this.host(),
+                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                );
+                #[allow(unreachable_code)]
+                return ::core::option::Option::Some(());
             }
         }
     } else {
@@ -202,7 +224,7 @@ pub fn generate_dispatch_arm(
     let const_def = build_selector_const(method);
 
     let fn_name = &method.fn_name;
-    let decoding = generate_param_decoding(&method.param_names, &method.param_types, false);
+    let decoding = generate_param_decoding(&method.param_names, &method.param_types);
     let ParamDecoding {
         min_size_expr,
         decode_statements,
@@ -273,7 +295,7 @@ pub fn generate_dispatch_arm(
         #sel_ident => {
             #payable_guard
             #size_check
-            #decode_statements
+            #(#decode_statements)*
             #body
         }
     };
@@ -526,13 +548,21 @@ mod tests {
                         __pvm_assert_value_zero(this.host(), __has_value);
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
-                            return revert(this);
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                this.host(),
+                                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                            );
+                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
                         }
-                        let Ok((to)) = <(Address) as ::pvm_contract_sdk::SolDecode>::decode_at(
-                            &input,
-                            0,
-                        ) else {
-                            return revert(this);
+                        let mut __decode_offset: usize = 0;
+                        let to = {
+                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                                &input,
+                                __decode_offset,
+                            );
+                            __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                            __value
                         };
                         this.transfer(::core::convert::Into::into(to));
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
@@ -559,13 +589,21 @@ mod tests {
                     __SEL_deposit => {
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
-                            return revert(this);
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                this.host(),
+                                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                            );
+                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
                         }
-                        let Ok((to)) = <(Address) as ::pvm_contract_sdk::SolDecode>::decode_at(
-                            &input,
-                            0,
-                        ) else {
-                            return revert(this);
+                        let mut __decode_offset: usize = 0;
+                        let to = {
+                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                                &input,
+                                __decode_offset,
+                            );
+                            __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                            __value
                         };
                         this.deposit(::core::convert::Into::into(to));
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
@@ -592,13 +630,21 @@ mod tests {
                     __SEL_transfer => {
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
-                            return revert(this);
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                this.host(),
+                                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                            );
+                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
                         }
-                        let Ok((to)) = <(Address) as ::pvm_contract_sdk::SolDecode>::decode_at(
-                            &input,
-                            0,
-                        ) else {
-                            return revert(this);
+                        let mut __decode_offset: usize = 0;
+                        let to = {
+                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                                &input,
+                                __decode_offset,
+                            );
+                            __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
+                            __value
                         };
                         this.transfer(::core::convert::Into::into(to));
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(

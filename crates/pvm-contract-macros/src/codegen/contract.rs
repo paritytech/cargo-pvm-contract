@@ -926,24 +926,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             host,
         };
     };
-    let has_params = !parsed.methods.iter().all(|m| m.param_names.is_empty())
-        || !parsed.constructor_inputs.is_empty();
-
-    let revert = if has_params {
-        quote! {
-            pub fn revert(this: &mut #struct_name) -> ::core::option::Option<()> {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                    this.host(),
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
-                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
-                );
-                #[allow(unreachable_code)]
-                return ::core::option::Option::Some(());
-            }
-        }
-    } else {
-        quote! {}
-    };
 
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
@@ -959,7 +941,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             .map(|(name, _)| name.clone())
             .collect();
 
-        let decoding = generate_param_decoding(&param_names, &param_types, true);
+        let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
             min_size_expr,
             decode_statements,
@@ -999,8 +981,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let revert_err = generate_revert_encoding_boundary(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
-                let this = &mut this;
-                #decode_statements
+                #(#decode_statements)*
                 match #call_expr {
                     Ok(()) => {}
                     Err(e) => {
@@ -1010,8 +991,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             }
         } else {
             quote! {
-                let this = &mut this;
-                #decode_statements
+                #(#decode_statements)*
                 #call_expr;
             }
         };
@@ -1155,9 +1135,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             #payable_helpers_fn
-
-            #[cfg(not(feature = "abi-gen"))]
-            #revert
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
