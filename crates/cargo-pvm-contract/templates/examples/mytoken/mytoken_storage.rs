@@ -7,15 +7,6 @@ mod my_token {
     use super::*;
     use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping};
 
-    #[derive(pvm_contract_sdk::SolEvent)]
-    pub struct Transfer {
-        #[indexed]
-        pub from: Address,
-        #[indexed]
-        pub to: Address,
-        pub value: U256,
-    }
-
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
@@ -63,8 +54,6 @@ mod my_token {
             let recipient_balance = recipient_cell.get();
             recipient_cell.set(&(recipient_balance + amount));
 
-            self.emit_transfer(caller, to, amount);
-
             Ok(())
         }
 
@@ -76,8 +65,6 @@ mod my_token {
 
             let new_supply = self.total_supply.get().saturating_add(amount);
             self.total_supply.set(&new_supply);
-
-            self.emit_transfer(Address([0u8; 20]), to, amount);
             Ok(())
         }
 
@@ -90,10 +77,6 @@ mod my_token {
             let mut caller = [0u8; 20];
             self.host().caller(&mut caller);
             Address(caller)
-        }
-
-        fn emit_transfer(&self, from: Address, to: Address, value: U256) {
-            Transfer { from, to, value }.emit(self.host());
         }
     }
 }
