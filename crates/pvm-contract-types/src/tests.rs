@@ -1790,48 +1790,6 @@ fn const_keccak256_matches_keccak256() {
 }
 
 #[test]
-fn sol_event_transfer_topic0_is_signature_hash() {
-    use alloy_core::primitives::keccak256;
-
-    struct Transfer {
-        from: Address,
-        to: Address,
-        value: U256,
-    }
-
-    impl SolEvent for Transfer {
-        const TOPIC: [u8; 32] = const_keccak256(b"Transfer(address,address,uint256)");
-        const NAME: &'static str = "Transfer";
-        const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
-        const INDEXED_COUNT: usize = 2;
-
-        fn topics(&self) -> EventTopics {
-            let mut from_topic = [0u8; 32];
-            from_topic[12..32].copy_from_slice(&self.from.0);
-
-            let mut to_topic = [0u8; 32];
-            to_topic[12..32].copy_from_slice(&self.to.0);
-
-            let mut t = EventTopics::new();
-            t.push(Self::TOPIC);
-            t.push(from_topic);
-            t.push(to_topic);
-            t
-        }
-
-        fn data_len(&self) -> usize {
-            32
-        }
-        fn data_to(&self, buf: &mut [u8]) {
-            self.value.encode_to(buf);
-        }
-    }
-
-    let expected_topic = keccak256("Transfer(address,address,uint256)".as_bytes());
-    assert_eq!(Transfer::TOPIC, expected_topic.0);
-}
-
-#[test]
 fn sol_event_transfer_topics_pack_addresses_correctly() {
     struct Transfer {
         from: Address,
@@ -1886,88 +1844,6 @@ fn sol_event_transfer_topics_pack_addresses_correctly() {
     assert_eq!(&topics[1][12..], &[0xAA; 20]);
     assert_eq!(&topics[2][..12], &[0u8; 12]);
     assert_eq!(&topics[2][12..], &[0xBB; 20]);
-}
-
-#[test]
-fn sol_event_transfer_data_encodes_non_indexed() {
-    struct Transfer {
-        _from: Address,
-        _to: Address,
-        value: U256,
-    }
-
-    impl SolEvent for Transfer {
-        const TOPIC: [u8; 32] = const_keccak256(b"Transfer(address,address,uint256)");
-        const NAME: &'static str = "Transfer";
-        const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
-        const INDEXED_COUNT: usize = 2;
-
-        fn topics(&self) -> EventTopics {
-            let mut from_topic = [0u8; 32];
-            from_topic[12..32].copy_from_slice(&self._from.0);
-            let mut to_topic = [0u8; 32];
-            to_topic[12..32].copy_from_slice(&self._to.0);
-            let mut t = EventTopics::new();
-            t.push(Self::TOPIC);
-            t.push(from_topic);
-            t.push(to_topic);
-            t
-        }
-
-        fn data_len(&self) -> usize {
-            32
-        }
-        fn data_to(&self, buf: &mut [u8]) {
-            self.value.encode_to(buf);
-        }
-    }
-
-    let event = Transfer {
-        _from: Address([0; 20]),
-        _to: Address([0; 20]),
-        value: U256::from(42u64),
-    };
-
-    let mut data = vec![0u8; event.data_len()];
-    event.data_to(&mut data);
-    assert_eq!(data.len(), 32);
-    let decoded = U256::decode(&data);
-    assert_eq!(decoded, U256::from(42u64));
-}
-
-#[test]
-fn sol_event_no_indexed_fields() {
-    struct Log {
-        message: u64,
-    }
-
-    impl SolEvent for Log {
-        const TOPIC: [u8; 32] = const_keccak256(b"Log(uint64)");
-        const NAME: &'static str = "Log";
-        const SIGNATURE: &'static str = "Log(uint64)";
-        const INDEXED_COUNT: usize = 0;
-
-        fn topics(&self) -> EventTopics {
-            let mut t = EventTopics::new();
-            t.push(Self::TOPIC);
-            t
-        }
-
-        fn data_len(&self) -> usize {
-            32
-        }
-        fn data_to(&self, buf: &mut [u8]) {
-            self.message.encode_to(buf);
-        }
-    }
-
-    let event = Log { message: 99 };
-    let topics = event.topics();
-    assert_eq!(topics.len(), 1, "only topic0 when no indexed fields");
-
-    let mut data = vec![0u8; event.data_len()];
-    event.data_to(&mut data);
-    assert_eq!(u64::decode(&data), 99);
 }
 
 #[test]

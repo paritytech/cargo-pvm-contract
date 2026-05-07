@@ -400,34 +400,24 @@ Topics and data follow Solidity's event wire format.
 
 An event log consists of:
 
-- **Topics**: A list of 32-byte values, up to 4 entries.
-  - Non-anonymous events: `topic0` is `keccak256(canonical_signature)`, followed
-    by up to 3 indexed field values.
-  - Anonymous events (`#[anonymous]`): no signature topic. Up to 4 indexed fields
-    occupy all available topic slots.
-- **Data**: ABI-encoded concatenation of the non-indexed fields, laid out as a
-  flat tuple (head + tail, matching `(T1,T2,...)` encoding rules).
+- **Topics**: up to 4 entries of 32 bytes each.
+  - Non-anonymous events: `topic0` is `keccak256(canonical_signature)`, followed by up to 3 indexed field values.
+  - Anonymous events (`#[anonymous]`): no signature topic. All 4 slots available for indexed fields.
+- **Data**: the non-indexed fields, ABI-encoded in declaration order. Same encoding as `abi.encode(field1, field2, ...)` in Solidity.
 
 ### Indexed Field Packing
 
-Static types (≤ 32 bytes): ABI-encoded directly into a 32-byte topic slot
-(integers right-aligned big-endian, `address` right-aligned in the low 20 bytes,
-`bytesN` left-aligned).
+Each indexed field is packed into a single 32-byte topic slot:
 
-Dynamic types (`bytes`, `string`): the topic is `keccak256(raw_bytes)` — the
-raw payload hashed directly, with no length prefix or ABI wrapper. The raw
-value is not recoverable from the topic; indexed dynamic fields are for
-filtering only.
+| Type | Topic value |
+|------|-------------|
+| Static primitives (`address`, `uintN`, `bool`, `bytesN`) | Value encoded directly into 32 bytes |
+| `string`, `bytes` | `keccak256(raw_bytes)`. Not recoverable from the topic; useful for filtering only |
+| Static arrays, fixed arrays, tuples | `keccak256(abi.encode(value))` |
 
-Static arrays, fixed arrays, and tuples: the topic is `keccak256(abi.encode(value))`.
-The full ABI encoding is hashed, matching Solidity's convention for indexed
-reference types. Dynamic composites (e.g. tuples containing `String`) and
-dynamic arrays (`Vec<T>`) are rejected at compile time.
-
-Custom and alias types (e.g. `type Owner = Address`) are not supported as
-indexed fields. The proc macro cannot distinguish type aliases from custom
-structs at expansion time, so all custom types are rejected to guarantee
-correctness. Use the concrete Solidity-mapped type directly.
+Not supported as indexed:
+- Dynamic composites (e.g. tuples containing `String`) and `Vec<T>` are rejected at compile time.
+- Custom and alias types (e.g. `type Owner = Address`) are rejected. Use the concrete type directly.
 
 ### Canonical Signature
 
@@ -506,6 +496,9 @@ Entries come from one of two sources:
 | Feature                           | Status        | Workaround                          |
 | --------------------------------- | ------------- | ----------------------------------- |
 | Dynamic arrays in `no_alloc` mode | Not supported | Use `alloc` feature or fixed arrays |
+| Indexed event fields: `Vec<T>`, dynamic composites | Rejected at compile time | Use static types or fixed arrays |
+| Indexed event fields: custom/alias types | Rejected at compile time | Use the concrete Solidity-mapped type |
+| `emit()` for events with dynamic data fields | Not generated | Use `data_len()` + `data_to()` manually |
 
 
 ### Custom Types with `#[derive(SolType)]`
