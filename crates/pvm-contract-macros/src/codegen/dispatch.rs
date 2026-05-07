@@ -557,10 +557,17 @@ mod tests {
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
-                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                            let Ok(__value) = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
                                 &input,
                                 __decode_offset,
-                            );
+                            ) else {
+                                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                    this.host(),
+                                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                                );
+                                #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                            };
                             __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                             __value
                         };
@@ -598,10 +605,17 @@ mod tests {
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
-                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                            let Ok(__value) = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
                                 &input,
                                 __decode_offset,
-                            );
+                            ) else {
+                                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                    this.host(),
+                                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                                );
+                                #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                            };
                             __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                             __value
                         };
@@ -639,10 +653,17 @@ mod tests {
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
-                            let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
+                            let Ok(__value) = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
                                 &input,
                                 __decode_offset,
-                            );
+                            ) else {
+                                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                    this.host(),
+                                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
+                                );
+                                #[allow(unreachable_code)] return ::core::option::Option::Some(());
+                            };
                             __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                             __value
                         };
