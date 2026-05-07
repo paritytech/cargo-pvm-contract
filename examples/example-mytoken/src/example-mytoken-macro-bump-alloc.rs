@@ -6,16 +6,7 @@ use pvm_contract_sdk::U256;
 mod my_token {
     use super::*;
     use alloc::vec;
-    use pvm_contract_sdk::{Address, SolEvent as _, StorageFlags};
-
-    #[derive(pvm_contract_sdk::SolEvent)]
-    pub struct Transfer {
-        #[indexed]
-        pub from: Address,
-        #[indexed]
-        pub to: Address,
-        pub value: U256,
-    }
+    use pvm_contract_sdk::{Address, StorageFlags};
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
@@ -81,8 +72,7 @@ mod my_token {
             let to: [u8; 20] = to.into();
             self.set_balance(&caller, new_sender_balance);
             self.set_balance(&to, new_recipient_balance);
-            let event = Transfer { from: Address(caller), to: Address(to), value: amount };
-            self.host().deposit_event(&event.topics(), &event.data());
+            self.emit_transfer(&caller, &to, amount);
 
             Ok(())
         }
@@ -97,8 +87,7 @@ mod my_token {
             let new_supply = self.total_supply().saturating_add(amount);
             self.set_total_supply(new_supply);
 
-            let event = Transfer { from: Address([0u8; 20]), to: Address(to), value: amount };
-            self.host().deposit_event(&event.topics(), &event.data());
+            self.emit_transfer(&[0u8; 20], &to, amount);
             Ok(())
         }
 
@@ -135,9 +124,26 @@ mod my_token {
             caller
         }
 
+        fn emit_transfer(&self, from: &[u8; 20], to: &[u8; 20], value: U256) {
+            let mut from_topic = [0u8; 32];
+            from_topic[12..32].copy_from_slice(from);
+
+            let mut to_topic = [0u8; 32];
+            to_topic[12..32].copy_from_slice(to);
+
+            let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
+            let data = value.to_be_bytes::<32>();
+            self.host().deposit_event(&topics, &data);
+        }
     }
 
     fn total_supply_key() -> [u8; 32] {
         [0u8; 32]
     }
+
+    const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
+        0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d,
+        0xaa, 0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23,
+        0xb3, 0xef,
+    ];
 }
