@@ -23,7 +23,7 @@ use crate::signature::SolType;
 /// method is generated. For dynamic events, use `data_len()` + `data_to()`.
 ///
 /// Anonymous events are supported via `#[anonymous]` on the struct. Anonymous
-/// events skip topic\[0\] (the signature hash) and allow up to 4 indexed fields.
+/// events skip topic[0] (the signature hash) and allow up to 4 indexed fields.
 pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
     let name_str = name.to_string();
