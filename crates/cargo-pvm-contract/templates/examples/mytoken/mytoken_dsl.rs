@@ -1,361 +1,193 @@
-extern crate std;
+#![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+#![no_main]
+#![no_std]
 
-use super::*;
-use alloc::rc::Rc;
-use pvm_contract_types::Address;
-use pvm_contract_types::MockHostBuilder;
-use ruint::aliases::U256;
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    Address, HostApi, PolkaVmHost, SolDecode, SolEncode, StaticDecode, StaticEncodedLen,
+    StorageFlags,
+};
+use pvm_contract_builder_dsl::ruint::aliases::U256;
+use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
 
-/// Fresh isolated `Host` backed by a new `MockHost` in an `Rc`.
-/// Clone the returned handle to share storage state between cells.
-fn h() -> Host {
-    Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
+const TOTAL_SUPPLY_SELECTOR: [u8; 4] = solidity_selector("totalSupply()");
+const BALANCE_OF_SELECTOR: [u8; 4] = solidity_selector("balanceOf(address)");
+const TRANSFER_SELECTOR: [u8; 4] = solidity_selector("transfer(address,uint256)");
+const MINT_SELECTOR: [u8; 4] = solidity_selector("mint(address,uint256)");
+
+const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
+    0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d, 0xaa,
+    0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23, 0xb3, 0xef,
+];
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    unsafe {
+        core::arch::asm!("unimp");
+        core::hint::unreachable_unchecked()
+    }
 }
 
-// --- Lazy roundtrips ---
+#[unsafe(no_mangle)]
+#[polkavm_derive::polkavm_export]
+pub extern "C" fn deploy() {}
 
-#[test]
-fn lazy_roundtrip_u256() {
-    let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    lazy.set(&U256::from(42));
-    assert_eq!(lazy.get(), U256::from(42));
+#[unsafe(no_mangle)]
+#[polkavm_derive::polkavm_export]
+pub extern "C" fn call() {
+    let host = PolkaVmHost;
+    ContractBuilder::<PolkaVmHost>::new()
+        .method(TOTAL_SUPPLY_SELECTOR, total_supply_handler::<PolkaVmHost>)
+        .method(BALANCE_OF_SELECTOR, balance_of_handler::<PolkaVmHost>)
+        .method(TRANSFER_SELECTOR, transfer_handler::<PolkaVmHost>)
+        .method(MINT_SELECTOR, mint_handler::<PolkaVmHost>)
+        .dispatch_impl::<256>(&host);
 }
 
-#[test]
-fn lazy_roundtrip_address() {
-    let addr = Address([0xAA; 20]);
-    let mut lazy = Lazy::<Address>::new(StorageKey::from_slot(0), h());
-    lazy.set(&addr);
-    assert_eq!(lazy.get(), addr);
+fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let key = total_supply_key();
+    let mut supply_bytes = [0u8; 32];
+    let mut supply_slice = &mut supply_bytes[..];
+
+    let result = match host.get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
+        Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
+        Err(_) => U256::ZERO,
+    };
+    let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
+    result.encode_to(&mut output[..len]);
+    HandlerResult::Ok(len)
 }
 
-#[test]
-fn lazy_roundtrip_bool() {
-    let mut lazy = Lazy::<bool>::new(StorageKey::from_slot(0), h());
-    lazy.set(&true);
-    assert!(lazy.get());
-    lazy.set(&false);
-    // Writing false = all-zero = deletes the key, so get returns zero = false
-    assert!(!lazy.get());
+fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let account = <Address>::decode_unchecked(input, 0);
+    let account: [u8; 20] = account.into();
+    let key = balance_key(host, &account);
+    let mut balance_bytes = [0u8; 32];
+    let mut balance_slice = &mut balance_bytes[..];
+
+    let result = match host.get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
+        Ok(_) => U256::from_be_bytes::<32>(balance_bytes),
+        Err(_) => U256::ZERO,
+    };
+    let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
+    result.encode_to(&mut output[..len]);
+    HandlerResult::Ok(len)
 }
 
-#[test]
-fn lazy_default_is_zero() {
-    let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    assert_eq!(lazy.get(), U256::ZERO);
+fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let to = <Address>::decode_unchecked(input, 0);
+    let to: [u8; 20] = to.into();
+    let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+
+    let caller = get_caller(host);
+    let sender_key = balance_key(host, &caller);
+    let mut sender_balance_bytes = [0u8; 32];
+    let mut sender_balance_slice = &mut sender_balance_bytes[..];
+    let sender_balance = match host.get_storage(
+        StorageFlags::empty(),
+        &sender_key,
+        &mut sender_balance_slice,
+    ) {
+        Ok(_) => U256::from_be_bytes::<32>(sender_balance_bytes),
+        Err(_) => U256::ZERO,
+    };
+
+    if sender_balance < amount {
+        let msg = b"InsufficientBalance";
+        output[..msg.len()].copy_from_slice(msg);
+        return HandlerResult::Revert(msg.len());
+    }
+
+    let new_sender_balance = sender_balance - amount;
+    let recipient_key = balance_key(host, &to);
+    let mut recipient_balance_bytes = [0u8; 32];
+    let mut recipient_balance_slice = &mut recipient_balance_bytes[..];
+    let recipient_balance = match host.get_storage(
+        StorageFlags::empty(),
+        &recipient_key,
+        &mut recipient_balance_slice,
+    ) {
+        Ok(_) => U256::from_be_bytes::<32>(recipient_balance_bytes),
+        Err(_) => U256::ZERO,
+    };
+    let new_recipient_balance = recipient_balance + amount;
+
+    set_balance(host, &caller, new_sender_balance);
+    set_balance(host, &to, new_recipient_balance);
+    emit_transfer(host, &caller, &to, amount);
+    HandlerResult::Ok(0)
 }
 
-#[test]
-fn lazy_try_get_uninitialized() {
-    let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    assert_eq!(lazy.try_get(), None);
+fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
+    let to = <Address>::decode_unchecked(input, 0);
+    let to: [u8; 20] = to.into();
+    let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+
+    let recipient_key = balance_key(host, &to);
+    let mut recipient_balance_bytes = [0u8; 32];
+    let mut recipient_balance_slice = &mut recipient_balance_bytes[..];
+    let recipient_balance = match host.get_storage(
+        StorageFlags::empty(),
+        &recipient_key,
+        &mut recipient_balance_slice,
+    ) {
+        Ok(_) => U256::from_be_bytes::<32>(recipient_balance_bytes),
+        Err(_) => U256::ZERO,
+    };
+    let new_recipient_balance = recipient_balance.saturating_add(amount);
+    set_balance(host, &to, new_recipient_balance);
+
+    let supply_key = total_supply_key();
+    let mut supply_bytes = [0u8; 32];
+    let mut supply_slice = &mut supply_bytes[..];
+    let supply = match host.get_storage(StorageFlags::empty(), &supply_key, &mut supply_slice) {
+        Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
+        Err(_) => U256::ZERO,
+    };
+    let new_supply = supply.saturating_add(amount);
+    set_total_supply(host, new_supply);
+
+    emit_transfer(host, &[0u8; 20], &to, amount);
+    HandlerResult::Ok(0)
 }
 
-#[test]
-fn lazy_try_get_nonzero_value() {
-    let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    lazy.set(&U256::from(99));
-    assert_eq!(lazy.try_get(), Some(U256::from(99)));
+fn total_supply_key() -> [u8; 32] {
+    [0u8; 32]
 }
 
-#[test]
-fn lazy_set_zero_deletes() {
-    let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    lazy.set(&U256::from(42));
-    assert_eq!(lazy.try_get(), Some(U256::from(42)));
-    lazy.set(&U256::ZERO);
-    // Writing zero triggers set_storage_or_clear deletion
-    assert_eq!(lazy.try_get(), None);
+fn balance_key<H: HostApi>(host: &H, addr: &[u8; 20]) -> [u8; 32] {
+    let mut input = [0u8; 64];
+    input[12..32].copy_from_slice(addr);
+    input[63] = 1;
+
+    let mut key = [0u8; 32];
+    host.hash_keccak_256(&input, &mut key);
+    key
 }
 
-#[test]
-fn lazy_clear_then_try_get() {
-    let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    lazy.set(&U256::from(42));
-    lazy.clear();
-    assert_eq!(lazy.try_get(), None);
+fn set_total_supply<H: HostApi>(host: &H, amount: U256) {
+    let key = total_supply_key();
+    host.set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
-#[test]
-fn lazy_clear() {
-    let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-    lazy.set(&U256::from(42));
-    lazy.clear();
-    assert_eq!(lazy.get(), U256::ZERO);
+fn set_balance<H: HostApi>(host: &H, addr: &[u8; 20], amount: U256) {
+    let key = balance_key(host, addr);
+    host.set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
-// --- Mapping operations ---
-
-#[test]
-fn mapping_insert_get() {
-    let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
-    let addr = Address([0xBB; 20]);
-    m.insert(&addr, &U256::from(100));
-    assert_eq!(m.get(&addr), U256::from(100));
+fn get_caller<H: HostApi>(host: &H) -> [u8; 20] {
+    let mut caller = [0u8; 20];
+    host.caller(&mut caller);
+    caller
 }
 
-#[test]
-fn mapping_remove() {
-    let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
-    let addr = Address([0xCC; 20]);
-    m.insert(&addr, &U256::from(50));
-    m.remove(&addr);
-    assert_eq!(m.get(&addr), U256::ZERO);
-}
+fn emit_transfer<H: HostApi>(host: &H, from: &[u8; 20], to: &[u8; 20], value: U256) {
+    let mut from_topic = [0u8; 32];
+    from_topic[12..32].copy_from_slice(from);
 
-#[test]
-fn mapping_remove_then_try_get() {
-    let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
-    let addr = Address([0xDD; 20]);
-    m.insert(&addr, &U256::from(50));
-    assert_eq!(m.try_get(&addr), Some(U256::from(50)));
-    m.remove(&addr);
-    // Key is truly deleted, not just zeroed (#33)
-    assert_eq!(m.try_get(&addr), None);
-}
+    let mut to_topic = [0u8; 32];
+    to_topic[12..32].copy_from_slice(to);
 
-#[test]
-fn mapping_different_keys_independent() {
-    let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
-    let a = Address([0x01; 20]);
-    let b = Address([0x02; 20]);
-    m.insert(&a, &U256::from(10));
-    m.insert(&b, &U256::from(20));
-    assert_eq!(m.get(&a), U256::from(10));
-    assert_eq!(m.get(&b), U256::from(20));
-}
-
-// --- Nested mappings ---
-
-#[test]
-fn nested_mapping_allowances() {
-    let mut allowances =
-        Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h());
-    let owner = Address([0xAA; 20]);
-    let spender = Address([0xBB; 20]);
-
-    allowances.entry(&owner).insert(&spender, &U256::from(500));
-    assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
-}
-
-// --- Tuple keys ---
-
-#[test]
-fn tuple_key_matches_chaining() {
-    let host = h();
-    let owner = Address([0xAA; 20]);
-    let spender = Address([0xBB; 20]);
-    let amount = U256::from(123);
-
-    // Write via nested mapping chaining
-    let mut chained =
-        Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone());
-    chained.entry(&owner).insert(&spender, &amount);
-
-    // Read via tuple key (same slot, same host state)
-    let tuple_map =
-        Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone());
-    assert_eq!(tuple_map.get(&(owner, spender)), amount);
-}
-
-#[test]
-fn tuple_key_write_and_read() {
-    let mut m = Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0), h());
-    let alice = Address([0xAA; 20]);
-    let bob = Address([0xBB; 20]);
-
-    m.insert(&(alice, bob), &U256::from(500));
-    assert_eq!(m.get(&(alice, bob)), U256::from(500));
-    assert_eq!(m.get(&(bob, alice)), U256::ZERO); // different key order
-}
-
-#[test]
-fn triple_tuple_key_matches_chaining() {
-    let host = h();
-    let a = Address([0xAA; 20]);
-    let b = Address([0xBB; 20]);
-    let c = Address([0xCC; 20]);
-
-    // Derive slot via triple nesting
-    let root = StorageKey::from_slot(0);
-    let chained = root.derive(&host, &a);
-    let chained = chained.derive(&host, &b);
-    let chained = chained.derive(&host, &c);
-
-    // Derive slot via 3-tuple (must match chaining)
-    let tupled = (a, b, c).derive_slot(&host, &root);
-    assert_eq!(chained, tupled);
-}
-
-#[test]
-fn bytes32_as_mapping_key() {
-    let mut m = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), h());
-    let key = [0xAB; 32];
-    m.insert(&key, &U256::from(42));
-    assert_eq!(m.get(&key), U256::from(42));
-}
-
-// --- Solidity compatibility ---
-
-#[test]
-fn storage_key_from_slot() {
-    assert_eq!(StorageKey::from_slot(0).as_bytes(), &[0u8; 32]);
-    let mut expected = [0u8; 32];
-    expected[31] = 1;
-    assert_eq!(StorageKey::from_slot(1).as_bytes(), &expected);
-}
-
-#[test]
-fn derive_key_matches_solidity() {
-    let host = h();
-    // cast index address 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 1
-    // Expected: keccak256(pad32(0xAA..AA) ++ pad32(1))
-    let addr = Address([0xAA; 20]);
-    let root = StorageKey::from_slot(1);
-    let derived = root.derive(&host, &addr);
-
-    // Compute expected: keccak256(0x000..0xAAAA..AA ++ 0x000..001)
-    let mut preimage = [0u8; 64];
-    // Address is right-aligned: 12 zero bytes + 20 address bytes
-    preimage[12..32].copy_from_slice(&[0xAA; 20]);
-    // Slot 1: 31 zero bytes + 0x01
-    preimage[63] = 1;
-    let mut expected = [0u8; 32];
-    host.hash_keccak_256(&preimage, &mut expected);
-
-    assert_eq!(derived.as_bytes(), &expected);
-}
-
-// --- Entry optimization ---
-
-#[test]
-fn entry_reuse_for_read_write() {
-    let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
-    let addr = Address([0xEE; 20]);
-    m.insert(&addr, &U256::from(100));
-
-    // Use entry for read-then-write
-    let mut cell = m.entry(&addr);
-    let val = cell.get();
-    assert_eq!(val, U256::from(100));
-    cell.set(&(val - U256::from(30)));
-
-    assert_eq!(m.get(&addr), U256::from(70));
-}
-
-// --- Multi-field storage ---
-
-#[test]
-fn multi_field_storage() {
-    let host = h();
-    let mut counter = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
-    let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host);
-
-    counter.set(&U256::from(42));
-    assert_eq!(counter.get(), U256::from(42));
-
-    let addr = Address([0xFF; 20]);
-    balances.insert(&addr, &U256::from(1000));
-    assert_eq!(balances.get(&addr), U256::from(1000));
-}
-
-/// Full ERC-20-like example showing how storage fields are constructed
-/// and used. This mirrors the `#[contract]` macro's generated code.
-#[test]
-fn erc20_storage_example() {
-    let host = h();
-    let mut total_supply = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
-    let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone());
-    let mut allowances =
-        Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host);
-
-    let alice = Address([0xAA; 20]);
-    let bob = Address([0xBB; 20]);
-    let initial_supply = U256::from(10_000);
-
-    // Constructor: set total supply and mint to alice
-    total_supply.set(&initial_supply);
-    balances.insert(&alice, &initial_supply);
-
-    assert_eq!(total_supply.get(), initial_supply);
-    assert_eq!(balances.get(&alice), initial_supply);
-    assert_eq!(balances.get(&bob), U256::ZERO);
-
-    // Transfer: alice sends 300 to bob using entry() for read-then-write
-    let amount = U256::from(300);
-    let mut alice_cell = balances.entry(&alice);
-    let alice_bal = alice_cell.get();
-    alice_cell.set(&(alice_bal - amount));
-
-    let mut bob_cell = balances.entry(&bob);
-    let bob_bal = bob_cell.get();
-    bob_cell.set(&(bob_bal + amount));
-
-    assert_eq!(balances.get(&alice), U256::from(9_700));
-    assert_eq!(balances.get(&bob), U256::from(300));
-
-    // Approve: alice approves bob for 500
-    allowances.entry(&alice).insert(&bob, &U256::from(500));
-
-    // Read allowance via chaining
-    assert_eq!(allowances.get(&alice).get(&bob), U256::from(500));
-    // Other direction is zero
-    assert_eq!(allowances.get(&bob).get(&alice), U256::ZERO);
-}
-
-#[test]
-fn different_slots_dont_interfere() {
-    let host = h();
-    let mut value_a = Lazy::<U256>::new(StorageKey::from_slot(5), host.clone());
-    let mut value_b = Lazy::<U256>::new(StorageKey::from_slot(10), host);
-
-    value_a.set(&U256::from(111));
-    value_b.set(&U256::from(222));
-    assert_eq!(value_a.get(), U256::from(111));
-    assert_eq!(value_b.get(), U256::from(222));
-}
-
-// --- Solidity slot cross-checks (hardcoded values from `cast index`) ---
-
-#[test]
-fn mapping_solidity_slot_compat() {
-    // `cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB 1`
-    // → 0x8f22848572deaf321ecb41095a0a57d3f19eda24b92a3f4a8e554a2e56f45bc4
-    let m = Mapping::<Address, U256>::new(StorageKey::from_slot(1), h());
-    let addr = Address([0xBB; 20]);
-    let slot = m.slot_of(&addr);
-
-    let expected = [
-        0x8f, 0x22, 0x84, 0x85, 0x72, 0xde, 0xaf, 0x32, 0x1e, 0xcb, 0x41, 0x09, 0x5a, 0x0a, 0x57,
-        0xd3, 0xf1, 0x9e, 0xda, 0x24, 0xb9, 0x2a, 0x3f, 0x4a, 0x8e, 0x55, 0x4a, 0x2e, 0x56, 0xf4,
-        0x5b, 0xc4,
-    ];
-    assert_eq!(slot.as_bytes(), &expected, "must match `cast index` output");
-}
-
-#[test]
-fn nested_mapping_slot_matches_solidity() {
-    // allowances[0xAA..AA][0xBB..BB] at root slot 2:
-    // inner = cast index address 0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 2
-    //       → 0xe1e81504ed8609a5b03379f97b221e3dede4a62d6d61a87a4ab7ed7b1b9c0553
-    // outer = cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB <inner>
-    //       → 0x35815c850ac7d4d0af322824699787b146e33c6cac5d0a52ab3225d6985a27a7
-    let allowances = Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h());
-    let owner = Address([0xAA; 20]);
-    let spender = Address([0xBB; 20]);
-
-    // Derive via chaining: get(&owner) returns inner Mapping, then slot_of(&spender)
-    let inner = allowances.get(&owner);
-    let slot = inner.slot_of(&spender);
-
-    let expected = [
-        0x35, 0x81, 0x5c, 0x85, 0x0a, 0xc7, 0xd4, 0xd0, 0xaf, 0x32, 0x28, 0x24, 0x69, 0x97, 0x87,
-        0xb1, 0x46, 0xe3, 0x3c, 0x6c, 0xac, 0x5d, 0x0a, 0x52, 0xab, 0x32, 0x25, 0xd6, 0x98, 0x5a,
-        0x27, 0xa7,
-    ];
-    assert_eq!(
-        slot.as_bytes(),
-        &expected,
-        "must match chained `cast index` output"
-    );
+    let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
+    let data = value.to_be_bytes::<32>();
+    host.deposit_event(&topics, &data);
 }
