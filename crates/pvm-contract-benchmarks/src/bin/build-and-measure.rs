@@ -9,7 +9,6 @@ enum Variant {
     WithAlloc,
     BuilderDsl,
     Storage,
-    Events,
 }
 
 impl Variant {
@@ -19,7 +18,6 @@ impl Variant {
             Variant::WithAlloc => "with-alloc",
             Variant::BuilderDsl => "builder-dsl",
             Variant::Storage => "storage",
-            Variant::Events => "events",
         }
     }
 
@@ -28,7 +26,6 @@ impl Variant {
             Variant::NoAlloc | Variant::Storage => cargo_toml_no_alloc(contract, base_path),
             Variant::WithAlloc => cargo_toml_with_alloc(contract, base_path),
             Variant::BuilderDsl => cargo_toml_builder_dsl(contract, base_path),
-            Variant::Events => cargo_toml_events(contract, base_path),
         }
     }
 }
@@ -141,42 +138,6 @@ overflow-checks = false
     )
 }
 
-fn cargo_toml_events(contract: &str, base_path: &Path) -> String {
-    let sdk_path = base_path.join("crates/pvm-contract-sdk");
-
-    format!(
-        r#"[package]
-name = "{}"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.92"
-
-[[bin]]
-name = "{}"
-path = "src/{}.rs"
-
-[dependencies]
-pvm-contract-sdk = {{ path = "{}", features = ["alloc"] }}
-picoalloc = {{ version = "5", default-features = false }}
-polkavm-derive = {{ version = "0.31.0" }}
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "z"
-panic = "abort"
-overflow-checks = false
-"#,
-        contract,
-        contract,
-        contract,
-        sdk_path.display(),
-    )
-}
-
 fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result<String> {
     if variant == Variant::BuilderDsl {
         let examples_dir = base_path.join("crates/pvm-contract-builder-dsl/contracts");
@@ -194,7 +155,6 @@ fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result
         Variant::NoAlloc => format!("{contract}_no_alloc.rs"),
         Variant::WithAlloc => format!("{contract}_with_alloc.rs"),
         Variant::Storage => format!("{contract}_storage.rs"),
-        Variant::Events => format!("{contract}_events.rs"),
         Variant::BuilderDsl => unreachable!(),
     };
 
@@ -292,7 +252,6 @@ fn variants_for_contract(contract: &str) -> Vec<Variant> {
     let mut variants = vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl];
     if contract == "mytoken" {
         variants.push(Variant::Storage);
-        variants.push(Variant::Events);
     }
     variants
 }

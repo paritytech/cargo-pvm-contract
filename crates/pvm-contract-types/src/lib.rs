@@ -785,12 +785,13 @@ macro_rules! sol_revert_enum {
 // Event trait for Solidity-compatible log emission
 // ---------------------------------------------------------------------------
 
-/// Trait for Solidity-compatible event emission.
+/// Trait for Solidity-compatible event emission. No allocator required.
 ///
 /// Each implementor represents a single Solidity event type. The derive macro
 /// `#[derive(SolEvent)]` generates this impl automatically, computing the topic
-/// hash at compile time, packing indexed fields into topics, and ABI-encoding
-/// non-indexed fields into the data blob.
+/// hash at compile time, packing indexed fields into stack-allocated
+/// [`EventTopics`], and ABI-encoding non-indexed fields into a caller-provided
+/// buffer via [`data_to`](SolEvent::data_to).
 ///
 /// # Topic layout
 ///
@@ -806,7 +807,44 @@ macro_rules! sol_revert_enum {
 ///
 /// Non-indexed fields are ABI-encoded in declaration order, identical to
 /// a Solidity `abi.encode(field1, field2, ...)` call.
-#[cfg(feature = "alloc")]
+/// Stack-allocated topic array for event emission. Maximum 4 topics
+/// (signature hash + up to 3 indexed fields, or 4 indexed for anonymous).
+#[derive(Default)]
+pub struct EventTopics {
+    buf: [[u8; 32]; 4],
+    len: usize,
+}
+
+impl EventTopics {
+    /// Create an empty topic list.
+    pub fn new() -> Self {
+        EventTopics {
+            buf: [[0u8; 32]; 4],
+            len: 0,
+        }
+    }
+
+    /// Append a topic. Panics if more than 4 topics are pushed.
+    pub fn push(&mut self, topic: [u8; 32]) {
+        assert!(self.len < 4, "EventTopics: maximum 4 topics (EVM limit)");
+        self.buf[self.len] = topic;
+        self.len += 1;
+    }
+
+    /// View the topics as a slice for `deposit_event`.
+    pub fn as_slice(&self) -> &[[u8; 32]] {
+        &self.buf[..self.len]
+    }
+}
+
+/// Allows `&topics` to coerce to `&[[u8; 32]]` for `deposit_event`.
+impl core::ops::Deref for EventTopics {
+    type Target = [[u8; 32]];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
 pub trait SolEvent {
     /// Full 32-byte keccak256 hash of the canonical event signature.
     const TOPIC: [u8; 32];
@@ -820,11 +858,14 @@ pub trait SolEvent {
     /// Number of indexed fields (excluding topic0). Range: 0..=3.
     const INDEXED_COUNT: usize;
 
-    /// Build the topics array: topic0 (signature hash) + indexed field values.
-    fn topics(&self) -> alloc::vec::Vec<[u8; 32]>;
+    /// Build the topics array on the stack.
+    fn topics(&self) -> EventTopics;
 
-    /// ABI-encode the non-indexed fields into a data blob.
-    fn data(&self) -> alloc::vec::Vec<u8>;
+    /// Size in bytes of the ABI-encoded non-indexed fields.
+    fn data_len(&self) -> usize;
+
+    /// Write ABI-encoded non-indexed fields into `buf`.
+    fn data_to(&self, buf: &mut [u8]);
 }
 
 // ---------------------------------------------------------------------------

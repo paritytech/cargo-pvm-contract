@@ -1121,14 +1121,20 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 
 /// Derive the [`SolEvent`] trait for a struct, enabling Solidity-compatible
 /// event emission with automatic topic hashing and indexed field packing.
+/// No allocator required.
 ///
 /// Fields marked with `#[indexed]` become log topics (max 3, or 4 for anonymous
 /// events). Remaining fields are ABI-encoded as the log data blob. The event
 /// signature hash is computed at compile time as topic0 (skipped for `#[anonymous]`).
 ///
-/// Indexed arrays, fixed arrays, and tuples use `keccak256(abi.encode(value))`.
-/// Custom and alias types (e.g. `type Owner = Address`) are not supported as
-/// indexed fields. Use the concrete Solidity-mapped type directly.
+/// Indexed static arrays, fixed arrays, and tuples use `keccak256(abi.encode(value))`.
+/// Indexed dynamic composites and dynamic arrays (`Vec<T>`) are rejected at
+/// compile time. Custom and alias types are not supported as indexed fields.
+///
+/// For events where all non-indexed fields are known-static primitive types,
+/// the derive also generates an `emit(host)` convenience method that handles
+/// buffer allocation on the stack. Custom types may not get `emit()` even if
+/// they are statically sized.
 ///
 /// # Example
 ///
@@ -1142,30 +1148,15 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 ///     value: U256,
 /// }
 ///
-/// // Emitting the event inside a contract method:
-/// let event = Transfer { from, to, value };
-/// api::deposit_event(&event.topics(), &event.data());
-/// ```
+/// // Emitting the event (static fields, emit() available):
+/// Transfer { from, to, value }.emit(self.host());
 ///
-/// # Generated Code
-///
-/// For the `Transfer` example above, the macro generates:
-///
-/// ```ignore
-/// impl ::pvm_contract_types::SolEvent for Transfer {
-///     const TOPIC: [u8; 32] = /* keccak256("Transfer(address,address,uint256)") */;
-///     const NAME: &'static str = "Transfer";
-///     const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
-///     const INDEXED_COUNT: usize = 2;
-///
-///     fn topics(&self) -> Vec<[u8; 32]> {
-///         // [topic0 (sig hash), from (right-aligned), to (right-aligned)]
-///     }
-///
-///     fn data(&self) -> Vec<u8> {
-///         // ABI-encoded value
-///     }
-/// }
+/// // Manual emission for dynamic events or advanced use.
+/// // The buffer must be at least event.data_len() bytes.
+/// let len = event.data_len();
+/// let mut data = [0u8; 256]; // size for your expected payload
+/// event.data_to(&mut data[..len]);
+/// self.host().deposit_event(&event.topics(), &data[..len]);
 /// ```
 #[proc_macro_derive(SolEvent, attributes(indexed, anonymous))]
 pub fn sol_event(input: TokenStream) -> TokenStream {

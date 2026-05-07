@@ -1805,20 +1805,25 @@ fn sol_event_transfer_topic0_is_signature_hash() {
         const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
         const INDEXED_COUNT: usize = 2;
 
-        fn topics(&self) -> Vec<[u8; 32]> {
+        fn topics(&self) -> EventTopics {
             let mut from_topic = [0u8; 32];
             from_topic[12..32].copy_from_slice(&self.from.0);
 
             let mut to_topic = [0u8; 32];
             to_topic[12..32].copy_from_slice(&self.to.0);
 
-            vec![Self::TOPIC, from_topic, to_topic]
+            let mut t = EventTopics::new();
+            t.push(Self::TOPIC);
+            t.push(from_topic);
+            t.push(to_topic);
+            t
         }
 
-        fn data(&self) -> Vec<u8> {
-            let mut buf = vec![0u8; 32];
-            self.value.encode_to(&mut buf);
-            buf
+        fn data_len(&self) -> usize {
+            32
+        }
+        fn data_to(&self, buf: &mut [u8]) {
+            self.value.encode_to(buf);
         }
     }
 
@@ -1840,20 +1845,25 @@ fn sol_event_transfer_topics_pack_addresses_correctly() {
         const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
         const INDEXED_COUNT: usize = 2;
 
-        fn topics(&self) -> Vec<[u8; 32]> {
+        fn topics(&self) -> EventTopics {
             let mut from_topic = [0u8; 32];
             from_topic[12..32].copy_from_slice(&self.from.0);
 
             let mut to_topic = [0u8; 32];
             to_topic[12..32].copy_from_slice(&self.to.0);
 
-            vec![Self::TOPIC, from_topic, to_topic]
+            let mut t = EventTopics::new();
+            t.push(Self::TOPIC);
+            t.push(from_topic);
+            t.push(to_topic);
+            t
         }
 
-        fn data(&self) -> Vec<u8> {
-            let mut buf = vec![0u8; 32];
-            self._value.encode_to(&mut buf);
-            buf
+        fn data_len(&self) -> usize {
+            32
+        }
+        fn data_to(&self, buf: &mut [u8]) {
+            self._value.encode_to(buf);
         }
     }
 
@@ -1892,18 +1902,23 @@ fn sol_event_transfer_data_encodes_non_indexed() {
         const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
         const INDEXED_COUNT: usize = 2;
 
-        fn topics(&self) -> Vec<[u8; 32]> {
+        fn topics(&self) -> EventTopics {
             let mut from_topic = [0u8; 32];
             from_topic[12..32].copy_from_slice(&self._from.0);
             let mut to_topic = [0u8; 32];
             to_topic[12..32].copy_from_slice(&self._to.0);
-            vec![Self::TOPIC, from_topic, to_topic]
+            let mut t = EventTopics::new();
+            t.push(Self::TOPIC);
+            t.push(from_topic);
+            t.push(to_topic);
+            t
         }
 
-        fn data(&self) -> Vec<u8> {
-            let mut buf = vec![0u8; 32];
-            self.value.encode_to(&mut buf);
-            buf
+        fn data_len(&self) -> usize {
+            32
+        }
+        fn data_to(&self, buf: &mut [u8]) {
+            self.value.encode_to(buf);
         }
     }
 
@@ -1913,7 +1928,8 @@ fn sol_event_transfer_data_encodes_non_indexed() {
         value: U256::from(42u64),
     };
 
-    let data = event.data();
+    let mut data = vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert_eq!(data.len(), 32);
     let decoded = U256::decode(&data);
     assert_eq!(decoded, U256::from(42u64));
@@ -1931,14 +1947,17 @@ fn sol_event_no_indexed_fields() {
         const SIGNATURE: &'static str = "Log(uint64)";
         const INDEXED_COUNT: usize = 0;
 
-        fn topics(&self) -> Vec<[u8; 32]> {
-            vec![Self::TOPIC]
+        fn topics(&self) -> EventTopics {
+            let mut t = EventTopics::new();
+            t.push(Self::TOPIC);
+            t
         }
 
-        fn data(&self) -> Vec<u8> {
-            let mut buf = vec![0u8; 32];
-            self.message.encode_to(&mut buf);
-            buf
+        fn data_len(&self) -> usize {
+            32
+        }
+        fn data_to(&self, buf: &mut [u8]) {
+            self.message.encode_to(buf);
         }
     }
 
@@ -1946,7 +1965,8 @@ fn sol_event_no_indexed_fields() {
     let topics = event.topics();
     assert_eq!(topics.len(), 1, "only topic0 when no indexed fields");
 
-    let data = event.data();
+    let mut data = vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert_eq!(u64::decode(&data), 99);
 }
 

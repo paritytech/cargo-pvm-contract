@@ -78,7 +78,8 @@ fn data_encodes_non_indexed_value() {
         to: Address([0xBB; 20]),
         value: U256::from(42u64),
     };
-    let data = event.data();
+    let mut data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert_eq!(data.len(), 32);
     let decoded = <U256 as pvm_contract_types::SolDecode>::decode(&data);
     assert_eq!(decoded, U256::from(42u64));
@@ -119,7 +120,8 @@ fn no_indexed_fields_data() {
         value: 99,
         flag: true,
     };
-    let data = event.data();
+    let mut data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert_eq!(data.len(), 64, "two 32-byte words for u64 + bool");
 }
 
@@ -157,7 +159,8 @@ fn all_indexed_empty_data() {
         spender: Address([2; 20]),
         value: U256::from(500u64),
     };
-    let data = event.data();
+    let mut data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert_eq!(data.len(), 0, "no data when all fields indexed");
 }
 
@@ -248,7 +251,8 @@ fn multi_field_dynamic_data_matches_alloy_tuple_encoding() {
         value: U256::from(0xDEADBEEFu64),
         name: "hello".to_string(),
     };
-    let our_data = event.data();
+    let mut our_data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut our_data);
 
     let alloy_tuple = (
         alloy_core::primitives::U256::from(0xDEADBEEFu64),
@@ -299,7 +303,8 @@ fn single_dynamic_field_data_matches_alloy_tuple_encoding() {
     let event = SingleString {
         name: "single dynamic field".to_string(),
     };
-    let our_data = event.data();
+    let mut our_data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut our_data);
 
     let alloy_tuple = ("single dynamic field".to_string(),);
     let alloy_data = alloy_tuple.abi_encode_sequence();
@@ -325,7 +330,8 @@ fn two_dynamic_fields_data_matches_alloy_tuple_encoding() {
         first: "hello world".to_string(),
         second: "a longer second value that forces multi-word tail".to_string(),
     };
-    let our_data = event.data();
+    let mut our_data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut our_data);
 
     let alloy_tuple = (
         "hello world".to_string(),
@@ -356,7 +362,8 @@ fn static_plus_two_dynamic_fields_matches_alloy() {
         first: "alpha".to_string(),
         second: "beta".to_string(),
     };
-    let our_data = event.data();
+    let mut our_data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut our_data);
 
     let alloy_tuple = (
         alloy_core::primitives::U256::from(7u64),
@@ -391,8 +398,9 @@ mod alloy_decode_roundtrip {
         };
 
         let our_topics: alloc::vec::Vec<B256> =
-            our_event.topics().into_iter().map(B256::from).collect();
-        let our_data = our_event.data();
+            our_event.topics().iter().copied().map(B256::from).collect();
+        let mut our_data = alloc::vec![0u8; our_event.data_len()];
+        our_event.data_to(&mut our_data);
 
         let log = LogData::new_unchecked(our_topics, our_data.into());
         let decoded = Transfer::decode_log_data(&log)
@@ -428,8 +436,9 @@ mod alloy_decode_roundtrip_mixed {
         };
 
         let our_topics: alloc::vec::Vec<B256> =
-            our_event.topics().into_iter().map(B256::from).collect();
-        let our_data = our_event.data();
+            our_event.topics().iter().copied().map(B256::from).collect();
+        let mut our_data = alloc::vec![0u8; our_event.data_len()];
+        our_event.data_to(&mut our_data);
 
         let log = LogData::new_unchecked(our_topics, our_data.into());
         let decoded = Tagged::decode_log_data(&log)
@@ -462,7 +471,8 @@ fn alias_as_non_indexed_field_is_accepted() {
         owner: Address([0xCC; 20]),
         value: U256::from(1u64),
     };
-    let data = event.data();
+    let mut data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert!(!data.is_empty());
 }
 
@@ -555,7 +565,8 @@ fn parameterless_event_has_only_topic0() {
     );
     assert_eq!(topics[0], Paused::TOPIC);
 
-    let data = event.data();
+    let mut data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut data);
     assert!(
         data.is_empty(),
         "parameterless event should have empty data"

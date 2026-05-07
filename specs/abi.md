@@ -450,13 +450,26 @@ the tuple.
 
 ### Emission
 
-The derive generates `topics()` and `data()` methods; the contract calls
-`api::deposit_event` directly:
+For events where all non-indexed fields are static, the derive generates an
+`emit(host)` convenience method:
 
 ```rust,ignore
-let event = Transfer { from, to, value };
-api::deposit_event(&event.topics(), &event.data());
+Transfer { from, to, value }.emit(self.host());
 ```
+
+For events with dynamic non-indexed fields, use `topics()`, `data_len()`, and
+`data_to()` directly:
+
+```rust,ignore
+// The buffer must be at least event.data_len() bytes.
+let len = event.data_len();
+let mut data = [0u8; 256]; // size for your expected payload
+event.data_to(&mut data[..len]);
+self.host().deposit_event(&event.topics(), &data[..len]);
+```
+
+No allocator is required. Topics use a stack-allocated `EventTopics` struct
+(max 4 entries). Data encoding writes into a caller-provided buffer.
 
 ### ABI JSON
 

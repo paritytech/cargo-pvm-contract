@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Events.sol", allocator = "pico")]
 mod events {
     use super::*;
-    use pvm_contract_sdk::{SolEvent as _, StorageFlags};
+    use pvm_contract_sdk::StorageFlags;
 
     #[derive(pvm_contract_sdk::SolEvent)]
     pub struct ValueChanged {
@@ -40,7 +40,7 @@ mod events {
                 old_value: old,
                 new_value: val,
             };
-            self.host().deposit_event(&event.topics(), &event.data());
+            event.emit(self.host());
         }
 
         #[pvm_contract_sdk::method]

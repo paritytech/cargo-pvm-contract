@@ -74,6 +74,7 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    EventTopics,
     Host,
     HostApi,
     HostResult,
@@ -91,6 +92,7 @@ pub use pvm_contract_types::{
     SolDefaultError,
     SolEncode,
     SolError,
+    SolEvent,
     SolRevert,
     StaticDecode,
     StaticEncodedLen,
@@ -125,9 +127,6 @@ pub use pvm_storage::StorageLayoutType;
 
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
-
-#[cfg(feature = "alloc")]
-pub use pvm_contract_types::SolEvent;
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_contract_types::{

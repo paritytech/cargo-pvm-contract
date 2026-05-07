@@ -7,17 +7,20 @@ use crate::signature::SolType;
 
 /// Expand `#[derive(SolEvent)]` into a `SolEvent` trait impl.
 ///
-/// Requires an allocator (`topics()` and `data()` return `Vec`).
-/// Inside `#[contract]` modules with an allocator, `alloc` is already in scope.
-/// The generated code wraps the trait impl in `const _: () = { extern crate alloc; ... }`
-/// to scope the alloc import and avoid conflicts with user code.
+/// No allocator required. Topics use a stack-allocated `EventTopics` struct
+/// (max 4 entries). Data encoding writes into a caller-provided buffer via
+/// `data_to(&self, buf: &mut [u8])`.
 ///
 /// Indexed field handling:
 /// - Static primitives (address, uintN, bool, bytesN): encoded directly into the topic slot.
 /// - Dynamic primitives (string, bytes): `keccak256(raw_bytes)`.
-/// - Arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
-/// - Custom/alias types: rejected at compile time. Use the concrete
-///   Solidity-mapped type directly (e.g. `Address` instead of `type Owner = Address`).
+/// - Static arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
+/// - Dynamic composites (tuples/arrays with dynamic elements): rejected at compile time.
+/// - Dynamic arrays (`Vec<T>`): rejected at compile time.
+/// - Custom/alias types: rejected at compile time.
+///
+/// For events with all-static non-indexed fields, an `emit(host)` convenience
+/// method is generated. For dynamic events, use `data_len()` + `data_to()`.
 ///
 /// Anonymous events are supported via `#[anonymous]` on the struct. Anonymous
 /// events skip topic\[0\] (the signature hash) and allow up to 4 indexed fields.
@@ -89,12 +92,22 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
             if !indexed_flags[i] {
                 continue;
             }
-            if matches!(field_info[i].1, SolType::Custom(_)) {
-                return Err(syn::Error::new_spanned(
-                    &field.ty,
-                    "#[indexed] does not support custom/alias types; \
-                     use the concrete Solidity-mapped type directly",
-                ));
+            match &field_info[i].1 {
+                SolType::Custom(_) => {
+                    return Err(syn::Error::new_spanned(
+                        &field.ty,
+                        "#[indexed] does not support custom/alias types; \
+                         use the concrete Solidity-mapped type directly",
+                    ));
+                }
+                SolType::Array(_) => {
+                    return Err(syn::Error::new_spanned(
+                        &field.ty,
+                        "#[indexed] does not support dynamic arrays (Vec<T>); \
+                         use a fixed-size array instead",
+                    ));
+                }
+                _ => {}
             }
         }
     }
@@ -104,36 +117,81 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     let indexed_count_lit = indexed_count;
 
     let topics_body = generate_topics_body(fields, &field_info, &indexed_flags, is_anonymous);
-    let data_body = generate_data_body(fields, &field_info, &indexed_flags);
+    let (data_len_body, data_body) = generate_data_bodies(fields, &field_info, &indexed_flags);
     let abi_entry_expr =
         build_abi_entry_expr(&name_str, fields, &field_info, &indexed_flags, is_anonymous);
+
+    // Check if all non-indexed fields are static (compile-time known size).
+    // Only generate emit() for static events; dynamic events require the
+    // user to manage the data buffer via data_len() + data_to().
+    let non_indexed_info: Vec<(&syn::Type, &SolType)> = match fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !indexed_flags[*i])
+            .map(|(i, f)| (&f.ty as &syn::Type, &field_info[i].1))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let all_non_indexed_static = non_indexed_info
+        .iter()
+        .all(|(_, sol_type)| !sol_type.is_dynamic().unwrap_or(true));
+
+    let emit_method = if all_non_indexed_static {
+        let data_size_parts: Vec<TokenStream> = non_indexed_info
+            .iter()
+            .map(|(ft, _)| quote! { <#ft as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE })
+            .collect();
+        let data_size_expr = if data_size_parts.is_empty() {
+            quote! { 0 }
+        } else {
+            quote! { #(#data_size_parts)+* }
+        };
+        quote! {
+            /// Emit this event via the host. Available because all non-indexed
+            /// fields have static (compile-time known) encoded size.
+            pub fn emit(&self, host: &::pvm_contract_sdk::Host) {
+                use ::pvm_contract_sdk::SolEvent as _;
+                use ::pvm_contract_sdk::HostApi as _;
+                let __topics = self.topics();
+                // Safe to use HEAD_SIZE sum: emit() is only generated when
+                // all non-indexed fields are static, so HEAD_SIZE == encoded size.
+                let mut __data = [0u8; #data_size_expr];
+                self.data_to(&mut __data);
+                host.deposit_event(&__topics, &__data);
+            }
+        }
+    } else {
+        quote! {}
+    };
 
     Ok(quote! {
         impl #name {
             #[doc(hidden)]
             pub const ABI_ENTRY: &'static str = #abi_entry_expr;
+
+            #emit_method
         }
 
-        // Wrap in a const block to scope the `extern crate alloc` and
-        // avoid conflicts with other derives or user code.
-        const _: () = {
-            extern crate alloc;
+        impl ::pvm_contract_sdk::SolEvent for #name {
+            const TOPIC: [u8; 32] = #topic_expr;
+            const NAME: &'static str = #name_str;
+            const SIGNATURE: &'static str = #sig_expr;
+            const INDEXED_COUNT: usize = #indexed_count_lit;
 
-            impl ::pvm_contract_sdk::types::SolEvent for #name {
-                const TOPIC: [u8; 32] = #topic_expr;
-                const NAME: &'static str = #name_str;
-                const SIGNATURE: &'static str = #sig_expr;
-                const INDEXED_COUNT: usize = #indexed_count_lit;
-
-                fn topics(&self) -> alloc::vec::Vec<[u8; 32]> {
-                    #topics_body
-                }
-
-                fn data(&self) -> alloc::vec::Vec<u8> {
-                    #data_body
-                }
+            fn topics(&self) -> ::pvm_contract_sdk::EventTopics {
+                #topics_body
             }
-        };
+
+            fn data_len(&self) -> usize {
+                #data_len_body
+            }
+
+            fn data_to(&self, __buf: &mut [u8]) {
+                #data_body
+            }
+        }
 
     })
 }
@@ -269,13 +327,6 @@ fn generate_topics_body(
     indexed_flags: &[bool],
     is_anonymous: bool,
 ) -> TokenStream {
-    let indexed_count = indexed_flags.iter().filter(|&&b| b).count();
-    let capacity = if is_anonymous {
-        indexed_count
-    } else {
-        indexed_count + 1
-    };
-
     let mut topic_pushes = Vec::new();
 
     if let Fields::Named(named) = fields {
@@ -298,7 +349,7 @@ fn generate_topics_body(
     };
 
     quote! {
-        let mut __topics = alloc::vec::Vec::with_capacity(#capacity);
+        let mut __topics = ::pvm_contract_sdk::EventTopics::new();
         #topic0_push
         #(#topic_pushes)*
         __topics
@@ -319,11 +370,19 @@ fn generate_indexed_topic_pack(
 
     if needs_abi_encode_hash {
         // Solidity hashes indexed reference types via keccak256(abi.encode(value)).
-        // This handles arrays, fixed arrays, and tuples.
+        // Uses a stack buffer sized by HEAD_SIZE, which is only correct for
+        // static types. Dynamic composites (tuples/arrays with dynamic elements)
+        // are rejected at compile time.
         quote! {
             {
-                let __enc_len = <#rust_type as ::pvm_contract_sdk::SolEncode>::encode_len(&self.#field_name);
-                let mut __enc_buf = alloc::vec![0u8; __enc_len];
+                const _: () = assert!(
+                    !<#rust_type as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC,
+                    "SolEvent: #[indexed] composites (tuples, fixed arrays) must \
+                     be fully static. Dynamic composites require runtime-sized \
+                     buffers which are not supported in no-alloc mode."
+                );
+                const __ENC_SIZE: usize = <#rust_type as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE;
+                let mut __enc_buf = [0u8; __ENC_SIZE];
                 <#rust_type as ::pvm_contract_sdk::SolEncode>::encode_to(&self.#field_name, &mut __enc_buf);
                 __topics.push(::pvm_contract_sdk::keccak256(&__enc_buf));
             }
@@ -346,11 +405,12 @@ fn generate_indexed_topic_pack(
     }
 }
 
-fn generate_data_body(
+/// Generate both `data_len()` and `data_to()` bodies.
+fn generate_data_bodies(
     fields: &Fields,
     _field_info: &[(Option<syn::Ident>, SolType)],
     indexed_flags: &[bool],
-) -> TokenStream {
+) -> (TokenStream, TokenStream) {
     let non_indexed: Vec<(usize, &syn::Ident)> = match fields {
         Fields::Named(named) => named
             .named
@@ -363,7 +423,7 @@ fn generate_data_body(
     };
 
     if non_indexed.is_empty() {
-        return quote! { alloc::vec::Vec::new() };
+        return (quote! { 0 }, quote! {});
     }
 
     let field_names: Vec<&syn::Ident> = non_indexed.iter().map(|(_, n)| *n).collect();
@@ -378,12 +438,13 @@ fn generate_data_body(
     if field_types.len() == 1 {
         let ft = field_types[0];
         let fn_ = field_names[0];
-        return quote! {
-            let __len = <#ft as ::pvm_contract_sdk::SolEncode>::encode_len(&self.#fn_);
-            let mut __buf = alloc::vec![0u8; __len];
-            <#ft as ::pvm_contract_sdk::SolEncode>::encode_to(&self.#fn_, &mut __buf);
-            __buf
+        let len_body = quote! {
+            <#ft as ::pvm_contract_sdk::SolEncode>::encode_len(&self.#fn_)
         };
+        let to_body = quote! {
+            <#ft as ::pvm_contract_sdk::SolEncode>::encode_to(&self.#fn_, __buf);
+        };
+        return (len_body, to_body);
     }
 
     let head_size_parts: Vec<TokenStream> = field_types
@@ -404,6 +465,11 @@ fn generate_data_body(
             }
         })
         .collect();
+
+    let len_body = quote! {
+        let __head_size: usize = #(#head_size_parts)+*;
+        __head_size #(+ #len_parts)*
+    };
 
     let encode_stmts: Vec<TokenStream> = field_types
         .iter()
@@ -426,15 +492,14 @@ fn generate_data_body(
         })
         .collect();
 
-    quote! {
+    let to_body = quote! {
         let __head_size: usize = #(#head_size_parts)+*;
-        let __total_len: usize = __head_size #(+ #len_parts)*;
-        let mut __buf = alloc::vec![0u8; __total_len];
         let mut __head_offset: usize = 0;
         let mut __tail_offset: usize = __head_size;
         #(#encode_stmts)*
-        __buf
-    }
+    };
+
+    (len_body, to_body)
 }
 
 #[cfg(test)]
@@ -567,14 +632,18 @@ mod tests {
     }
 
     #[test]
-    fn accepts_indexed_dynamic_array() {
+    fn rejects_indexed_dynamic_array() {
         let input: DeriveInput = syn::parse_str(
             r#"struct Ev {
                 #[indexed] items: Vec<u64>,
             }"#,
         )
         .unwrap();
-        assert!(expand_sol_event(input).is_ok());
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic arrays"),
+            "should reject Vec<T> as indexed: {err}"
+        );
     }
 
     #[test]
@@ -629,6 +698,55 @@ mod tests {
         assert!(
             topic_str.contains("const_keccak256"),
             "Custom types should use const_keccak256: {topic_str}"
+        );
+    }
+
+    #[test]
+    fn emit_not_generated_for_dynamic_non_indexed_fields() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Log {
+                #[indexed] who: Address,
+                message: String,
+            }"#,
+        )
+        .unwrap();
+        let output = expand_sol_event(input).unwrap().to_string();
+        assert!(
+            !output.contains("fn emit"),
+            "emit() should not be generated for events with dynamic non-indexed fields"
+        );
+    }
+
+    #[test]
+    fn indexed_composite_generates_dynamic_assert() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Ev {
+                #[indexed] pair: (u64, u64),
+                value: U256,
+            }"#,
+        )
+        .unwrap();
+        let output = expand_sol_event(input).unwrap().to_string();
+        assert!(
+            output.contains("IS_DYNAMIC"),
+            "indexed composites should have an IS_DYNAMIC const_assert: {output}"
+        );
+    }
+
+    #[test]
+    fn emit_generated_for_static_non_indexed_fields() {
+        let input: DeriveInput = syn::parse_str(
+            r#"struct Transfer {
+                #[indexed] from: Address,
+                #[indexed] to: Address,
+                value: U256,
+            }"#,
+        )
+        .unwrap();
+        let output = expand_sol_event(input).unwrap().to_string();
+        assert!(
+            output.contains("fn emit"),
+            "emit() should be generated for events with static non-indexed fields"
         );
     }
 }
