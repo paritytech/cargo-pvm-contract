@@ -419,9 +419,10 @@ raw payload hashed directly, with no length prefix or ABI wrapper. The raw
 value is not recoverable from the topic; indexed dynamic fields are for
 filtering only.
 
-Arrays, fixed arrays, and tuples: the topic is `keccak256(abi.encode(value))`.
+Static arrays, fixed arrays, and tuples: the topic is `keccak256(abi.encode(value))`.
 The full ABI encoding is hashed, matching Solidity's convention for indexed
-reference types.
+reference types. Dynamic composites (e.g. tuples containing `String`) and
+dynamic arrays (`Vec<T>`) are rejected at compile time.
 
 Custom and alias types (e.g. `type Owner = Address`) are not supported as
 indexed fields. The proc macro cannot distinguish type aliases from custom
