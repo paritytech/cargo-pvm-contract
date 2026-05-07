@@ -28,7 +28,9 @@
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{Host, HostApi, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
+use pvm_contract_types::{
+    Host, HostApi, SolDecode, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags,
+};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -258,7 +260,7 @@ pub struct Lazy<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
+impl<T: SolEncode + StaticDecode + StaticEncodedLen> Lazy<T> {
     /// Create a new `Lazy` at the given storage key, bound to a host handle.
     pub fn new(key: StorageKey, host: Host) -> Self {
         const {
@@ -278,9 +280,9 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     ///
     /// Returns the zero value for `T` if the slot was never written,
     /// matching Solidity's default-to-zero semantics.
-    pub fn get(&self) -> Result<T, pvm_contract_types::DecodeError> {
+    pub fn get(&self) -> T {
         let buf = storage_get_32(&self.host, self.key.as_bytes());
-        T::decode(&buf)
+        T::decode_unchecked(&buf, 0)
     }
 
     /// Read the value, distinguishing "never written" from "has been set."
@@ -290,8 +292,8 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     ///
     /// Note: writing an all-zero value deletes the key (Solidity semantics),
     /// so `try_get()` returns `None` after writing zero.
-    pub fn try_get(&self) -> Option<Result<T, pvm_contract_types::DecodeError>> {
-        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode(&buf))
+    pub fn try_get(&self) -> Option<T> {
+        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode_unchecked(&buf, 0))
     }
 
     /// Write a value to storage.
@@ -337,7 +339,7 @@ impl<K, V> Mapping<K, V> {
     }
 }
 
-impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V> {
+impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K, V> {
     /// Compute the raw storage key for a given map key.
     ///
     /// Useful for debugging and cross-checking with `cast index`.
@@ -358,12 +360,12 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
     /// Read the value at the given key.
     ///
     /// Returns the zero value if the key was never written.
-    pub fn get(&self, key: &K) -> Result<V, pvm_contract_types::DecodeError> {
+    pub fn get(&self, key: &K) -> V {
         Lazy::new(self.slot_of(key), self.host.clone()).get()
     }
 
     /// Read the value, returning `None` if the key was never written.
-    pub fn try_get(&self, key: &K) -> Option<Result<V, pvm_contract_types::DecodeError>> {
+    pub fn try_get(&self, key: &K) -> Option<V> {
         Lazy::new(self.slot_of(key), self.host.clone()).try_get()
     }
 
@@ -434,7 +436,7 @@ mod tests {
     fn lazy_roundtrip_u256() {
         let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
-        assert_eq!(lazy.get().unwrap(), U256::from(42));
+        assert_eq!(lazy.get(), U256::from(42));
     }
 
     #[test]
@@ -442,23 +444,23 @@ mod tests {
         let addr = Address([0xAA; 20]);
         let mut lazy = Lazy::<Address>::new(StorageKey::from_slot(0), h());
         lazy.set(&addr);
-        assert_eq!(lazy.get().unwrap(), addr);
+        assert_eq!(lazy.get(), addr);
     }
 
     #[test]
     fn lazy_roundtrip_bool() {
         let mut lazy = Lazy::<bool>::new(StorageKey::from_slot(0), h());
         lazy.set(&true);
-        assert!(lazy.get().unwrap());
+        assert!(lazy.get());
         lazy.set(&false);
         // Writing false = all-zero = deletes the key, so get returns zero = false
-        assert!(!lazy.get().unwrap());
+        assert!(!lazy.get());
     }
 
     #[test]
     fn lazy_default_is_zero() {
         let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
-        assert_eq!(lazy.get().unwrap(), U256::ZERO);
+        assert_eq!(lazy.get(), U256::ZERO);
     }
 
     #[test]
@@ -471,14 +473,14 @@ mod tests {
     fn lazy_try_get_nonzero_value() {
         let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(99));
-        assert_eq!(lazy.try_get(), Some(Ok(U256::from(99))));
+        assert_eq!(lazy.try_get(), Some(U256::from(99)));
     }
 
     #[test]
     fn lazy_set_zero_deletes() {
         let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
-        assert_eq!(lazy.try_get().unwrap(), Ok(U256::from(42)));
+        assert_eq!(lazy.try_get(), Some(U256::from(42)));
         lazy.set(&U256::ZERO);
         // Writing zero triggers set_storage_or_clear deletion
         assert_eq!(lazy.try_get(), None);
@@ -497,7 +499,7 @@ mod tests {
         let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
         lazy.set(&U256::from(42));
         lazy.clear();
-        assert_eq!(lazy.get().unwrap(), U256::ZERO);
+        assert_eq!(lazy.get(), U256::ZERO);
     }
 
     // --- Mapping operations ---
@@ -507,7 +509,7 @@ mod tests {
         let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let addr = Address([0xBB; 20]);
         m.insert(&addr, &U256::from(100));
-        assert_eq!(m.get(&addr).unwrap(), U256::from(100));
+        assert_eq!(m.get(&addr), U256::from(100));
     }
 
     #[test]
@@ -516,7 +518,7 @@ mod tests {
         let addr = Address([0xCC; 20]);
         m.insert(&addr, &U256::from(50));
         m.remove(&addr);
-        assert_eq!(m.get(&addr).unwrap(), U256::ZERO);
+        assert_eq!(m.get(&addr), U256::ZERO);
     }
 
     #[test]
@@ -524,7 +526,7 @@ mod tests {
         let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
         let addr = Address([0xDD; 20]);
         m.insert(&addr, &U256::from(50));
-        assert_eq!(m.try_get(&addr), Some(Ok(U256::from(50))));
+        assert_eq!(m.try_get(&addr), Some(U256::from(50)));
         m.remove(&addr);
         // Key is truly deleted, not just zeroed (#33)
         assert_eq!(m.try_get(&addr), None);
@@ -537,8 +539,8 @@ mod tests {
         let b = Address([0x02; 20]);
         m.insert(&a, &U256::from(10));
         m.insert(&b, &U256::from(20));
-        assert_eq!(m.get(&a).unwrap(), U256::from(10));
-        assert_eq!(m.get(&b).unwrap(), U256::from(20));
+        assert_eq!(m.get(&a), U256::from(10));
+        assert_eq!(m.get(&b), U256::from(20));
     }
 
     // --- Nested mappings ---
@@ -551,10 +553,7 @@ mod tests {
         let spender = Address([0xBB; 20]);
 
         allowances.entry(&owner).insert(&spender, &U256::from(500));
-        assert_eq!(
-            allowances.get(&owner).get(&spender).unwrap(),
-            U256::from(500)
-        );
+        assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
     }
 
     // --- Tuple keys ---
@@ -574,7 +573,7 @@ mod tests {
         // Read via tuple key (same slot, same host state)
         let tuple_map =
             Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone());
-        assert_eq!(tuple_map.get(&(owner, spender)).unwrap(), amount);
+        assert_eq!(tuple_map.get(&(owner, spender)), amount);
     }
 
     #[test]
@@ -584,8 +583,8 @@ mod tests {
         let bob = Address([0xBB; 20]);
 
         m.insert(&(alice, bob), &U256::from(500));
-        assert_eq!(m.get(&(alice, bob)).unwrap(), U256::from(500));
-        assert_eq!(m.get(&(bob, alice)).unwrap(), U256::ZERO); // different key order
+        assert_eq!(m.get(&(alice, bob)), U256::from(500));
+        assert_eq!(m.get(&(bob, alice)), U256::ZERO); // different key order
     }
 
     #[test]
@@ -611,7 +610,7 @@ mod tests {
         let mut m = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), h());
         let key = [0xAB; 32];
         m.insert(&key, &U256::from(42));
-        assert_eq!(m.get(&key).unwrap(), U256::from(42));
+        assert_eq!(m.get(&key), U256::from(42));
     }
 
     // --- Solidity compatibility ---
@@ -655,11 +654,11 @@ mod tests {
 
         // Use entry for read-then-write
         let mut cell = m.entry(&addr);
-        let val = cell.get().unwrap();
+        let val = cell.get();
         assert_eq!(val, U256::from(100));
         cell.set(&(val - U256::from(30)));
 
-        assert_eq!(m.get(&addr).unwrap(), U256::from(70));
+        assert_eq!(m.get(&addr), U256::from(70));
     }
 
     // --- Multi-field storage ---
@@ -671,11 +670,11 @@ mod tests {
         let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host);
 
         counter.set(&U256::from(42));
-        assert_eq!(counter.get().unwrap(), U256::from(42));
+        assert_eq!(counter.get(), U256::from(42));
 
         let addr = Address([0xFF; 20]);
         balances.insert(&addr, &U256::from(1000));
-        assert_eq!(balances.get(&addr).unwrap(), U256::from(1000));
+        assert_eq!(balances.get(&addr), U256::from(1000));
     }
 
     /// Full ERC-20-like example showing how storage fields are constructed
@@ -696,30 +695,30 @@ mod tests {
         total_supply.set(&initial_supply);
         balances.insert(&alice, &initial_supply);
 
-        assert_eq!(total_supply.get().unwrap(), initial_supply);
-        assert_eq!(balances.get(&alice).unwrap(), initial_supply);
-        assert_eq!(balances.get(&bob).unwrap(), U256::ZERO);
+        assert_eq!(total_supply.get(), initial_supply);
+        assert_eq!(balances.get(&alice), initial_supply);
+        assert_eq!(balances.get(&bob), U256::ZERO);
 
         // Transfer: alice sends 300 to bob using entry() for read-then-write
         let amount = U256::from(300);
         let mut alice_cell = balances.entry(&alice);
-        let alice_bal = alice_cell.get().unwrap();
+        let alice_bal = alice_cell.get();
         alice_cell.set(&(alice_bal - amount));
 
         let mut bob_cell = balances.entry(&bob);
-        let bob_bal = bob_cell.get().unwrap();
+        let bob_bal = bob_cell.get();
         bob_cell.set(&(bob_bal + amount));
 
-        assert_eq!(balances.get(&alice).unwrap(), U256::from(9_700));
-        assert_eq!(balances.get(&bob).unwrap(), U256::from(300));
+        assert_eq!(balances.get(&alice), U256::from(9_700));
+        assert_eq!(balances.get(&bob), U256::from(300));
 
         // Approve: alice approves bob for 500
         allowances.entry(&alice).insert(&bob, &U256::from(500));
 
         // Read allowance via chaining
-        assert_eq!(allowances.get(&alice).get(&bob).unwrap(), U256::from(500));
+        assert_eq!(allowances.get(&alice).get(&bob), U256::from(500));
         // Other direction is zero
-        assert_eq!(allowances.get(&bob).get(&alice).unwrap(), U256::ZERO);
+        assert_eq!(allowances.get(&bob).get(&alice), U256::ZERO);
     }
 
     #[test]
@@ -730,8 +729,8 @@ mod tests {
 
         value_a.set(&U256::from(111));
         value_b.set(&U256::from(222));
-        assert_eq!(value_a.get().unwrap(), U256::from(111));
-        assert_eq!(value_b.get().unwrap(), U256::from(222));
+        assert_eq!(value_a.get(), U256::from(111));
+        assert_eq!(value_b.get(), U256::from(222));
     }
 
     // --- Solidity slot cross-checks (hardcoded values from `cast index`) ---

@@ -941,7 +941,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             .map(|(name, _)| name.clone())
             .collect();
 
-        let decoding = generate_param_decoding(&param_names, &param_types);
+        let decoding = generate_param_decoding(&param_names, &param_types, true);
         let super::dispatch::ParamDecoding {
             min_size_expr,
             decode_statements,

@@ -3,7 +3,8 @@
 #![no_std]
 
 use pvm_contract_builder_dsl::pvm_contract_types::{
-    HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
+    Address, HostApi, PolkaVmHost, SolDecode, SolEncode, StaticDecode, StaticEncodedLen,
+    StorageFlags,
 };
 use pvm_contract_builder_dsl::ruint::aliases::U256;
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
@@ -57,7 +58,8 @@ fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) 
 }
 
 fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <[u8; 20]>::decode_at(input, 0).unwrap();
+    let account = <Address>::decode_unchecked(input, 0);
+    let account: [u8; 20] = account.into();
     let key = balance_key(host, &account);
     let mut balance_bytes = [0u8; 32];
     let mut balance_slice = &mut balance_bytes[..];
@@ -72,7 +74,9 @@ fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> 
 }
 
 fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let (to, amount) = <([u8; 20], U256)>::decode(input).unwrap();
+    let to = <Address>::decode_unchecked(input, 0);
+    let to: [u8; 20] = to.into();
+    let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
 
     let caller = get_caller(host);
     let sender_key = balance_key(host, &caller);
@@ -114,7 +118,9 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let (to, amount) = <([u8; 20], U256)>::decode(input).unwrap();
+    let to = <Address>::decode_unchecked(input, 0);
+    let to: [u8; 20] = to.into();
+    let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
 
     let recipient_key = balance_key(host, &to);
     let mut recipient_balance_bytes = [0u8; 32];
@@ -140,8 +146,7 @@ fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> Handl
     let new_supply = supply.saturating_add(amount);
     set_total_supply(host, new_supply);
 
-    let zero_address = [0u8; 20];
-    emit_transfer(host, &zero_address, &to, amount);
+    emit_transfer(host, &[0u8; 20], &to, amount);
     HandlerResult::Ok(0)
 }
 

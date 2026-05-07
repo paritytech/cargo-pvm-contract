@@ -89,6 +89,7 @@ pub use pvm_contract_types::{
     SolEncode,
     SolError,
     SolRevert,
+    StaticDecode,
     StaticEncodedLen,
     StorageFlags,
     U256,

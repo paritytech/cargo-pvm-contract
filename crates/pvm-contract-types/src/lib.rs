@@ -366,7 +366,7 @@ pub trait SolEncode {
 }
 
 /// Marker trait for types with compile-time known encoded size.
-pub trait StaticEncodedLen: SolEncode {
+pub trait StaticEncodedLen: SolEncode + Sized {
     const ENCODED_SIZE: usize;
 }
 
@@ -400,6 +400,12 @@ pub trait SolDecode: SolEncode + Sized {
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
         Self::decode_at(input, offset)
     }
+}
+
+pub trait StaticDecode: SolDecode + SolEncode + StaticEncodedLen + Sized {
+    /// SAFETY contract: caller guarantees `input.len() >= offset + ENCODED_SIZE`.
+    /// Caller is the dispatch codegen that checks total size once at entry.
+    fn decode_unchecked(input: &[u8], offset: usize) -> Self;
 }
 
 // ---------------------------------------------------------------------------
@@ -999,6 +1005,163 @@ impl_static_type!(
     array_element
 );
 
+macro_rules! impl_static_type_decode {
+    ($ty:ty,  $decode_fn:expr) => {
+        impl StaticDecode for $ty {
+            #[inline]
+            fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+                $decode_fn(input, offset)
+            }
+        }
+    };
+    // Variant that also emits SolArrayElement
+    ($ty:ty, $decode_fn:expr, array_element) => {
+        impl_static_type_decode!($ty, $decode_fn);
+    };
+}
+
+impl_static_type_decode!(
+    U256,
+    |input: &[u8], offset: usize| unsafe {
+        U256::from_be_slice(input.get_unchecked(offset..offset + 32))
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    I256,
+    |input: &[u8], offset: usize| unsafe {
+        I256::from_be_slice(input.get_unchecked(offset..offset + 32))
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    u128,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
+                .map(u128::from_be_bytes)
+                .unwrap()
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    u64,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
+                .map(u64::from_be_bytes)
+                .unwrap()
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    u32,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            TryInto::<[u8; 4]>::try_into(input.get_unchecked(offset + 28..offset + 32))
+                .map(u32::from_be_bytes)
+                .unwrap()
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    u16,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            u16::from_be_bytes([
+                *input.get_unchecked(offset + 30),
+                *input.get_unchecked(offset + 31),
+            ])
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(u8, |input: &[u8], offset: usize| unsafe {
+    *input.get_unchecked(offset + 31)
+});
+
+impl_static_type_decode!(
+    i128,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
+                .map(i128::from_be_bytes)
+                .unwrap()
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    i64,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
+                .map(i64::from_be_bytes)
+                .unwrap()
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    i32,
+    |input: &[u8], offset: usize| {
+        input
+            .get(offset + 28..offset + 32)
+            .and_then(|x| TryInto::<[u8; 4]>::try_into(x).ok())
+            .map(i32::from_be_bytes)
+            .unwrap()
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    i16,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            i16::from_be_bytes([
+                *input.get_unchecked(offset + 30),
+                *input.get_unchecked(offset + 31),
+            ])
+        }
+    },
+    array_element
+);
+
+impl_static_type_decode!(
+    i8,
+    |input: &[u8], offset: usize| unsafe { i8::from_be_bytes([*input.get_unchecked(offset + 31)]) },
+    array_element
+);
+
+impl_static_type_decode!(
+    bool,
+    |input: &[u8], offset: usize| unsafe { *input.get_unchecked(offset + 31) != 0 },
+    array_element
+);
+
+impl_static_type_decode!(
+    Address,
+    |input: &[u8], offset: usize| {
+        unsafe {
+            let mut result = [0u8; 20];
+            result.copy_from_slice(input.get_unchecked(offset + 12..offset + 32));
+            Address(result)
+        }
+    },
+    array_element
+);
+
 impl SolEncode for &str {
     const IS_DYNAMIC: bool = true;
     const SOL_NAME: &'static str = "string";
@@ -1083,6 +1246,18 @@ impl<const N: usize> SolDecode for [u8; N] {
                 result
             })
             .ok_or(DecodeError)
+    }
+}
+
+impl<const N: usize> StaticDecode for [u8; N] {
+    fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+        const { assert!(N >= 1 && N <= 32, "bytesN only valid for N in 1..=32") };
+
+        let mut result = [0u8; N];
+        unsafe {
+            result.copy_from_slice(input.get_unchecked(offset..offset + N));
+        }
+        result
     }
 }
 
@@ -1173,6 +1348,12 @@ impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
     }
 }
 
+impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> StaticDecode for [T; N] {
+    fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+        core::array::from_fn(|i| T::decode_unchecked(input, offset + i * T::SLOT_SIZE))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tuple impls for arities 1-12
 // ---------------------------------------------------------------------------
@@ -1241,6 +1422,11 @@ macro_rules! impl_tuple_sol {
 
         impl<$($T: SolEncode),+> SolArrayElement for ($($T,)+) {}
 
+        impl<$($T: StaticEncodedLen),+> StaticEncodedLen for ($($T,)+) {
+            const ENCODED_SIZE: usize = 0 $(+ $T::ENCODED_SIZE)+;
+
+        }
+
         impl<$($T: SolDecode),+> SolDecode for ($($T,)+) {
             fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
                 let mut __ho = offset;
@@ -1266,6 +1452,20 @@ macro_rules! impl_tuple_sol {
                         __val
                     },
                 )+))
+
+            }
+        }
+        impl<$($T: StaticDecode + StaticEncodedLen + SolDecode),+> StaticDecode for ($($T,)+) {
+            fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+                let mut __ho = offset;
+                ($(
+                    {
+
+                        let __val = $T::decode_unchecked(input, __ho);
+                        __ho += $T::SLOT_SIZE;
+                        __val
+                    },
+                )+)
 
             }
         }
