@@ -14,35 +14,12 @@ struct Transfer {
 }
 
 #[test]
-fn topic0_matches_keccak256_of_signature() {
-    let expected = pvm_contract_types::const_keccak256(b"Transfer(address,address,uint256)");
-    assert_eq!(Transfer::TOPIC, expected);
-}
-
-#[test]
-fn signature_is_canonical() {
+fn consts_match_expected_values() {
     assert_eq!(Transfer::SIGNATURE, "Transfer(address,address,uint256)");
-}
-
-#[test]
-fn name_is_struct_name() {
     assert_eq!(Transfer::NAME, "Transfer");
-}
-
-#[test]
-fn indexed_count_is_correct() {
     assert_eq!(Transfer::INDEXED_COUNT, 2);
-}
-
-#[test]
-fn topics_returns_three_entries() {
-    let event = Transfer {
-        from: Address([0xAA; 20]),
-        to: Address([0xBB; 20]),
-        value: U256::from(100u64),
-    };
-    let topics = event.topics();
-    assert_eq!(topics.len(), 3);
+    let expected_topic = pvm_contract_types::const_keccak256(b"Transfer(address,address,uint256)");
+    assert_eq!(Transfer::TOPIC, expected_topic);
 }
 
 #[test]
@@ -53,6 +30,7 @@ fn topic0_is_signature_hash() {
         value: U256::from(100u64),
     };
     let topics = event.topics();
+    assert_eq!(topics.len(), 3);
     assert_eq!(topics[0], Transfer::TOPIC);
 }
 
