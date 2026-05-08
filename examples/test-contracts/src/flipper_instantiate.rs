@@ -40,10 +40,10 @@ mod flipper_instantiate {
             let get = flipper.get();
             let flip = flipper.flip();
 
-            let res = get.call(self.host())?;
+            let res = get.call(self)?;
             assert_eq!(res, false);
-            let _ = flip.call(self.host())?;
-            let res = get.call(self.host())?;
+            let _ = flip.call(self)?;
+            let res = get.call(self)?;
             assert_eq!(res, true);
             let mut code_hash = [0; 32];
             let _ = self.host().code_hash(&addr.0, &mut code_hash);
@@ -51,7 +51,7 @@ mod flipper_instantiate {
             let deposit_limit = ruint::aliases::U256::from(u128::MAX);
             let deposit_limit = deposit_limit.to_be_bytes();
             let (addr, _) = f.instantiate(
-                self.host(),
+                self,
                 &code_hash,
                 0,
                 RefTimeAndProofSizeLimits {
@@ -65,10 +65,10 @@ mod flipper_instantiate {
             let get = flipper.get();
             let flip = flipper.flip();
 
-            let res = get.call(self.host())?;
+            let res = get.call(self)?;
             assert_eq!(res, false);
-            let _ = flip.call(self.host())?;
-            let res = get.call(self.host())?;
+            let _ = flip.call(self)?;
+            let res = get.call(self)?;
             assert_eq!(res, true);
             Ok(())
         }

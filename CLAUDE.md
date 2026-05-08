@@ -104,6 +104,42 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 
 - `#[method]` — marks a public function as a contract method
 - `#[method(rename = "name")]` — overrides the Solidity function name (default: snake_case to camelCase)
+- `#[payable]` — marks the method as `payable` (must be combined with `&mut self`)
+
+### Mutability Inference
+
+Solidity `stateMutability` is inferred from the Rust receiver. No explicit `#[view]` or `#[pure]` attribute — receiver shape is the source of truth.
+
+| Receiver | `#[payable]` | ABI emits |
+|---|---|---|
+| none (`fn foo(args)`) | — | `pure` |
+| `&self` | — | `view` |
+| `&mut self` | — | `nonpayable` |
+| `&mut self` | yes | `payable` |
+| `&self` | yes | **compile error** |
+| no receiver | yes | **compile error** |
+
+**Constructor:** must take `&mut self`; `pure`/`view` constructors are rejected (they cannot initialize storage). `#[payable]` is allowed.
+
+**Fallback:** follows the same inference table as regular methods.
+
+**`.sol` consistency check:** when a `.sol` interface is provided, the macro errors if the Rust-inferred mutability disagrees with the `.sol` declaration (e.g., `.sol` says `view` but Rust uses `&mut self`).
+
+### Mutability Enforcement
+
+Three layers, in increasing strength:
+
+1. **Compile-time (typed-API)** — `#[contract]` auto-implements `ContractRoot` on the storage struct (and forbids `#[derive(Clone)]` on it). Cross-contract call builders take `&impl ContractRoot` for `view`/`pure` callees and `&mut impl ContractRoot` for `nonpayable`/`payable` callees, so a `&self` (view) method *cannot* initiate a state-mutating call through the typed `abi_import!`-generated SDK. `delegate_call` and `instantiate` always require `&mut`. Storage helpers (`Lazy`, `Mapping`) similarly gate `set`/`insert` on `&mut self`.
+
+2. **Runtime (contract-side)** — non-payable methods (`pure`/`view`/`nonpayable`) get an injected `__pvm_assert_non_payable` / `__pvm_assert_value_zero` guard at the dispatch entry; the contract reverts if `msg.value > 0`.
+
+3. **Runtime (host-side)** — `pallet-revive` enforces the STATICCALL boundary: state-mutating host calls revert when invoked inside a static frame. This is what backstops `view`/`pure` for cross-contract callers.
+
+**Honest caveat:** the typed-API gate covers cross-contract calls made through `abi_import!`-generated wrappers and storage operations through `pvm-storage`. Raw `pallet_revive_uapi` calls (e.g., `api::set_storage`) bypass the type-level check — only the host's STATICCALL enforcement and the runtime payable guard apply there. Use the typed APIs as the primary surface; reach for raw uAPI only when the typed surface lacks coverage.
+
+**Pure limitation:** truly pure methods (no receiver) have no `Host` access, so they cannot call `keccak256` (which routes through the host). A method that needs `keccak256` should be marked `view` (`&self`) instead.
+
+**Reentrancy non-protection:** `&mut self` enforces single-threaded mutation within a frame, but persistent storage is shared across reentrant frames (each callee gets a fresh contract struct, so the borrow checker offers no cross-frame guarantee). A reentrancy-sensitive method needs an explicit guard (not provided by the SDK yet).
 
 ## Type System
 

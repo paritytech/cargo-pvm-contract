@@ -40,7 +40,7 @@ mod flipper_delegate {
         #[pvm_contract_sdk::method]
         pub fn delegate_flipper(&mut self, addr: Address) -> Result<(), Error> {
             let flip = Flipper::from_address(addr).flip();
-            Ok(flip.delegate_call(self.host())?)
+            Ok(flip.delegate_call(self)?)
         }
 
         #[pvm_contract_sdk::method]

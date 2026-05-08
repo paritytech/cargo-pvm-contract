@@ -6,24 +6,24 @@
 //! These tests exercise the host-as-parameter path:
 //!
 //! ```ignore
-//! Iface::from_address(addr).method().call(&host)?
-//!     -> CallBuilder::call(host, ...)
-//!     -> host.call_evm(...)             // dispatches to MockHost
+//! Iface::from_address(addr).method().call(&root)?
+//!     -> CallBuilder::call(root, ...)
+//!     -> root.host().call_evm(...)      // dispatches to MockHost
 //!     -> MockHost::resolve_call         // returns mocked data
 //!     -> CallBuilder::extract_output(host, ...)
 //!     -> host.return_data_copy(...)     // reads from MockHost.return_data
 //! ```
 //!
-//! Without the host plumbing, `CallBuilder` would call `PolkaVmHost.*`
-//! directly, bypassing the mock and panicking with `unimplemented!()` on
-//! host-target builds.
+//! `TestContract` wraps the `Host` and impls `ContractRoot`, so it satisfies
+//! the borrow gate (`&impl ContractRoot` for view callees,
+//! `&mut impl ContractRoot` for mutating ones).
 
 extern crate alloc;
 
 use std::rc::Rc;
 
 use pvm_contract_sdk::{
-    Address, CallError, Host, HostApi, MockHostBuilder, RefTimeAndProofSizeLimits,
+    Address, CallError, Host, HostApi, MockHostBuilder, RefTimeAndProofSizeLimits, TestContract,
 };
 
 pvm_contract_sdk::abi_import! {
@@ -51,11 +51,11 @@ fn view_call_returns_mocked_data() {
     let target = Address::from([0xBB; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(encoded_bool(true)));
-    let host = Host::from_dyn(Rc::new(mock));
+    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
-        .call(&host)
+        .call(&root)
         .unwrap();
 
     assert!(res);
@@ -66,11 +66,11 @@ fn view_call_returns_mocked_false() {
     let target = Address::from([0xBC; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(encoded_bool(false)));
-    let host = Host::from_dyn(Rc::new(mock));
+    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
-        .call(&host)
+        .call(&root)
         .unwrap();
 
     assert!(!res);
@@ -82,15 +82,16 @@ fn write_call_invokes_mock_and_propagates_return_data() {
     let marker = vec![0xAA, 0xBB, 0xCC, 0xDD];
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(marker.clone()));
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     flipper::Flipper::from_address(target)
         .flip()
-        .call(&host)
+        .call(&mut root)
         .expect("flip should succeed");
 
     // Stronger evidence than a successful return: the mock actually wrote
     // its configured payload into the host's return-data buffer.
+    let host = &root.host;
     assert_eq!(host.return_data_size(), marker.len() as u64);
     let mut buf = vec![0u8; marker.len()];
     let mut out = &mut buf[..];
@@ -105,14 +106,14 @@ fn unmocked_call_leaves_return_data_empty() {
     // clears return_data and returns Ok(()) — proving the previous test's
     // marker bytes came from the mock table, not from a default fallback.
     let target = Address::from([0xBE; 20]);
-    let host = Host::from_dyn(Rc::new(MockHostBuilder::new().build()));
+    let mut root = TestContract::new(Host::from_dyn(Rc::new(MockHostBuilder::new().build())));
 
     flipper::Flipper::from_address(target)
         .flip()
-        .call(&host)
+        .call(&mut root)
         .expect("unmocked flip still succeeds");
 
-    assert_eq!(host.return_data_size(), 0);
+    assert_eq!(root.host.return_data_size(), 0);
 }
 
 #[test]
@@ -120,9 +121,9 @@ fn revert_from_callee_propagates_as_call_error() {
     let target = Address::from([0xCC; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Err(()));
-    let host = Host::from_dyn(Rc::new(mock));
+    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
-    let res = flipper::Flipper::from_address(target).get().call(&host);
+    let res = flipper::Flipper::from_address(target).get().call(&root);
 
     assert_eq!(res, Err(CallError::CalleeReverted));
 }
@@ -139,14 +140,15 @@ fn delegate_call_uses_same_mock_table() {
     let payload = encoded_bool(true);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(payload.clone()));
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
-        .delegate_call(&host)
+        .delegate_call(&mut root)
         .unwrap();
 
     assert!(res);
+    let host = &root.host;
     assert_eq!(host.return_data_size(), payload.len() as u64);
     let mut buf = vec![0u8; payload.len()];
     let mut out = &mut buf[..];
@@ -157,7 +159,7 @@ fn delegate_call_uses_same_mock_table() {
 #[test]
 fn chained_calls_each_extract_their_own_return_data() {
     // Two callees mocked with different payloads; the contract calls both
-    // in sequence. Each `.call(&host)` must decode the value belonging to
+    // in sequence. Each `.call(&root)` must decode the value belonging to
     // *its* callee — proving that `extract_output` runs immediately after
     // `call_raw` and before the next call clobbers `return_data`. This
     // mirrors on-chain semantics (RETURNDATA reflects only the most recent
@@ -169,25 +171,26 @@ fn chained_calls_each_extract_their_own_return_data() {
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target_a.0, Ok(encoded_bool(true)));
     mock.mock_call(target_b.0, Ok(encoded_bool(false)));
-    let host = Host::from_dyn(Rc::new(mock));
+    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     // First call — get the answer for target A.
     let res_a = flipper::Flipper::from_address(target_a)
         .get()
-        .call(&host)
+        .call(&root)
         .unwrap();
     assert!(res_a, "first call should decode target_a's payload");
 
     // Second call — get the answer for target B.
     let res_b = flipper::Flipper::from_address(target_b)
         .get()
-        .call(&host)
+        .call(&root)
         .unwrap();
     assert!(!res_b, "second call should decode target_b's payload");
 
     // Pin the overwrite semantics: the host's RETURNDATA now holds only
     // target B's payload (target A's is gone). On chain this is exactly
     // how `RETURNDATASIZE` / `RETURNDATACOPY` behave.
+    let host = &root.host;
     assert_eq!(host.return_data_size(), 32);
     let mut buf = [0u8; 32];
     let mut out = &mut buf[..];
@@ -200,7 +203,7 @@ fn instantiate_returns_mocked_address() {
     let deployed = [0xDD; 20];
     let mock = MockHostBuilder::new().build();
     mock.mock_instantiate(deployed, Vec::new());
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     let limits = RefTimeAndProofSizeLimits {
         ref_time_limit: u64::MAX,
@@ -208,7 +211,7 @@ fn instantiate_returns_mocked_address() {
         deposit_limit: [0u8; 32],
     };
     let (addr, ()) = flipper::new_flipper()
-        .instantiate(&host, &[0u8; 32], 0, limits, None)
+        .instantiate(&mut root, &[0u8; 32], 0, limits, None)
         .expect("instantiate should succeed");
 
     assert_eq!(addr, Address::from(deployed));
@@ -217,14 +220,14 @@ fn instantiate_returns_mocked_address() {
 #[test]
 fn instantiate_without_mock_returns_out_of_resources() {
     let mock = MockHostBuilder::new().build();
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
 
     let limits = RefTimeAndProofSizeLimits {
         ref_time_limit: u64::MAX,
         proof_size_limit: u64::MAX,
         deposit_limit: [0u8; 32],
     };
-    let res = flipper::new_flipper().instantiate(&host, &[0u8; 32], 0, limits, None);
+    let res = flipper::new_flipper().instantiate(&mut root, &[0u8; 32], 0, limits, None);
 
     assert_eq!(res, Err(CallError::OutOfResources));
 }

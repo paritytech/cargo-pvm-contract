@@ -68,6 +68,8 @@ pub use pvm_contract_types::{
     CallFlags,
     // Encoding / decoding
     ConstStr,
+    // Mutation gating
+    ContractRoot,
     // Error traits and types
     EmptyError,
     Host,
@@ -98,6 +100,11 @@ pub use pvm_contract_types::{
     value_transferred_is_nonzero,
 };
 
+/// Sealing module re-exported for the `#[contract]` macro to implement on
+/// generated storage structs. External users have no reason to import this.
+#[doc(hidden)]
+pub use pvm_contract_types::__private;
+
 // Cross-contract calls
 pub use pvm_contract_core::call::{
     CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
@@ -121,7 +128,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, TestContract};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;

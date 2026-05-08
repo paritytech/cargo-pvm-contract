@@ -25,8 +25,17 @@ pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
+    CallFlags, ContractRoot, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags,
+    StorageFlags,
 };
+
+/// Sealing marker for traits that should only be implemented by code in this
+/// workspace (specifically: macro-generated contract structs and the DSL
+/// dispatch root). External users have no reason to import this module.
+#[doc(hidden)]
+pub mod __private {
+    pub trait Sealed {}
+}
 
 /// Re-exported so macro-generated `call()` / `deploy()` wrappers can reach it
 /// without the user's `Cargo.toml` depending on `pallet-revive-uapi` directly.
@@ -36,7 +45,7 @@ pub use pallet_revive_uapi;
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]
-pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue};
+pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue, TestContract};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};

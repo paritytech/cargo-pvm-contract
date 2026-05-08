@@ -39,10 +39,13 @@ mod flipper_call_alloy {
             let get = flipper.get();
             let flip = flipper.flip();
 
-            let res = get.call(self.host())?;
+            // View callee — `&self` borrow of the contract root suffices;
+            // `&mut self` here coerces to `&Self` automatically.
+            let res = get.call(self)?;
             assert_eq!(res, false);
-            let _ = flip.call(self.host())?;
-            let res = get.call(self.host())?;
+            // Nonpayable callee — requires `&mut Self` borrow.
+            let _ = flip.call(self)?;
+            let res = get.call(self)?;
             assert_eq!(res, true);
             Ok(())
         }

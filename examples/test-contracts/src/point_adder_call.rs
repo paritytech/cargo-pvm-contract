@@ -55,7 +55,7 @@ mod point_adder_call {
                         b: U256::from(2),
                     },
                 )
-                .call(self.host())?;
+                .call(self)?;
 
             assert_eq!(
                 call,

@@ -358,39 +358,31 @@ fn extract_result_ok_type(ty: &syn::Type) -> Option<syn::Type> {
 
 /// Extract typed params from an impl-method's `FnArg` list.
 ///
-/// Requires the first parameter to be a `self` receiver (`&self`, `&mut self`,
-/// or owned `self`) — without one, dispatch can't call `this.method(...)` on
-/// the generated contract struct, so we error loudly here instead of producing
-/// a cryptic "method not found" error from expanded code.
+/// Accepts methods with `&self`, `&mut self`, or no receiver (associated
+/// functions, used for `pure` methods). Owned `self` is rejected — it would
+/// consume the contract instance. The receiver, when present, is skipped;
+/// remaining typed params are returned in order.
+///
+/// Mutability/payable enforcement is done by [`classify_receiver`] and
+/// [`infer_method_mutability`] at the call site.
 fn extract_typed_params_impl(
-    func: &syn::ImplItemFn,
+    _func: &syn::ImplItemFn,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
 ) -> syn::Result<Vec<(Ident, syn::Type)>> {
-    let Some(first) = inputs.first() else {
-        return Err(syn::Error::new_spanned(
-            &func.sig,
-            "Contract methods must take `&self` or `&mut self` as the first parameter",
-        ));
-    };
-    match first {
-        syn::FnArg::Receiver(r) if r.reference.is_none() => {
+    let skip = match inputs.first() {
+        Some(syn::FnArg::Receiver(r)) if r.reference.is_none() => {
             return Err(syn::Error::new_spanned(
                 r,
-                "Contract methods must take a borrowed self (`&self` / `&mut self`); owning `self` would consume the contract instance",
+                "owning `self` would consume the contract instance; use `&self` or `&mut self`",
             ));
         }
-        syn::FnArg::Receiver(_) => {}
-        syn::FnArg::Typed(_) => {
-            return Err(syn::Error::new_spanned(
-                first,
-                "Contract methods must take `&self` or `&mut self` as the first parameter",
-            ));
-        }
-    }
+        Some(syn::FnArg::Receiver(_)) => 1,
+        _ => 0,
+    };
 
     inputs
         .iter()
-        .skip(1)
+        .skip(skip)
         .map(|arg| match arg {
             syn::FnArg::Receiver(r) => Err(syn::Error::new_spanned(
                 r,
@@ -411,12 +403,151 @@ fn extract_typed_params_impl(
         .collect()
 }
 
+/// Scan struct attributes for `#[derive(..., Clone, ...)]` (any path that
+/// resolves to `Clone`, ignoring fully-qualified prefixes like
+/// `core::clone::Clone`). Returns the offending derive token for span
+/// reporting, or `None` if no `Clone` is derived.
+fn find_derive_clone(attrs: &[Attribute]) -> Option<&Attribute> {
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let derives_clone = attr
+            .parse_args_with(syn::punctuated::Punctuated::<syn::Path, Token![,]>::parse_terminated)
+            .ok()
+            .map(|paths| {
+                paths
+                    .iter()
+                    .any(|p| p.segments.last().is_some_and(|s| s.ident == "Clone"))
+            })
+            .unwrap_or(false);
+        if derives_clone {
+            return Some(attr);
+        }
+    }
+    None
+}
+
 /// `true` iff the function's first parameter is `&mut self`.
 fn receiver_is_mut(inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>) -> bool {
     matches!(
         inputs.first(),
         Some(syn::FnArg::Receiver(r))
             if r.reference.is_some() && r.mutability.is_some()
+    )
+}
+
+/// Method receiver classification used for mutability inference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReceiverKind {
+    /// No receiver — `fn foo(args) -> T`. Maps to Solidity `pure`.
+    None,
+    /// `&self` — read-only. Maps to Solidity `view`.
+    Ref,
+    /// `&mut self` — mutating. Maps to `nonpayable` / `payable`.
+    RefMut,
+}
+
+fn classify_receiver(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::token::Comma>,
+) -> syn::Result<ReceiverKind> {
+    match inputs.first() {
+        None | Some(syn::FnArg::Typed(_)) => Ok(ReceiverKind::None),
+        Some(syn::FnArg::Receiver(r)) => {
+            if r.reference.is_none() {
+                return Err(syn::Error::new_spanned(
+                    r,
+                    "consuming `self` receiver is not supported; use `&self` or `&mut self`",
+                ));
+            }
+            if r.mutability.is_some() {
+                Ok(ReceiverKind::RefMut)
+            } else {
+                Ok(ReceiverKind::Ref)
+            }
+        }
+    }
+}
+
+/// Infer Solidity stateMutability from receiver + `#[payable]`.
+///
+/// | Receiver       | `#[payable]` | Result        |
+/// |----------------|--------------|---------------|
+/// | none           | no           | `Pure`        |
+/// | none           | yes          | error         |
+/// | `&self`        | no           | `View`        |
+/// | `&self`        | yes          | error         |
+/// | `&mut self`    | no           | `NonPayable`  |
+/// | `&mut self`    | yes          | `Payable`     |
+fn infer_method_mutability(
+    func: &syn::ImplItemFn,
+    is_payable: bool,
+) -> syn::Result<StateMutability> {
+    let kind = classify_receiver(&func.sig.inputs)?;
+    match (kind, is_payable) {
+        (ReceiverKind::None, false) => Ok(StateMutability::Pure),
+        (ReceiverKind::Ref, false) => Ok(StateMutability::View),
+        (ReceiverKind::RefMut, false) => Ok(StateMutability::NonPayable),
+        (ReceiverKind::RefMut, true) => Ok(StateMutability::Payable),
+        (ReceiverKind::None, true) => Err(syn::Error::new_spanned(
+            func,
+            "associated function (no `self` receiver) cannot be marked `#[payable]`; \
+             payable callables must take `&mut self`",
+        )),
+        (ReceiverKind::Ref, true) => Err(syn::Error::new_spanned(
+            func,
+            "method is marked `#[payable]` but takes `&self`; \
+             payable callables must take `&mut self`",
+        )),
+    }
+}
+
+/// Format a `.sol` vs Rust mutability mismatch into a human-readable error
+/// pointing at the Rust method.
+fn mutability_mismatch_error(
+    func: &syn::ImplItemFn,
+    fn_name: &str,
+    sol: StateMutability,
+    rust: StateMutability,
+) -> syn::Error {
+    let hint = match (sol, rust) {
+        (StateMutability::View, StateMutability::NonPayable) => "change Rust receiver to `&self`",
+        (StateMutability::View, StateMutability::Payable) => {
+            "remove `#[payable]` and change to `&self`"
+        }
+        (StateMutability::View, StateMutability::Pure) => "change Rust signature to take `&self`",
+        (StateMutability::Pure, StateMutability::View) => {
+            "remove `&self` (associated functions are pure)"
+        }
+        (StateMutability::Pure, StateMutability::NonPayable) => {
+            "remove `&mut self` (associated functions are pure)"
+        }
+        (StateMutability::Pure, StateMutability::Payable) => {
+            "remove `&mut self` and `#[payable]` (associated functions are pure)"
+        }
+        (StateMutability::NonPayable, StateMutability::View) => {
+            "change Rust receiver to `&mut self`"
+        }
+        (StateMutability::NonPayable, StateMutability::Pure) => "add a `&mut self` receiver",
+        (StateMutability::NonPayable, StateMutability::Payable) => "remove `#[payable]`",
+        (StateMutability::Payable, StateMutability::NonPayable) => "add `#[payable]`",
+        (StateMutability::Payable, StateMutability::View) => {
+            "change to `&mut self` and add `#[payable]`"
+        }
+        (StateMutability::Payable, StateMutability::Pure) => {
+            "add a `&mut self` receiver and `#[payable]`"
+        }
+        _ => "update either the `.sol` interface or the Rust signature",
+    };
+    syn::Error::new_spanned(
+        func,
+        format!(
+            "method `{fn_name}` mutability mismatch: `.sol` declares `{}`, \
+             Rust signature is `{}`. {}.",
+            sol.as_abi_str(),
+            rust.as_abi_str(),
+            hint,
+        ),
     )
 }
 
@@ -510,12 +641,28 @@ fn parse_contract(
             // concrete type arguments at the impl site.
             if let syn::Item::Struct(item_struct) = item
                 && &item_struct.ident == expected
-                && !item_struct.generics.params.is_empty()
             {
-                return Err(syn::Error::new_spanned(
-                    &item_struct.generics.params,
-                    "contract structs must not be generic",
-                ));
+                if !item_struct.generics.params.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &item_struct.generics.params,
+                        "contract structs must not be generic",
+                    ));
+                }
+                // The contract storage struct is the borrow-check root for
+                // mutation gating: a `&self` method holds `&Storage`, a
+                // `&mut self` method holds `&mut Storage`. If the user
+                // derives `Clone`, a view method could clone the storage and
+                // get a fresh `&mut Storage` — bypassing the gate and lying
+                // to the ABI. Reject `#[derive(Clone)]` syntactically.
+                if let Some(bad) = find_derive_clone(&item_struct.attrs) {
+                    return Err(syn::Error::new_spanned(
+                        bad,
+                        "contract storage structs must not derive `Clone`; the \
+                         mutation gate (`&self` vs `&mut self`) relies on \
+                         `Storage: !Clone` to prevent view methods from \
+                         smuggling out a `&mut Storage`",
+                    ));
+                }
             }
 
             let syn::Item::Impl(item_impl) = item else {
@@ -610,10 +757,13 @@ fn parse_contract(
                 constructor_name = Some(func.sig.ident.clone());
                 constructor_returns_result = is_result_return_type(&func.sig.output);
                 constructor_is_payable = has_pvm_attr(&func.attrs, "payable");
-                if constructor_is_payable && !receiver_is_mut(&func.sig.inputs) {
+                // Constructors must take `&mut self`. A view (`&self`) or pure
+                // (no receiver) constructor cannot initialize storage, so it
+                // would never be a useful entry point. Reject explicitly.
+                if !receiver_is_mut(&func.sig.inputs) {
                     return Err(syn::Error::new_spanned(
                         func,
-                        "constructor is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
+                        "constructor must take `&mut self`; it always initializes storage",
                     ));
                 }
                 constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
@@ -623,22 +773,16 @@ fn parse_contract(
                 fallback_name = Some(func.sig.ident.clone());
                 fallback_returns_result = is_result_return_type(&func.sig.output);
                 fallback_is_payable = has_pvm_attr(&func.attrs, "payable");
-                if fallback_is_payable && !receiver_is_mut(&func.sig.inputs) {
-                    return Err(syn::Error::new_spanned(
-                        func,
-                        "fallback is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
-                    ));
-                }
+                // Fallbacks accept the same receiver shapes as methods. The
+                // payable+&self mismatch is the only structural error we
+                // reject here; other receivers (no-receiver, &self, &mut self)
+                // are all legitimate fallback shapes.
+                let _ = infer_method_mutability(func, fallback_is_payable)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
                 let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
                 let is_payable = has_pvm_attr(&func.attrs, "payable");
-                if is_payable && !receiver_is_mut(&func.sig.inputs) {
-                    return Err(syn::Error::new_spanned(
-                        func,
-                        "method is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`",
-                    ));
-                }
+                let inferred_mutability = infer_method_mutability(func, is_payable)?;
                 let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
                     typed_params.into_iter().map(|(_, t)| t).collect();
@@ -708,34 +852,23 @@ fn parse_contract(
                         Some(syn_solidity::Mutability::Payable(_)) => StateMutability::Payable,
                         _ => StateMutability::NonPayable,
                     };
-                    let sol_is_payable = sol_mutability == StateMutability::Payable;
-                    let fn_name = func.sig.ident.to_string();
-                    if sol_is_payable && !is_payable {
-                        return Err(syn::Error::new_spanned(
+                    if sol_mutability != inferred_mutability {
+                        return Err(mutability_mismatch_error(
                             func,
-                            format!(
-                                "method '{fn_name}' is declared payable in the Solidity interface but the Rust signature is not marked `#[payable]`"
-                            ),
+                            &func.sig.ident.to_string(),
+                            sol_mutability,
+                            inferred_mutability,
                         ));
                     }
-                    if !sol_is_payable && is_payable {
-                        return Err(syn::Error::new_spanned(
-                            func,
-                            format!(
-                                "method '{fn_name}' is not declared payable in the Solidity interface but the Rust signature is marked `#[payable]`"
-                            ),
-                        ));
-                    }
-                    (sol_func.name().to_string(), Some(selector), sol_mutability)
+                    (
+                        sol_func.name().to_string(),
+                        Some(selector),
+                        inferred_mutability,
+                    )
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    let mutability = if is_payable {
-                        StateMutability::Payable
-                    } else {
-                        StateMutability::NonPayable
-                    };
-                    (sol_name, None, mutability)
+                    (sol_name, None, inferred_mutability)
                 };
 
                 methods.push(MethodInfo {
@@ -1222,11 +1355,28 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
     // Inject the `host()` accessor. The generated struct has a private `host`
     // field; contract method bodies reach the host via `self.host()`, mirroring
     // Stylus's `self.vm()` and ink!'s `self.env()`.
+    //
+    // Also auto-implement `ContractRoot` (and its sealing trait) on the
+    // contract storage struct. Cross-contract call builders take
+    // `&impl ContractRoot` (view/pure) or `&mut impl ContractRoot`
+    // (nonpayable/payable), so the borrow on `Self` is the gate that prevents
+    // a `&self` method from initiating a state-mutating call.
     let host_accessor = quote! {
         #[cfg(not(feature = "abi-gen"))]
         impl #struct_name {
             #[inline(always)]
             pub fn host(&self) -> &::pvm_contract_sdk::Host {
+                &self.host
+            }
+        }
+
+        #[cfg(not(feature = "abi-gen"))]
+        impl ::pvm_contract_sdk::__private::Sealed for #struct_name {}
+
+        #[cfg(not(feature = "abi-gen"))]
+        impl ::pvm_contract_sdk::ContractRoot for #struct_name {
+            #[inline(always)]
+            fn host(&self) -> &::pvm_contract_sdk::Host {
                 &self.host
             }
         }
@@ -1539,13 +1689,75 @@ mod tests {
                 pub struct C;
                 impl C {
                     #[pvm_contract_macros::method]
-                    pub fn add(&self, a: U256, b: U256) -> U256 { U256::ZERO }
+                    pub fn add(a: U256, b: U256) -> U256 { U256::ZERO }
                 }
             }
         };
         let parsed = parse_contract(&input, Some(&iface)).unwrap();
         let method = parsed.methods.iter().find(|m| m.fn_name == "add").unwrap();
         assert_eq!(method.mutability, StateMutability::Pure);
+    }
+
+    #[test]
+    fn parse_contract_pure_with_self_rejected() {
+        // `.sol` declares `pure`, but Rust takes `&self` — pure functions
+        // cannot have host access, so the receiver must be absent.
+        let iface = parse_sol(
+            r#"
+            interface I {
+                function add(uint256 a, uint256 b) external pure returns (uint256);
+            }
+        "#,
+        );
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn add(&self, a: U256, b: U256) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let err = match parse_contract(&input, Some(&iface)) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mutability mismatch") && msg.contains("pure") && msg.contains("view"),
+            "expected pure/view mismatch, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_view_mismatch_with_mut_self_rejected() {
+        let iface = parse_sol(
+            r#"
+            interface I {
+                function balance() external view returns (uint256);
+            }
+        "#,
+        );
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&mut self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let err = match parse_contract(&input, Some(&iface)) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mutability mismatch")
+                && msg.contains("view")
+                && msg.contains("nonpayable"),
+            "expected view/nonpayable mismatch, got: {msg}"
+        );
     }
 
     #[test]
@@ -1576,7 +1788,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_contract_without_sol_leaves_view_pure_false() {
+    fn parse_contract_without_sol_infers_view_from_ref_self() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
                 pub struct C;
@@ -1592,7 +1804,181 @@ mod tests {
             .iter()
             .find(|m| m.fn_name == "balance")
             .unwrap();
+        assert_eq!(method.mutability, StateMutability::View);
+    }
+
+    #[test]
+    fn parse_contract_without_sol_infers_pure_from_no_receiver() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn version() -> u32 { 1 }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        let method = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "version")
+            .unwrap();
+        assert_eq!(method.mutability, StateMutability::Pure);
+    }
+
+    #[test]
+    fn parse_contract_without_sol_infers_nonpayable_from_mut_self() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        let method = parsed
+            .methods
+            .iter()
+            .find(|m| m.fn_name == "transfer")
+            .unwrap();
         assert_eq!(method.mutability, StateMutability::NonPayable);
+    }
+
+    #[test]
+    fn parse_contract_payable_on_ref_self_rejected() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit(&self) {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string().contains("payable") && err.to_string().contains("&self"),
+            "expected payable+&self error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn parse_contract_rejects_clone_on_storage_struct() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                #[derive(Clone)]
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string().contains("must not derive `Clone`"),
+            "expected Clone rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_rejects_clone_in_multi_derive() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                #[derive(Debug, Clone, PartialEq)]
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn balance(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string().contains("must not derive `Clone`"),
+            "expected Clone rejection in multi-derive, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_constructor_with_ref_self_rejected() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&self) {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string()
+                .contains("constructor must take `&mut self`"),
+            "expected constructor mutability rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_constructor_with_no_receiver_rejected() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new() {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string()
+                .contains("constructor must take `&mut self`"),
+            "expected constructor mutability rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_payable_on_no_receiver_rejected() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    #[pvm_contract_macros::payable]
+                    pub fn deposit() {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string().contains("payable"),
+            "expected payable error on no-receiver method, got: {}",
+            err
+        );
     }
 
     #[test]
@@ -1660,10 +2046,10 @@ mod tests {
     }
 
     #[test]
-    fn errors_when_method_missing_self() {
-        // A `#[method]` without a `self` receiver would expand into
-        // `this.foo(args)` where `foo` is a free associated function — producing
-        // a cryptic "no method named" error. Catch it at parse time instead.
+    fn method_without_receiver_is_pure() {
+        // No `self` receiver = associated function = `pure` mutability.
+        // Dispatch generates `MyContract::foo(args)` (UFCS) instead of
+        // `this.foo(args)` so the call type-checks.
         let input: ItemMod = syn::parse_quote! {
             mod my_contract {
                 pub struct MyContract;
@@ -1673,11 +2059,8 @@ mod tests {
                 }
             }
         };
-        let err = expand_contract(ContractArgs::default(), input).unwrap_err();
-        assert!(
-            err.to_string().contains("&self"),
-            "error should mention &self: {err}"
-        );
+        let _ts = expand_contract(ContractArgs::default(), input)
+            .expect("no-receiver method should be accepted as `pure`");
     }
 
     #[test]
@@ -1695,9 +2078,10 @@ mod tests {
             }
         };
         let err = expand_contract(ContractArgs::default(), input).unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("borrowed self"),
-            "error should mention borrowed self: {err}"
+            msg.contains("consume the contract") || msg.contains("&self"),
+            "error should reject owning self, got: {msg}"
         );
     }
 

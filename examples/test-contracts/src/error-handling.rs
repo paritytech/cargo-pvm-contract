@@ -31,7 +31,7 @@ mod error_handling {
         }
 
         #[pvm_contract_sdk::method]
-        pub fn will_revert(&self) -> Result<(), ContractError> {
+        pub fn will_revert(&mut self) -> Result<(), ContractError> {
             Err(AlwaysReverts.into())
         }
 

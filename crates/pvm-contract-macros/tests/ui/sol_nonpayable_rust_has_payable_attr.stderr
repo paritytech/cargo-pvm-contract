@@ -1,4 +1,4 @@
-error: method 'transfer' is not declared payable in the Solidity interface but the Rust signature is marked `#[payable]`
+error: method `transfer` mutability mismatch: `.sol` declares `nonpayable`, Rust signature is `payable`. remove `#[payable]`.
   --> tests/ui/sol_nonpayable_rust_has_payable_attr.rs:6:9
    |
  6 | /         #[pvm_contract_macros::method]

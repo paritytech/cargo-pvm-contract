@@ -28,6 +28,26 @@ pub use pallet_revive_uapi::{CallFlags, ReturnErrorCode, ReturnFlags, StorageFla
 /// Result type for host operations that can fail.
 pub type HostResult = core::result::Result<(), ReturnErrorCode>;
 
+/// Marker trait identifying the contract storage root.
+///
+/// The `#[contract]` macro auto-implements this on the generated storage
+/// struct; the DSL implements it on its dispatch root. Cross-contract call
+/// builders are bound `&impl ContractRoot` (for `View`/`Pure` callees) or
+/// `&mut impl ContractRoot` (for `NonPayable`/`Payable` callees), so the
+/// borrow checker — not just the runtime — rejects view methods that try to
+/// initiate a state-mutating cross-contract call.
+///
+/// Sealed via [`crate::__private::Sealed`]: external code cannot implement
+/// `ContractRoot` for arbitrary types, so the gate cannot be smuggled past
+/// by user-provided "fake roots".
+pub trait ContractRoot: crate::__private::Sealed {
+    /// Borrow the contract's host handle.
+    ///
+    /// The borrow on `Self` is the load-bearing piece of the gate; the host
+    /// returned here is then used internally by the call builder.
+    fn host(&self) -> &Host;
+}
+
 /// Receiver-based host API.
 ///
 /// Every method takes `&self` — `PolkaVmHost` is a zero-sized type, so this

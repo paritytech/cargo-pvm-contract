@@ -117,6 +117,10 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
 
     /// Register a non-payable method handler for the given selector.
     ///
+    /// Maps to Solidity `nonpayable`. Use [`view_method`](Self::view_method) /
+    /// [`pure_method`](Self::pure_method) when the method does not mutate
+    /// storage — they share the same runtime guard but communicate intent.
+    ///
     /// # Panics
     ///
     /// Panics if more than MAX_METHODS methods are registered.
@@ -129,6 +133,39 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
         self.methods[self.len] = (selector, handler);
         self.len += 1;
         self
+    }
+
+    /// Register a `view` method handler for the given selector.
+    ///
+    /// Equivalent to [`method`](Self::method) at runtime — both reject calls
+    /// carrying a non-zero value transfer. The distinction is intent: `view`
+    /// communicates that the handler does not mutate storage.
+    ///
+    /// View enforcement against state mutation is handled by the host
+    /// (pallet-revive's STATICCALL frame), not the contract: a view caller
+    /// that is *itself* invoked via STATICCALL will revert if it tries to
+    /// `set_storage`. Marking handlers `view` here lets you tooling-emit a
+    /// matching ABI for cross-contract callers.
+    ///
+    /// # Panics
+    ///
+    /// Panics if more than MAX_METHODS methods are registered.
+    pub fn view_method(self, selector: Selector, handler: MethodHandler<H>) -> Self {
+        self.method(selector, handler)
+    }
+
+    /// Register a `pure` method handler for the given selector.
+    ///
+    /// Equivalent to [`method`](Self::method) at runtime — both reject calls
+    /// carrying a non-zero value transfer. The distinction is intent: `pure`
+    /// communicates that the handler depends only on its inputs and does not
+    /// touch host state.
+    ///
+    /// # Panics
+    ///
+    /// Panics if more than MAX_METHODS methods are registered.
+    pub fn pure_method(self, selector: Selector, handler: MethodHandler<H>) -> Self {
+        self.method(selector, handler)
     }
 
     /// Register a payable method handler for the given selector.
@@ -302,6 +339,17 @@ mod tests {
         let builder = ContractBuilder::<MockHost>::new()
             .method(TRANSFER, dummy_handler::<MockHost>)
             .method(DEPOSIT, dummy_handler::<MockHost>);
+        assert_eq!(builder.payable_bits, 0);
+    }
+
+    #[test]
+    fn view_and_pure_methods_share_nonpayable_runtime_guard() {
+        // view_method/pure_method are aliases for method at runtime — they
+        // get the same deny_value guard. Verify by checking the payable bit
+        // is not set.
+        let builder = ContractBuilder::<MockHost>::new()
+            .view_method(TRANSFER, dummy_handler::<MockHost>)
+            .pure_method(DEPOSIT, dummy_handler::<MockHost>);
         assert_eq!(builder.payable_bits, 0);
     }
 }
