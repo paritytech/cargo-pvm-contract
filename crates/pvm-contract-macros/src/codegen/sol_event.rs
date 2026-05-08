@@ -20,7 +20,8 @@ use crate::signature::SolType;
 /// - Custom/alias types: rejected at compile time.
 ///
 /// For events with all-static non-indexed fields, an `emit(host)` convenience
-/// method is generated. For dynamic events, use `data_len()` + `data_to()`.
+/// method is generated automatically. For dynamic events, add `#[alloc]` to
+/// generate an alloc-backed `emit()`, or use `data_len()` + `data_to()` manually.
 ///
 /// Anonymous events are supported via `#[anonymous]` on the struct. Anonymous
 /// events skip topic[0] (the signature hash) and allow up to 4 indexed fields.
@@ -47,21 +48,25 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     let indexed_flags = collect_indexed_flags(fields)?;
     let field_info = extract_field_info(fields)?;
 
-    let is_anonymous = {
-        let mut found = false;
-        for attr in &input.attrs {
-            if attr.path().is_ident("anonymous") {
-                if !matches!(attr.meta, syn::Meta::Path(_)) {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "#[anonymous] takes no arguments",
-                    ));
-                }
-                found = true;
+    let mut is_anonymous = false;
+    let mut use_alloc = false;
+    for attr in &input.attrs {
+        if attr.path().is_ident("anonymous") {
+            if !matches!(attr.meta, syn::Meta::Path(_)) {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "#[anonymous] takes no arguments",
+                ));
             }
+            is_anonymous = true;
         }
-        found
-    };
+        if attr.path().is_ident("alloc") {
+            if !matches!(attr.meta, syn::Meta::Path(_)) {
+                return Err(syn::Error::new_spanned(attr, "#[alloc] takes no arguments"));
+            }
+            use_alloc = true;
+        }
+    }
 
     let indexed_count = indexed_flags.iter().filter(|&&b| b).count();
     let max_indexed = if is_anonymous { 4 } else { 3 };
@@ -137,6 +142,7 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
         .all(|(_, sol_type)| !sol_type.is_dynamic().unwrap_or(true));
 
     let emit_method = if all_non_indexed_static {
+        // Static data: stack-allocated buffer sized at compile time.
         let data_size_parts: Vec<TokenStream> = non_indexed_info
             .iter()
             .map(|(ft, _)| quote! { <#ft as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE })
@@ -147,15 +153,29 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
             quote! { #(#data_size_parts)+* }
         };
         quote! {
-            /// Emit this event via the host. Available because all non-indexed
-            /// fields have static (compile-time known) encoded size.
+            /// Emit this event via the host.
             pub fn emit(&self, host: &::pvm_contract_sdk::Host) {
                 use ::pvm_contract_sdk::SolEvent as _;
                 use ::pvm_contract_sdk::HostApi as _;
                 let __topics = self.topics();
-                // Safe to use HEAD_SIZE sum: emit() is only generated when
-                // all non-indexed fields are static, so HEAD_SIZE == encoded size.
+                // Safe to use HEAD_SIZE sum: all non-indexed fields are static.
                 let mut __data = [0u8; #data_size_expr];
+                self.data_to(&mut __data);
+                host.deposit_event(&__topics, &__data);
+            }
+        }
+    } else if use_alloc {
+        // Dynamic data with #[alloc]: heap-allocated buffer sized at runtime.
+        quote! {
+            /// Emit this event via the host. Uses alloc for the data buffer
+            /// because this event has dynamic non-indexed fields.
+            pub fn emit(&self, host: &::pvm_contract_sdk::Host) {
+                extern crate alloc;
+                use ::pvm_contract_sdk::SolEvent as _;
+                use ::pvm_contract_sdk::HostApi as _;
+                let __topics = self.topics();
+                let __len = self.data_len();
+                let mut __data = alloc::vec![0u8; __len];
                 self.data_to(&mut __data);
                 host.deposit_event(&__topics, &__data);
             }
@@ -745,6 +765,41 @@ mod tests {
         assert!(
             output.contains("fn emit"),
             "emit() should be generated for events with static non-indexed fields"
+        );
+    }
+
+    #[test]
+    fn alloc_attr_generates_emit_for_dynamic_fields() {
+        let input: DeriveInput = syn::parse_str(
+            r#"
+            #[alloc]
+            struct Log {
+                #[indexed] who: Address,
+                message: String,
+            }"#,
+        )
+        .unwrap();
+        let output = expand_sol_event(input).unwrap().to_string();
+        assert!(
+            output.contains("fn emit"),
+            "emit() should be generated with #[alloc] for dynamic events"
+        );
+    }
+
+    #[test]
+    fn alloc_attr_with_args_rejected() {
+        let input: DeriveInput = syn::parse_str(
+            r#"
+            #[alloc(true)]
+            struct Log {
+                message: String,
+            }"#,
+        )
+        .unwrap();
+        let err = expand_sol_event(input).unwrap_err().to_string();
+        assert!(
+            err.contains("no arguments"),
+            "should reject #[alloc(true)]: {err}"
         );
     }
 }

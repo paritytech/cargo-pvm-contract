@@ -1132,13 +1132,14 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 /// compile time. Custom and alias types are not supported as indexed fields.
 ///
 /// For events where all non-indexed fields are known-static primitive types,
-/// the derive also generates an `emit(host)` convenience method that handles
-/// buffer allocation on the stack. Custom types may not get `emit()` even if
-/// they are statically sized.
+/// the derive generates an `emit(host)` convenience method with a stack buffer.
+/// For events with dynamic fields (e.g. `String`), add `#[alloc]` to generate
+/// an alloc-backed `emit()`, or use `data_len()` + `data_to()` manually.
 ///
 /// # Example
 ///
 /// ```ignore
+/// // Static event: emit() generated automatically.
 /// #[derive(SolEvent)]
 /// struct Transfer {
 ///     #[indexed]
@@ -1147,18 +1148,17 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 ///     to: Address,
 ///     value: U256,
 /// }
-///
-/// // Emitting the event (static fields, emit() available):
 /// Transfer { from, to, value }.emit(self.host());
 ///
-/// // Manual emission for dynamic events or advanced use.
-/// // The buffer must be at least event.data_len() bytes.
-/// let len = event.data_len();
-/// let mut data = [0u8; 256]; // size for your expected payload
-/// event.data_to(&mut data[..len]);
-/// self.host().deposit_event(&event.topics(), &data[..len]);
+/// // Dynamic event with #[alloc]: emit() uses heap allocation.
+/// #[derive(SolEvent)]
+/// #[alloc]
+/// struct Log {
+///     message: String,
+/// }
+/// Log { message }.emit(self.host());
 /// ```
-#[proc_macro_derive(SolEvent, attributes(indexed, anonymous))]
+#[proc_macro_derive(SolEvent, attributes(indexed, anonymous, alloc))]
 pub fn sol_event(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 

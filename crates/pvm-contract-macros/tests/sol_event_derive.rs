@@ -14,6 +14,31 @@ struct Transfer {
 }
 
 #[test]
+fn static_event_emit_e2e() {
+    use pvm_contract_types::{Host, MockHostBuilder, SolDecode};
+
+    let mock = MockHostBuilder::new().build();
+    let host = Host::from_dyn(::std::rc::Rc::new(mock.clone()));
+
+    let event = Transfer {
+        from: Address([0xAA; 20]),
+        to: Address([0xBB; 20]),
+        value: U256::from(42u64),
+    };
+    event.emit(&host);
+
+    let events = mock.events();
+    assert_eq!(events.len(), 1);
+
+    let (topics, data) = &events[0];
+    assert_eq!(topics.len(), 3);
+    assert_eq!(topics[0], Transfer::TOPIC);
+    assert_eq!(&topics[1][12..], &[0xAA; 20]);
+    assert_eq!(&topics[2][12..], &[0xBB; 20]);
+    assert_eq!(U256::decode(data), U256::from(42u64));
+}
+
+#[test]
 fn consts_match_expected_values() {
     assert_eq!(Transfer::SIGNATURE, "Transfer(address,address,uint256)");
     assert_eq!(Transfer::NAME, "Transfer");
@@ -622,4 +647,44 @@ fn anonymous_event_allows_four_indexed_fields() {
         4,
         "anonymous event should allow 4 indexed fields"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #[alloc] dynamic event emit
+// ---------------------------------------------------------------------------
+
+#[derive(SolEvent)]
+#[alloc]
+struct DynamicLog {
+    #[indexed]
+    who: Address,
+    message: alloc::string::String,
+}
+
+#[test]
+fn alloc_dynamic_event_emit_e2e() {
+    use alloc::string::ToString;
+    use pvm_contract_types::{Host, MockHostBuilder, SolDecode};
+
+    let mock = MockHostBuilder::new().build();
+    let host = Host::from_dyn(::std::rc::Rc::new(mock.clone()));
+
+    let event = DynamicLog {
+        who: Address([0xCC; 20]),
+        message: "hello".to_string(),
+    };
+    event.emit(&host);
+
+    let events = mock.events();
+    assert_eq!(events.len(), 1);
+
+    let (topics, data) = &events[0];
+    // topic0 = signature hash
+    assert_eq!(topics[0], DynamicLog::TOPIC);
+    // topic1 = indexed address, right-aligned
+    assert_eq!(&topics[1][..12], &[0u8; 12]);
+    assert_eq!(&topics[1][12..], &[0xCC; 20]);
+    // data = ABI-encoded "hello"
+    let decoded = alloc::string::String::decode(data);
+    assert_eq!(decoded, "hello");
 }
