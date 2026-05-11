@@ -46,6 +46,12 @@ fn constructor_no_params_produces_valid_abi() {
 }
 
 #[test]
+fn constructor_payable_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_constructor_payable.json")
+        .assert_eq(&cargo_run_abi("constructor-payable"));
+}
+
+#[test]
 fn custom_type_method_produces_valid_abi() {
     expect_test::expect_file!("./test_abi_contract/abi_custom_type_method.json")
         .assert_eq(&cargo_run_abi("custom-type-method"));

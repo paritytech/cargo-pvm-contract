@@ -1,7 +1,7 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pvm_contract_types::{
-    Address, CallFlags, ContractRoot, Host, HostApi, ReturnErrorCode, SolDecode, SolEncode,
+    Address, CallFlags, ContractContext, Host, HostApi, ReturnErrorCode, SolDecode, SolEncode,
     SolError, const_selector,
 };
 use ruint::aliases::U256;
@@ -181,7 +181,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     /// Decode the most recent call's return data into `R`.
     ///
     /// Read-only — does not mutate state, so it is intentionally not gated by
-    /// [`ContractRoot`]. Internal helper used by `call` / `delegate_call` /
+    /// [`ContractContext`]. Internal helper used by `call` / `delegate_call` /
     /// `instantiate`; safe to call from `&self` methods directly when reading
     /// return data after a manual `*_raw` call.
     pub fn extract_output(&self, host: &Host, mut output_buf: &mut [u8]) -> Result<R, CallError> {
@@ -241,7 +241,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
 
     /// Internal — actually invoke the delegate call. Always mutating from the
     /// caller's perspective: callee runs in caller's storage context, so any
-    /// callee write hits caller's storage. Gated `&mut impl ContractRoot` at
+    /// callee write hits caller's storage. Gated `&mut impl ContractContext` at
     /// the public surface regardless of the callee's declared mutability.
     fn delegate_call_raw_inner(
         &self,
@@ -309,10 +309,10 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
 
     /// Delegate-call another contract.
     ///
-    /// Always requires `&mut impl ContractRoot`: the callee runs in caller's
+    /// Always requires `&mut impl ContractContext`: the callee runs in caller's
     /// storage context, so even a `View`-typestate delegate call could mutate
     /// caller's state. Borrow gate is on `Self`, not the callee mutability.
-    pub fn delegate_call_raw<R0: ContractRoot>(
+    pub fn delegate_call_raw<R0: ContractContext>(
         &self,
         root: &mut R0,
         address: Address,
@@ -322,29 +322,28 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
     }
 
     /// Delegate-call another contract and decode the output.
-    pub fn delegate_call<R0: ContractRoot>(
+    pub fn delegate_call<R0: ContractContext>(
         &self,
         root: &mut R0,
         address: Address,
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        let host_ptr: *const Host = root.host();
+        // Clone the host handle before the mutable borrow of `root`: on
+        // `riscv64` `Host` is a ZST (free `Copy`), on host-target builds it's
+        // a refcount bump on `Rc<dyn HostApi>`. Avoids re-borrowing `root`
+        // after the mutable call to read return data.
+        let host = root.host().clone();
         self.delegate_call_raw(root, address, input_buf)?;
-        // SAFETY: `root.host()` returns `&Host` whose lifetime is tied to
-        // `root`; reading return data afterward only needs a shared borrow,
-        // and the `&mut root` borrow is no longer aliased here. This avoids
-        // re-borrowing `root` while we still hold a result tied to it.
-        let host = unsafe { &*host_ptr };
-        self.extract_output(host, output_buf)
+        self.extract_output(&host, output_buf)
     }
 
     /// Instantiate a new contract.
     ///
-    /// Always requires `&mut impl ContractRoot`: instantiation transfers
+    /// Always requires `&mut impl ContractContext`: instantiation transfers
     /// value, emits a deploy event, and bumps the caller's nonce.
     #[allow(clippy::too_many_arguments)]
-    pub fn instantiate_raw<R0: ContractRoot>(
+    pub fn instantiate_raw<R0: ContractContext>(
         &self,
         root: &mut R0,
         limits: RefTimeAndProofSizeLimits,
@@ -367,7 +366,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
 
     /// Instantiate a new contract and decode the constructor's output.
     #[allow(clippy::too_many_arguments)]
-    pub fn instantiate<R0: ContractRoot>(
+    pub fn instantiate<R0: ContractContext>(
         &self,
         root: &mut R0,
         limits: RefTimeAndProofSizeLimits,
@@ -378,11 +377,10 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        let host_ptr: *const Host = root.host();
+        // Clone first — see `delegate_call` for rationale.
+        let host = root.host().clone();
         self.instantiate_raw(root, limits, value, code_hash, salt, address_buf, input_buf)?;
-        // SAFETY: see `delegate_call`.
-        let host = unsafe { &*host_ptr };
-        self.extract_output(host, output_buf)
+        self.extract_output(&host, output_buf)
     }
 }
 
@@ -395,7 +393,7 @@ macro_rules! impl_readonly_call {
         impl<I: SolEncode, R: SolDecode> CallBuilder<$mutability, I, R> {
             /// Call a `view`/`pure` callee. Borrows the contract root
             /// immutably, so this is callable from `&self` methods.
-            pub fn call_raw<R0: ContractRoot>(
+            pub fn call_raw<R0: ContractContext>(
                 &self,
                 root: &R0,
                 address: Address,
@@ -405,7 +403,7 @@ macro_rules! impl_readonly_call {
             }
 
             /// Call a `view`/`pure` callee and decode its output.
-            pub fn call<R0: ContractRoot>(
+            pub fn call<R0: ContractContext>(
                 &self,
                 root: &R0,
                 address: Address,
@@ -432,10 +430,10 @@ macro_rules! impl_mutating_call {
             /// Call a `nonpayable`/`payable` callee. Borrows the contract
             /// root mutably, so this is only callable from `&mut self`
             /// methods. A `&self` (view) method cannot construct the
-            /// `&mut impl ContractRoot` required here, so the borrow checker
+            /// `&mut impl ContractContext` required here, so the borrow checker
             /// rejects view methods that try to initiate a state-mutating
             /// cross-contract call.
-            pub fn call_raw<R0: ContractRoot>(
+            pub fn call_raw<R0: ContractContext>(
                 &self,
                 root: &mut R0,
                 address: Address,
@@ -445,18 +443,17 @@ macro_rules! impl_mutating_call {
             }
 
             /// Call a `nonpayable`/`payable` callee and decode its output.
-            pub fn call<R0: ContractRoot>(
+            pub fn call<R0: ContractContext>(
                 &self,
                 root: &mut R0,
                 address: Address,
                 input_buf: &mut [u8],
                 output_buf: &mut [u8],
             ) -> Result<R, CallError> {
-                let host_ptr: *const Host = root.host();
+                // Clone first — see `delegate_call` for rationale.
+                let host = root.host().clone();
                 self.call_raw(root, address, input_buf)?;
-                // SAFETY: see `delegate_call`.
-                let host = unsafe { &*host_ptr };
-                self.extract_output(host, output_buf)
+                self.extract_output(&host, output_buf)
             }
         }
     };

@@ -23,5 +23,14 @@ mod my_contract {
         pub fn get_count(&self) -> u64 {
             0
         }
+
+        #[pvm_contract_sdk::method]
+        pub fn add(a: u64, b: u64) -> u64 {
+            a + b
+        }
+
+        #[pvm_contract_sdk::method]
+        #[pvm_contract_sdk::payable]
+        pub fn deposit(&mut self) {}
     }
 }

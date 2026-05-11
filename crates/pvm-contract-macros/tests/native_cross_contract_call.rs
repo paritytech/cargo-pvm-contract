@@ -14,16 +14,16 @@
 //!     -> host.return_data_copy(...)     // reads from MockHost.return_data
 //! ```
 //!
-//! `TestContract` wraps the `Host` and impls `ContractRoot`, so it satisfies
-//! the borrow gate (`&impl ContractRoot` for view callees,
-//! `&mut impl ContractRoot` for mutating ones).
+//! `TestContext` wraps the `Host` and impls `ContractContext`, so it satisfies
+//! the borrow gate (`&impl ContractContext` for view callees,
+//! `&mut impl ContractContext` for mutating ones).
 
 extern crate alloc;
 
 use std::rc::Rc;
 
 use pvm_contract_sdk::{
-    Address, CallError, Host, HostApi, MockHostBuilder, RefTimeAndProofSizeLimits, TestContract,
+    Address, CallError, Host, HostApi, MockHostBuilder, RefTimeAndProofSizeLimits, TestContext,
 };
 
 pvm_contract_sdk::abi_import! {
@@ -51,7 +51,7 @@ fn view_call_returns_mocked_data() {
     let target = Address::from([0xBB; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(encoded_bool(true)));
-    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
@@ -66,7 +66,7 @@ fn view_call_returns_mocked_false() {
     let target = Address::from([0xBC; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(encoded_bool(false)));
-    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
@@ -82,7 +82,7 @@ fn write_call_invokes_mock_and_propagates_return_data() {
     let marker = vec![0xAA, 0xBB, 0xCC, 0xDD];
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(marker.clone()));
-    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let mut root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     flipper::Flipper::from_address(target)
         .flip()
@@ -106,7 +106,7 @@ fn unmocked_call_leaves_return_data_empty() {
     // clears return_data and returns Ok(()) — proving the previous test's
     // marker bytes came from the mock table, not from a default fallback.
     let target = Address::from([0xBE; 20]);
-    let mut root = TestContract::new(Host::from_dyn(Rc::new(MockHostBuilder::new().build())));
+    let mut root = TestContext::new(Host::from_dyn(Rc::new(MockHostBuilder::new().build())));
 
     flipper::Flipper::from_address(target)
         .flip()
@@ -121,7 +121,7 @@ fn revert_from_callee_propagates_as_call_error() {
     let target = Address::from([0xCC; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Err(()));
-    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target).get().call(&root);
 
@@ -140,7 +140,7 @@ fn delegate_call_uses_same_mock_table() {
     let payload = encoded_bool(true);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(payload.clone()));
-    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let mut root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
@@ -171,7 +171,7 @@ fn chained_calls_each_extract_their_own_return_data() {
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target_a.0, Ok(encoded_bool(true)));
     mock.mock_call(target_b.0, Ok(encoded_bool(false)));
-    let root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     // First call — get the answer for target A.
     let res_a = flipper::Flipper::from_address(target_a)
@@ -203,7 +203,7 @@ fn instantiate_returns_mocked_address() {
     let deployed = [0xDD; 20];
     let mock = MockHostBuilder::new().build();
     mock.mock_instantiate(deployed, Vec::new());
-    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let mut root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     let limits = RefTimeAndProofSizeLimits {
         ref_time_limit: u64::MAX,
@@ -218,9 +218,35 @@ fn instantiate_returns_mocked_address() {
 }
 
 #[test]
+fn mut_caller_calling_view_callee_compiles_via_coercion() {
+    // Pins the borrow-checker coercion path: a caller that holds
+    // `&mut TestContext` can invoke a `View` callee whose `call` takes
+    // `&impl ContractContext`. Rust's `&mut T -> &T` reborrow makes this
+    // work without an explicit `&*root`. Regression guard: if someone
+    // tightens the View bound to require `&Self`-only (no coercion from
+    // `&mut`), this test will fail to compile.
+    let target = Address::from([0xBF; 20]);
+    let mock = MockHostBuilder::new().build();
+    mock.mock_call(target.0, Ok(encoded_bool(true)));
+    let mut root = TestContext::new(Host::from_dyn(Rc::new(mock)));
+
+    // `&mut root` exists; Flipper::get is a View callee whose .call
+    // takes `&impl ContractContext`. The reborrow `&*&mut root -> &root` is
+    // implicit here — we just pass `&root` after taking the mut borrow.
+    let res = flipper::Flipper::from_address(target)
+        .get()
+        .call(&root)
+        .unwrap();
+    assert!(res);
+
+    // Confirm `root` is still owned mutably afterwards (no borrow stuck).
+    let _: &mut TestContext = &mut root;
+}
+
+#[test]
 fn instantiate_without_mock_returns_out_of_resources() {
     let mock = MockHostBuilder::new().build();
-    let mut root = TestContract::new(Host::from_dyn(Rc::new(mock)));
+    let mut root = TestContext::new(Host::from_dyn(Rc::new(mock)));
 
     let limits = RefTimeAndProofSizeLimits {
         ref_time_limit: u64::MAX,

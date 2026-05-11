@@ -1,0 +1,8 @@
+error: constructor must take `&mut self`; it always initializes storage
+  --> tests/ui/constructor_no_receiver.rs:9:9
+   |
+ 9 | /         #[pvm_contract_macros::constructor]
+10 | |         pub fn new() -> Result<(), pvm_contract_sdk::EmptyError> {
+11 | |             Ok(())
+12 | |         }
+   | |_________^

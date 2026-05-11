@@ -69,7 +69,7 @@ pub use pvm_contract_types::{
     // Encoding / decoding
     ConstStr,
     // Mutation gating
-    ContractRoot,
+    ContractContext,
     // Error traits and types
     EmptyError,
     Host,
@@ -128,7 +128,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, TestContract};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, TestContext};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;

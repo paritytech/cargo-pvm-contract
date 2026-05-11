@@ -773,10 +773,22 @@ fn parse_contract(
                 fallback_name = Some(func.sig.ident.clone());
                 fallback_returns_result = is_result_return_type(&func.sig.output);
                 fallback_is_payable = has_pvm_attr(&func.attrs, "payable");
-                // Fallbacks accept the same receiver shapes as methods. The
-                // payable+&self mismatch is the only structural error we
-                // reject here; other receivers (no-receiver, &self, &mut self)
-                // are all legitimate fallback shapes.
+                // Fallback dispatch generates `this.fallback_name()` (method
+                // call), so the fallback must have a receiver. `&self` and
+                // `&mut self` are both valid; no-receiver (pure) fallback is
+                // rejected here — a pure fallback has no host access and is
+                // never useful (can't read calldata, return values, or state).
+                match classify_receiver(&func.sig.inputs)? {
+                    ReceiverKind::Ref | ReceiverKind::RefMut => {}
+                    ReceiverKind::None => {
+                        return Err(syn::Error::new_spanned(
+                            func,
+                            "fallback must take `&self` or `&mut self`; \
+                             a no-receiver fallback has no access to host or calldata",
+                        ));
+                    }
+                }
+                // Reuses the payable+receiver consistency check.
                 let _ = infer_method_mutability(func, fallback_is_payable)?;
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
@@ -1356,9 +1368,9 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
     // field; contract method bodies reach the host via `self.host()`, mirroring
     // Stylus's `self.vm()` and ink!'s `self.env()`.
     //
-    // Also auto-implement `ContractRoot` (and its sealing trait) on the
+    // Also auto-implement `ContractContext` (and its sealing trait) on the
     // contract storage struct. Cross-contract call builders take
-    // `&impl ContractRoot` (view/pure) or `&mut impl ContractRoot`
+    // `&impl ContractContext` (view/pure) or `&mut impl ContractContext`
     // (nonpayable/payable), so the borrow on `Self` is the gate that prevents
     // a `&self` method from initiating a state-mutating call.
     let host_accessor = quote! {
@@ -1374,7 +1386,7 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
         impl ::pvm_contract_sdk::__private::Sealed for #struct_name {}
 
         #[cfg(not(feature = "abi-gen"))]
-        impl ::pvm_contract_sdk::ContractRoot for #struct_name {
+        impl ::pvm_contract_sdk::ContractContext for #struct_name {
             #[inline(always)]
             fn host(&self) -> &::pvm_contract_sdk::Host {
                 &self.host
@@ -1933,6 +1945,31 @@ mod tests {
             err.to_string()
                 .contains("constructor must take `&mut self`"),
             "expected constructor mutability rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_fallback_with_no_receiver_rejected() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    pub fn fb() {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Err(e) => e,
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(
+            err.to_string().contains("fallback must take")
+                || err.to_string().contains("no-receiver"),
+            "expected fallback receiver rejection, got: {err}"
         );
     }
 

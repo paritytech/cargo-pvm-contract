@@ -25,8 +25,8 @@ pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, ContractRoot, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags,
-    StorageFlags,
+    CallFlags, ContractContext, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode,
+    ReturnFlags, StorageFlags,
 };
 
 /// Sealing marker for traits that should only be implemented by code in this
@@ -45,7 +45,7 @@ pub use pallet_revive_uapi;
 #[cfg(feature = "std")]
 mod mock_host;
 #[cfg(feature = "std")]
-pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue, TestContract};
+pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue, TestContext};
 
 mod i256;
 pub use i256::{I256, ParseI256Error};

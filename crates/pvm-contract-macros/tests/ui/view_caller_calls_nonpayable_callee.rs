@@ -1,6 +1,6 @@
 // A `view` (`&self`) method must not be able to invoke a `nonpayable`
 // callee through the typed cross-contract API. The borrow check rejects
-// passing `&self` where `&mut impl ContractRoot` is required.
+// passing `&self` where `&mut impl ContractContext` is required.
 
 extern crate alloc;
 
@@ -29,7 +29,7 @@ mod caller {
 
         // The misuse: `&self` (view) caller tries to call the
         // `nonpayable` callee `setValue`. The `set_value` builder method
-        // requires `&mut impl ContractRoot`; we only have `&Self`.
+        // requires `&mut impl ContractContext`; we only have `&Self`.
         #[pvm_contract_sdk::method]
         pub fn cheat(&self, addr: Address) -> Result<(), CallError> {
             let cb = CrossContract::from_address(addr).set_value(U256::ZERO);

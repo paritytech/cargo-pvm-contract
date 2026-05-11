@@ -53,32 +53,33 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::host::{
-    CallFlags, ContractRoot, Host, HostApi, HostResult, ReturnErrorCode, ReturnFlags, StorageFlags,
+    CallFlags, ContractContext, Host, HostApi, HostResult, ReturnErrorCode, ReturnFlags,
+    StorageFlags,
 };
 
 /// Test-only contract root for unit tests.
 ///
-/// Wraps a [`Host`] and implements [`ContractRoot`] so cross-contract call
-/// builders (which require `&impl ContractRoot` / `&mut impl ContractRoot`)
+/// Wraps a [`Host`] and implements [`ContractContext`] so cross-contract call
+/// builders (which require `&impl ContractContext` / `&mut impl ContractContext`)
 /// can be invoked from `#[test]` functions without the `#[contract]` macro.
 ///
 /// **Not `Clone`** — same gating contract as the macro-generated storage
-/// struct: a `&self` test method that gets `&TestContract` cannot smuggle
-/// out a `&mut TestContract` via cloning.
-pub struct TestContract {
+/// struct: a `&self` test method that gets `&TestContext` cannot smuggle
+/// out a `&mut TestContext` via cloning.
+pub struct TestContext {
     pub host: Host,
 }
 
-impl TestContract {
+impl TestContext {
     /// Construct a new test root from a host handle.
     pub fn new(host: Host) -> Self {
         Self { host }
     }
 }
 
-impl crate::__private::Sealed for TestContract {}
+impl crate::__private::Sealed for TestContext {}
 
-impl ContractRoot for TestContract {
+impl ContractContext for TestContext {
     fn host(&self) -> &Host {
         &self.host
     }

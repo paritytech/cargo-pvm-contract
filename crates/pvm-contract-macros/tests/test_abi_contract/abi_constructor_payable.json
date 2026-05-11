@@ -1,0 +1,32 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "payable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
+]
