@@ -27,6 +27,14 @@ pub struct BuildArgs {
     /// Forward --message-format to inner cargo build (e.g. "json")
     #[arg(long)]
     pub message_format: Option<String>,
+
+    /// Activate cargo features on the inner contract build. Accepts the same
+    /// forms as `cargo build --features`: a comma- or space-separated list
+    /// (`--features foo,bar`), and/or the flag repeated (`--features foo
+    /// --features bar`). Each value is forwarded verbatim as its own
+    /// `--features` argument.
+    #[arg(long)]
+    pub features: Vec<String>,
 }
 
 pub fn build_contracts(args: &BuildArgs) -> Result<()> {
@@ -67,7 +75,7 @@ pub fn build_contracts(args: &BuildArgs) -> Result<()> {
         eprintln!("Building contract: {pkg_name}");
 
         let bins = resolve_bins_for_package(&manifest_path, pkg_name)?;
-        build_contract(&manifest_path, &output_dir, profile, pkg_name, bins, args.message_format.as_deref())?;
+        build_contract(&manifest_path, &output_dir, profile, pkg_name, bins, args.message_format.as_deref(), &args.features)?;
     }
 
     Ok(())
@@ -152,4 +160,42 @@ fn glob_member_paths(base: &Path, pattern: &str) -> Vec<PathBuf> {
             p
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(argv: &[&str]) -> BuildArgs {
+        let mut full = vec!["test"];
+        full.extend_from_slice(argv);
+        BuildArgs::parse_from(full)
+    }
+
+    #[test]
+    fn features_absent_yields_empty_vec() {
+        assert_eq!(parse(&[]).features, Vec::<String>::new());
+    }
+
+    #[test]
+    fn features_single_value_preserved_verbatim() {
+        assert_eq!(parse(&["--features", "foo,bar"]).features, vec!["foo,bar"]);
+    }
+
+    #[test]
+    fn features_repeated_flag_collected_in_order() {
+        assert_eq!(
+            parse(&["--features", "foo", "--features", "bar"]).features,
+            vec!["foo", "bar"],
+        );
+    }
+
+    #[test]
+    fn features_mixed_repeated_and_comma_separated() {
+        assert_eq!(
+            parse(&["--features", "foo,bar", "--features", "baz"]).features,
+            vec!["foo,bar", "baz"],
+        );
+    }
 }
