@@ -7,7 +7,7 @@ use pvm_contract_types::{
 use ruint::aliases::U256;
 
 /// Errors returned by `HostApi::call()` / `HostApi::instantiate()`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum CallError {
     /// The called function trapped and has its state changes reverted.

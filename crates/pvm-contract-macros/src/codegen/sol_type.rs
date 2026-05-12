@@ -83,7 +83,7 @@ fn expand_static_sol_type(
         }
 
         impl ::pvm_contract_sdk::StaticDecode for #name {
-            fn decode_unchecked(input: &[u8], offset: usize) -> Self  {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self  {
                 #decode_body_unchecked
             }
         }
@@ -371,7 +371,7 @@ fn generate_static_decode_body(fields: &Fields, unchecked: bool) -> TokenStream 
     let decoder = |ty: TokenStream| {
         if unchecked {
             quote! {
-                let __val = <#ty as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(input, offset + __offset);
+                let __val = unsafe { <#ty as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(input, offset + __offset) };
             }
         } else {
             quote! {
@@ -677,9 +677,13 @@ fn generate_dynamic_field_decode(
     match sol_type.is_dynamic() {
         Some(true) => quote! {{
             let __ho = #head_offset_expr;
-            let __field_offset =
-                u64::from_be_bytes(input[offset + __ho + 24..offset + __ho + 32].try_into().unwrap())
-                    as usize;
+            let __field_offset = TryInto::<[u8; 8]>::try_into(
+                input
+                    .get(offset + __ho + 24..offset + __ho + 32)
+                    .ok_or(::pvm_contract_sdk::DecodeError)?,
+            )
+            .map_err(|_| ::pvm_contract_sdk::DecodeError)
+            .map(u64::from_be_bytes)? as usize;
             <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)?
         }},
         Some(false) => quote! {{
@@ -689,9 +693,13 @@ fn generate_dynamic_field_decode(
         None => quote! {{
             let __ho = #head_offset_expr;
             if <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
-                let __field_offset =
-                    u64::from_be_bytes(input[offset + __ho + 24..offset + __ho + 32].try_into().unwrap())
-                        as usize;
+                let __field_offset = TryInto::<[u8; 8]>::try_into(
+                    input
+                        .get(offset + __ho + 24..offset + __ho + 32)
+                        .ok_or(::pvm_contract_sdk::DecodeError)?,
+                )
+                .map_err(|_| ::pvm_contract_sdk::DecodeError)
+                .map(u64::from_be_bytes)? as usize;
                 <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)?
             } else {
                 <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)?

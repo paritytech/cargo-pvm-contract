@@ -282,7 +282,7 @@ impl<T: SolEncode + StaticDecode + StaticEncodedLen> Lazy<T> {
     /// matching Solidity's default-to-zero semantics.
     pub fn get(&self) -> T {
         let buf = storage_get_32(&self.host, self.key.as_bytes());
-        T::decode_unchecked(&buf, 0)
+        unsafe { T::decode_unchecked(&buf, 0) }
     }
 
     /// Read the value, distinguishing "never written" from "has been set."
@@ -293,7 +293,8 @@ impl<T: SolEncode + StaticDecode + StaticEncodedLen> Lazy<T> {
     /// Note: writing an all-zero value deletes the key (Solidity semantics),
     /// so `try_get()` returns `None` after writing zero.
     pub fn try_get(&self) -> Option<T> {
-        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode_unchecked(&buf, 0))
+        storage_try_get_32(&self.host, self.key.as_bytes())
+            .map(|buf| unsafe { T::decode_unchecked(&buf, 0) })
     }
 
     /// Write a value to storage.

@@ -558,10 +558,12 @@ mod tests {
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
-                            let __value = <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
-                                &input,
-                                __decode_offset,
-                            );
+                            let __value = unsafe {
+                                <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
+                                    &input,
+                                    __decode_offset,
+                                )
+                            };
                             __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                             __value
                         };
@@ -599,10 +601,12 @@ mod tests {
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
-                            let __value = <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
-                                &input,
-                                __decode_offset,
-                            );
+                            let __value = unsafe {
+                                <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
+                                    &input,
+                                    __decode_offset,
+                                )
+                            };
                             __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                             __value
                         };
@@ -640,10 +644,12 @@ mod tests {
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
-                            let __value = <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
-                                &input,
-                                __decode_offset,
-                            );
+                            let __value = unsafe {
+                                <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
+                                    &input,
+                                    __decode_offset,
+                                )
+                            };
                             __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                             __value
                         };

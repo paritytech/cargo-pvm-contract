@@ -327,6 +327,12 @@ fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenS
                 #typ::decode_at(input, offset).map(|x| x.into())
             }
         }
+
+        impl StaticDecode for #name {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+                unsafe { #typ::decode_unchecked(input, offset).into() }
+            }
+        }
     }
 }
 

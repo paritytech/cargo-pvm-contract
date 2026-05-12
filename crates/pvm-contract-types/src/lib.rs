@@ -46,7 +46,7 @@ pub use i256::{I256, ParseI256Error};
 pub use const_format;
 pub use ruint::aliases::U256;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DecodeError;
 
 impl SolError for DecodeError {
@@ -403,9 +403,11 @@ pub trait SolDecode: SolEncode + Sized {
 }
 
 pub trait StaticDecode: SolDecode + SolEncode + StaticEncodedLen + Sized {
-    /// SAFETY contract: caller guarantees `input.len() >= offset + ENCODED_SIZE`.
+    /// # Safety
+    ///
+    /// safety contract: caller guarantees `input.len() >= offset + ENCODED_SIZE`.
     /// Caller is the dispatch codegen that checks total size once at entry.
-    fn decode_unchecked(input: &[u8], offset: usize) -> Self;
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self;
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,7 +1011,7 @@ macro_rules! impl_static_type_decode {
     ($ty:ty,  $decode_fn:expr) => {
         impl StaticDecode for $ty {
             #[inline]
-            fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
                 $decode_fn(input, offset)
             }
         }
@@ -1150,6 +1152,14 @@ impl SolDecode for () {
     }
 }
 
+impl StaticEncodedLen for () {
+    const ENCODED_SIZE: usize = 0;
+}
+
+impl StaticDecode for () {
+    unsafe fn decode_unchecked(_input: &[u8], _offset: usize) -> Self {}
+}
+
 // ---------------------------------------------------------------------------
 // [u8; N] impl — encodes as Solidity `bytesN` (left-aligned in one word),
 // matching alloy's behavior. For `T[N]` array semantics, see the
@@ -1198,7 +1208,7 @@ impl<const N: usize> SolDecode for [u8; N] {
 }
 
 impl<const N: usize> StaticDecode for [u8; N] {
-    fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
         const { assert!(N >= 1 && N <= 32, "bytesN only valid for N in 1..=32") };
 
         let mut result = [0u8; N];
@@ -1297,8 +1307,8 @@ impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
 }
 
 impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> StaticDecode for [T; N] {
-    fn decode_unchecked(input: &[u8], offset: usize) -> Self {
-        core::array::from_fn(|i| T::decode_unchecked(input, offset + i * T::SLOT_SIZE))
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+        core::array::from_fn(|i| unsafe { T::decode_unchecked(input, offset + i * T::SLOT_SIZE) })
     }
 }
 
@@ -1404,12 +1414,14 @@ macro_rules! impl_tuple_sol {
             }
         }
         impl<$($T: StaticDecode + StaticEncodedLen + SolDecode),+> StaticDecode for ($($T,)+) {
-            fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
                 let mut __ho = offset;
                 ($(
                     {
 
-                        let __val = $T::decode_unchecked(input, __ho);
+                        let __val = unsafe {
+                            $T::decode_unchecked(input, __ho)
+                        };
                         __ho += $T::SLOT_SIZE;
                         __val
                     },

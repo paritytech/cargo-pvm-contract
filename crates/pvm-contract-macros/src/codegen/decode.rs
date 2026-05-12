@@ -28,7 +28,7 @@ pub fn generate_decode_params(types: &[syn::Type], is_constructor: bool) -> Vec<
 
             let decode = if !is_dynamic {
                 quote! {
-                    let __value = <#ty as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(&input, __decode_offset);
+                    let __value = unsafe { <#ty as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(&input, __decode_offset) };
                 }
             } else {
                 quote! {
