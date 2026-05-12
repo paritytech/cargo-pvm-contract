@@ -9,7 +9,6 @@ extern crate alloc;
 #[cfg(feature = "alloc")]
 mod alloc_types;
 use core::mem::MaybeUninit;
-use std::intrinsics::transmute_unchecked;
 
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
