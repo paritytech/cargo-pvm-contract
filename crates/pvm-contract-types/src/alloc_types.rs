@@ -191,7 +191,9 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
             .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
             .ok_or(DecodeError)
             .map(u64::from_be_bytes)? as usize;
-
+        if len > input.len() / 32 {
+            return Err(DecodeError);
+        }
         let mut result = alloc::vec::Vec::with_capacity(len);
         let array_data_start = offset + 32;
 
