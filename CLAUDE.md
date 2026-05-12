@@ -329,6 +329,39 @@ PolkaVmHost::get_storage_or_zero(StorageFlags::empty(), &key, &mut output)
 PolkaVmHost::set_storage_or_clear(StorageFlags::empty(), &key, &data)
 ```
 
+## Reentrancy Protection
+
+pallet-revive rejects reentrant calls by default. When contract A calls contract B, B (and its callees) cannot call back into A. The runtime returns `ReentranceDenied` if reentrancy is attempted.
+
+Two modes are available to contracts:
+- **Default** (`CallFlags::empty()`): callee and its recursive callees cannot re-enter the caller.
+- **AllowReentry** (`CallFlags::ALLOW_REENTRY`): no restriction, callee can call back freely.
+
+### Macro path (abi_import / CallBuilder)
+
+```rust
+// Default: reentrancy denied
+let result = foo.bar().call(self.host())?;
+
+// Opt in to reentrancy
+let result = foo.bar().allow_reentry().call(self.host())?;
+```
+
+### DSL path (raw host calls)
+
+```rust
+host.call_evm(
+    CallFlags::ALLOW_REENTRY,
+    &callee_address,
+    gas_limit,
+    &value,
+    &calldata,
+    Some(&mut output),
+)?;
+```
+
+**Security: do not enable `ALLOW_REENTRY` unless the contract is specifically designed to handle reentrant callbacks** (e.g., flash loans, ERC-777 hooks). Reentrancy is one of the most exploited vulnerability classes in smart contracts. The default protection exists to prevent the classic attack where a callee re-enters the caller before state updates are complete. PVM creates fresh memory per call, so in-memory state is not shared across reentrant invocations. On-chain storage is shared.
+
 ## Host APIs
 
 Contracts interact with the runtime through `pallet_revive_uapi::HostFnImpl`:

@@ -113,6 +113,7 @@ pub fn expand_function(
                     selector: [#(#selector),*],
                     witness: #state_mutability::default(),
                     call_limits: Default::default(),
+                    allow_reentry: false,
                     _ret: core::marker::PhantomData,
                 }
             }
@@ -695,6 +696,7 @@ mod test {
                                 selector: [110u8, 44u8, 115u8, 45u8],
                                 witness: Pure::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -707,6 +709,7 @@ mod test {
                                 selector: [208u8, 227u8, 13u8, 176u8],
                                 witness: Payable::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -719,6 +722,7 @@ mod test {
                                 selector: [168u8, 125u8, 148u8, 44u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -734,6 +738,7 @@ mod test {
                                 selector: [57u8, 39u8, 246u8, 175u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -751,6 +756,7 @@ mod test {
                                 selector: [103u8, 215u8, 9u8, 208u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -773,6 +779,7 @@ mod test {
                             selector: [0u8, 0u8, 0u8, 0u8],
                             witness: Payable::default(),
                             call_limits: Default::default(),
+                            allow_reentry: false,
                             _ret: core::marker::PhantomData,
                         },
                     }
@@ -1058,6 +1065,7 @@ mod test {
                                 selector: [147u8, 139u8, 95u8, 50u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -1087,6 +1095,7 @@ mod test {
                                 selector: [5u8, 150u8, 191u8, 142u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -1109,6 +1118,7 @@ mod test {
                             selector: [0u8, 0u8, 0u8, 0u8],
                             witness: Payable::default(),
                             call_limits: Default::default(),
+                            allow_reentry: false,
                             _ret: core::marker::PhantomData,
                         },
                     }
@@ -1396,6 +1406,7 @@ mod test {
                                 selector: [184u8, 219u8, 195u8, 2u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -1418,6 +1429,7 @@ mod test {
                             selector: [0u8, 0u8, 0u8, 0u8],
                             witness: Payable::default(),
                             call_limits: Default::default(),
+                            allow_reentry: false,
                             _ret: core::marker::PhantomData,
                         },
                     }
@@ -1705,6 +1717,7 @@ mod test {
                                 selector: [233u8, 148u8, 217u8, 223u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -1735,6 +1748,7 @@ mod test {
                                 selector: [57u8, 253u8, 73u8, 204u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -1759,6 +1773,7 @@ mod test {
                             selector: [0u8, 0u8, 0u8, 0u8],
                             witness: Payable::default(),
                             call_limits: Default::default(),
+                            allow_reentry: false,
                             _ret: core::marker::PhantomData,
                         },
                     }
@@ -2046,6 +2061,7 @@ mod test {
                                 selector: [112u8, 160u8, 130u8, 49u8],
                                 witness: View::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -2073,6 +2089,7 @@ mod test {
                             selector: [0u8, 0u8, 0u8, 0u8],
                             witness: Payable::default(),
                             call_limits: Default::default(),
+                            allow_reentry: false,
                             _ret: core::marker::PhantomData,
                         },
                     }
@@ -2382,6 +2399,7 @@ mod test {
                                 selector: [217u8, 117u8, 149u8, 186u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
@@ -2402,6 +2420,7 @@ mod test {
                                 selector: [178u8, 1u8, 18u8, 196u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
+                                allow_reentry: false,
                                 _ret: core::marker::PhantomData,
                             },
                         }
