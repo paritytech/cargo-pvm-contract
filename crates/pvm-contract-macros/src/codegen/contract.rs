@@ -2191,11 +2191,10 @@ mod tests {
             output.contains("fn route"),
             "route() function should be generated"
         );
-        // The Router trait is instantiated at the concrete Host type
+        // The Router trait impl is emitted (no generic parameter).
         assert!(
-            output.contains("Router :: < :: pvm_contract_sdk :: Host >")
-                || output.contains(":: pvm_contract_sdk :: Router"),
-            "Router impl should target concrete Host"
+            output.contains(":: pvm_contract_sdk :: Router"),
+            "Router impl should be generated"
         );
         // call() delegates to route() with the constructed `this` and falls
         // through to the unknown-selector handler when the Option is None.

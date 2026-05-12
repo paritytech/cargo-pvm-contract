@@ -319,7 +319,7 @@ pub struct RouteItems {
     pub route_fn: TokenStream,
 }
 
-/// `impl Router<Host> for mod_name::StructName` block, placed outside the module.
+/// `impl Router for mod_name::StructName` block, placed outside the module.
 pub struct RouterImpl {
     pub tokens: TokenStream,
 }
@@ -390,9 +390,7 @@ pub fn generate_router(
 
     let router_impl = RouterImpl {
         tokens: quote! {
-            impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
-                for #mod_name::#struct_name
-            {
+            impl ::pvm_contract_sdk::Router for #mod_name::#struct_name {
                 fn route(
                     &mut self,
                     selector: [u8; 4],

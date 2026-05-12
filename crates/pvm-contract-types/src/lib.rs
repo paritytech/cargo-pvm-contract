@@ -239,7 +239,7 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
 
 /// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
-/// Each contract module gets a generated `impl Router<Host> for Contract`
+/// Each contract module gets a generated `impl Router for Contract`
 /// that delegates to a free `mod_name::route(this, selector, input)` function.
 /// Dispatch arms call `host.return_value(...)` directly — `-> !` on `riscv64`
 /// (terminates execution), `-> ()` on host targets (captures into
@@ -258,7 +258,7 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
 ///     // fallback or revert
 /// }
 /// ```
-pub trait Router<H: HostApi> {
+pub trait Router {
     /// Dispatch `selector` against `input`. Returns `Some(())` if the selector
     /// was handled (the dispatch arm has already called `host.return_value(...)`,
     /// which on `riscv64` means execution has terminated). Returns `None` if

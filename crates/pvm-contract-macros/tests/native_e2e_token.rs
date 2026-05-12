@@ -500,7 +500,7 @@ fn router_trait_path_produces_identical_result_to_free_fn() {
         .expect("free fn called return_value");
 
     // Drive via the Router trait, take the freshly captured return.
-    let outcome = <mini_token::MiniToken as Router<Host>>::route(&mut contract, sel, &input);
+    let outcome = <mini_token::MiniToken as Router>::route(&mut contract, sel, &input);
     assert_eq!(outcome, Some(()));
     let via_trait = mock
         .take_return_value()

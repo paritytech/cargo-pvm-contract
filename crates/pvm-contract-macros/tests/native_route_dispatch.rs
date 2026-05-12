@@ -134,7 +134,7 @@ fn router_trait_impl_delegates_to_module_route() {
     let input = encode_address(Address::from([0xAA; 20]));
 
     // Call through the Router trait rather than the free function.
-    let outcome = <my_token::MyContract as Router<Host>>::route(&mut contract, sel, &input);
+    let outcome = <my_token::MyContract as Router>::route(&mut contract, sel, &input);
     assert_eq!(outcome, Some(()));
 
     let rv = mock

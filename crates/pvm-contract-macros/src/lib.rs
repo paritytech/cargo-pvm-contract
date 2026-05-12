@@ -126,12 +126,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///   reads calldata, calls `route()`, falls through to fallback or
 ///   `return_value(REVERT, UNKNOWN_SELECTOR)` when `route()` returns `None`.
 ///
-/// Outside the module, a `Router<Host>` trait impl is generated:
+/// Outside the module, a `Router` trait impl is generated:
 ///
 /// ```ignore
-/// impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
-///     for my_token::Contract
-/// {
+/// impl ::pvm_contract_sdk::Router for my_token::Contract {
 ///     fn route(
 ///         &mut self,
 ///         selector: [u8; 4],
@@ -395,9 +393,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// }
 ///
 /// // Generated outside the module:
-/// impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
-///     for my_token::Contract
-/// {
+/// impl ::pvm_contract_sdk::Router for my_token::Contract {
 ///     fn route(
 ///         &mut self,
 ///         selector: [u8; 4],
