@@ -1289,7 +1289,7 @@ impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
         let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
         let mut written = 0usize;
 
-        for i in 0..N {
+        for (i, item) in array.iter_mut().enumerate() {
             let res: Result<T, DecodeError> = (|| {
                 if T::IS_DYNAMIC {
                     let ho = offset + i * T::SLOT_SIZE;
@@ -1306,7 +1306,7 @@ impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
 
             match res {
                 Ok(v) => {
-                    array[i].write(v);
+                    item.write(v);
                     written = i + 1;
                 }
                 Err(e) => {
@@ -1329,7 +1329,7 @@ impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> Stati
     unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
         let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
 
-        for i in 0..N {
+        for (i, item) in array.iter_mut().enumerate() {
             let res: T = {
                 if T::IS_DYNAMIC {
                     let ho = offset + i * T::SLOT_SIZE;
@@ -1346,7 +1346,7 @@ impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> Stati
                 }
             };
 
-            array[i].write(res);
+            item.write(res);
         }
 
         let ptr = &array as *const _ as *const [T; N];
