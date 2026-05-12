@@ -254,6 +254,37 @@ impl CastClient {
             .to_string()
     }
 
+    /// Send a plain ether transfer (empty calldata) to a contract address.
+    /// Targets the contract's `receive` (or payable `fallback`) handler.
+    pub fn send_value_only(&self, contract: &str, private_key: &str, value: &str) -> String {
+        let mut cmd = Command::new("cast");
+        cmd.args([
+            "send",
+            contract,
+            "--rpc-url",
+            &self.rpc_url,
+            "--private-key",
+            private_key,
+            "--value",
+            value,
+            "--json",
+        ]);
+
+        let output = cmd.output().expect("cast send failed to execute");
+        assert!(
+            output.status.success(),
+            "cast send (value-only) failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .expect("Failed to parse cast send output as JSON");
+        json["transactionHash"]
+            .as_str()
+            .expect("No transactionHash in cast output")
+            .to_string()
+    }
+
     /// Send a write transaction with a value transfer, expect it to revert. Returns raw output.
     pub fn send_with_value_expect_revert(
         &self,

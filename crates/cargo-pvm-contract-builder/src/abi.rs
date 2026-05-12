@@ -279,6 +279,7 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         } else if line.starts_with("function ")
             || line.starts_with("constructor")
             || line.starts_with("error ")
+            || line.starts_with("receive")
         {
             if has_balanced_parens(line) {
                 try_parse_decl(line, &mut items);
@@ -323,7 +324,22 @@ fn try_parse_decl(line: &str, items: &mut Vec<AbiItem>) {
         && let Some(err) = parse_sol_error_line(line)
     {
         items.push(err);
+    } else if line.starts_with("receive")
+        && let Some(recv) = parse_sol_receive_line(line)
+    {
+        items.push(recv);
     }
+}
+
+fn parse_sol_receive_line(line: &str) -> Option<AbiItem> {
+    let rest = line.strip_prefix("receive")?;
+    let after = rest.trim_start();
+    if !after.starts_with('(') {
+        return None;
+    }
+    Some(AbiItem::Receive {
+        state_mutability: Some("payable".to_string()),
+    })
 }
 
 /// Check whether all parentheses in `s` are balanced.

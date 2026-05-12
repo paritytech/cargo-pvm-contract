@@ -41,6 +41,12 @@ pub enum AbiItem {
         name: String,
         inputs: Vec<AbiParam>,
     },
+    Receive {
+        #[serde(rename = "stateMutability")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default)]
+        state_mutability: Option<String>,
+    },
 }
 
 /// Wrapper for a complete ABI JSON array.

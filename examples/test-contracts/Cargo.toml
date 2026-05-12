@@ -71,6 +71,10 @@ path = "src/constructor-args.rs"
 name = "payable"
 path = "src/payable.rs"
 
+[[bin]]
+name = "receive"
+path = "src/receive.rs"
+
 [dependencies]
 pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = [
     "alloc",

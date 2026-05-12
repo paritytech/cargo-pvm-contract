@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[derive(SolType)]`, `#[derive(SolError)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[derive(SolType)]`, `#[derive(SolError)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error traits (`SolError`, `SolRevert`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -84,7 +84,7 @@ ContractBuilder::new()
 The `#[contract]` macro generates two PolkaVM entry points:
 
 - **`deploy()`** — calls the `#[constructor]` function
-- **`call()`** — reads calldata, extracts 4-byte selector, dispatches to matching `#[method]`
+- **`call()`** — reads calldata, extracts 4-byte selector, dispatches to matching `#[method]`. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
 
 Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolRevert::revert_data` and returned with `REVERT` flags.
 
@@ -104,6 +104,13 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 
 - `#[method]` — marks a public function as a contract method
 - `#[method(rename = "name")]` — overrides the Solidity function name (default: snake_case to camelCase)
+
+### Fallback and Receive Handlers
+
+- `#[fallback]` — invoked when no method selector matches (or calldata is 1..=3 bytes). Non-payable by default; add `#[payable]` to accept value.
+- `#[receive]` — invoked on plain value transfers (empty calldata). Must take `&mut self` and no other arguments. Implicitly payable (mirrors Solidity's `receive() external payable`); `#[payable]` is rejected as redundant. Return type must be `()` or `Result<(), E>`.
+
+When both are present, receive fires first on empty calldata; fallback handles non-empty calldata that doesn't match a selector. Contracts without `#[receive]` pay zero bytecode cost — the empty-calldata branch is omitted entirely.
 
 ## Type System
 

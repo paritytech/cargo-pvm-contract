@@ -607,3 +607,46 @@ fn non_payable_constructor_accepts_zero_value() {
     let (_anvil, _cast, addr) = deploy("payable");
     assert!(!addr.is_empty(), "deploy without value should succeed");
 }
+
+// --- Receive Handler ---
+
+#[test]
+fn receive_handles_plain_ether_transfer() {
+    let (_anvil, cast, addr) = deploy("receive");
+
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "42");
+
+    let total = cast.call(&addr, "totalReceived()(uint256)", &[]);
+    assert_eq!(total, "42");
+    let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
+    assert_eq!(count, "1");
+}
+
+#[test]
+fn receive_accumulates_multiple_transfers() {
+    let (_anvil, cast, addr) = deploy("receive");
+
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "10");
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "20");
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "30");
+
+    let total = cast.call(&addr, "totalReceived()(uint256)", &[]);
+    assert_eq!(total, "60");
+    let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
+    assert_eq!(count, "3");
+}
+
+#[test]
+fn receive_handles_zero_value_empty_calldata() {
+    let (_anvil, cast, addr) = deploy("receive");
+
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "0");
+
+    let total = cast.call(&addr, "totalReceived()(uint256)", &[]);
+    assert_eq!(total, "0");
+    let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
+    assert_eq!(
+        count, "1",
+        "receive must fire on empty calldata regardless of value"
+    );
+}

@@ -1,0 +1,6 @@
+error: duplicate `#[receive]` handler; a contract may declare at most one
+  --> tests/ui/receive_duplicate.rs:9:9
+   |
+ 9 | /         #[pvm_contract_macros::receive]
+10 | |         pub fn receive_two(&mut self) {}
+   | |________________________________________^
