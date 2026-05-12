@@ -2,9 +2,7 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::{
-    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
-};
+use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
 use pvm_contract_builder_dsl::pvm_contract_types::{Host, SolDecode, SolEncode, StaticEncodedLen};
 use pvm_contract_builder_dsl::ruint::aliases::U256;
 
@@ -29,9 +27,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
-pub extern "C" fn deploy() {
-    assert_non_payable_deploy(&Host::new());
-}
+pub extern "C" fn deploy() {}
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
