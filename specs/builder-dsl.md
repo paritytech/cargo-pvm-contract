@@ -173,31 +173,32 @@ match api::get_storage(StorageFlags::empty(), &key, &mut slice) {
 }
 ```
 
-## Typed Cross-Contract Calls (`DslContext`)
+## Typed Cross-Contract Calls (`Context`)
 
 The typed `abi_import!`-generated call wrappers expect `&impl ContractContext`
 (view callees) or `&mut impl ContractContext` (mutating callees). DSL handlers
-receive a `&Host` from the dispatcher, not a contract struct, so they wrap the
-host borrow in [`DslContext`](https://docs.rs/pvm-contract-builder-dsl):
+receive a `&Host` from the dispatcher, not a contract struct, so they wrap a
+cloned host in [`Context`](https://docs.rs/pvm-contract-types):
 
 ```rust,ignore
-use pvm_contract_builder_dsl::{DslContext, HandlerResult};
-use pvm_contract_sdk::Host;
+use pvm_contract_builder_dsl::HandlerResult;
+use pvm_contract_sdk::{Context, Host};
 
 fn transfer_handler(host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let mut cx = DslContext::new(host);
+    let mut cx = Context::new(host.clone());
     // Mutating call — `&mut cx` satisfies `&mut impl ContractContext`.
     Erc20::from_address(addr).transfer(to, amount).call(&mut cx)?;
     HandlerResult::Ok(0)
 }
 ```
 
-`DslContext` carries only the host borrow, so the borrow checker cannot
-enforce view-vs-mutating at compile time — a handler can freely construct
-`&cx` and `&mut cx` from the same locally-owned wrapper. The DSL is the
-manual-control path; if you need the static guarantee that view methods
-cannot initiate state-mutating cross-contract calls, use the `#[contract]`
-macro path.
+`Host::clone()` is `Copy` on `riscv64` (ZST) and a single `Rc::clone` on host
+targets, so the wrapper costs nothing in production. `Context` carries only
+the host handle, so the borrow checker cannot enforce view-vs-mutating at
+compile time in the DSL — a handler can freely construct `&cx` and `&mut cx`
+from the same locally-owned wrapper. The DSL is the manual-control path; if
+you need the static guarantee that view methods cannot initiate
+state-mutating cross-contract calls, use the `#[contract]` macro path.
 
 ## Events
 

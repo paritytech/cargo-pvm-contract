@@ -48,6 +48,44 @@ pub trait ContractContext: crate::__private::Sealed {
     fn host(&self) -> &Host;
 }
 
+/// Stateless [`ContractContext`] root.
+///
+/// Wraps a [`Host`] and implements [`ContractContext`] so cross-contract call
+/// builders (which require `&impl ContractContext` / `&mut impl ContractContext`)
+/// can be invoked outside the `#[contract]` macro's storage struct — from DSL
+/// handlers (wrap the dispatcher-provided `&Host` via `Context::new(host.clone())`)
+/// and from `#[test]` functions backed by a `MockHost`.
+///
+/// `Host` is `Copy` on `riscv64` (ZST) and `Clone` on host targets (one
+/// `Rc::clone`), so the owned shape costs nothing in production.
+///
+/// **Not `Clone`** — same gating contract as the macro-generated storage
+/// struct: a `&self` method that gets `&Context` cannot smuggle out a
+/// `&mut Context` via cloning. The DSL path is still the "manual control"
+/// surface: a handler holds the owned `Context` locally, so it can freely
+/// construct both `&cx` and `&mut cx` from the same binding. If you need
+/// the static view-vs-mutating guarantee, use the `#[contract]` macro path.
+pub struct Context {
+    pub host: Host,
+}
+
+impl Context {
+    /// Construct a new context from an owned host handle.
+    #[inline(always)]
+    pub fn new(host: Host) -> Self {
+        Self { host }
+    }
+}
+
+impl crate::__private::Sealed for Context {}
+
+impl ContractContext for Context {
+    #[inline(always)]
+    fn host(&self) -> &Host {
+        &self.host
+    }
+}
+
 /// Receiver-based host API.
 ///
 /// Every method takes `&self` — `PolkaVmHost` is a zero-sized type, so this

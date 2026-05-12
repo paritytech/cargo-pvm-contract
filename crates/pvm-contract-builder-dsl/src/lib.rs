@@ -8,10 +8,26 @@ pub use polkavm_derive::polkavm_export;
 pub use pvm_contract_types;
 pub use ruint;
 
-use pvm_contract_types::{ContractContext, Host, HostApi, ReturnFlags};
+use pvm_contract_types::{Host, HostApi, ReturnFlags};
 
 /// 4-byte Solidity function selector.
 pub type Selector = [u8; 4];
+
+/// Revert the `deploy` entry point if any value was attached.
+///
+/// Solidity's default constructor is non-payable, and the `#[contract]` macro
+/// path auto-injects an equivalent guard. The DSL has no codegen step, so
+/// scaffolded `deploy()` functions must call this explicitly. Omit the call
+/// only when the constructor is intentionally payable.
+#[inline(always)]
+pub fn assert_non_payable_deploy(host: &Host) {
+    if pvm_contract_types::value_transferred_is_nonzero(host) {
+        host.return_value(
+            ReturnFlags::REVERT,
+            &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED,
+        );
+    }
+}
 
 /// The result a [`MethodHandler`] returns to the dispatcher.
 ///
@@ -50,47 +66,6 @@ const MAX_METHODS: usize = 16;
 #[inline(always)]
 fn noop_handler(_host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
     HandlerResult::Ok(0)
-}
-
-/// Borrowed [`ContractContext`] adapter for DSL handlers.
-///
-/// Handlers receive `&Host` from the dispatcher. To call typed cross-contract
-/// wrappers (which require `&impl ContractContext` or `&mut impl ContractContext`),
-/// wrap the host borrow:
-///
-/// ```ignore
-/// fn my_handler(host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
-///     let mut cx = DslContext::new(host);
-///     Flipper::from_address(addr).flip().delegate_call(&mut cx)?;
-///     HandlerResult::Ok(0)
-/// }
-/// ```
-///
-/// Unlike the `#[contract]` macro's storage struct, `DslContext` carries no
-/// state beyond the host borrow, so the borrow checker cannot enforce
-/// view-vs-mutating at compile time — a handler can freely construct `&cx`
-/// and `&mut cx` from the same locally-owned wrapper. The DSL is the
-/// "manual control" path; if you need compile-time view enforcement, use the
-/// macro path.
-pub struct DslContext<'a> {
-    host: &'a Host,
-}
-
-impl<'a> DslContext<'a> {
-    /// Wrap a `&Host` for use with typed cross-contract call builders.
-    #[inline(always)]
-    pub fn new(host: &'a Host) -> Self {
-        Self { host }
-    }
-}
-
-impl pvm_contract_types::__private::Sealed for DslContext<'_> {}
-
-impl ContractContext for DslContext<'_> {
-    #[inline(always)]
-    fn host(&self) -> &Host {
-        self.host
-    }
 }
 
 /// Pure Rust builder for PVM smart contract dispatch.
@@ -290,18 +265,11 @@ impl ContractBuilder {
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
-    use alloc::rc::Rc;
-
     use super::*;
-    use pvm_contract_types::{Host, MockHostBuilder};
+    use pvm_contract_types::Host;
 
     const DEPOSIT: Selector = [0xde, 0x00, 0x00, 0x01];
     const TRANSFER: Selector = [0x7f, 0x00, 0x00, 0x02];
-
-    fn make_host() -> Host {
-        Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
-    }
 
     fn dummy_handler(_host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
         HandlerResult::Ok(0)
@@ -349,13 +317,5 @@ mod tests {
             .method(TRANSFER, dummy_handler)
             .method(DEPOSIT, dummy_handler);
         assert_eq!(builder.payable_bits, 0);
-    }
-
-    #[test]
-    fn dsl_context_implements_contract_context() {
-        let host = make_host();
-        let cx = DslContext::new(&host);
-        // Confirms the trait impl is reachable and returns the wrapped host.
-        let _: &Host = ContractContext::host(&cx);
     }
 }

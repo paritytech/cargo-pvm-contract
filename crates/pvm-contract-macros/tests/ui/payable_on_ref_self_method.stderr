@@ -1,0 +1,7 @@
+error: method is marked `#[payable]` but takes `&self`; payable callables must take `&mut self`
+  --> tests/ui/payable_on_ref_self_method.rs:9:9
+   |
+ 9 | /         #[pvm_contract_macros::method]
+10 | |         #[pvm_contract_macros::payable]
+11 | |         pub fn deposit(&self) {}
+   | |________________________________^

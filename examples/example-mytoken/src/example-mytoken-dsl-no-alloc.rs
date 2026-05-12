@@ -1,7 +1,9 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_builder_dsl::{
+    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+};
 use pvm_contract_sdk::{
     Address, Host, HostApi, SolDecode, SolEncode, SolRevert, StaticEncodedLen, StorageFlags,
 };
@@ -45,7 +47,9 @@ pvm_contract_sdk::sol_revert_enum! {
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
-pub extern "C" fn deploy() {}
+pub extern "C" fn deploy() {
+    assert_non_payable_deploy(&Host::new());
+}
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]

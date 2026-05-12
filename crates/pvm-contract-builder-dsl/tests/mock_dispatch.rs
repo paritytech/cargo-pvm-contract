@@ -7,7 +7,9 @@
 
 use std::rc::Rc;
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_builder_dsl::{
+    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+};
 use pvm_contract_types::{
     Host, MockHost, MockHostBuilder, ReturnFlags, ReturnValue, SolDecode, SolEncode,
     StaticEncodedLen,
@@ -160,6 +162,36 @@ fn handler_returning_oversize_len_is_clamped() {
     // Must not panic; len is clamped to BUF_SIZE (256).
     assert_eq!(rv.data.len(), 256);
     assert_eq!(&rv.data[..4], &[1, 2, 3, 4]);
+}
+
+#[test]
+fn deploy_guard_reverts_when_value_attached() {
+    let mut value = [0u8; 32];
+    value[31] = 1;
+    let mock = Rc::new(MockHostBuilder::new().value_transferred(value).build());
+
+    assert_non_payable_deploy(&wrap(&mock));
+
+    let rv = mock
+        .take_return_value()
+        .expect("deploy guard must call return_value on non-zero value");
+    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    assert_eq!(
+        rv.data,
+        pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED.as_slice()
+    );
+}
+
+#[test]
+fn deploy_guard_passes_with_zero_value() {
+    let mock = Rc::new(MockHostBuilder::new().build());
+
+    assert_non_payable_deploy(&wrap(&mock));
+
+    assert!(
+        mock.take_return_value().is_none(),
+        "deploy guard must not call return_value when value is zero"
+    );
 }
 
 #[test]

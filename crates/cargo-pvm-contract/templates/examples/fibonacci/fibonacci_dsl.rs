@@ -1,7 +1,9 @@
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_builder_dsl::{
+    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+};
 use pvm_contract_builder_dsl::pvm_contract_types::{Host, SolDecode, SolEncode, StaticEncodedLen};
 
 const FIBONACCI_SELECTOR: [u8; 4] = solidity_selector("fibonacci(uint32)");
@@ -16,7 +18,9 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
-pub extern "C" fn deploy() {}
+pub extern "C" fn deploy() {
+    assert_non_payable_deploy(&Host::new());
+}
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
