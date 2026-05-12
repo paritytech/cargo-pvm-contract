@@ -1966,6 +1966,11 @@ mod test {
                     U256::decode_at(input, offset).map(|x| x.into())
                 }
             }
+            impl StaticDecode for Example {
+                unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+                    unsafe { U256::decode_unchecked(input, offset).into() }
+                }
+            }
             #[derive(SolType, PartialEq, Eq, Debug)]
             pub struct Point {
                 pub a: U256,
