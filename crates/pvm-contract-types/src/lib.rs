@@ -1330,7 +1330,7 @@ impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> Stati
         let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
 
         for i in 0..N {
-            let res: T = (|| {
+            let res: T = {
                 if T::IS_DYNAMIC {
                     let ho = offset + i * T::SLOT_SIZE;
                     let field_offset = input
@@ -1344,7 +1344,7 @@ impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> Stati
                 } else {
                     unsafe { T::decode_unchecked(input, i * T::SLOT_SIZE) }
                 }
-            })();
+            };
 
             array[i].write(res);
         }
