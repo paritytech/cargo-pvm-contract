@@ -8,6 +8,9 @@ extern crate alloc;
 
 #[cfg(feature = "alloc")]
 mod alloc_types;
+use core::mem::MaybeUninit;
+use std::intrinsics::transmute_unchecked;
+
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
 
@@ -1284,31 +1287,71 @@ impl<T: SolArrayElement + StaticEncodedLen, const N: usize> StaticEncodedLen for
 
 impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        // array::try_from_fn is unstable
-        Ok(if T::IS_DYNAMIC {
-            core::array::from_fn(|i| {
-                let ho = offset + i * T::SLOT_SIZE;
-                let field_offset =
-                    u64::from_be_bytes(input[ho + 24..ho + 32].try_into().unwrap()) as usize;
-                let Ok(res) = T::decode_tail(input, offset + field_offset) else {
-                    panic!("array::try_from_fn is unstable")
-                };
-                res
-            })
-        } else {
-            core::array::from_fn(|i| {
-                let Ok(res) = T::decode_at(input, offset + i * T::SLOT_SIZE) else {
-                    panic!("array::try_from_fn is unstable")
-                };
-                res
-            })
-        })
+        let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
+        let mut written = 0usize;
+
+        for i in 0..N {
+            let res: Result<T, DecodeError> = (|| {
+                if T::IS_DYNAMIC {
+                    let ho = offset + i * T::SLOT_SIZE;
+                    let field_offset = input
+                        .get(ho + 24..ho + 32)
+                        .and_then(|x| x.try_into().ok())
+                        .map(u64::from_be_bytes)
+                        .ok_or(DecodeError)? as usize;
+                    T::decode_tail(input, offset + field_offset)
+                } else {
+                    T::decode_at(input, offset + i * T::SLOT_SIZE)
+                }
+            })();
+
+            match res {
+                Ok(v) => {
+                    array[i].write(v);
+                    written = i + 1;
+                }
+                Err(e) => {
+                    for slot in &mut array[..written] {
+                        unsafe {
+                            slot.assume_init_drop();
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        let ptr = &array as *const _ as *const [T; N];
+        Ok(unsafe { ptr.read() })
     }
 }
 
 impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> StaticDecode for [T; N] {
     unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
-        core::array::from_fn(|i| unsafe { T::decode_unchecked(input, offset + i * T::SLOT_SIZE) })
+        let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
+
+        for i in 0..N {
+            let res: T = (|| {
+                if T::IS_DYNAMIC {
+                    let ho = offset + i * T::SLOT_SIZE;
+                    let field_offset = input
+                        .get(ho + 24..ho + 32)
+                        .and_then(|x| x.try_into().ok())
+                        .map(u64::from_be_bytes)
+                        .ok_or(DecodeError)
+                        .expect("failed to parse offset")
+                        as usize;
+                    unsafe { T::decode_unchecked(input, offset + field_offset) }
+                } else {
+                    unsafe { T::decode_unchecked(input, i * T::SLOT_SIZE) }
+                }
+            })();
+
+            array[i].write(res);
+        }
+
+        let ptr = &array as *const _ as *const [T; N];
+        unsafe { ptr.read() }
     }
 }
 
