@@ -30,8 +30,8 @@ pub use host::{
 };
 
 /// Sealing marker for traits that should only be implemented by code in this
-/// workspace (specifically: macro-generated contract structs and the DSL
-/// dispatch root). External users have no reason to import this module.
+/// workspace (specifically: macro-generated contract structs and [`Context`]).
+/// External users have no reason to import this module.
 #[doc(hidden)]
 pub mod __private {
     pub trait Sealed {}

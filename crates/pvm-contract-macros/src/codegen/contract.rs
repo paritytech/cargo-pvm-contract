@@ -454,6 +454,12 @@ fn classify_receiver(
     match inputs.first() {
         None | Some(syn::FnArg::Typed(_)) => Ok(ReceiverKind::None),
         Some(syn::FnArg::Receiver(r)) => {
+            if r.colon_token.is_some() {
+                return Err(syn::Error::new_spanned(
+                    r,
+                    "explicit-type `self` receiver is not supported; use `&self` or `&mut self`",
+                ));
+            }
             if r.reference.is_none() {
                 return Err(syn::Error::new_spanned(
                     r,
@@ -486,19 +492,19 @@ fn infer_method_mutability(
     let kind = classify_receiver(&func.sig.inputs)?;
     match (kind, is_payable) {
         (ReceiverKind::None, false) => Ok(StateMutability::Pure),
-        (ReceiverKind::Ref, false) => Ok(StateMutability::View),
-        (ReceiverKind::RefMut, false) => Ok(StateMutability::NonPayable),
-        (ReceiverKind::RefMut, true) => Ok(StateMutability::Payable),
         (ReceiverKind::None, true) => Err(syn::Error::new_spanned(
             func,
             "associated function (no `self` receiver) cannot be marked `#[payable]`; \
              payable callables must take `&mut self`",
         )),
+        (ReceiverKind::Ref, false) => Ok(StateMutability::View),
         (ReceiverKind::Ref, true) => Err(syn::Error::new_spanned(
             func,
             "method is marked `#[payable]` but takes `&self`; \
              payable callables must take `&mut self`",
         )),
+        (ReceiverKind::RefMut, false) => Ok(StateMutability::NonPayable),
+        (ReceiverKind::RefMut, true) => Ok(StateMutability::Payable),
     }
 }
 
