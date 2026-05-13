@@ -89,6 +89,14 @@ pub struct MethodInfo {
     pub mutability: StateMutability,
     /// When set, the selector is precomputed (e.g. from a `.sol` file).
     pub precomputed_selector: Option<[u8; 4]>,
+    /// Path to the trait this method is implemented on, when the method came
+    /// from `impl Trait for Contract { ... }`. `None` for inherent methods.
+    ///
+    /// When set, the dispatch arm calls the method through UFCS
+    /// (`<Contract as Trait>::method`) instead of inherent method-call syntax
+    /// (`this.method`), which side-steps any name collision with an inherent
+    /// `method` on the contract and makes the binding explicit.
+    pub trait_path: Option<syn::Path>,
 }
 
 pub(super) struct ParamDecoding {
@@ -144,8 +152,27 @@ pub(super) fn generate_param_decoding(
     }
 }
 
+/// Compose the per-method selector const ident.
+///
+/// For inherent methods: `__SEL_{fn_name}`. For trait-impl methods we prefix
+/// with the trait's last segment ident, so `<X as IErc20>::transfer` and
+/// `<X as IErc721>::transfer` don't produce duplicate const names.
+fn selector_const_ident(method: &MethodInfo) -> syn::Ident {
+    match &method.trait_path {
+        Some(path) => {
+            let trait_seg = path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            quote::format_ident!("__SEL_{}_{}", trait_seg, method.fn_name)
+        }
+        None => quote::format_ident!("__SEL_{}", method.fn_name),
+    }
+}
+
 fn build_selector_const(method: &MethodInfo) -> TokenStream {
-    let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
+    let sel_ident = selector_const_ident(method);
 
     if let Some(selector) = method.precomputed_selector {
         let [s0, s1, s2, s3] = selector;
@@ -221,7 +248,7 @@ pub fn generate_dispatch_arm(
     use_alloc: bool,
     guard_hoisted: bool,
 ) -> (TokenStream, TokenStream) {
-    let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
+    let sel_ident = selector_const_ident(method);
     let const_def = build_selector_const(method);
 
     let fn_name = &method.fn_name;
@@ -246,19 +273,45 @@ pub fn generate_dispatch_arm(
         }
     };
 
-    // Pure methods are associated functions — no `self` receiver — so dispatch
-    // them via UFCS (`Self::fn_name`) rather than method-call syntax
-    // (`this.fn_name`), which would only work for `&self` / `&mut self`.
-    let invoke = if method.mutability == StateMutability::Pure {
-        quote! { #struct_name::#fn_name }
+    // Build the function-invocation expression. Three shapes:
+    //
+    // - Pure (no receiver): `Self::name(args)`. Today's behavior unchanged.
+    // - Inherent method (`&self`/`&mut self`): `this.name(args)`. Today's
+    //   behavior unchanged.
+    // - Trait-impl method: UFCS through the trait —
+    //   `<Self as Trait>::name(this, args)`. This side-steps any name
+    //   collision with an inherent `name` on the contract struct.
+    //
+    // For trait methods we pass `this` as the explicit receiver. Inside the
+    // generated `route()` body `this` is already a `&mut Self`, so it
+    // satisfies `&mut self` trait methods directly; for `&self` trait
+    // methods, Rust reborrows `&mut Self` as `&Self` at the call site.
+    let (invoke, prepend_receiver): (TokenStream, bool) =
+        match (&method.trait_path, method.mutability) {
+            (Some(trait_path), StateMutability::Pure) => {
+                (quote! { <#struct_name as #trait_path>::#fn_name }, false)
+            }
+            (Some(trait_path), _) => (
+                quote! { <#struct_name as #trait_path>::#fn_name },
+                true,
+            ),
+            (None, StateMutability::Pure) => (quote! { #struct_name::#fn_name }, false),
+            (None, _) => (quote! { this.#fn_name }, false),
+        };
+
+    // Compose the call argument list, optionally prepending the explicit
+    // `this` receiver for UFCS calls. For trait `&self` methods, Rust's
+    // standard argument coercion rules reborrow `&mut Self` → `&Self`.
+    let invoke_call = if prepend_receiver {
+        quote! { #invoke(this, #(#call_args),*) }
     } else {
-        quote! { this.#fn_name }
+        quote! { #invoke(#(#call_args),*) }
     };
 
     let body = if method.returns_result {
         if has_return {
             quote! {
-                match #invoke(#(#call_args),*) {
+                match #invoke_call {
                     Ok(result) => { #encode_and_return }
                     Err(e) => {
                         #revert_err
@@ -267,7 +320,7 @@ pub fn generate_dispatch_arm(
             }
         } else {
             quote! {
-                match #invoke(#(#call_args),*) {
+                match #invoke_call {
                     Ok(()) => {
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                             this.host(),
@@ -285,12 +338,12 @@ pub fn generate_dispatch_arm(
         }
     } else if has_return {
         quote! {
-            let result = #invoke(#(#call_args),*);
+            let result = #invoke_call;
             #encode_and_return
         }
     } else {
         quote! {
-            #invoke(#(#call_args),*);
+            #invoke_call;
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
                 ::pvm_contract_sdk::ReturnFlags::empty(),
@@ -542,6 +595,7 @@ mod tests {
             returns_result: false,
             mutability,
             precomputed_selector: Some([0xde, 0xad, 0xbe, 0xef]),
+            trait_path: None,
         }
     }
 

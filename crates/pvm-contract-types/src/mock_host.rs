@@ -179,6 +179,13 @@ pub struct MockHost {
 }
 
 impl MockHost {
+    /// Change the caller (`msg.sender` analogue) used by subsequent host
+    /// calls. Useful for tests that exercise auth-gated methods from multiple
+    /// EOAs without rebuilding the whole mock (and losing storage state).
+    pub fn set_caller(&self, caller: [u8; 20]) {
+        self.state.borrow_mut().caller = caller;
+    }
+
     /// Register a mock return value for [`HostApi::call`] to `callee`.
     pub fn mock_call(&self, callee: [u8; 20], result: MockCallReturn) {
         self.state.borrow_mut().call_returns.insert(callee, result);

@@ -477,6 +477,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::View,
             precomputed_selector: None,
+            trait_path: None,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
@@ -498,6 +499,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::Pure,
             precomputed_selector: None,
+            trait_path: None,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);

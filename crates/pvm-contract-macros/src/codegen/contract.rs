@@ -18,6 +18,11 @@ pub struct ContractArgs {
     pub sol_path: Option<String>,
     pub allocator: Option<AllocatorKind>,
     pub allocator_size: usize,
+    /// Traits whose `impl Trait for Contract { ... }` blocks should be
+    /// included in dispatch. Parsed from `implements(IErc20<Error = MyError>,
+    /// IErc721)` — each entry is the trait path including any
+    /// associated-type bindings (`<Error = MyError>` etc.).
+    pub implements: Vec<syn::Path>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +38,7 @@ impl Default for ContractArgs {
             sol_path: None,
             allocator: None,
             allocator_size: 1024,
+            implements: Vec::new(),
         }
     }
 }
@@ -83,6 +89,31 @@ impl Parse for ContractArgs {
                     let size: LitInt = input.parse()?;
                     args.allocator_size = size.base10_parse()?;
                     allocator_size_set = true;
+                }
+                "implements" => {
+                    // Grammar: implements(Path1, Path2<Bind = Ty>, ...)
+                    // Each `Path` may carry associated-type bindings such as
+                    // `IErc20<Error = MyError>` (parsed as a generic args
+                    // segment on the final ident).
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let paths: syn::punctuated::Punctuated<syn::Path, Token![,]> =
+                        content.parse_terminated(syn::Path::parse, Token![,])?;
+                    args.implements = paths.into_iter().collect();
+                }
+                // Reserved keywords — recognise them so the grammar is stable
+                // even though dispatch for them is not wired up yet. This
+                // matches the plan in the SDK roadmap (Tier A #5): reserve
+                // future attribute names early so adding semantics later is
+                // not a breaking change.
+                "abi_source" | "selector" => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!(
+                            "`{other}` is reserved for future use but not yet implemented.",
+                            other = ident
+                        ),
+                    ));
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -326,23 +357,7 @@ fn collect_error_type(
     }
 }
 
-fn to_camel_case(snake: &str) -> String {
-    let mut result = String::new();
-    let mut next_upper = false;
-    for (i, c) in snake.chars().enumerate() {
-        if c == '_' {
-            next_upper = true;
-        } else if i == 0 {
-            result.push(c);
-        } else if next_upper {
-            result.push(c.to_ascii_uppercase());
-            next_upper = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
+use crate::utils::to_camel_case;
 
 fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
     match output {
@@ -619,9 +634,23 @@ fn build_assert_non_payable_call(emit: bool) -> TokenStream {
     quote! { __pvm_assert_non_payable(this.host()); }
 }
 
+/// Back-compat wrapper used by the existing test suite.
+#[cfg(test)]
 fn parse_contract(
     input: &ItemMod,
     sol_interface: Option<&syn_solidity::File>,
+) -> syn::Result<ParsedContract> {
+    parse_contract_with_implements(input, sol_interface, &[])
+}
+
+/// Like [`parse_contract`] but takes the list of trait paths the contract is
+/// declared to `implements(...)`. Trait impls matching one of these paths are
+/// scanned for dispatched methods, with each `fn` becoming an implicit
+/// `#[method]` callable through UFCS.
+fn parse_contract_with_implements(
+    input: &ItemMod,
+    sol_interface: Option<&syn_solidity::File>,
+    implements: &[syn::Path],
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
     let content = input
@@ -918,6 +947,126 @@ fn parse_contract(
                     returns_result,
                     mutability,
                     precomputed_selector,
+                    trait_path: None,
+                });
+                collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Trait-impl dispatch: walk `impl <Trait> for <Self>` blocks for every
+    // trait listed in `implements(...)`. Each `fn` in a matched trait impl
+    // becomes an implicit dispatched method — no `#[method]` attribute
+    // required, with selector computed from the camelCase fn name + Solidity
+    // param types. Dispatch goes through UFCS so inherent name collisions
+    // produce a clear "duplicate selector" compile error rather than a silent
+    // override.
+    //
+    // Path matching is "last-segment-ident equality": `implements(IErc20)` and
+    // `implements(super::IErc20<Error = E>)` both match `impl IErc20 for X`
+    // and `impl crate::traits::IErc20 for X`. This is intentionally loose —
+    // proc macros can't resolve paths to concrete types, so we accept any
+    // import alias of the same trait name.
+    if !implements.is_empty() {
+        let expected_struct = struct_name
+            .as_ref()
+            .ok_or_else(|| {
+                syn::Error::new_spanned(
+                    input,
+                    "`implements(...)` was specified but the contract has no \
+                     storage struct. Define `pub struct YourContract { ... }` \
+                     inside the module.",
+                )
+            })?
+            .clone();
+
+        for item in &content.1 {
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            let Some((_, trait_path, _)) = &item_impl.trait_ else {
+                continue;
+            };
+
+            // Match the trait path against the declared `implements` list by
+            // the last segment's ident. See comment above for rationale.
+            let trait_ident = match trait_path.segments.last() {
+                Some(seg) => &seg.ident,
+                None => continue,
+            };
+            let declared = implements.iter().any(|p| {
+                p.segments
+                    .last()
+                    .map(|s| &s.ident == trait_ident)
+                    .unwrap_or(false)
+            });
+            if !declared {
+                continue;
+            }
+
+            // Validate that the trait impl targets the contract struct.
+            let target_ident = match item_impl.self_ty.as_ref() {
+                syn::Type::Path(type_path) => type_path.path.segments.last().map(|s| &s.ident),
+                _ => None,
+            };
+            let Some(target_ident) = target_ident else {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    "`impl Trait for ...`: target type must be a named struct",
+                ));
+            };
+            if target_ident != &expected_struct {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    format!(
+                        "trait impl targets `{target_ident}` but the contract \
+                         struct is `{expected_struct}`. Move the impl to the \
+                         contract struct, or remove the trait from \
+                         `implements(...)`."
+                    ),
+                ));
+            }
+
+            // Walk every `fn` in this trait impl and record it as a method.
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(func) = impl_item else {
+                    continue;
+                };
+
+                // Generics on trait methods are not supported — selectors are
+                // concrete.
+                if !func.sig.generics.params.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig.generics.params,
+                        "contract methods (including trait-impl methods) \
+                         must not be generic",
+                    ));
+                }
+
+                let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
+                let is_payable = has_pvm_attr(&func.attrs, "payable");
+                let inferred_mutability = infer_method_mutability(func, is_payable)?;
+                let param_names: Vec<Ident> =
+                    typed_params.iter().map(|(n, _)| n.clone()).collect();
+                let param_types: Vec<syn::Type> =
+                    typed_params.into_iter().map(|(_, t)| t).collect();
+                let returns_result = is_result_return_type(&func.sig.output);
+                let return_types = extract_return_types(&func.sig.output);
+
+                let sol_name = extract_method_rename(&func.attrs)?
+                    .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
+
+                methods.push(MethodInfo {
+                    fn_name: func.sig.ident.clone(),
+                    sol_name,
+                    param_names,
+                    param_types,
+                    return_types,
+                    returns_result,
+                    mutability: inferred_mutability,
+                    precomputed_selector: None,
+                    trait_path: Some(trait_path.clone()),
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             }
@@ -990,7 +1139,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         None
     };
 
-    let parsed = parse_contract(&input, sol_interface.as_ref())?;
+    let parsed = parse_contract_with_implements(&input, sol_interface.as_ref(), &args.implements)?;
     let use_alloc = args.allocator.is_some();
 
     let mod_name = &parsed.mod_name;
@@ -2187,6 +2336,7 @@ mod tests {
                 sol_path: Some("MyToken.sol".to_string()),
                 allocator: None,
                 allocator_size: 1024,
+                implements: Vec::new(),
             }
         );
     }
@@ -2203,7 +2353,62 @@ mod tests {
                 sol_path: None,
                 allocator: Some(super::AllocatorKind::Pico),
                 allocator_size: 2048,
+                implements: Vec::new(),
             }
+        );
+    }
+
+    #[test]
+    fn parses_implements_single_trait() {
+        let args = syn::parse_str::<ContractArgs>("implements(IErc20)")
+            .expect("single-trait implements should parse");
+        assert_eq!(args.implements.len(), 1);
+        let path = &args.implements[0];
+        assert_eq!(quote::quote! { #path }.to_string(), "IErc20");
+    }
+
+    #[test]
+    fn parses_implements_multi_trait_with_associated_types() {
+        let args = syn::parse_str::<ContractArgs>(
+            "implements(IErc20<Error = MyError>, IErc721<Error = MyError>, IErc165)",
+        )
+        .expect("multi-trait implements with associated-type bindings should parse");
+        assert_eq!(args.implements.len(), 3);
+        // Cross-check: each trait path should round-trip through quote without
+        // losing its generic args.
+        let rendered: Vec<String> = args
+            .implements
+            .iter()
+            .map(|p| quote::quote! { #p }.to_string())
+            .collect();
+        assert!(
+            rendered[0].contains("IErc20") && rendered[0].contains("Error = MyError"),
+            "Got: {:?}",
+            rendered
+        );
+        assert!(rendered[1].contains("IErc721"), "Got: {:?}", rendered);
+        assert_eq!(rendered[2], "IErc165");
+    }
+
+    #[test]
+    fn reserved_keywords_rejected_with_clear_message() {
+        // `abi_source` and `selector` are parked for future use — must error
+        // today so a future implementation can introduce them without breaking
+        // anyone who picked the same name for their own attribute.
+        let err = syn::parse_str::<ContractArgs>("abi_source = \"rust\"")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("reserved for future use"),
+            "Expected reserved-keyword rejection. Got: {err}"
+        );
+
+        let err = syn::parse_str::<ContractArgs>("selector = 0x12345678")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("reserved for future use"),
+            "Expected reserved-keyword rejection. Got: {err}"
         );
     }
 

@@ -49,3 +49,26 @@ pub fn compute_function_signature(item: &ItemFunction) -> String {
     }
     name
 }
+
+/// Convert `snake_case_name` -> `snakeCaseName` (Solidity convention for fn names).
+///
+/// The first segment stays lowercase; subsequent underscore-separated segments
+/// get their first letter capitalised. Matches the `to_camel_case` helper that
+/// was originally private to `codegen/contract.rs`.
+pub fn to_camel_case(snake: &str) -> String {
+    let mut result = String::new();
+    let mut next_upper = false;
+    for (i, c) in snake.chars().enumerate() {
+        if c == '_' {
+            next_upper = true;
+        } else if i == 0 {
+            result.push(c);
+        } else if next_upper {
+            result.push(c.to_ascii_uppercase());
+            next_upper = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}

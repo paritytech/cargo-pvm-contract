@@ -539,6 +539,42 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// Adds an `interface_id() -> [u8; 4]` provided method to a trait, matching
+/// the ERC-165 convention (XOR of function selectors).
+///
+/// Each trait method's selector is computed from its Rust signature: the
+/// method name is converted from `snake_case` to `camelCase` (or overridden
+/// via `#[selector(name = "...")]`), parameter types are taken from each
+/// argument's `<T as SolEncode>::SOL_NAME`, and the canonical Solidity
+/// signature is fed to `const_selector` for the first 4 keccak bytes.
+///
+/// # Example
+///
+/// ```ignore
+/// #[pvm_contract_sdk::interface_id]
+/// pub trait IErc20 {
+///     fn total_supply(&self) -> U256;
+///     fn balance_of(&self, account: Address) -> U256;
+///     fn transfer(&mut self, to: Address, value: U256) -> Result<bool, Self::Error>;
+/// }
+///
+/// // Use it from a contract:
+/// let id: [u8; 4] = <MyToken as IErc20>::interface_id();
+/// ```
+///
+/// # Renaming methods
+///
+/// Use `#[selector(name = "exactSolidityName")]` to override the camelCase
+/// default for a single method.
+#[proc_macro_attribute]
+pub fn interface_id(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemTrait);
+    match codegen::expand_interface_id(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 /// Marks a function as a contract method. The signature is derived from the Solidity interface file.
 ///
 /// # Attributes
