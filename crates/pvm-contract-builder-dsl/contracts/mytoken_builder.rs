@@ -58,7 +58,7 @@ fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) 
 }
 
 fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <Address>::decode_unchecked(input, 0);
+    let account = unsafe { <Address>::decode_unchecked(input, 0) };
     let account: [u8; 20] = account.into();
     let key = balance_key(host, &account);
     let mut balance_bytes = [0u8; 32];
@@ -74,7 +74,7 @@ fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> 
 }
 
 fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let to = <Address>::decode_unchecked(input, 0);
+    let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
     let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
 
@@ -118,7 +118,7 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let to = <Address>::decode_unchecked(input, 0);
+    let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
     let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
 

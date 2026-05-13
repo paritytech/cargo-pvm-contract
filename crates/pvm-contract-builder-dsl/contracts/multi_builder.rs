@@ -50,8 +50,8 @@ pub extern "C" fn call() {
 }
 
 fn add_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u32::decode_unchecked(input, 0);
-    let b = u32::decode_unchecked(input, <u32 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = unsafe { u32::decode_unchecked(input, 0) };
+    let b = unsafe { u32::decode_unchecked(input, <u32 as StaticEncodedLen>::ENCODED_SIZE) };
     let result = a.wrapping_add(b);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -59,8 +59,8 @@ fn add_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handle
 }
 
 fn multiply_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u64::decode_unchecked(input, 0);
-    let b = u64::decode_unchecked(input, <u64 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = unsafe { u64::decode_unchecked(input, 0) };
+    let b = unsafe { u64::decode_unchecked(input, <u64 as StaticEncodedLen>::ENCODED_SIZE) };
     let result = a.wrapping_mul(b);
     let len = <u64 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -68,7 +68,7 @@ fn multiply_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> H
 }
 
 fn is_even_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_unchecked(input, 0);
+    let n = unsafe { u32::decode_unchecked(input, 0) };
     let result = (n & 1) == 0;
     let len = <bool as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -76,7 +76,7 @@ fn is_even_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn negate_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let value = U256::decode_unchecked(input, 0);
+    let value = unsafe { U256::decode_unchecked(input, 0) };
     let result = !value + U256::from(1u8);
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -84,8 +84,8 @@ fn negate_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Han
 }
 
 fn max_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = U256::decode_unchecked(input, 0);
-    let b = U256::decode_unchecked(input, <U256 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = unsafe { U256::decode_unchecked(input, 0) };
+    let b = unsafe { U256::decode_unchecked(input, <U256 as StaticEncodedLen>::ENCODED_SIZE) };
     let result = if a > b { a } else { b };
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -93,7 +93,7 @@ fn max_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handle
 }
 
 fn hash_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <[u8; 20]>::decode_unchecked(input, 0);
+    let account = unsafe { <[u8; 20]>::decode_unchecked(input, 0) };
     let mut bytes = [0u8; 32];
     bytes[12..].copy_from_slice(&account);
     let result = U256::from_be_bytes::<32>(bytes);
@@ -103,9 +103,9 @@ fn hash_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handl
 }
 
 fn sum3_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = u32::decode_unchecked(input, 0);
-    let b = u32::decode_unchecked(input, <u32 as StaticEncodedLen>::ENCODED_SIZE);
-    let c = u32::decode_unchecked(input, <u32 as StaticEncodedLen>::ENCODED_SIZE * 2);
+    let a = unsafe { u32::decode_unchecked(input, 0) };
+    let b = unsafe { u32::decode_unchecked(input, <u32 as StaticEncodedLen>::ENCODED_SIZE) };
+    let c = unsafe { u32::decode_unchecked(input, <u32 as StaticEncodedLen>::ENCODED_SIZE * 2) };
     let result = a.wrapping_add(b).wrapping_add(c);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -113,8 +113,8 @@ fn sum3_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Handl
 }
 
 fn bit_and_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let a = U256::decode_unchecked(input, 0);
-    let b = U256::decode_unchecked(input, <U256 as StaticEncodedLen>::ENCODED_SIZE);
+    let a = unsafe { U256::decode_unchecked(input, 0) };
+    let b = unsafe { U256::decode_unchecked(input, <U256 as StaticEncodedLen>::ENCODED_SIZE) };
     let result = a & b;
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -122,7 +122,7 @@ fn bit_and_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn is_zero_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let value = U256::decode_unchecked(input, 0);
+    let value = unsafe { U256::decode_unchecked(input, 0) };
     let result = value == U256::ZERO;
     let len = <bool as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -130,7 +130,7 @@ fn is_zero_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> Ha
 }
 
 fn increment_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_unchecked(input, 0);
+    let n = unsafe { u32::decode_unchecked(input, 0) };
     let result = n.wrapping_add(1);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
