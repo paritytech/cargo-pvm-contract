@@ -16,6 +16,6 @@ pvm-storage = { path = "../pvm-storage", default-features = false }
 
 [features]
 default = []
-alloc = ["pvm-contract-types/alloc"]
-std = ["alloc", "pvm-contract-types/std"]
+alloc = ["pvm-contract-types/alloc", "pvm-storage/alloc"]
+std = ["alloc", "pvm-contract-types/std", "pvm-storage/std"]
 abi-gen = ["pvm-contract-types/abi-gen", "pvm-contract-macros/abi-gen", "pvm-storage/abi-gen"]

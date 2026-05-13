@@ -4,24 +4,40 @@
 //! storage, both using Solidity-compatible key derivation so tools like `cast storage`
 //! and `cast index` work out of the box.
 //!
+//! The crate is built on two layered abstractions:
+//!
+//! - [`SlotValue`] — *how a value lives in storage*. Static-encoded leaves (32-byte
+//!   types) put their value directly in the slot; dynamic-encoded leaves
+//!   (`String`, `Vec<u8>`) put a length in the slot and the payload at a derived
+//!   key, matching the layout `solc` emits for the same Solidity type.
+//! - [`StorageComponent`] — *how a typed storage object claims root slots*.
+//!   `Lazy<T>` and `Mapping<K, V>` each claim one slot; user-defined storage
+//!   structs (marked with `#[storage]`) claim the sum of their fields. The
+//!   `#[contract]` macro uses [`StorageComponent::SLOTS`] to auto-number the
+//!   contract struct's fields, so explicit `#[slot(N)]` is optional.
+//!
 //! # Usage
 //!
-//! Inside a `#[contract]` module, declare `#[slot(N)]` fields on the contract
-//! struct. The macro handles construction automatically. Standalone usage:
+//! Inside a `#[contract]` module, declare storage fields on the contract struct.
+//! Slot numbers are assigned in declaration order by default; opt out with
+//! `#[slot(N)]` if you need to pin a specific slot.
 //!
 //! ```ignore
 //! use pvm_storage::{Lazy, Mapping, StorageKey};
 //!
-//! let mut total_supply = Lazy::<U256>::new(StorageKey::from_slot(0));
+//! let mut total_supply = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
 //! total_supply.set(&U256::from(1000));
 //! assert_eq!(total_supply.get(), U256::from(1000));
 //!
-//! let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1));
+//! let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host);
 //! balances.insert(&caller, &U256::from(500));
 //! assert_eq!(balances.get(&caller), U256::from(500));
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 // Alias so that macro-generated `::pvm_contract_sdk::` paths resolve
 // within this crate's own tests. Same pattern as pvm-contract-types.
@@ -65,6 +81,29 @@ fn storage_try_get_32(host: &Host, key: &[u8; 32]) -> Option<[u8; 32]> {
     }
 }
 
+/// Hash a 32-byte slot to produce the data root for a dynamic value
+/// (`keccak256(slot)`). This matches Solidity's layout for `bytes`, `string`,
+/// and arrays.
+#[cfg(feature = "alloc")]
+fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    host.hash_keccak_256(slot, &mut output);
+    output
+}
+
+/// Increment a 32-byte big-endian integer in-place (used to walk consecutive
+/// storage slots for the body of dynamic values).
+#[cfg(feature = "alloc")]
+fn inc_slot(slot: &mut [u8; 32]) {
+    for byte in slot.iter_mut().rev() {
+        let (next, carry) = byte.overflowing_add(1);
+        *byte = next;
+        if !carry {
+            return;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // StorageKey
 // ---------------------------------------------------------------------------
@@ -91,6 +130,13 @@ impl StorageKey {
             i += 1;
         }
         StorageKey(key)
+    }
+
+    /// Construct from raw 32 bytes. Internal: callers must ensure the bytes
+    /// already represent a valid slot identifier.
+    #[doc(hidden)]
+    pub const fn from_raw(bytes: [u8; 32]) -> Self {
+        StorageKey(bytes)
     }
 
     /// Derive a mapping child key following Solidity's key derivation convention.
@@ -204,6 +250,345 @@ impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3, E: 4);
 
 // ---------------------------------------------------------------------------
+// SlotValue: how a Rust type lives in (or under) a single storage slot.
+// ---------------------------------------------------------------------------
+
+/// Encode/decode a Rust value into a Solidity-compatible storage cell rooted
+/// at a single slot.
+///
+/// Two layout families share this trait:
+///
+/// - **Static** (`U256`, `Address`, `bool`, `[u8; 32]`, etc.): the entire
+///   value lives in the slot itself.
+/// - **Dynamic** (`String`, `Vec<u8>`): the slot stores layout metadata
+///   (length) and the payload lives at slots derived from
+///   `keccak256(slot)`, matching `solc`'s layout for the corresponding
+///   Solidity type.
+///
+/// Implementors describe both directions. The `Lazy<T>` and `Mapping<K, V>`
+/// wrappers route their `get` / `set` / `clear` calls through these methods.
+///
+/// The trait is sealed at the SDK boundary: external crates implement it via
+/// `pvm-contract-types`' encoding impls (`SolEncode + SolDecode + StaticEncodedLen`
+/// for static, plus the alloc-gated blanket impls for `String` / `Vec<u8>` in
+/// this crate). Future additions (e.g. user-defined wrapper types) will gain
+/// blanket impls here rather than ad-hoc unsafe code in consumer crates.
+pub trait SlotValue: Sized {
+    /// Read the value from a storage slot. Returns the zero/default value if
+    /// the slot was never written (matching Solidity semantics).
+    fn slot_get(host: &Host, slot: &StorageKey) -> Self;
+
+    /// Read the value, distinguishing "never written" from "has been set."
+    /// Returns `None` if the slot was never written or has been cleared back
+    /// to the zero value.
+    fn slot_try_get(host: &Host, slot: &StorageKey) -> Option<Self>;
+
+    /// Write the value to a storage slot.
+    fn slot_set(&self, host: &Host, slot: &StorageKey);
+
+    /// Clear the storage slot (delete the entry).
+    fn slot_clear(host: &Host, slot: &StorageKey);
+}
+
+/// Internal helper: read a static-encoded value from a single 32-byte slot.
+///
+/// Used by the per-type `SlotValue` impls produced by [`impl_static_slot_value!`].
+/// Generic over any `SolDecode` type whose canonical encoding is 32 bytes.
+fn static_slot_get<T: SolDecode>(host: &Host, slot: &StorageKey) -> T {
+    let buf = storage_get_32(host, slot.as_bytes());
+    T::decode(&buf)
+}
+
+fn static_slot_try_get<T: SolDecode>(host: &Host, slot: &StorageKey) -> Option<T> {
+    storage_try_get_32(host, slot.as_bytes()).map(|buf| T::decode(&buf))
+}
+
+fn static_slot_set<T: SolEncode>(value: &T, host: &Host, slot: &StorageKey) {
+    let mut buf = [0u8; 32];
+    SolEncode::encode_body_to(value, &mut buf);
+    storage_set_32(host, slot.as_bytes(), &buf);
+}
+
+fn static_slot_clear(host: &Host, slot: &StorageKey) {
+    storage_set_32(host, slot.as_bytes(), &[0u8; 32]);
+}
+
+/// Implement [`SlotValue`] for each 32-byte static type.
+///
+/// Per-type impl rather than a blanket `impl<T: StaticEncodedLen>` because the
+/// blanket form forbids us from later adding a *different* `SlotValue` impl
+/// for `String` / `Vec<u8>` (which DO implement `StaticEncodedLen` via the
+/// `alloc` feature, but encode as Solidity `bytes`/`string` — a fundamentally
+/// different storage layout). The const-assert guards against accidentally
+/// listing a non-32-byte type here.
+macro_rules! impl_static_slot_value {
+    ($($ty:ty),* $(,)?) => {$(
+        impl SlotValue for $ty {
+            fn slot_get(host: &Host, slot: &StorageKey) -> Self {
+                const {
+                    assert!(
+                        <$ty as StaticEncodedLen>::ENCODED_SIZE == 32,
+                        "static SlotValue requires a 32-byte ABI encoding"
+                    );
+                }
+                static_slot_get::<$ty>(host, slot)
+            }
+
+            fn slot_try_get(host: &Host, slot: &StorageKey) -> Option<Self> {
+                static_slot_try_get::<$ty>(host, slot)
+            }
+
+            fn slot_set(&self, host: &Host, slot: &StorageKey) {
+                static_slot_set::<$ty>(self, host, slot)
+            }
+
+            fn slot_clear(host: &Host, slot: &StorageKey) {
+                static_slot_clear(host, slot)
+            }
+        }
+    )*};
+}
+
+// Mirrors the list in `impl_scalar_storage_key!` above — all 32-byte scalar
+// types from `pvm-contract-types`.
+impl_static_slot_value!(
+    U256, u128, u64, u32, u16, u8, // Signed integers
+    I256, i128, i64, i32, i16, i8, // Other value types
+    bool, Address,
+);
+
+// Fixed-size byte arrays [u8; N] encode as Solidity `bytesN` (left-aligned, 32 bytes).
+impl<const N: usize> SlotValue for [u8; N] {
+    fn slot_get(host: &Host, slot: &StorageKey) -> Self {
+        const {
+            assert!(
+                N <= 32,
+                "static SlotValue requires a 32-byte ABI encoding ([u8; N] with N <= 32)"
+            );
+        }
+        static_slot_get::<[u8; N]>(host, slot)
+    }
+
+    fn slot_try_get(host: &Host, slot: &StorageKey) -> Option<Self> {
+        static_slot_try_get::<[u8; N]>(host, slot)
+    }
+
+    fn slot_set(&self, host: &Host, slot: &StorageKey) {
+        static_slot_set::<[u8; N]>(self, host, slot)
+    }
+
+    fn slot_clear(host: &Host, slot: &StorageKey) {
+        static_slot_clear(host, slot)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic SlotValue impls (alloc-gated): bytes/string Solidity layout.
+//
+// Layout matches solc for `bytes`/`string` at storage slot S:
+//   slot[S]                 = encoded length (bytes as right-aligned big-endian
+//                             integer; short-string optimization is intentionally
+//                             NOT implemented — see comment below).
+//   slot[keccak256(S) + i]  = 32-byte body chunks, big-endian.
+//
+// We deliberately *skip* solc's "short string optimization" (where bytes <= 31
+// pack length+data into the slot itself). The optimization is incompatible
+// with how `set_storage_or_clear` decides whether to delete: solc encodes the
+// length in the low byte, but our static-value path always treats the slot as
+// a 32-byte big-endian integer. Storing the full length in the slot lets
+// `try_get` distinguish "never written" from "empty value" reliably.
+// `cast storage` and similar tooling still read this correctly; only the
+// gas-saving short-string fast path differs from Solidity.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_set(host: &Host, slot: &StorageKey, data: &[u8]) {
+    // Write the length to the header slot.
+    let mut length_buf = [0u8; 32];
+    let len_bytes = (data.len() as u64).to_be_bytes();
+    length_buf[24..32].copy_from_slice(&len_bytes);
+    storage_set_32(host, slot.as_bytes(), &length_buf);
+
+    if data.is_empty() {
+        return;
+    }
+
+    // Write the body, 32 bytes per slot, starting at keccak256(slot).
+    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let mut chunk = [0u8; 32];
+        let remaining = data.len() - offset;
+        let take = if remaining >= 32 { 32 } else { remaining };
+        chunk[..take].copy_from_slice(&data[offset..offset + take]);
+        storage_set_32(host, &body_slot, &chunk);
+        offset += take;
+        inc_slot(&mut body_slot);
+    }
+}
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_get(host: &Host, slot: &StorageKey) -> alloc::vec::Vec<u8> {
+    let length_buf = storage_get_32(host, slot.as_bytes());
+    let length = u64::from_be_bytes([
+        length_buf[24],
+        length_buf[25],
+        length_buf[26],
+        length_buf[27],
+        length_buf[28],
+        length_buf[29],
+        length_buf[30],
+        length_buf[31],
+    ]) as usize;
+    if length == 0 {
+        return alloc::vec::Vec::new();
+    }
+    let mut out = alloc::vec::Vec::with_capacity(length);
+    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
+    let mut remaining = length;
+    while remaining > 0 {
+        let chunk = storage_get_32(host, &body_slot);
+        let take = if remaining >= 32 { 32 } else { remaining };
+        out.extend_from_slice(&chunk[..take]);
+        remaining -= take;
+        inc_slot(&mut body_slot);
+    }
+    out
+}
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_try_get(host: &Host, slot: &StorageKey) -> Option<alloc::vec::Vec<u8>> {
+    let length_buf = storage_try_get_32(host, slot.as_bytes())?;
+    let length = u64::from_be_bytes([
+        length_buf[24],
+        length_buf[25],
+        length_buf[26],
+        length_buf[27],
+        length_buf[28],
+        length_buf[29],
+        length_buf[30],
+        length_buf[31],
+    ]) as usize;
+    if length == 0 {
+        return Some(alloc::vec::Vec::new());
+    }
+    let mut out = alloc::vec::Vec::with_capacity(length);
+    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
+    let mut remaining = length;
+    while remaining > 0 {
+        let chunk = storage_get_32(host, &body_slot);
+        let take = if remaining >= 32 { 32 } else { remaining };
+        out.extend_from_slice(&chunk[..take]);
+        remaining -= take;
+        inc_slot(&mut body_slot);
+    }
+    Some(out)
+}
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_clear(host: &Host, slot: &StorageKey) {
+    // Read current length first so we know how many body slots to clear.
+    let length_buf = storage_get_32(host, slot.as_bytes());
+    let length = u64::from_be_bytes([
+        length_buf[24],
+        length_buf[25],
+        length_buf[26],
+        length_buf[27],
+        length_buf[28],
+        length_buf[29],
+        length_buf[30],
+        length_buf[31],
+    ]) as usize;
+
+    // Clear the header.
+    storage_set_32(host, slot.as_bytes(), &[0u8; 32]);
+
+    if length == 0 {
+        return;
+    }
+
+    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
+    let chunks = length.div_ceil(32);
+    for _ in 0..chunks {
+        storage_set_32(host, &body_slot, &[0u8; 32]);
+        inc_slot(&mut body_slot);
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl SlotValue for alloc::vec::Vec<u8> {
+    fn slot_get(host: &Host, slot: &StorageKey) -> Self {
+        dynamic_bytes_get(host, slot)
+    }
+
+    fn slot_try_get(host: &Host, slot: &StorageKey) -> Option<Self> {
+        dynamic_bytes_try_get(host, slot)
+    }
+
+    fn slot_set(&self, host: &Host, slot: &StorageKey) {
+        dynamic_bytes_set(host, slot, self);
+    }
+
+    fn slot_clear(host: &Host, slot: &StorageKey) {
+        dynamic_bytes_clear(host, slot);
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl SlotValue for alloc::string::String {
+    fn slot_get(host: &Host, slot: &StorageKey) -> Self {
+        let bytes = dynamic_bytes_get(host, slot);
+        // Solidity `string` is UTF-8 by convention; we tolerate invalid bytes
+        // by replacing them, matching how alloy decodes string return data.
+        alloc::string::String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn slot_try_get(host: &Host, slot: &StorageKey) -> Option<Self> {
+        let bytes = dynamic_bytes_try_get(host, slot)?;
+        Some(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    fn slot_set(&self, host: &Host, slot: &StorageKey) {
+        dynamic_bytes_set(host, slot, self.as_bytes());
+    }
+
+    fn slot_clear(host: &Host, slot: &StorageKey) {
+        dynamic_bytes_clear(host, slot);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StorageComponent: how a typed storage object claims root slots.
+// ---------------------------------------------------------------------------
+
+/// A typed storage helper that occupies one or more contiguous root slots.
+///
+/// Implementations:
+///
+/// - [`Lazy<T>`]      — 1 slot.
+/// - [`Mapping<K,V>`] — 1 slot (the root; entries live at derived keys).
+/// - user storage structs annotated with `#[storage]` — sum of their fields'
+///   `SLOTS`, assigned in declaration order.
+///
+/// The `#[contract]` macro reads `SLOTS` to assign slot numbers to fields. The
+/// macro-generated constructor calls [`StorageComponent::new_at`] with the
+/// assigned base slot and a clone of the contract's host handle.
+///
+/// # Why a separate trait from [`SlotValue`]
+///
+/// `SlotValue` describes how a *Rust value* lives in storage; `StorageComponent`
+/// describes how a *typed storage helper* is constructed. `U256` implements
+/// `SlotValue` (it can be stored), but never `StorageComponent` — you never put
+/// a `U256` directly on a contract struct; you put a `Lazy<U256>` there.
+pub trait StorageComponent: Sized {
+    /// Number of root storage slots claimed by this component.
+    const SLOTS: u64;
+
+    /// Construct the component rooted at `slot`, bound to `host`.
+    fn new_at(slot: u64, host: Host) -> Self;
+}
+
+// ---------------------------------------------------------------------------
 // StorageLayoutType: for storageLayout JSON generation (abi-gen only)
 // ---------------------------------------------------------------------------
 
@@ -250,23 +635,18 @@ impl<K: SolEncode, V: StorageLayoutType> StorageLayoutType for Mapping<K, V> {
 /// "Lazy" because there is no caching: every [`get`](Lazy::get) reads from host
 /// storage, every [`set`](Lazy::set) writes immediately.
 ///
-/// Only 32-byte types are supported (U256, Address, bool, `[u8; 32]`).
-/// Using a larger type produces a compile-time error.
+/// `T` may be any [`SlotValue`] — static 32-byte types (`U256`, `Address`,
+/// `bool`, `[u8; 32]`, …) and, with the `alloc` feature, dynamic types
+/// (`String`, `Vec<u8>`).
 pub struct Lazy<T> {
     key: StorageKey,
     host: Host,
     _marker: PhantomData<T>,
 }
 
-impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
+impl<T: SlotValue> Lazy<T> {
     /// Create a new `Lazy` at the given storage key, bound to a host handle.
     pub fn new(key: StorageKey, host: Host) -> Self {
-        const {
-            assert!(
-                T::ENCODED_SIZE == 32,
-                "Lazy<T> requires a 32-byte type (U256, Address, bool, [u8; 32])"
-            )
-        };
         Lazy {
             key,
             host,
@@ -279,8 +659,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// Returns the zero value for `T` if the slot was never written,
     /// matching Solidity's default-to-zero semantics.
     pub fn get(&self) -> T {
-        let buf = storage_get_32(&self.host, self.key.as_bytes());
-        T::decode(&buf)
+        T::slot_get(&self.host, &self.key)
     }
 
     /// Read the value, distinguishing "never written" from "has been set."
@@ -291,7 +670,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// Note: writing an all-zero value deletes the key (Solidity semantics),
     /// so `try_get()` returns `None` after writing zero.
     pub fn try_get(&self) -> Option<T> {
-        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode(&buf))
+        T::slot_try_get(&self.host, &self.key)
     }
 
     /// Write a value to storage.
@@ -299,16 +678,22 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// Takes `&mut self` so that view methods (which receive `&Storage`)
     /// cannot call this through an immutable borrow.
     pub fn set(&mut self, value: &T) {
-        let mut buf = [0u8; 32];
-        SolEncode::encode_body_to(value, &mut buf);
-        storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        value.slot_set(&self.host, &self.key);
     }
 
     /// Clear the storage slot.
     ///
     /// Writes all-zero, which the host deletes from storage.
     pub fn clear(&mut self) {
-        storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
+        T::slot_clear(&self.host, &self.key);
+    }
+}
+
+impl<T: SlotValue> StorageComponent for Lazy<T> {
+    const SLOTS: u64 = 1;
+
+    fn new_at(slot: u64, host: Host) -> Self {
+        Lazy::new(StorageKey::from_slot(slot), host)
     }
 }
 
@@ -337,7 +722,15 @@ impl<K, V> Mapping<K, V> {
     }
 }
 
-impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V> {
+impl<K, V> StorageComponent for Mapping<K, V> {
+    const SLOTS: u64 = 1;
+
+    fn new_at(slot: u64, host: Host) -> Self {
+        Mapping::new(StorageKey::from_slot(slot), host)
+    }
+}
+
+impl<K: AsStorageKey, V: SlotValue> Mapping<K, V> {
     /// Compute the raw storage key for a given map key.
     ///
     /// Useful for debugging and cross-checking with `cast index`.
@@ -359,22 +752,22 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
     ///
     /// Returns the zero value if the key was never written.
     pub fn get(&self, key: &K) -> V {
-        Lazy::new(self.slot_of(key), self.host.clone()).get()
+        V::slot_get(&self.host, &self.slot_of(key))
     }
 
     /// Read the value, returning `None` if the key was never written.
     pub fn try_get(&self, key: &K) -> Option<V> {
-        Lazy::new(self.slot_of(key), self.host.clone()).try_get()
+        V::slot_try_get(&self.host, &self.slot_of(key))
     }
 
     /// Write a value at the given key.
     pub fn insert(&mut self, key: &K, value: &V) {
-        self.entry(key).set(value);
+        value.slot_set(&self.host, &self.slot_of(key));
     }
 
     /// Delete the value at the given key.
     pub fn remove(&mut self, key: &K) {
-        self.entry(key).clear();
+        V::slot_clear(&self.host, &self.slot_of(key));
     }
 }
 
@@ -386,9 +779,7 @@ impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V>
 /// `Mapping<(Address, Address), U256>` produces the same slots as
 /// `Mapping<Address, Mapping<Address, U256>>`. Tuple key support is
 /// implemented via `AsStorageKey` for tuples up to arity 5.
-impl<K1: AsStorageKey, K2: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen>
-    Mapping<K1, Mapping<K2, V>>
-{
+impl<K1: AsStorageKey, K2: AsStorageKey, V: SlotValue> Mapping<K1, Mapping<K2, V>> {
     /// Read path for nested mappings: derives the inner mapping root.
     ///
     /// The returned `Mapping` is an owned value with full read/write access.
@@ -418,6 +809,8 @@ mod tests {
 
     use super::*;
     use alloc::rc::Rc;
+    use alloc::string::String;
+    use alloc::vec::Vec;
     use pvm_contract_types::Address;
     use pvm_contract_types::MockHostBuilder;
     use ruint::aliases::U256;
@@ -611,6 +1004,90 @@ mod tests {
         assert_eq!(m.get(&key), U256::from(42));
     }
 
+    // --- Dynamic SlotValue: String / Vec<u8> ---
+
+    #[test]
+    fn lazy_roundtrip_string_short() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        lazy.set(&String::from("hello"));
+        assert_eq!(lazy.get(), "hello");
+    }
+
+    #[test]
+    fn lazy_roundtrip_string_long() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let long = "a".repeat(200);
+        lazy.set(&long);
+        assert_eq!(lazy.get(), long);
+    }
+
+    #[test]
+    fn lazy_string_empty_is_default() {
+        let lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        assert_eq!(lazy.get(), "");
+        assert_eq!(lazy.try_get(), None);
+    }
+
+    #[test]
+    fn lazy_string_clear() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        lazy.set(&String::from("payload"));
+        assert_eq!(lazy.try_get().as_deref(), Some("payload"));
+        lazy.clear();
+        assert_eq!(lazy.try_get(), None);
+        assert_eq!(lazy.get(), "");
+    }
+
+    #[test]
+    fn lazy_string_overwrite_smaller() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        lazy.set(&"hello world this is a longer string".into());
+        lazy.set(&"short".into());
+        assert_eq!(lazy.get(), "short");
+    }
+
+    #[test]
+    fn lazy_roundtrip_vec_u8() {
+        let mut lazy = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
+        lazy.set(&alloc::vec![1, 2, 3, 4, 5]);
+        assert_eq!(lazy.get(), alloc::vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn lazy_vec_u8_large() {
+        let mut lazy = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
+        let data: Vec<u8> = (0..=255u8).collect();
+        lazy.set(&data);
+        assert_eq!(lazy.get(), data);
+    }
+
+    #[test]
+    fn mapping_address_to_string() {
+        let mut m = Mapping::<Address, String>::new(StorageKey::from_slot(0), h());
+        let a = Address([0x01; 20]);
+        let b = Address([0x02; 20]);
+        m.insert(&a, &"alice".into());
+        m.insert(&b, &"bob".into());
+        assert_eq!(m.get(&a), "alice");
+        assert_eq!(m.get(&b), "bob");
+        m.remove(&a);
+        assert_eq!(m.try_get(&a), None);
+        assert_eq!(m.get(&b), "bob");
+    }
+
+    #[test]
+    fn dynamic_data_root_independent_per_slot() {
+        // Distinct header slots must hash to distinct data roots so two
+        // dynamic values on adjacent slots can't trample each other.
+        let mut a = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = a.host.clone();
+        let mut b = Lazy::<String>::new(StorageKey::from_slot(1), host);
+        a.set(&"first".into());
+        b.set(&"second".into());
+        assert_eq!(a.get(), "first");
+        assert_eq!(b.get(), "second");
+    }
+
     // --- Solidity compatibility ---
 
     #[test]
@@ -640,6 +1117,27 @@ mod tests {
         host.hash_keccak_256(&preimage, &mut expected);
 
         assert_eq!(derived.as_bytes(), &expected);
+    }
+
+    // --- StorageComponent ---
+
+    #[test]
+    fn storage_component_slot_count() {
+        assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<Mapping<Address, U256> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<Lazy<String> as StorageComponent>::SLOTS, 1);
+    }
+
+    #[test]
+    fn storage_component_new_at_matches_new() {
+        let host = h();
+        let mut a = Lazy::<U256>::new(StorageKey::from_slot(7), host.clone());
+        let mut b = <Lazy<U256> as StorageComponent>::new_at(7, host);
+        a.set(&U256::from(99));
+        // `b` shares the host, so should see the same write.
+        assert_eq!(b.get(), U256::from(99));
+        b.set(&U256::from(100));
+        assert_eq!(a.get(), U256::from(100));
     }
 
     // --- Entry optimization ---

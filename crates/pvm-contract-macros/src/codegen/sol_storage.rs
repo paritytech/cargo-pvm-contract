@@ -3,13 +3,25 @@ use quote::quote;
 
 /// Generate the TokenStream that constructs a `StorageLayoutEntry` for one field.
 ///
+/// `slot_expr` is a const-evaluable `u64` expression — either a literal (for
+/// explicit `#[slot(N)]`) or a reference to a chained `__pvm_storage_slot_*`
+/// const (for auto-numbered fields).
+///
 /// Used by the `#[contract]` slot-field layout generation in `abi_gen.rs`.
-pub(super) fn generate_layout_entry(name_str: &str, ty: &syn::Type, slot: u64) -> TokenStream {
-    let slot_str = format!("{}", slot);
+pub(super) fn generate_layout_entry(
+    name_str: &str,
+    ty: &syn::Type,
+    slot_expr: TokenStream,
+) -> TokenStream {
     quote! {
         ::pvm_contract_sdk::StorageLayoutEntry {
             label: ::std::string::String::from(#name_str),
-            slot: ::std::string::String::from(#slot_str),
+            slot: {
+                // The slot expr is `u64`. Stringify it at runtime since auto-numbered
+                // slots are only known after const evaluation of the chain.
+                let slot_value: u64 = #slot_expr;
+                ::std::format!("{}", slot_value)
+            },
             ty: <#ty as ::pvm_contract_sdk::StorageLayoutType>::sol_type_name(),
         }
     }

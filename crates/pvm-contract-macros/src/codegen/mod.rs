@@ -6,8 +6,10 @@ mod method;
 mod sol_error;
 mod sol_storage;
 mod sol_type;
+mod storage_struct;
 
 pub use contract::{ContractArgs, expand_contract};
 pub use method::{MethodArgs, expand_constructor, expand_fallback, expand_method};
 pub use sol_error::expand_sol_error;
 pub use sol_type::expand_sol_type;
+pub use storage_struct::expand_storage_struct;

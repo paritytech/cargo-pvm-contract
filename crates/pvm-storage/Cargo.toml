@@ -16,5 +16,6 @@ trybuild = { workspace = true }
 
 [features]
 default = []
-std = []
+alloc = ["pvm-contract-types/alloc"]
+std = ["alloc"]
 abi-gen = ["std"]

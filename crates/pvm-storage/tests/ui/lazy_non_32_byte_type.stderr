@@ -5,4 +5,4 @@ error[E0599]: the function or associated item `new` exists for struct `Lazy<(Uin
   |                                                                       ^^^ function or associated item cannot be called on `Lazy<(Uint<256, 4>, Uint<256, 4>)>` due to unsatisfied trait bounds
   |
   = note: the following trait bounds were not satisfied:
-          `(Uint<256, 4>, Uint<256, 4>): StaticEncodedLen`
+          `(Uint<256, 4>, Uint<256, 4>): SlotValue`

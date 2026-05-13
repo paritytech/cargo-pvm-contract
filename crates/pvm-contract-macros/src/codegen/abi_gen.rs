@@ -48,12 +48,60 @@ pub fn generate_abi_gen(
 }
 
 /// Generate a module-level `__storage_layout_json()` function that builds the
-/// JSON layout from the `#[slot(N)]` fields on the contract struct.
+/// JSON layout from the storage fields on the contract struct.
+///
+/// Auto-numbered slots reference a chain of `__pvm_storage_slot_*` const items
+/// declared inside the helper fn (mirroring the chain produced for the
+/// `this` construction in `deploy()`/`call()`). This way the slot value is
+/// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
+/// is not trivially 1 (e.g. for embedded sub-storage structs).
 fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
+    use super::contract::Slot;
+
+    let auto_slot_consts: Vec<TokenStream> = slot_fields
+        .iter()
+        .filter_map(|sf| match sf.slot {
+            Slot::Auto { index } => {
+                let name = &sf.name;
+                let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
+                let cfgs = &sf.cfg_attrs;
+                if index == 0 {
+                    Some(quote! {
+                        #(#cfgs)*
+                        #[allow(non_upper_case_globals)]
+                        const #const_ident: u64 = 0;
+                    })
+                } else {
+                    let prev = slot_fields
+                        .iter()
+                        .filter(|s| matches!(s.slot, Slot::Auto { .. }))
+                        .nth(index - 1)
+                        .expect("auto_index walks in order");
+                    let prev_const = quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
+                    let prev_ty = &prev.ty;
+                    Some(quote! {
+                        #(#cfgs)*
+                        #[allow(non_upper_case_globals)]
+                        const #const_ident: u64 = #prev_const
+                            + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                    })
+                }
+            }
+            Slot::Explicit(_) => None,
+        })
+        .collect();
+
     let layout_pushes: Vec<TokenStream> = slot_fields
         .iter()
         .map(|sf| {
-            let entry = generate_layout_entry(&sf.name.to_string(), &sf.ty, sf.slot);
+            let slot_expr: TokenStream = match sf.slot {
+                Slot::Explicit(n) => quote! { #n },
+                Slot::Auto { .. } => {
+                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", &sf.name);
+                    quote! { #const_ident }
+                }
+            };
+            let entry = generate_layout_entry(&sf.name.to_string(), &sf.ty, slot_expr);
             let cfgs = &sf.cfg_attrs;
             quote! {
                 #(#cfgs)*
@@ -67,6 +115,7 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
         pub fn __storage_layout_json() -> ::std::string::String {
+            #(#auto_slot_consts)*
             let mut entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> = ::std::vec::Vec::new();
             #(#layout_pushes)*
             #json_assembly
@@ -508,7 +557,7 @@ mod tests {
         let slot_fields = vec![SlotField {
             name: syn::parse_str("total_supply").unwrap(),
             ty: syn::parse_str("Lazy<U256>").unwrap(),
-            slot: 0,
+            slot: crate::codegen::contract::Slot::Explicit(0),
             cfg_attrs: vec![],
         }];
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &slot_fields);
@@ -593,7 +642,7 @@ mod tests {
         let slot_fields = vec![SlotField {
             name: syn::parse_str("balances").unwrap(),
             ty: syn::parse_str("Mapping<Address, U256>").unwrap(),
-            slot: 1,
+            slot: crate::codegen::contract::Slot::Explicit(1),
             cfg_attrs: vec![],
         }];
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &slot_fields);
@@ -619,7 +668,7 @@ mod tests {
         let slot_fields = vec![SlotField {
             name: syn::parse_str("data").unwrap(),
             ty: syn::parse_str("Lazy<U256>").unwrap(),
-            slot: 0,
+            slot: crate::codegen::contract::Slot::Explicit(0),
             cfg_attrs: vec![cfg_attr],
         }];
         let helper = storage_layout_helper(&slot_fields);

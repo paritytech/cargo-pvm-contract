@@ -146,14 +146,40 @@ pub(super) struct ParsedContract {
     pub(super) error_types: Vec<syn::Type>,
 }
 
-/// A storage field annotated with `#[slot(N)]` on the contract struct.
+/// A storage field on the contract struct.
+///
+/// `slot` is either pinned by an explicit `#[slot(N)]` attribute (`Slot::Explicit`)
+/// or auto-numbered by declaration order (`Slot::Auto`). Auto-numbering computes
+/// the slot at compile time via the field type's [`StorageComponent::SLOTS`],
+/// summed left-to-right across all preceding auto-numbered fields.
 #[derive(Debug, Clone)]
 pub(super) struct SlotField {
     pub name: Ident,
     pub ty: syn::Type,
-    pub slot: u64,
+    pub slot: Slot,
     /// `#[cfg(...)]` attributes on the field, propagated into construction and layout.
     pub cfg_attrs: Vec<syn::Attribute>,
+}
+
+/// How a storage field's slot is determined.
+#[derive(Debug, Clone)]
+pub(super) enum Slot {
+    /// Explicit `#[slot(N)]` attribute.
+    Explicit(u64),
+    /// Auto-numbered: computed at compile time from declaration order and
+    /// each preceding field's `<Type as StorageComponent>::SLOTS`.
+    /// `index` is the position among auto-numbered fields (0, 1, 2, ...).
+    Auto { index: usize },
+}
+
+impl SlotField {
+    /// Explicit slot value, or `None` if auto-numbered.
+    pub(super) fn explicit_slot(&self) -> Option<u64> {
+        match self.slot {
+            Slot::Explicit(n) => Some(n),
+            Slot::Auto { .. } => None,
+        }
+    }
 }
 
 const VALID_PREFIXES: &[&str] = &[
@@ -1046,19 +1072,76 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let buffer_size = args.buffer_size;
 
     // Generate the `this` construction, shared by deploy() and call().
-    // When #[slot(N)] fields are present, each is initialised with a clone
-    // of the host handle so storage cells share the same backing store.
+    //
+    // Each storage field is initialised through `StorageComponent::new_at` with
+    // a clone of the host handle so cells share the same backing store.
+    //
+    // Slot assignment:
+    //
+    // - Explicit `#[slot(N)]`: the literal `N` is used directly.
+    // - Auto-numbered: a chain of `const` items emits the slot for field K as
+    //   `prev_const + <FieldType K-1 as StorageComponent>::SLOTS`. The compiler
+    //   evaluates the chain at monomorphization, so user-defined storage
+    //   components with `SLOTS > 1` (embedded sub-storage structs) get the
+    //   correct contiguous range without the macro knowing their size.
+    //
+    // The `#[allow(non_upper_case_globals)]` is needed because the const idents
+    // include the field name verbatim (which is snake_case).
+    let auto_slot_consts: Vec<TokenStream> = slot_fields
+        .iter()
+        .filter_map(|sf| match sf.slot {
+            Slot::Auto { index } => {
+                let name = &sf.name;
+                let const_ident =
+                    quote::format_ident!("__pvm_storage_slot_{}", name);
+                let cfgs = &sf.cfg_attrs;
+                if index == 0 {
+                    Some(quote! {
+                        #(#cfgs)*
+                        #[allow(non_upper_case_globals)]
+                        const #const_ident: u64 = 0;
+                    })
+                } else {
+                    // Reference the previous auto-numbered field's const.
+                    // We need to look up the previous auto-numbered name.
+                    let prev = slot_fields
+                        .iter()
+                        .filter(|s| matches!(s.slot, Slot::Auto { .. }))
+                        .nth(index - 1)
+                        .expect("auto_index walks in order");
+                    let prev_const =
+                        quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
+                    let prev_ty = &prev.ty;
+                    Some(quote! {
+                        #(#cfgs)*
+                        #[allow(non_upper_case_globals)]
+                        const #const_ident: u64 = #prev_const
+                            + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                    })
+                }
+            }
+            Slot::Explicit(_) => None,
+        })
+        .collect();
+
     let slot_field_inits: Vec<TokenStream> = slot_fields
         .iter()
         .map(|sf| {
             let name = &sf.name;
             let ty = &sf.ty;
-            let slot = sf.slot;
             let cfgs = &sf.cfg_attrs;
+            let slot_expr: TokenStream = match sf.slot {
+                Slot::Explicit(n) => quote! { #n },
+                Slot::Auto { .. } => {
+                    let const_ident =
+                        quote::format_ident!("__pvm_storage_slot_{}", name);
+                    quote! { #const_ident }
+                }
+            };
             quote! {
                 #(#cfgs)*
-                #name: <#ty>::new(
-                    ::pvm_contract_sdk::StorageKey::from_slot(#slot),
+                #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
+                    #slot_expr,
                     host.clone(),
                 )
             }
@@ -1066,6 +1149,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         .collect();
     let this_construction = quote! {
         let host = ::pvm_contract_sdk::Host::new();
+        #(#auto_slot_consts)*
         let mut this = #struct_name {
             #(#slot_field_inits,)*
             host,
@@ -1480,7 +1564,16 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
         syn::Fields::Unnamed(_) => return Ok(vec![]),
     };
 
-    let mut fields = Vec::new();
+    // First pass: gather raw field info + their explicit-slot annotations.
+    struct Raw {
+        name: Ident,
+        ty: syn::Type,
+        explicit: Option<u64>,
+        cfg_attrs: Vec<syn::Attribute>,
+        original_field: syn::Field,
+    }
+
+    let mut raws: Vec<Raw> = Vec::new();
     for field in &named.named {
         let Some(ident) = &field.ident else {
             continue;
@@ -1495,38 +1588,87 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
             }
             continue;
         }
-        let Some(slot) = extract_optional_slot_attr(field)? else {
-            return Err(syn::Error::new_spanned(
-                field,
-                format!(
-                    "field `{ident}` must have a `#[slot(N)]` attribute. \
-                     All non-host fields on the contract struct are storage fields \
-                     and require a slot number."
-                ),
-            ));
-        };
+        let explicit = extract_optional_slot_attr(field)?;
         let cfg_attrs: Vec<syn::Attribute> = field
             .attrs
             .iter()
             .filter(|a| a.path().is_ident("cfg"))
             .cloned()
             .collect();
-        fields.push(SlotField {
+        raws.push(Raw {
             name: ident.clone(),
             ty: field.ty.clone(),
-            slot,
+            explicit,
             cfg_attrs,
+            original_field: field.clone(),
         });
     }
 
-    // Reject duplicate slot numbers. When both fields are #[cfg]-gated
-    // AND share the same name, we allow it. The compiler enforces that
-    // only one field with a given name exists, so exactly one cfg branch
-    // will be active. Different names with the same slot are always
-    // rejected because the compiler can't catch the aliasing.
+    if raws.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Mode decision: either ALL fields have `#[slot(N)]` (explicit mode, the
+    // original behavior) or NONE do (auto-numbered, the new behavior). Mixing
+    // is rejected so users don't end up with surprising slot assignments where
+    // an explicit slot collides with an auto-assigned one.
+    let any_explicit = raws.iter().any(|r| r.explicit.is_some());
+    let all_explicit = raws.iter().all(|r| r.explicit.is_some());
+
+    if any_explicit && !all_explicit {
+        // Find the first un-annotated field to attach the error span.
+        let offender = raws
+            .iter()
+            .find(|r| r.explicit.is_none())
+            .expect("checked any_explicit && !all_explicit");
+        return Err(syn::Error::new_spanned(
+            &offender.original_field,
+            format!(
+                "field `{}` is missing `#[slot(N)]`. \
+                 Storage fields must all be annotated with `#[slot(N)]`, or all \
+                 left un-annotated for auto-numbering by declaration order. \
+                 Mixing the two modes is not supported.",
+                offender.name,
+            ),
+        ));
+    }
+
+    let mut fields = Vec::new();
+    let mut auto_index = 0usize;
+    for raw in raws {
+        let slot = if let Some(n) = raw.explicit {
+            Slot::Explicit(n)
+        } else {
+            let s = Slot::Auto { index: auto_index };
+            auto_index += 1;
+            s
+        };
+        fields.push(SlotField {
+            name: raw.name,
+            ty: raw.ty,
+            slot,
+            cfg_attrs: raw.cfg_attrs,
+        });
+    }
+
+    // Reject duplicate explicit slot numbers. (Auto-numbered slots cannot
+    // collide with each other by construction; they can only collide with
+    // explicit slots when both modes are mixed, which we already rejected
+    // above.)
+    //
+    // When both fields are #[cfg]-gated AND share the same name, we allow it.
+    // The compiler enforces that only one field with a given name exists, so
+    // exactly one cfg branch will be active. Different names with the same
+    // slot are always rejected because the compiler can't catch the aliasing.
     for (i, a) in fields.iter().enumerate() {
+        let Some(a_slot) = a.explicit_slot() else {
+            continue;
+        };
         for b in &fields[i + 1..] {
-            if a.slot != b.slot {
+            let Some(b_slot) = b.explicit_slot() else {
+                continue;
+            };
+            if a_slot != b_slot {
                 continue;
             }
             let both_cfg = !a.cfg_attrs.is_empty() && !b.cfg_attrs.is_empty();
@@ -1538,7 +1680,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
                 item_struct,
                 format!(
                     "duplicate slot {}: fields `{}` and `{}` use the same slot number",
-                    a.slot, a.name, b.name
+                    a_slot, a.name, b.name
                 ),
             ));
         }
@@ -2614,10 +2756,15 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Each slot field is constructed with StorageKey::from_slot(N) and host.clone()
+        // Each slot field is constructed via StorageComponent::new_at(N, host.clone())
         assert!(
-            output.contains("from_slot (0u64") && output.contains("from_slot (1u64"),
-            "Slot fields should produce from_slot construction.\n\
+            output.contains("StorageComponent > :: new_at (0u64"),
+            "Slot field 0 should use StorageComponent::new_at(0u64, ...).\n\
+             Expanded output:\n{output}"
+        );
+        assert!(
+            output.contains("StorageComponent > :: new_at (1u64"),
+            "Slot field 1 should use StorageComponent::new_at(1u64, ...).\n\
              Expanded output:\n{output}"
         );
         assert!(
@@ -2661,11 +2808,99 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let slot_init_count = output.matches("from_slot (0u64").count();
+        let slot_init_count = output.matches("new_at (0u64").count();
         assert!(
             slot_init_count >= 2,
             "Slot field should be initialized in both deploy() and call().\n\
              Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn auto_numbered_storage_fields_compose_via_storage_component_slots() {
+        // When NO field carries `#[slot(N)]`, the macro auto-numbers fields in
+        // declaration order. Slots are computed at codegen time as a chain of
+        // `const` items so embedded sub-storage components (with SLOTS > 1)
+        // get a contiguous range without the macro knowing their layout.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    counter: Lazy<U256>,
+                    balances: Mapping<Address, U256>,
+                    allowances: Mapping<Address, Mapping<Address, U256>>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // The first auto-numbered field gets slot const = 0.
+        assert!(
+            output.contains("const __pvm_storage_slot_counter : u64 = 0 ;"),
+            "First auto-numbered field should declare its slot const = 0.\n\
+             Expanded output:\n{output}"
+        );
+        // Each subsequent field's slot is the previous field's slot plus its
+        // StorageComponent::SLOTS, evaluated at compile time.
+        assert!(
+            output.contains(
+                "const __pvm_storage_slot_balances : u64 = __pvm_storage_slot_counter + < Lazy < U256 > as :: pvm_contract_sdk :: StorageComponent > :: SLOTS"
+            ),
+            "Second field should chain off the first via StorageComponent::SLOTS.\n\
+             Expanded output:\n{output}"
+        );
+        assert!(
+            output.contains(
+                "const __pvm_storage_slot_allowances : u64 = __pvm_storage_slot_balances + < Mapping < Address , U256 > as :: pvm_contract_sdk :: StorageComponent > :: SLOTS"
+            ),
+            "Third field should chain off the second.\n\
+             Expanded output:\n{output}"
+        );
+        // Field construction references the slot consts (rather than literals).
+        assert!(
+            output.contains("StorageComponent > :: new_at (__pvm_storage_slot_counter ,"),
+            "Auto-numbered fields should pass their slot const to new_at.\n\
+             Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn mixing_explicit_and_auto_slots_rejected() {
+        // Mixing `#[slot(N)]` and unannotated fields is rejected to keep the
+        // mental model simple: either all slots are explicit or all are
+        // auto-numbered.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[slot(0)]
+                    counter: Lazy<U256>,
+                    balances: Mapping<Address, U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Mixing the two modes is not supported"),
+            "Expected mixed-mode rejection. Got: {err}"
         );
     }
 
@@ -2700,7 +2935,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_slot_attr_rejected_for_non_host_fields() {
+    fn lone_unannotated_field_auto_numbers_to_slot_zero() {
+        // Previously this was rejected ("must have a #[slot(N)] attribute").
+        // It is now auto-numbered to slot 0 — `#[slot(N)]` is optional.
         let item: ItemMod = syn::parse_str(
             r#"
             mod my_contract {
@@ -2716,12 +2953,13 @@ mod tests {
         )
         .unwrap();
 
-        let err = expand_contract(ContractArgs::default(), item)
-            .unwrap_err()
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
             .to_string();
         assert!(
-            err.contains("must have a `#[slot(N)]` attribute"),
-            "Expected missing-slot validation. Got: {err}"
+            output.contains("const __pvm_storage_slot_counter : u64 = 0 ;"),
+            "Single unannotated field should auto-number to slot 0.\n\
+             Expanded output:\n{output}"
         );
     }
 

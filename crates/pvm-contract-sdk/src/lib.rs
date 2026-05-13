@@ -43,7 +43,7 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolType, abi_import, constructor, contract, fallback, method, payable,
+    SolError, SolType, abi_import, constructor, contract, fallback, method, payable, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -113,8 +113,10 @@ pub use pvm_contract_core::call::{
 };
 
 // Typed storage helpers. `Lazy`/`Mapping` are the declarable field types for
-// `#[slot(N)]` fields on the contract struct.
-pub use pvm_storage::{AsStorageKey, Lazy, Mapping, StorageKey};
+// storage fields on the contract struct. `SlotValue` is the trait values must
+// implement to live in a slot; `StorageComponent` is the trait typed storage
+// helpers implement to participate in auto-numbered slot layout.
+pub use pvm_storage::{AsStorageKey, Lazy, Mapping, SlotValue, StorageComponent, StorageKey};
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_storage::StorageLayoutType;
