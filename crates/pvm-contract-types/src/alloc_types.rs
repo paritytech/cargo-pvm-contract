@@ -49,7 +49,9 @@ impl SolDecode for Bytes {
             .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
             .ok_or(DecodeError)
             .map(u64::from_be_bytes)? as usize;
-        let data = &input[offset + 32..offset + 32 + len];
+        let data = &input
+            .get(offset + 32..offset + 32 + len)
+            .ok_or(DecodeError)?;
         Ok(Bytes(data.to_vec()))
     }
 }
