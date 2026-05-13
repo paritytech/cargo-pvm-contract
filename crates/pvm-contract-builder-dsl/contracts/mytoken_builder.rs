@@ -76,7 +76,8 @@ fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> 
 fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
     let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount =
+        unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
     let caller = get_caller(host);
     let sender_key = balance_key(host, &caller);
@@ -120,7 +121,8 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
 fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
     let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount =
+        unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
     let recipient_key = balance_key(host, &to);
     let mut recipient_balance_bytes = [0u8; 32];
