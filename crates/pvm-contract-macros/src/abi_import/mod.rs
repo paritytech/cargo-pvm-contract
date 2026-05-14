@@ -60,9 +60,11 @@ pub fn expand_function(
         .parameters
         .types()
         .map(|x| to_rust_type(x, alloc, ctxt));
-    let names = func.parameters.names().map(|name| {
-        let name = name.as_ref().map_or(&SolIdent::new("s"), |v| v).to_string();
-        format_ident!("{}", name)
+    let names = func.parameters.names().enumerate().map(|(index, name)| {
+        let name = name
+            .as_ref()
+            .map_or_else(|| format!("s{index}"), |v| v.to_string());
+        format_ident!("{}", to_snake_case(&name))
     });
 
     let state_mutability = if is_constructor {

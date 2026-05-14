@@ -38,6 +38,29 @@ pvm_contract_sdk::abi_import! {
     }
 }
 
+// Regression fixtures for abi_import! parameter naming (see tests below).
+pvm_contract_sdk::abi_import! {
+    #![abi_import(alloc = true)]
+    pragma solidity ^0.8.0;
+
+    interface CamelCaseParams {
+        function publishLatest(
+            string memory contractName,
+            address contractAddress,
+            string memory metadataUri
+        ) external;
+    }
+}
+
+pvm_contract_sdk::abi_import! {
+    #![abi_import(alloc = true)]
+    pragma solidity ^0.8.0;
+
+    interface UnnamedParams {
+        function compute(uint256, uint256, address) external returns (uint256);
+    }
+}
+
 fn encoded_bool(value: bool) -> Vec<u8> {
     let mut buf = vec![0u8; 32];
     if value {
@@ -227,4 +250,46 @@ fn instantiate_without_mock_returns_out_of_resources() {
     let res = flipper::new_flipper().instantiate(&host, &[0u8; 32], 0, limits, None);
 
     assert_eq!(res, Err(CallError::OutOfResources));
+}
+
+// Regression: camelCase params must be snake_cased on both signature and body
+// sides of the abi_import!-generated proxy.
+#[test]
+fn camelcase_params_call_through_mock() {
+    let target = Address::from([0xCE; 20]);
+    let mock = MockHostBuilder::new().build();
+    mock.mock_call(target.0, Ok(vec![]));
+    let host = Host::from_dyn(Rc::new(mock));
+
+    camel_case_params::CamelCaseParams::from_address(target)
+        .publish_latest(
+            "MyContract".to_string(),
+            Address::from([0xDE; 20]),
+            "ipfs://qm".to_string(),
+        )
+        .call(&host)
+        .expect("publish_latest should succeed");
+}
+
+// Regression: unnamed params must use `s{index}` on both sides to avoid
+// identifier collisions across multiple unnamed parameters.
+#[test]
+fn unnamed_params_call_through_mock() {
+    let target = Address::from([0xCF; 20]);
+    let mut payload = vec![0u8; 32];
+    payload[31] = 42;
+    let mock = MockHostBuilder::new().build();
+    mock.mock_call(target.0, Ok(payload));
+    let host = Host::from_dyn(Rc::new(mock));
+
+    let result = unnamed_params::UnnamedParams::from_address(target)
+        .compute(
+            pvm_contract_sdk::U256::from(1u64),
+            pvm_contract_sdk::U256::from(2u64),
+            Address::from([0xAB; 20]),
+        )
+        .call(&host)
+        .expect("compute should succeed");
+
+    assert_eq!(result, pvm_contract_sdk::U256::from(42u64));
 }
