@@ -650,3 +650,37 @@ fn receive_handles_zero_value_empty_calldata() {
         "receive must fire on empty calldata regardless of value"
     );
 }
+
+// --- DSL Receive Handler ---
+//
+// Mirrors the `receive` tests above but against a DSL-built contract that
+// uses `ContractBuilder::receive(...)` instead of the `#[receive]` macro.
+// Same wire-level Solidity ABI; same plain-ether-transfer semantics; proves
+// the typestate-extended DSL dispatch reaches the registered receive
+// handler at runtime.
+
+#[test]
+fn receive_dsl_handles_plain_ether_transfer() {
+    let (_anvil, cast, addr) = deploy("receive_dsl");
+
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "42");
+
+    let total = cast.call(&addr, "totalReceived()(uint256)", &[]);
+    assert_eq!(total, "42");
+    let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
+    assert_eq!(count, "1");
+}
+
+#[test]
+fn receive_dsl_accumulates_multiple_transfers() {
+    let (_anvil, cast, addr) = deploy("receive_dsl");
+
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "10");
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "20");
+    cast.send_value_only(&addr, DEFAULT_PRIVATE_KEY, "30");
+
+    let total = cast.call(&addr, "totalReceived()(uint256)", &[]);
+    assert_eq!(total, "60");
+    let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
+    assert_eq!(count, "3");
+}
