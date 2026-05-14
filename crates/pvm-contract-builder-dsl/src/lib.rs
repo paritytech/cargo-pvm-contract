@@ -288,10 +288,9 @@ impl<H: pvm_contract_types::HostApi> ContractBuilder<H> {
 ///
 /// - **receive** fires on empty calldata (`call_data_size() == 0`).
 ///   Implicitly payable. Handler's `input` slice is always empty.
-/// - **fallback** fires on:
-///   - 1..=3 byte calldata (after receive has been considered), or
-///   - a selector that didn't match any registered method.
-///   Receives the full incoming calldata. Non-payable by default; use
+/// - **fallback** fires on 1..=3 byte calldata (after receive has been
+///   considered) or on a selector that didn't match any registered method.
+///   It receives the full incoming calldata. Non-payable by default; use
 ///   [`payable_fallback`](ContractBuilder::payable_fallback) to accept value.
 /// - Without a fallback registered, the unmatched-selector path still
 ///   reverts with `NO_SELECTOR` / `UNKNOWN_SELECTOR` as before.
