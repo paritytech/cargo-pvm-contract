@@ -817,7 +817,11 @@ mod tests {
         ] {
             let mut buf = [0u8; 32];
             val.encode_to(&mut buf);
-            assert_eq!(I256::decode(&buf), val, "round-trip failed for {val}");
+            assert_eq!(
+                I256::decode(&buf).unwrap(),
+                val,
+                "round-trip failed for {val}"
+            );
         }
     }
 

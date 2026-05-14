@@ -28,7 +28,9 @@
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{Host, HostApi, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
+use pvm_contract_types::{
+    Host, HostApi, SolDecode, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags,
+};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -258,7 +260,7 @@ pub struct Lazy<T> {
     _marker: PhantomData<T>,
 }
 
-impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
+impl<T: SolEncode + StaticDecode + StaticEncodedLen> Lazy<T> {
     /// Create a new `Lazy` at the given storage key, bound to a host handle.
     pub fn new(key: StorageKey, host: Host) -> Self {
         const {
@@ -280,7 +282,7 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// matching Solidity's default-to-zero semantics.
     pub fn get(&self) -> T {
         let buf = storage_get_32(&self.host, self.key.as_bytes());
-        T::decode(&buf)
+        unsafe { T::decode_unchecked(&buf, 0) }
     }
 
     /// Read the value, distinguishing "never written" from "has been set."
@@ -291,7 +293,8 @@ impl<T: SolEncode + SolDecode + StaticEncodedLen> Lazy<T> {
     /// Note: writing an all-zero value deletes the key (Solidity semantics),
     /// so `try_get()` returns `None` after writing zero.
     pub fn try_get(&self) -> Option<T> {
-        storage_try_get_32(&self.host, self.key.as_bytes()).map(|buf| T::decode(&buf))
+        storage_try_get_32(&self.host, self.key.as_bytes())
+            .map(|buf| unsafe { T::decode_unchecked(&buf, 0) })
     }
 
     /// Write a value to storage.
@@ -337,7 +340,7 @@ impl<K, V> Mapping<K, V> {
     }
 }
 
-impl<K: AsStorageKey, V: SolEncode + SolDecode + StaticEncodedLen> Mapping<K, V> {
+impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K, V> {
     /// Compute the raw storage key for a given map key.
     ///
     /// Useful for debugging and cross-checking with `cast index`.

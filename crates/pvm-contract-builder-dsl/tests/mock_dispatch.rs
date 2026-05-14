@@ -19,7 +19,7 @@ const DOUBLE_SELECTOR: [u8; 4] = solidity_selector("double(uint32)");
 const PING_SELECTOR: [u8; 4] = solidity_selector("ping()");
 
 fn double_handler(_host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0);
+    let n = u32::decode_at(input, 0).unwrap();
     let result = n.wrapping_mul(2);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
@@ -63,7 +63,7 @@ fn double_returns_doubled_value() {
     );
     let rv = drive(&mock);
     assert_eq!(rv.flags, ReturnFlags::empty());
-    assert_eq!(u32::decode_at(&rv.data, 0), 42);
+    assert_eq!(u32::decode_at(&rv.data, 0).unwrap(), 42);
 }
 
 #[test]

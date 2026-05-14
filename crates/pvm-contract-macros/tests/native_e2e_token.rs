@@ -273,7 +273,7 @@ fn owner_returns_stored_address() {
 
     let data = route_ok(&mut contract, &mock, selector("owner()"), &[]);
 
-    let returned = Address::decode_at(&data, 0);
+    let returned = Address::decode_at(&data, 0).unwrap();
     assert_eq!(returned, Address::from(OWNER));
 }
 
@@ -285,7 +285,7 @@ fn balance_of_returns_zero_for_untouched_address() {
     let input = encode_balance_of_calldata(Address::from(ALICE));
     let data = route_ok(&mut contract, &mock, selector("balanceOf(address)"), &input);
 
-    assert_eq!(U256::decode_at(&data, 0), U256::ZERO);
+    assert_eq!(U256::decode_at(&data, 0).unwrap(), U256::ZERO);
 }
 
 #[test]
@@ -388,8 +388,8 @@ fn transfer_insufficient_balance_reverts_with_encoded_fields() {
     // Expected revert: selector + ABI-encoded (available: U256, required: U256)
     let expected_selector = selector("InsufficientBalance(uint256,uint256)");
     assert_eq!(&data[..4], &expected_selector, "revert selector");
-    let available = U256::decode_at(&data[4..], 0);
-    let required = U256::decode_at(&data[4..], 32);
+    let available = U256::decode_at(&data[4..], 0).unwrap();
+    let required = U256::decode_at(&data[4..], 32).unwrap();
     assert_eq!(available, U256::from(50u64));
     assert_eq!(required, U256::from(100u64));
     assert_eq!(data.len(), 4 + 64, "no trailing bytes");

@@ -166,7 +166,7 @@ fn owner_returns_stored_address() {
 
 #[test]
 fn balance_of_returns_zero_by_default() {
-    let (contract, mock) = contract_with_caller(ALICE);
+    let (contract, _) = contract_with_caller(ALICE);
 
     assert_eq!(contract.balance_of(Address::from(ALICE)), U256::ZERO);
 }
