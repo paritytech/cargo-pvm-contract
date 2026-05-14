@@ -288,7 +288,7 @@ fn camelcase_params_call_through_mock() {
     let target = Address::from([0xCE; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(vec![]));
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     camel_case_params::CamelCaseParams::from_address(target)
         .publish_latest(
@@ -296,7 +296,7 @@ fn camelcase_params_call_through_mock() {
             Address::from([0xDE; 20]),
             "ipfs://qm".to_string(),
         )
-        .call(&host)
+        .call(&mut cx)
         .expect("publish_latest should succeed");
 }
 
@@ -309,7 +309,7 @@ fn unnamed_params_call_through_mock() {
     payload[31] = 42;
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(payload));
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     let result = unnamed_params::UnnamedParams::from_address(target)
         .compute(
@@ -317,7 +317,7 @@ fn unnamed_params_call_through_mock() {
             pvm_contract_sdk::U256::from(2u64),
             Address::from([0xAB; 20]),
         )
-        .call(&host)
+        .call(&mut cx)
         .expect("compute should succeed");
 
     assert_eq!(result, pvm_contract_sdk::U256::from(42u64));
