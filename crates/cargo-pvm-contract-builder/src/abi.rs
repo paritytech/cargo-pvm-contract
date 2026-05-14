@@ -279,7 +279,8 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         } else if line.starts_with("function ")
             || line.starts_with("constructor")
             || line.starts_with("error ")
-            || line.starts_with("receive")
+            || line.starts_with("receive(")
+            || line.starts_with("receive ")
         {
             if has_balanced_parens(line) {
                 try_parse_decl(line, &mut items);
@@ -324,7 +325,7 @@ fn try_parse_decl(line: &str, items: &mut Vec<AbiItem>) {
         && let Some(err) = parse_sol_error_line(line)
     {
         items.push(err);
-    } else if line.starts_with("receive")
+    } else if (line.starts_with("receive(") || line.starts_with("receive "))
         && let Some(recv) = parse_sol_receive_line(line)
     {
         items.push(recv);
