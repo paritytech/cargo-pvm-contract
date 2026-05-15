@@ -52,12 +52,9 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
         anyhow::bail!("No binary targets found in {}", manifest_path.display());
     }
 
-    let output_dir = args.output_dir.unwrap_or_else(|| {
-        workspace_root
-            .as_deref()
-            .map(|root| root.join("target"))
-            .unwrap_or_else(|| find_target_dir(&manifest_path))
-    });
+    let output_dir = args
+        .output_dir
+        .unwrap_or_else(|| find_target_dir(&manifest_path, workspace_root.as_deref()));
 
     std::fs::create_dir_all(&output_dir).with_context(|| {
         format!(
@@ -77,9 +74,12 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
     Ok(())
 }
 
-fn find_target_dir(manifest_path: &Path) -> PathBuf {
+fn find_target_dir(manifest_path: &Path, workspace_root: Option<&Path>) -> PathBuf {
     if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
+    }
+    if let Some(root) = workspace_root {
+        return root.join("target");
     }
     manifest_path
         .parent()
@@ -93,15 +93,17 @@ fn resolve_workspace_member(
     manifest_path: &Path,
     package: &str,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
-    let output = Command::new("cargo")
-        .arg("metadata")
+    let mut cmd = Command::new("cargo");
+    cmd.arg("metadata")
         .arg("--no-deps")
         .arg("--format-version")
         .arg("1")
         .arg("--manifest-path")
-        .arg(manifest_path)
-        .output()
-        .context("Failed to invoke `cargo metadata`")?;
+        .arg(manifest_path);
+    if let Some(dir) = manifest_path.parent() {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().context("Failed to invoke `cargo metadata`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
