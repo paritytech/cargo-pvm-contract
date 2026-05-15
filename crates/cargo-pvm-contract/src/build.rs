@@ -2,12 +2,17 @@ use anyhow::{Context, Result};
 use cargo_pvm_contract_builder as builder;
 use clap::Args;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Args, Debug)]
 pub struct BuildArgs {
     /// Path to Cargo.toml
     #[arg(long)]
     manifest_path: Option<PathBuf>,
+
+    /// Package to build (when manifest points at a workspace)
+    #[arg(short = 'p', long = "package")]
+    package: Option<String>,
 
     /// Build profile (default: release)
     #[arg(long)]
@@ -23,16 +28,21 @@ pub struct BuildArgs {
 }
 
 pub fn build_contracts(args: BuildArgs) -> Result<()> {
-    let manifest_path = match args.manifest_path {
+    let input_manifest = match args.manifest_path {
         Some(path) => path,
         None => std::env::current_dir()
             .context("Failed to determine current working directory")?
             .join("Cargo.toml"),
     };
 
-    let manifest_path = manifest_path
+    let input_manifest = input_manifest
         .canonicalize()
-        .with_context(|| format!("Manifest not found: {}", manifest_path.display()))?;
+        .with_context(|| format!("Manifest not found: {}", input_manifest.display()))?;
+
+    let (manifest_path, workspace_root) = match args.package.as_deref() {
+        Some(pkg) => resolve_workspace_member(&input_manifest, pkg)?,
+        None => (input_manifest, None),
+    };
 
     let profile_name = args.profile.as_deref().unwrap_or("release");
     let profile = builder::Profile::from_name(profile_name);
@@ -42,9 +52,12 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
         anyhow::bail!("No binary targets found in {}", manifest_path.display());
     }
 
-    let output_dir = args
-        .output_dir
-        .unwrap_or_else(|| find_target_dir(&manifest_path));
+    let output_dir = args.output_dir.unwrap_or_else(|| {
+        workspace_root
+            .as_deref()
+            .map(|root| root.join("target"))
+            .unwrap_or_else(|| find_target_dir(&manifest_path))
+    });
 
     std::fs::create_dir_all(&output_dir).with_context(|| {
         format!(
@@ -72,4 +85,57 @@ fn find_target_dir(manifest_path: &Path) -> PathBuf {
         .parent()
         .unwrap_or(Path::new("."))
         .join("target")
+}
+
+/// Resolve `<package>` against the workspace at `manifest_path`, returning the
+/// member's own `Cargo.toml` and the workspace root.
+fn resolve_workspace_member(
+    manifest_path: &Path,
+    package: &str,
+) -> Result<(PathBuf, Option<PathBuf>)> {
+    let output = Command::new("cargo")
+        .arg("metadata")
+        .arg("--no-deps")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+        .context("Failed to invoke `cargo metadata`")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`cargo metadata` failed:\n{stderr}");
+    }
+
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse `cargo metadata` output")?;
+
+    let packages = metadata
+        .get("packages")
+        .and_then(|p| p.as_array())
+        .context("`cargo metadata` output missing `packages`")?;
+
+    let member = packages
+        .iter()
+        .find(|p| p.get("name").and_then(|n| n.as_str()) == Some(package))
+        .with_context(|| {
+            format!(
+                "Package `{package}` not found in workspace at {}",
+                manifest_path.display()
+            )
+        })?;
+
+    let member_manifest = member
+        .get("manifest_path")
+        .and_then(|m| m.as_str())
+        .map(PathBuf::from)
+        .with_context(|| format!("Package `{package}` has no manifest_path"))?;
+
+    let workspace_root = metadata
+        .get("workspace_root")
+        .and_then(|w| w.as_str())
+        .map(PathBuf::from);
+
+    Ok((member_manifest, workspace_root))
 }

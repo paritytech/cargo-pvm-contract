@@ -374,3 +374,54 @@ fn cli_test_supports_manifest_path_from_outside_project_dir() {
 
     run_cli_test_with_manifest(&manifest_path, temp_dir.path());
 }
+
+#[test]
+fn build_selects_workspace_member_via_package_flag() {
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    let pkg_a = scaffold_new_contract(&temp_dir, "ws-pkg-a", "macro", None);
+    let pkg_b = scaffold_new_contract(&temp_dir, "ws-pkg-b", "macro", None);
+
+    // The scaffold template adds an empty `[workspace]` to each crate's
+    // Cargo.toml so it works standalone. Remove it so both crates can be
+    // members of a parent workspace.
+    for member in [&pkg_a, &pkg_b] {
+        let manifest = member.join("Cargo.toml");
+        let content = std::fs::read_to_string(&manifest).expect("read member Cargo.toml");
+        let stripped = content.replace("[workspace]\n\n", "");
+        std::fs::write(&manifest, stripped).expect("write member Cargo.toml");
+    }
+
+    let workspace_manifest = temp_dir.path().join("Cargo.toml");
+    std::fs::write(
+        &workspace_manifest,
+        "[workspace]\nresolver = \"2\"\nmembers = [\"ws-pkg-a\", \"ws-pkg-b\"]\n",
+    )
+    .expect("write workspace Cargo.toml");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .arg("pvm-contract")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&workspace_manifest)
+        .arg("-p")
+        .arg("ws-pkg-a");
+
+    let status = cmd.status().expect("run cargo pvm-contract build -p");
+    assert!(status.success(), "build -p ws-pkg-a failed");
+
+    let target_release = temp_dir.path().join("target").join("release");
+    assert!(
+        target_release.join("ws-pkg-a.polkavm").exists(),
+        "ws-pkg-a.polkavm should exist at workspace target/release"
+    );
+    assert!(
+        target_release.join("ws-pkg-a.abi.json").exists(),
+        "ws-pkg-a.abi.json should exist at workspace target/release"
+    );
+    assert!(
+        !target_release.join("ws-pkg-b.polkavm").exists(),
+        "ws-pkg-b.polkavm should NOT exist — only ws-pkg-a was selected"
+    );
+}
