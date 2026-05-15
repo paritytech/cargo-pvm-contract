@@ -17,7 +17,7 @@ pub struct Line {
 #[pvm_contract_sdk::contract]
 mod my_contract {
     use super::{Line, Point};
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     pub struct MyContract;
 

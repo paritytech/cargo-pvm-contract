@@ -31,7 +31,8 @@ pub type HostResult = core::result::Result<(), ReturnErrorCode>;
 /// Marker trait identifying the contract storage root.
 ///
 /// The `#[contract]` macro auto-implements this on the generated storage
-/// struct; the DSL implements it on its dispatch root. Cross-contract call
+/// struct; DSL handlers wrap their host in [`Context`] (`Context::new(host.clone())`)
+/// to satisfy the bound. Cross-contract call
 /// builders are bound `&impl ContractContext` (for `View`/`Pure` callees) or
 /// `&mut impl ContractContext` (for `NonPayable`/`Payable` callees), so the
 /// borrow checker — not just the runtime — rejects view methods that try to

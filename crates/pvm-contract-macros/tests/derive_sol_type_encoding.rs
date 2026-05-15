@@ -35,7 +35,7 @@ fn encode_decode_user_type_static_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(UserStatic::decode(&buf), val);
+        prop_assert_eq!(UserStatic::decode(&buf).unwrap(), val);
     });
 }
 
@@ -58,7 +58,7 @@ fn encode_decode_user_type_dynamic_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(UserDynamic::decode(&buf), val);
+        prop_assert_eq!(UserDynamic::decode(&buf).unwrap(), val);
     });
 }
 
@@ -84,7 +84,7 @@ fn encode_decode_vector_of_user_type_static_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Vec::<UserStatic>::decode(&buf), val);
+        prop_assert_eq!(Vec::<UserStatic>::decode(&buf).unwrap(), val);
     });
 }
 
@@ -112,7 +112,7 @@ fn encode_decode_vector_of_user_type_dynamic_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Vec::<UserDynamic>::decode(&buf), val);
+        prop_assert_eq!(Vec::<UserDynamic>::decode(&buf).unwrap(), val);
     });
 }
 
@@ -144,7 +144,7 @@ fn encode_decode_nested_struct_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Line::decode(&buf), val);
+        prop_assert_eq!(Line::decode(&buf).unwrap(), val);
     });
 }
 
@@ -179,7 +179,7 @@ fn encode_decode_triple_nested_struct() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(Outer::decode(&buf), val);
+    assert_eq!(Outer::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -212,7 +212,7 @@ fn encode_decode_dynamic_struct_with_custom_field_proptest() {
         // Our encoding omits the top-level tuple offset (32 bytes) that alloy prepends
         // for dynamic tuples, so compare against alloy[32..]
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(NamedPoint::decode(&buf), val);
+        prop_assert_eq!(NamedPoint::decode(&buf).unwrap(), val);
     });
 }
 
@@ -231,7 +231,7 @@ fn encode_decode_dynamic_struct_multiple_dynamic_fields() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Profile::decode(&buf), val);
+        prop_assert_eq!(Profile::decode(&buf).unwrap(), val);
     });
 }
 
@@ -250,7 +250,7 @@ fn encode_decode_dynamic_struct_string_then_static() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Record::decode(&buf), val);
+        prop_assert_eq!(Record::decode(&buf).unwrap(), val);
     });
 }
 
@@ -280,7 +280,7 @@ fn encode_decode_many_field_static_struct() {
         // alloy uses AlloyAddress (not our Address), so we just verify roundtrip
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
-        prop_assert_eq!(Wide::decode(&buf), val);
+        prop_assert_eq!(Wide::decode(&buf).unwrap(), val);
         // Cross-validate field count: 7 fields × 32 bytes each = 224
         prop_assert_eq!(buf.len(), 7 * 32);
     });
@@ -303,7 +303,7 @@ fn encode_decode_fixed_array_of_struct() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(<[Point; 2]>::decode(&buf), val);
+    assert_eq!(<[Point; 2]>::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -323,7 +323,7 @@ fn encode_decode_tuple_with_struct() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(<(Point, u32)>::decode(&buf), val);
+    assert_eq!(<(Point, u32)>::decode(&buf).unwrap(), val);
 }
 
 #[test]
@@ -339,7 +339,7 @@ fn encode_decode_tuple_struct_and_string() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(<(Point, alloc::string::String)>::decode(&buf), val);
+    assert_eq!(<(Point, alloc::string::String)>::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -360,7 +360,7 @@ fn encode_decode_fixed_array_of_strings() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(TwoNames::decode(&buf), val);
+    assert_eq!(TwoNames::decode(&buf).unwrap(), val);
 }
 
 #[test]
@@ -376,7 +376,7 @@ fn encode_decode_fixed_array_of_strings_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(TwoNames::decode(&buf), val);
+        prop_assert_eq!(TwoNames::decode(&buf).unwrap(), val);
     });
 }
 
@@ -414,7 +414,7 @@ fn encode_decode_dynamic_struct_with_fixed_array_of_structs() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(Polygon::decode(&buf), val);
+    assert_eq!(Polygon::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -454,7 +454,7 @@ fn encode_decode_vec_of_nested_struct_proptest() {
         let mut buf = vec![0u8; val.encode_len()];
         val.encode_to(&mut buf);
         prop_assert_eq!(&buf, &alloy);
-        prop_assert_eq!(Vec::<Line>::decode(&buf), val);
+        prop_assert_eq!(Vec::<Line>::decode(&buf).unwrap(), val);
     });
 }
 
@@ -522,7 +522,7 @@ fn encode_decode_empty_vec_of_struct() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(Vec::<Point>::decode(&buf), val);
+    assert_eq!(Vec::<Point>::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -549,7 +549,7 @@ fn encode_decode_struct_with_vec_field() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(TokenList::decode(&buf), val);
+    assert_eq!(TokenList::decode(&buf).unwrap(), val);
 }
 
 #[test]
@@ -575,7 +575,7 @@ fn encode_decode_struct_with_vec_and_string() {
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
     assert_eq!(&buf, &alloy);
-    assert_eq!(Record::decode(&buf), val);
+    assert_eq!(Record::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -635,7 +635,7 @@ fn encode_decode_struct_with_bytes_field() {
     };
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(WithBytes::decode(&buf), val);
+    assert_eq!(WithBytes::decode(&buf).unwrap(), val);
 }
 
 #[test]
@@ -652,7 +652,7 @@ fn encode_decode_struct_with_empty_bytes() {
     };
     let mut buf = vec![0u8; val.encode_len()];
     val.encode_to(&mut buf);
-    assert_eq!(WithEmptyBytes::decode(&buf), val);
+    assert_eq!(WithEmptyBytes::decode(&buf).unwrap(), val);
 }
 
 // ========================================================================
@@ -888,15 +888,21 @@ fn return_encoding_roundtrip_advanced() {
     };
     let mut buf = vec![0u8; p.encode_len()];
     p.encode_to(&mut buf);
-    assert_eq!(Profile::decode(&buf), p);
+    assert_eq!(Profile::decode(&buf).unwrap(), p);
 
     let t = (true, "x".to_string(), 9u64);
     let mut buf = vec![0u8; t.encode_len()];
     t.encode_to(&mut buf);
-    assert_eq!(<(bool, alloc::string::String, u64)>::decode(&buf), t);
+    assert_eq!(
+        <(bool, alloc::string::String, u64)>::decode(&buf).unwrap(),
+        t
+    );
 
     let nested = ((1u64, 2u64), "z".to_string());
     let mut buf = vec![0u8; nested.encode_len()];
     nested.encode_to(&mut buf);
-    assert_eq!(<((u64, u64), alloc::string::String)>::decode(&buf), nested);
+    assert_eq!(
+        <((u64, u64), alloc::string::String)>::decode(&buf).unwrap(),
+        nested
+    );
 }

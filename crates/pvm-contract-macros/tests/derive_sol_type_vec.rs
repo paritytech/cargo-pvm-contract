@@ -53,7 +53,7 @@ fn test_derive_with_vec_u256() {
     assert_eq!(elem2_bytes[31], 2);
     assert!(elem2_bytes[0..31].iter().all(|&b| b == 0));
 
-    let decoded = WithVecU256::decode_at(&buf, 0);
+    let decoded = WithVecU256::decode_at(&buf, 0).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -139,7 +139,7 @@ fn test_derive_with_mixed_fields() {
     let elem2_bytes = &buf[128..160];
     assert_eq!(elem2_bytes[31], 200);
 
-    let decoded = MixedFields::decode_at(&buf, 0);
+    let decoded = MixedFields::decode_at(&buf, 0).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -224,7 +224,7 @@ fn test_derive_with_multiple_vec_fields() {
     ]);
     assert_eq!(second_len, 2);
 
-    let decoded = MultipleVecs::decode_at(&buf, 0);
+    let decoded = MultipleVecs::decode_at(&buf, 0).unwrap();
     assert_eq!(decoded, s);
 }
 

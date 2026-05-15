@@ -1,8 +1,8 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pvm_contract_types::{
-    Address, CallFlags, ContractContext, Host, HostApi, ReturnErrorCode, SolDecode, SolEncode,
-    SolError, const_selector,
+    Address, CallFlags, ContractContext, DecodeError, Host, HostApi, ReturnErrorCode, SolDecode,
+    SolEncode, SolError, const_selector,
 };
 use ruint::aliases::U256;
 
@@ -27,8 +27,16 @@ pub enum CallError {
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
     CalleeReverted,
+    /// Payload decoding error
+    DecodingError,
     /// Unknown error occured
     Unknown,
+}
+
+impl From<DecodeError> for CallError {
+    fn from(_: DecodeError) -> Self {
+        Self::DecodingError
+    }
 }
 
 impl SolError for CallError {
@@ -222,7 +230,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
             return Err(CallError::OutputBufTooSmall);
         }
         host.return_data_copy(&mut output_buf, 0);
-        Ok(R::decode(output_buf))
+        R::decode(output_buf).map_err(Into::into)
     }
 
     pub fn output_size(&self, host: &Host) -> usize {

@@ -1,3 +1,4 @@
+#![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #![no_main]
 #![no_std]
 
@@ -5,7 +6,7 @@ use pvm_contract_builder_dsl::{
     ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
 };
 use pvm_contract_builder_dsl::pvm_contract_types::{
-    Address, Host, HostApi, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
+    Address, Host, HostApi, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags,
 };
 use pvm_contract_builder_dsl::ruint::aliases::U256;
 
@@ -60,7 +61,7 @@ fn total_supply_handler(host: &Host, _input: &[u8], output: &mut [u8]) -> Handle
 }
 
 fn balance_of_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <Address>::decode_at(input, 0);
+    let account = unsafe { <Address>::decode_unchecked(input, 0) };
     let account: [u8; 20] = account.into();
     let key = balance_key(host, &account);
     let mut balance_bytes = [0u8; 32];
@@ -76,19 +77,23 @@ fn balance_of_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerRe
 }
 
 fn transfer_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let to = <Address>::decode_at(input, 0);
+    let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount =
+        unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
     let caller = get_caller(host);
     let sender_key = balance_key(host, &caller);
     let mut sender_balance_bytes = [0u8; 32];
     let mut sender_balance_slice = &mut sender_balance_bytes[..];
-    let sender_balance =
-        match host.get_storage(StorageFlags::empty(), &sender_key, &mut sender_balance_slice) {
-            Ok(_) => U256::from_be_bytes::<32>(sender_balance_bytes),
-            Err(_) => U256::ZERO,
-        };
+    let sender_balance = match host.get_storage(
+        StorageFlags::empty(),
+        &sender_key,
+        &mut sender_balance_slice,
+    ) {
+        Ok(_) => U256::from_be_bytes::<32>(sender_balance_bytes),
+        Err(_) => U256::ZERO,
+    };
 
     if sender_balance < amount {
         let msg = b"InsufficientBalance";
@@ -117,9 +122,10 @@ fn transfer_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResu
 }
 
 fn mint_handler(host: &Host, input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let to = <Address>::decode_at(input, 0);
+    let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount =
+        unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
     let recipient_key = balance_key(host, &to);
     let mut recipient_balance_bytes = [0u8; 32];

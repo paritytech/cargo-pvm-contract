@@ -2,8 +2,10 @@
 #![no_main]
 #![no_std]
 
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    Host, SolEncode, StaticDecode, StaticEncodedLen,
+};
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
-use pvm_contract_builder_dsl::pvm_contract_types::{Host, SolDecode, SolEncode, StaticEncodedLen};
 
 const FIBONACCI_SELECTOR: [u8; 4] = solidity_selector("fibonacci(uint32)");
 
@@ -29,7 +31,7 @@ pub extern "C" fn call() {
 }
 
 fn fibonacci_handler(_host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0);
+    let n = unsafe { u32::decode_unchecked(input, 0) };
     let result = fibonacci(n);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);

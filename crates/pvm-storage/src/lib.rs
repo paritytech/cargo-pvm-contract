@@ -44,7 +44,9 @@ extern crate alloc;
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{Host, HostApi, SolDecode, SolEncode, StaticEncodedLen, StorageFlags};
+use pvm_contract_types::{
+    Host, HostApi, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags,
+};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -293,14 +295,17 @@ pub trait SlotValue: Sized {
 /// Internal helper: read a static-encoded value from a single 32-byte slot.
 ///
 /// Used by the per-type `SlotValue` impls produced by [`impl_static_slot_value!`].
-/// Generic over any `SolDecode` type whose canonical encoding is 32 bytes.
-fn static_slot_get<T: SolDecode>(host: &Host, slot: &StorageKey) -> T {
+/// Generic over any `StaticDecode` type whose canonical encoding is 32 bytes.
+/// The slot buffer is always 32 bytes and the caller guarantees the type has a
+/// 32-byte encoding via the `const_assert!` inside `impl_static_slot_value!`,
+/// so `decode_unchecked` is safe.
+fn static_slot_get<T: StaticDecode>(host: &Host, slot: &StorageKey) -> T {
     let buf = storage_get_32(host, slot.as_bytes());
-    T::decode(&buf)
+    unsafe { T::decode_unchecked(&buf, 0) }
 }
 
-fn static_slot_try_get<T: SolDecode>(host: &Host, slot: &StorageKey) -> Option<T> {
-    storage_try_get_32(host, slot.as_bytes()).map(|buf| T::decode(&buf))
+fn static_slot_try_get<T: StaticDecode>(host: &Host, slot: &StorageKey) -> Option<T> {
+    storage_try_get_32(host, slot.as_bytes()).map(|buf| unsafe { T::decode_unchecked(&buf, 0) })
 }
 
 fn static_slot_set<T: SolEncode>(value: &T, host: &Host, slot: &StorageKey) {
