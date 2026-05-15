@@ -44,9 +44,7 @@ extern crate alloc;
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{
-    Host, HostApi, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags,
-};
+use pvm_contract_types::{Host, HostApi, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -63,6 +61,26 @@ fn storage_get_32(host: &Host, key: &[u8; 32]) -> [u8; 32] {
 
 fn storage_set_32(host: &Host, key: &[u8; 32], value: &[u8; 32]) {
     host.set_storage_or_clear(StorageFlags::empty(), key, value);
+}
+
+/// Write a 32-byte value without the auto-clear-on-zero optimisation.
+///
+/// `set_storage_or_clear(_, &[0; 32])` deletes the slot — wrong when we need
+/// the slot to exist with zero bytes (e.g. the solc-style header for an empty
+/// `string` / `bytes` value: byte31 = 0 means "inline length 0", and `try_get`
+/// must distinguish it from a never-written slot).
+#[cfg(feature = "alloc")]
+fn storage_write_raw_32(host: &Host, key: &[u8; 32], value: &[u8; 32]) {
+    host.set_storage(StorageFlags::empty(), key.as_slice(), value);
+}
+
+/// Delete a storage slot.
+///
+/// pallet-revive's uapi only exposes deletion via `set_storage_or_clear` with
+/// an all-zero value; there is no dedicated `clear_storage` host function.
+#[cfg(feature = "alloc")]
+fn storage_delete_32(host: &Host, key: &[u8; 32]) {
+    host.set_storage_or_clear(StorageFlags::empty(), key, &[0u8; 32]);
 }
 
 fn storage_derive_key(host: &Host, root: &[u8; 32], padded_key: &[u8; 32]) -> [u8; 32] {
@@ -388,69 +406,73 @@ impl<const N: usize> SlotValue for [u8; N] {
 }
 
 // ---------------------------------------------------------------------------
-// Dynamic SlotValue impls (alloc-gated): bytes/string Solidity layout.
+// Dynamic SlotValue impls (alloc-gated): solc-compatible bytes/string layout.
 //
-// Layout matches solc for `bytes`/`string` at storage slot S:
-//   slot[S]                 = encoded length (bytes as right-aligned big-endian
-//                             integer; short-string optimization is intentionally
-//                             NOT implemented — see comment below).
-//   slot[keccak256(S) + i]  = 32-byte body chunks, big-endian.
+// Layout matches Solidity's `bytes` / `string` storage exactly:
 //
-// We deliberately *skip* solc's "short string optimization" (where bytes <= 31
-// pack length+data into the slot itself). The optimization is incompatible
-// with how `set_storage_or_clear` decides whether to delete: solc encodes the
-// length in the low byte, but our static-value path always treats the slot as
-// a 32-byte big-endian integer. Storing the full length in the slot lets
-// `try_get` distinguish "never written" from "empty value" reliably.
-// `cast storage` and similar tooling still read this correctly; only the
-// gas-saving short-string fast path differs from Solidity.
+//   Short form (raw byte length < 32):
+//     slot[0..len] = body bytes (left-aligned in high-order positions)
+//     slot[31]     = (len as u8) << 1               // low bit = 0
+//
+//   Long form (raw byte length >= 32):
+//     slot         = (len * 2 + 1) as big-endian u256   // low bit = 1
+//     keccak256(slot) + i  =  32-byte body chunks (i = 0, 1, ...)
+//
+// `set("")` / `set(vec![])` writes a header of all-zero bytes (length 0,
+// low bit 0, inline). It uses raw `set_storage` (not `set_storage_or_clear`)
+// so the slot stays in the trie — `try_get` then returns `Some(empty)` for
+// "explicitly set to empty" and `None` for "never written / cleared", which
+// matches solc's storage semantics for the read paths and our richer
+// try_get distinction at the same time.
+//
+// `clear` deletes the header (and any long-form body chunks) via
+// `set_storage_or_clear(_, &[0; 32])` — the only deletion path in uapi.
 // ---------------------------------------------------------------------------
 
+/// Decoded short/long header for a solc-compatible dynamic slot.
 #[cfg(feature = "alloc")]
-fn dynamic_bytes_set(host: &Host, slot: &StorageKey, data: &[u8]) {
-    // Write the length to the header slot.
-    let mut length_buf = [0u8; 32];
-    let len_bytes = (data.len() as u64).to_be_bytes();
-    length_buf[24..32].copy_from_slice(&len_bytes);
-    storage_set_32(host, slot.as_bytes(), &length_buf);
+enum DynHeader {
+    /// `len` bytes packed inline in the slot (`len < 32`). The slot's
+    /// high-order bytes hold the data.
+    Inline { len: usize },
+    /// `len` bytes spilled to keccak-derived chunks (`len >= 32`).
+    Spilled { len: usize },
+}
 
-    if data.is_empty() {
-        return;
-    }
-
-    // Write the body, 32 bytes per slot, starting at keccak256(slot).
-    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
-    let mut offset = 0usize;
-    while offset < data.len() {
-        let mut chunk = [0u8; 32];
-        let remaining = data.len() - offset;
-        let take = if remaining >= 32 { 32 } else { remaining };
-        chunk[..take].copy_from_slice(&data[offset..offset + take]);
-        storage_set_32(host, &body_slot, &chunk);
-        offset += take;
-        inc_slot(&mut body_slot);
+#[cfg(feature = "alloc")]
+fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
+    if slot_bytes[31] & 1 == 0 {
+        DynHeader::Inline {
+            len: (slot_bytes[31] >> 1) as usize,
+        }
+    } else {
+        // Spilled: full slot encodes `len * 2 + 1` as a u256.
+        // Length cannot exceed usize::MAX bytes in practice; the upper 192
+        // bits are always zero for any plausible stored value.
+        let mut len_be = [0u8; 16];
+        len_be.copy_from_slice(&slot_bytes[16..32]);
+        let raw = u128::from_be_bytes(len_be);
+        DynHeader::Spilled {
+            len: (raw >> 1) as usize,
+        }
     }
 }
 
 #[cfg(feature = "alloc")]
-fn dynamic_bytes_get(host: &Host, slot: &StorageKey) -> alloc::vec::Vec<u8> {
-    let length_buf = storage_get_32(host, slot.as_bytes());
-    let length = u64::from_be_bytes([
-        length_buf[24],
-        length_buf[25],
-        length_buf[26],
-        length_buf[27],
-        length_buf[28],
-        length_buf[29],
-        length_buf[30],
-        length_buf[31],
-    ]) as usize;
-    if length == 0 {
-        return alloc::vec::Vec::new();
-    }
-    let mut out = alloc::vec::Vec::with_capacity(length);
+fn encode_long_header(len: usize) -> [u8; 32] {
+    // `len * 2 + 1` as a 32-byte big-endian u256. `len` fits in u64 on any
+    // realistic chain so the value fits in u128 with room to spare.
+    let raw: u128 = (len as u128) * 2 + 1;
+    let mut out = [0u8; 32];
+    out[16..32].copy_from_slice(&raw.to_be_bytes());
+    out
+}
+
+#[cfg(feature = "alloc")]
+fn read_dyn_body(host: &Host, slot: &StorageKey, len: usize) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(len);
     let mut body_slot = dynamic_data_root(host, slot.as_bytes());
-    let mut remaining = length;
+    let mut remaining = len;
     while remaining > 0 {
         let chunk = storage_get_32(host, &body_slot);
         let take = if remaining >= 32 { 32 } else { remaining };
@@ -461,63 +483,97 @@ fn dynamic_bytes_get(host: &Host, slot: &StorageKey) -> alloc::vec::Vec<u8> {
     out
 }
 
+/// Clear `count` body chunks starting at `keccak256(slot) + start_chunk`.
 #[cfg(feature = "alloc")]
-fn dynamic_bytes_try_get(host: &Host, slot: &StorageKey) -> Option<alloc::vec::Vec<u8>> {
-    let length_buf = storage_try_get_32(host, slot.as_bytes())?;
-    let length = u64::from_be_bytes([
-        length_buf[24],
-        length_buf[25],
-        length_buf[26],
-        length_buf[27],
-        length_buf[28],
-        length_buf[29],
-        length_buf[30],
-        length_buf[31],
-    ]) as usize;
-    if length == 0 {
-        return Some(alloc::vec::Vec::new());
+fn clear_dyn_body_range(host: &Host, slot: &StorageKey, start_chunk: usize, count: usize) {
+    if count == 0 {
+        return;
     }
-    let mut out = alloc::vec::Vec::with_capacity(length);
     let mut body_slot = dynamic_data_root(host, slot.as_bytes());
-    let mut remaining = length;
-    while remaining > 0 {
-        let chunk = storage_get_32(host, &body_slot);
-        let take = if remaining >= 32 { 32 } else { remaining };
-        out.extend_from_slice(&chunk[..take]);
-        remaining -= take;
+    for _ in 0..start_chunk {
         inc_slot(&mut body_slot);
     }
-    Some(out)
+    for _ in 0..count {
+        storage_delete_32(host, &body_slot);
+        inc_slot(&mut body_slot);
+    }
+}
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_set(host: &Host, slot: &StorageKey, data: &[u8]) {
+    let new_len = data.len();
+    let new_chunks = if new_len < 32 {
+        0
+    } else {
+        new_len.div_ceil(32)
+    };
+
+    // Inspect the existing layout so we can free body chunks that the new
+    // value no longer needs (otherwise a long → short transition would leak
+    // storage at `keccak256(slot) + i`).
+    let old_slot_bytes = storage_get_32(host, slot.as_bytes());
+    if let DynHeader::Spilled { len: old_len } = decode_dyn_header(&old_slot_bytes) {
+        let old_chunks = old_len.div_ceil(32);
+        if old_chunks > new_chunks {
+            clear_dyn_body_range(host, slot, new_chunks, old_chunks - new_chunks);
+        }
+    }
+
+    if new_len < 32 {
+        // Short form: inline body + length × 2 in byte 31.
+        let mut packed = [0u8; 32];
+        packed[..new_len].copy_from_slice(data);
+        packed[31] = (new_len as u8) << 1;
+        // Raw write — for `set("")` the header is `[0; 32]` and we must keep
+        // the slot present (auto-clear would delete and try_get would no
+        // longer distinguish "set empty" from "never written").
+        storage_write_raw_32(host, slot.as_bytes(), &packed);
+        return;
+    }
+
+    // Long form: header = len * 2 + 1; body chunks at keccak256(slot) + i.
+    let header = encode_long_header(new_len);
+    storage_write_raw_32(host, slot.as_bytes(), &header);
+
+    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
+    let mut offset = 0usize;
+    while offset < new_len {
+        let mut chunk = [0u8; 32];
+        let remaining = new_len - offset;
+        let take = if remaining >= 32 { 32 } else { remaining };
+        chunk[..take].copy_from_slice(&data[offset..offset + take]);
+        storage_write_raw_32(host, &body_slot, &chunk);
+        offset += take;
+        inc_slot(&mut body_slot);
+    }
+}
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_get(host: &Host, slot: &StorageKey) -> alloc::vec::Vec<u8> {
+    let slot_bytes = storage_get_32(host, slot.as_bytes());
+    match decode_dyn_header(&slot_bytes) {
+        DynHeader::Inline { len } => alloc::vec::Vec::from(&slot_bytes[..len]),
+        DynHeader::Spilled { len } => read_dyn_body(host, slot, len),
+    }
+}
+
+#[cfg(feature = "alloc")]
+fn dynamic_bytes_try_get(host: &Host, slot: &StorageKey) -> Option<alloc::vec::Vec<u8>> {
+    let slot_bytes = storage_try_get_32(host, slot.as_bytes())?;
+    Some(match decode_dyn_header(&slot_bytes) {
+        DynHeader::Inline { len } => alloc::vec::Vec::from(&slot_bytes[..len]),
+        DynHeader::Spilled { len } => read_dyn_body(host, slot, len),
+    })
 }
 
 #[cfg(feature = "alloc")]
 fn dynamic_bytes_clear(host: &Host, slot: &StorageKey) {
-    // Read current length first so we know how many body slots to clear.
-    let length_buf = storage_get_32(host, slot.as_bytes());
-    let length = u64::from_be_bytes([
-        length_buf[24],
-        length_buf[25],
-        length_buf[26],
-        length_buf[27],
-        length_buf[28],
-        length_buf[29],
-        length_buf[30],
-        length_buf[31],
-    ]) as usize;
-
-    // Clear the header.
-    storage_set_32(host, slot.as_bytes(), &[0u8; 32]);
-
-    if length == 0 {
-        return;
+    let slot_bytes = storage_get_32(host, slot.as_bytes());
+    if let DynHeader::Spilled { len } = decode_dyn_header(&slot_bytes) {
+        let chunks = len.div_ceil(32);
+        clear_dyn_body_range(host, slot, 0, chunks);
     }
-
-    let mut body_slot = dynamic_data_root(host, slot.as_bytes());
-    let chunks = length.div_ceil(32);
-    for _ in 0..chunks {
-        storage_set_32(host, &body_slot, &[0u8; 32]);
-        inc_slot(&mut body_slot);
-    }
+    storage_delete_32(host, slot.as_bytes());
 }
 
 #[cfg(feature = "alloc")]
@@ -1046,9 +1102,195 @@ mod tests {
     #[test]
     fn lazy_string_overwrite_smaller() {
         let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
-        lazy.set(&"hello world this is a longer string".into());
-        lazy.set(&"short".into());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        let long =
+            String::from("hello world this is a long string that spills over the inline boundary");
+        let long_chunks = long.len().div_ceil(32);
+        lazy.set(&long);
+        lazy.set(&String::from("short"));
         assert_eq!(lazy.get(), "short");
+
+        // Stale body chunks from the previous long value must have been
+        // deleted, otherwise we'd be leaking storage on every long → short
+        // transition.
+        let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+        for _ in 0..long_chunks {
+            assert_eq!(
+                storage_try_get_32(&host, &body_slot),
+                None,
+                "stale body chunk not cleared"
+            );
+            inc_slot(&mut body_slot);
+        }
+    }
+
+    // --- solc layout invariants ---
+
+    /// "set("") and never written are distinguishable" — the central guarantee
+    /// of using raw set_storage (not _or_clear) for the short header.
+    #[test]
+    fn lazy_string_set_empty_distinct_from_never_written() {
+        let mut written = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let never = Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone());
+
+        written.set(&String::new());
+
+        assert_eq!(written.try_get(), Some(String::new()));
+        assert_eq!(written.get(), "");
+        assert_eq!(never.try_get(), None);
+        assert_eq!(never.get(), "");
+    }
+
+    /// Probe the slot bytes directly: short value lives inline with
+    /// `byte31 = length * 2` (low bit = 0). This is the solc convention that
+    /// `cast storage` decodes natively.
+    #[test]
+    fn lazy_string_short_inline_layout() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        lazy.set(&String::from("hello"));
+
+        let slot_bytes = storage_get_32(&host, key.as_bytes());
+        assert_eq!(&slot_bytes[..5], b"hello");
+        assert!(slot_bytes[5..31].iter().all(|&b| b == 0));
+        assert_eq!(slot_bytes[31], 5 * 2, "byte31 = length * 2, low bit 0");
+    }
+
+    /// 31-byte string is still inline; 32-byte string spills.
+    #[test]
+    fn lazy_string_boundary_31_bytes_inline() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        let s = "a".repeat(31);
+        lazy.set(&s);
+
+        let slot_bytes = storage_get_32(&host, key.as_bytes());
+        assert!(slot_bytes[31] & 1 == 0, "low bit 0 -> inline");
+        assert_eq!(slot_bytes[31] >> 1, 31);
+        assert_eq!(&slot_bytes[..31], s.as_bytes());
+        assert_eq!(lazy.get(), s);
+    }
+
+    #[test]
+    fn lazy_string_boundary_32_bytes_spilled() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        let s = "b".repeat(32);
+        lazy.set(&s);
+
+        let slot_bytes = storage_get_32(&host, key.as_bytes());
+        assert!(slot_bytes[31] & 1 == 1, "low bit 1 -> spilled");
+        // Header = 32 * 2 + 1 = 65, fits in byte 31.
+        assert_eq!(slot_bytes[31], 65);
+        assert!(slot_bytes[..31].iter().all(|&b| b == 0));
+        assert_eq!(lazy.get(), s);
+    }
+
+    /// Long-spill probe: header is `len * 2 + 1` big-endian, body chunks live
+    /// at consecutive slots starting from `keccak256(slot)`.
+    #[test]
+    fn lazy_string_long_spill_layout() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        // 40 bytes spans two 32-byte chunks (8 bytes into the second).
+        let s: String = (0..40).map(|i| (b'a' + (i % 26) as u8) as char).collect();
+        lazy.set(&s);
+
+        let slot_bytes = storage_get_32(&host, key.as_bytes());
+        assert!(slot_bytes[31] & 1 == 1);
+        // 40 * 2 + 1 = 81.
+        assert_eq!(slot_bytes[31], 81);
+
+        let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+        let chunk0 = storage_get_32(&host, &body_slot);
+        assert_eq!(&chunk0[..32], &s.as_bytes()[..32]);
+
+        inc_slot(&mut body_slot);
+        let chunk1 = storage_get_32(&host, &body_slot);
+        assert_eq!(&chunk1[..8], &s.as_bytes()[32..40]);
+        assert!(chunk1[8..].iter().all(|&b| b == 0), "trailing chunk pad");
+
+        assert_eq!(lazy.get(), s);
+    }
+
+    /// Short → long transition: previously inline data is replaced with
+    /// spill-form header and body chunks.
+    #[test]
+    fn lazy_string_grow_short_to_long() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        lazy.set(&String::from("short"));
+        assert_eq!(lazy.get(), "short");
+
+        let long = "x".repeat(100);
+        lazy.set(&long);
+        assert_eq!(lazy.get(), long);
+    }
+
+    /// Long → short transition deletes the now-orphaned body chunks. Probes
+    /// each previously-occupied keccak slot and asserts it no longer exists.
+    #[test]
+    fn lazy_string_shrink_long_to_short_clears_chunks() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        let long = "y".repeat(100); // 4 chunks of 32B
+        lazy.set(&long);
+        lazy.set(&String::from("ok"));
+        assert_eq!(lazy.get(), "ok");
+
+        let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+        for chunk_idx in 0..4 {
+            assert_eq!(
+                storage_try_get_32(&host, &body_slot),
+                None,
+                "body chunk {chunk_idx} not cleared after shrink"
+            );
+            inc_slot(&mut body_slot);
+        }
+    }
+
+    /// clear() on a long value must delete header AND every body chunk.
+    #[test]
+    fn lazy_string_clear_after_long_deletes_chunks() {
+        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+        let long = "z".repeat(70); // 3 chunks
+        lazy.set(&long);
+        lazy.clear();
+
+        // Header slot gone.
+        assert_eq!(storage_try_get_32(&host, key.as_bytes()), None);
+        // All body chunks gone.
+        let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+        for chunk_idx in 0..3 {
+            assert_eq!(
+                storage_try_get_32(&host, &body_slot),
+                None,
+                "body chunk {chunk_idx} survived clear()"
+            );
+            inc_slot(&mut body_slot);
+        }
+        assert_eq!(lazy.try_get(), None);
+        assert_eq!(lazy.get(), "");
+    }
+
+    /// Mapping<Address, String> with a spill-form value round-trips through
+    /// the same layout path.
+    #[test]
+    fn mapping_with_long_string_value() {
+        let mut m = Mapping::<Address, String>::new(StorageKey::from_slot(0), h());
+        let addr = Address([0x11; 20]);
+        let value = "w".repeat(100);
+        m.insert(&addr, &value);
+        assert_eq!(m.get(&addr), value);
+        m.remove(&addr);
+        assert_eq!(m.try_get(&addr), None);
     }
 
     #[test]
@@ -1064,6 +1306,28 @@ mod tests {
         let data: Vec<u8> = (0..=255u8).collect();
         lazy.set(&data);
         assert_eq!(lazy.get(), data);
+    }
+
+    /// `Vec<u8>` rides the same solc-compatible path as `String`. Cover the
+    /// inline / spill boundary explicitly: 31 bytes inline, 32 bytes spills.
+    #[test]
+    fn lazy_vec_u8_boundary() {
+        let mut a = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
+        let host = a.host.clone();
+        let key_a = a.key;
+
+        let inline: Vec<u8> = (0..31).collect();
+        a.set(&inline);
+        let slot_bytes = storage_get_32(&host, key_a.as_bytes());
+        assert_eq!(slot_bytes[31], 31 * 2, "31B vec inline, byte31 = 62");
+        assert_eq!(a.get(), inline);
+
+        let mut b = Lazy::<Vec<u8>>::new(StorageKey::from_slot(1), host);
+        let spill: Vec<u8> = (0..32).collect();
+        b.set(&spill);
+        let slot_b = storage_get_32(&b.host, b.key.as_bytes());
+        assert_eq!(slot_b[31], 32 * 2 + 1, "32B vec spills, byte31 = 65");
+        assert_eq!(b.get(), spill);
     }
 
     #[test]

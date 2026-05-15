@@ -98,7 +98,12 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let field_cfgs: Vec<Vec<&syn::Attribute>> = named
         .named
         .iter()
-        .map(|f| f.attrs.iter().filter(|a| a.path().is_ident("cfg")).collect())
+        .map(|f| {
+            f.attrs
+                .iter()
+                .filter(|a| a.path().is_ident("cfg"))
+                .collect()
+        })
         .collect();
 
     // The SLOTS const sums every field's contribution.
@@ -247,10 +252,7 @@ mod tests {
     fn rejects_empty_named_struct() {
         let input = parse("pub struct E {}");
         let err = expand_storage_struct(input).unwrap_err().to_string();
-        assert!(
-            err.contains("at least one storage field"),
-            "Got: {err}"
-        );
+        assert!(err.contains("at least one storage field"), "Got: {err}");
     }
 
     #[test]
@@ -265,7 +267,8 @@ mod tests {
         let output = expand_storage_struct(input).unwrap().to_string();
         // The impl picks up the generics.
         assert!(
-            output.contains("impl < T > :: pvm_contract_sdk :: StorageComponent for Container < T >"),
+            output
+                .contains("impl < T > :: pvm_contract_sdk :: StorageComponent for Container < T >"),
             "should propagate generics: {output}"
         );
     }

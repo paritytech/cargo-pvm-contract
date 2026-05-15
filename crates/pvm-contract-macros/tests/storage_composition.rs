@@ -155,12 +155,12 @@ fn composed_contract_layout_matches_hand_constructed() {
     assert_eq!(balances_slot.get(&alice), U256::from(42));
 
     // `allowances` claims slot 2 — write/read via two paths to confirm.
-    let mut allowances_via_outer = <Mapping<Address, Mapping<Address, U256>>>::new(
-        StorageKey::from_slot(2),
-        host.clone(),
-    );
+    let mut allowances_via_outer =
+        <Mapping<Address, Mapping<Address, U256>>>::new(StorageKey::from_slot(2), host.clone());
     let bob = Address([0xBB; 20]);
-    allowances_via_outer.entry(&alice).insert(&bob, &U256::from(7));
+    allowances_via_outer
+        .entry(&alice)
+        .insert(&bob, &U256::from(7));
     assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
 
     let name_slot = Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone());
@@ -194,10 +194,7 @@ fn nested_storage_struct_uses_offset() {
     // OuterState at base 10 places `flag` at slot 10 and `erc20` starting at
     // slot 11 (because flag claims 1 slot).
     outer.flag.set(&true);
-    outer
-        .erc20
-        .total_supply
-        .set(&U256::from(999));
+    outer.erc20.total_supply.set(&U256::from(999));
 
     let flag_check = Lazy::<bool>::new(StorageKey::from_slot(10), host.clone());
     assert!(flag_check.get());

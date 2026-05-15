@@ -1098,8 +1098,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         .filter_map(|sf| match sf.slot {
             Slot::Auto { index } => {
                 let name = &sf.name;
-                let const_ident =
-                    quote::format_ident!("__pvm_storage_slot_{}", name);
+                let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
                 let cfgs = &sf.cfg_attrs;
                 if index == 0 {
                     Some(quote! {
@@ -1115,8 +1114,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                         .filter(|s| matches!(s.slot, Slot::Auto { .. }))
                         .nth(index - 1)
                         .expect("auto_index walks in order");
-                    let prev_const =
-                        quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
+                    let prev_const = quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
                     let prev_ty = &prev.ty;
                     Some(quote! {
                         #(#cfgs)*
@@ -1139,8 +1137,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let slot_expr: TokenStream = match sf.slot {
                 Slot::Explicit(n) => quote! { #n },
                 Slot::Auto { .. } => {
-                    let const_ident =
-                        quote::format_ident!("__pvm_storage_slot_{}", name);
+                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
                     quote! { #const_ident }
                 }
             };
