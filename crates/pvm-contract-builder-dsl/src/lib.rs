@@ -153,7 +153,7 @@ impl ContractBuilder {
     /// # Panics
     ///
     /// Panics if more than MAX_METHODS methods are registered.
-    #[inline]
+    #[inline(always)]
     pub fn payable_method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         assert!(
             self.len < MAX_METHODS,
