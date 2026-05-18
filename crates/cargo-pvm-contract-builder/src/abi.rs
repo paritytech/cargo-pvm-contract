@@ -9,8 +9,9 @@ pub fn generate_abi_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<AbiJson>> {
-    generate_abi_via_feature(manifest_dir, bin_name, target_root)
+    generate_abi_via_feature(manifest_dir, bin_name, target_root, features)
 }
 
 /// Generate the storage layout JSON for a binary, if the contract declares
@@ -26,6 +27,7 @@ pub fn generate_storage_layout_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists()
@@ -37,7 +39,7 @@ pub fn generate_storage_layout_for_bin(
         return Ok(None);
     }
 
-    let stdout = match run_abi_gen_binary(manifest_dir, bin_name, target_root) {
+    let stdout = match run_abi_gen_binary(manifest_dir, bin_name, target_root, features) {
         Ok(Some(s)) => s,
         Ok(None) => return Ok(None),
         Err(e) => {
@@ -92,6 +94,7 @@ fn generate_abi_via_feature(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<AbiJson>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists() {
@@ -114,7 +117,7 @@ fn generate_abi_via_feature(
     // The abi-gen binary outputs either a bare ABI array (no storage) or
     // {"abi": [...], "storageLayout": {...}} (with storage). Extract
     // just the ABI items either way.
-    let stdout = run_abi_gen_binary(manifest_dir, bin_name, target_root)?
+    let stdout = run_abi_gen_binary(manifest_dir, bin_name, target_root, features)?
         .context("abi-gen binary produced no output")?;
 
     let value: serde_json::Value =
@@ -136,6 +139,7 @@ fn run_abi_gen_binary(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<String>> {
     let target_dir = match target_root {
         Some(root) => root.join("abi-gen-target"),
@@ -158,6 +162,13 @@ fn run_abi_gen_binary(
         cmd.env_remove("RUSTUP_TOOLCHAIN");
     }
 
+    // Combine `abi-gen` with any user-supplied features into a single
+    // `--features` argument (cargo accepts comma-separated lists).
+    let combined_features = match features {
+        Some(list) if !list.trim().is_empty() => format!("abi-gen,{list}"),
+        _ => "abi-gen".to_string(),
+    };
+
     let output = cmd
         .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")
@@ -168,7 +179,7 @@ fn run_abi_gen_binary(
         .arg("--config")
         .arg(r#"unstable.build-std=["std","core","alloc"]"#)
         .arg("--features")
-        .arg("abi-gen")
+        .arg(&combined_features)
         .arg("--bin")
         .arg(bin_name)
         .output()

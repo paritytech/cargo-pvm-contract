@@ -177,11 +177,21 @@ pub fn build_contract(
     profile: &Profile,
     bins: &[String],
     message_format: Option<&str>,
+    features: Option<&str>,
+    no_default_features: bool,
 ) -> Result<()> {
     let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
     let build_dir = output_dir.join("pvmbuild");
 
-    build_elf(manifest_path, &build_dir, profile, bins, message_format)?;
+    build_elf(
+        manifest_path,
+        &build_dir,
+        profile,
+        bins,
+        message_format,
+        features,
+        no_default_features,
+    )?;
 
     let elf_dir = build_dir
         .join("riscv64emac-unknown-none-polkavm")
@@ -195,6 +205,7 @@ pub fn build_contract(
         manifest_dir,
         Some(output_dir),
         true,
+        features,
     )
 }
 
@@ -226,6 +237,8 @@ fn build_project(
         &profile,
         &bins_to_build,
         None,
+        None,
+        false,
     )?;
 
     let elf_dir = build_dir
@@ -240,6 +253,7 @@ fn build_project(
         manifest_dir,
         None,
         !skip_abi,
+        None,
     )
 }
 
@@ -252,6 +266,7 @@ fn process_elf_binaries(
     manifest_dir: &Path,
     abi_target_root: Option<&Path>,
     generate_abi: bool,
+    features: Option<&str>,
 ) -> Result<()> {
     fs::create_dir_all(profile_dir).with_context(|| {
         format!(
@@ -271,7 +286,7 @@ fn process_elf_binaries(
 
         if generate_abi {
             let abi_path = profile_dir.join(format!("{bin}.abi.json"));
-            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root)?;
+            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root, features)?;
         }
     }
 
@@ -285,6 +300,8 @@ fn build_elf(
     profile: &Profile,
     bins: &[String],
     message_format: Option<&str>,
+    features: Option<&str>,
+    no_default_features: bool,
 ) -> Result<()> {
     let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
 
@@ -349,6 +366,14 @@ fn build_elf(
 
     if let Some(fmt) = message_format {
         cmd.arg("--message-format").arg(fmt);
+    }
+
+    if let Some(list) = features {
+        cmd.arg("--features").arg(list);
+    }
+
+    if no_default_features {
+        cmd.arg("--no-default-features");
     }
 
     eprintln!("Building PolkaVM binary with profile: {profile}");
@@ -474,8 +499,9 @@ fn generate_abi_file(
     bin_name: &str,
     output_path: &Path,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<()> {
-    let abi = match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
+    let abi = match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root, features) {
         Ok(Some(abi)) => abi,
         Ok(None) => {
             eprintln!("No pvm_contract found, skipping ABI generation");
@@ -486,7 +512,8 @@ fn generate_abi_file(
         }
     };
 
-    let storage_layout = abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root)?;
+    let storage_layout =
+        abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root, features)?;
 
     let json = if let Some(layout) = storage_layout {
         let abi_value = serde_json::to_value(&abi).context("Failed to serialize ABI")?;
