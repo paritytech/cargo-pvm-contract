@@ -42,8 +42,8 @@ jobs:
         run: cargo fmt --check
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Run unit tests (types + macros)
-        run: cargo test -p pvm-contract-types --features alloc && cargo test -p pvm-contract-macros
+      - name: Run unit tests (types + macros + storage)
+        run: cargo test -p pvm-contract-types --features alloc && cargo test -p pvm-contract-macros && cargo test -p pvm-storage --features alloc
       - name: Run integration tests
         run: cargo test -p cargo-pvm-contract -- --test-threads=1
       - name: Cache revive-dev-node
