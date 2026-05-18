@@ -4,9 +4,7 @@ use std::rc::Rc;
 
 fn main() {
     let host = Host::from_dyn(Rc::new(MockHostBuilder::new().build()));
-    // (U256, U256) is 64 bytes, not 32.  Lazy's const assertion should reject it.
-    let _lazy = Lazy::<(ruint::aliases::U256, ruint::aliases::U256)>::new(
-        StorageKey::from_slot(0),
-        host,
-    );
+    // `Vec<u8>` is dynamic — no `StaticEncodedLen` impl — so it can't go
+    // through `Lazy<T>`. Users must reach for `LazyBytes` instead.
+    let _lazy = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), host);
 }

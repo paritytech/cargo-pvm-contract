@@ -6,9 +6,9 @@
 //!   slot range.
 //! - `StorageComponent::SLOTS` chained through both levels so the outer
 //!   contract gets the correct overall layout without manual offset math.
-//! - Dynamic `String` value stored via `Lazy<String>` (Gap 1).
+//! - Dynamic `String` value stored via `LazyString` (Gap 1).
 
-use pvm_contract_sdk::{Lazy, Mapping, StorageComponent, StorageKey};
+use pvm_contract_sdk::{Lazy, LazyString, Mapping, StorageComponent, StorageKey};
 use pvm_contract_types::{Address, Host, MockHostBuilder};
 use ruint::aliases::U256;
 
@@ -22,13 +22,13 @@ pub struct Erc20State {
     pub allowances: Mapping<Address, Mapping<Address, U256>>,
 }
 
-/// A second sub-storage struct using a dynamic `Lazy<String>`. Still 1 slot
+/// A second sub-storage struct using a dynamic `LazyString`. Still 1 slot
 /// because the header slot stores length and the body lives at
 /// `keccak256(slot)`.
 #[pvm_contract_sdk::storage]
 pub struct MetadataState {
-    pub name: Lazy<alloc::string::String>,
-    pub symbol: Lazy<alloc::string::String>,
+    pub name: LazyString,
+    pub symbol: LazyString,
 }
 
 // Pull `alloc` into the test crate for the `String` type.
@@ -98,12 +98,8 @@ mod composed_contract {
         #[pvm_contract_macros::constructor]
         pub fn new(&mut self) {
             self.erc20.total_supply.set(&U256::from(1_000_000));
-            self.metadata
-                .name
-                .set(&alloc::string::String::from("Composed Token"));
-            self.metadata
-                .symbol
-                .set(&alloc::string::String::from("CMP"));
+            self.metadata.name.set("Composed Token");
+            self.metadata.symbol.set("CMP");
             self.paused.set(&false);
         }
 
@@ -142,8 +138,8 @@ fn composed_contract_layout_matches_hand_constructed() {
     let alice = Address([0xAA; 20]);
     erc20.total_supply.set(&U256::from(1_000));
     erc20.balances.insert(&alice, &U256::from(42));
-    metadata.name.set(&alloc::string::String::from("Composed"));
-    metadata.symbol.set(&alloc::string::String::from("CMP"));
+    metadata.name.set("Composed");
+    metadata.symbol.set("CMP");
     paused.set(&true);
 
     // Read back via slot-pinned standalone helpers and confirm the slot
@@ -163,10 +159,10 @@ fn composed_contract_layout_matches_hand_constructed() {
         .insert(&bob, &U256::from(7));
     assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
 
-    let name_slot = Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone());
+    let name_slot = LazyString::new(StorageKey::from_slot(3), host.clone());
     assert_eq!(name_slot.get(), "Composed");
 
-    let symbol_slot = Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), host.clone());
+    let symbol_slot = LazyString::new(StorageKey::from_slot(4), host.clone());
     assert_eq!(symbol_slot.get(), "CMP");
 
     let paused_slot = Lazy::<bool>::new(StorageKey::from_slot(5), host);

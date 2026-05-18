@@ -114,11 +114,15 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
-// Typed storage helpers. `Lazy`/`Mapping` are the declarable field types for
-// storage fields on the contract struct. `SlotValue` is the trait values must
-// implement to live in a slot; `StorageComponent` is the trait typed storage
-// helpers implement to participate in auto-numbered slot layout.
-pub use pvm_storage::{AsStorageKey, Lazy, Mapping, SlotValue, StorageComponent, StorageKey};
+// Typed storage helpers. `Lazy<T>`/`Mapping<K, V>` are the declarable field
+// types for static 32-byte values. `LazyString`/`LazyBytes`/`MappingString<K>`/
+// `MappingBytes<K>` are the dedicated dynamic-value accessors. `StorageComponent`
+// is the trait typed storage helpers implement to participate in auto-numbered
+// slot layout.
+pub use pvm_storage::{AsStorageKey, Lazy, Mapping, StorageComponent, StorageKey};
+
+#[cfg(feature = "alloc")]
+pub use pvm_storage::{LazyBytes, LazyString, MappingBytes, MappingString};
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_storage::StorageLayoutType;
