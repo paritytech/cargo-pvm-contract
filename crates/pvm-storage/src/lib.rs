@@ -91,6 +91,19 @@ fn storage_derive_key(host: &Host, root: &[u8; 32], padded_key: &[u8; 32]) -> [u
     output
 }
 
+// Dynamic-key variant: preimage is `raw_key ++ pad32(root)` (no key padding).
+// Matches Solidity's `mapping(string => _)` / `mapping(bytes => _)` slot
+// derivation, where the key bytes are hashed verbatim.
+#[cfg(feature = "alloc")]
+fn storage_derive_key_unpadded(host: &Host, root: &[u8; 32], key: &[u8]) -> [u8; 32] {
+    let mut preimage = alloc::vec::Vec::with_capacity(key.len() + 32);
+    preimage.extend_from_slice(key);
+    preimage.extend_from_slice(root);
+    let mut output = [0u8; 32];
+    host.hash_keccak_256(&preimage, &mut output);
+    output
+}
+
 fn storage_try_get_32(host: &Host, key: &[u8; 32]) -> Option<[u8; 32]> {
     let mut buf = [0u8; 32];
     let mut out = &mut buf[..];
@@ -267,6 +280,47 @@ impl_tuple_storage_key!(A: 0, B: 1);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3);
 impl_tuple_storage_key!(A: 0, B: 1, C: 2, D: 3, E: 4);
+
+// Dynamic key types: Solidity's `mapping(string => _)` and `mapping(bytes => _)`
+// derive slots as `keccak256(raw_bytes ++ pad32(root_slot))` — the key bytes are
+// hashed verbatim with no padding. These impls are alloc-gated because building
+// the preimage requires a heap buffer of `key.len() + 32` bytes.
+//
+// `str` and `[u8]` get impls so that future ergonomics (e.g. `Mapping::get_by`)
+// can dispatch on them without requiring an owned key. Today, `Mapping<K, V>`
+// still requires `K: Sized`, so users will declare `Mapping<String, V>` or
+// `Mapping<Vec<u8>, V>`.
+#[cfg(feature = "alloc")]
+impl AsStorageKey for str {
+    fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
+        StorageKey(storage_derive_key_unpadded(
+            host,
+            root.as_bytes(),
+            self.as_bytes(),
+        ))
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl AsStorageKey for [u8] {
+    fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
+        StorageKey(storage_derive_key_unpadded(host, root.as_bytes(), self))
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl AsStorageKey for alloc::string::String {
+    fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
+        <str as AsStorageKey>::derive_slot(self.as_str(), host, root)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl AsStorageKey for alloc::vec::Vec<u8> {
+    fn derive_slot(&self, host: &Host, root: &StorageKey) -> StorageKey {
+        <[u8] as AsStorageKey>::derive_slot(self.as_slice(), host, root)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Dynamic value helpers (alloc-gated): solc-compatible bytes/string layout.
@@ -981,7 +1035,9 @@ mod tests {
 
     use super::*;
     use alloc::rc::Rc;
+    #[cfg(feature = "alloc")]
     use alloc::string::String;
+    #[cfg(feature = "alloc")]
     use alloc::vec::Vec;
     use pvm_contract_types::Address;
     use pvm_contract_types::MockHostBuilder;
@@ -1178,6 +1234,7 @@ mod tests {
 
     // --- Dynamic accessors: LazyString / LazyBytes ---
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_string_short() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1185,6 +1242,7 @@ mod tests {
         assert_eq!(lazy.get(), "hello");
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_string_long() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1193,6 +1251,7 @@ mod tests {
         assert_eq!(lazy.get(), long);
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_empty_is_default() {
         let lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1200,6 +1259,7 @@ mod tests {
         assert_eq!(lazy.try_get(), None);
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_clear() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1210,6 +1270,7 @@ mod tests {
         assert_eq!(lazy.get(), "");
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_overwrite_smaller() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1240,6 +1301,7 @@ mod tests {
 
     /// "set("") and never written are distinguishable" — the central guarantee
     /// of using raw set_storage (not _or_clear) for the short header.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_set_empty_distinct_from_never_written() {
         let mut written = LazyString::new(StorageKey::from_slot(0), h());
@@ -1256,6 +1318,7 @@ mod tests {
     /// Probe the slot bytes directly: short value lives inline with
     /// `byte31 = length * 2` (low bit = 0). This is the solc convention that
     /// `cast storage` decodes natively.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_short_inline_layout() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1270,6 +1333,7 @@ mod tests {
     }
 
     /// 31-byte string is still inline; 32-byte string spills.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_boundary_31_bytes_inline() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1285,6 +1349,7 @@ mod tests {
         assert_eq!(lazy.get(), s);
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_boundary_32_bytes_spilled() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1303,6 +1368,7 @@ mod tests {
 
     /// Long-spill probe: header is `len * 2 + 1` big-endian, body chunks live
     /// at consecutive slots starting from `keccak256(slot)`.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_long_spill_layout() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1331,6 +1397,7 @@ mod tests {
 
     /// Short → long transition: previously inline data is replaced with
     /// spill-form header and body chunks.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_grow_short_to_long() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1344,6 +1411,7 @@ mod tests {
 
     /// Long → short transition deletes the now-orphaned body chunks. Probes
     /// each previously-occupied keccak slot and asserts it no longer exists.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_shrink_long_to_short_clears_chunks() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1366,6 +1434,7 @@ mod tests {
     }
 
     /// clear() on a long value must delete header AND every body chunk.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_clear_after_long_deletes_chunks() {
         let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
@@ -1393,6 +1462,7 @@ mod tests {
 
     /// Mapping<Address, String> with a spill-form value round-trips through
     /// the same layout path.
+    #[cfg(feature = "alloc")]
     #[test]
     fn mapping_with_long_string_value() {
         let mut m = MappingString::<Address>::new(StorageKey::from_slot(0), h());
@@ -1404,6 +1474,7 @@ mod tests {
         assert_eq!(m.try_get(&addr), None);
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_vec_u8() {
         let mut lazy = LazyBytes::new(StorageKey::from_slot(0), h());
@@ -1411,6 +1482,7 @@ mod tests {
         assert_eq!(lazy.get(), alloc::vec![1, 2, 3, 4, 5]);
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_vec_u8_large() {
         let mut lazy = LazyBytes::new(StorageKey::from_slot(0), h());
@@ -1421,6 +1493,7 @@ mod tests {
 
     /// `Vec<u8>` rides the same solc-compatible path as `String`. Cover the
     /// inline / spill boundary explicitly: 31 bytes inline, 32 bytes spills.
+    #[cfg(feature = "alloc")]
     #[test]
     fn lazy_vec_u8_boundary() {
         let mut a = LazyBytes::new(StorageKey::from_slot(0), h());
@@ -1441,6 +1514,7 @@ mod tests {
         assert_eq!(b.get(), spill);
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn mapping_address_to_string() {
         let mut m = MappingString::<Address>::new(StorageKey::from_slot(0), h());
@@ -1455,6 +1529,7 @@ mod tests {
         assert_eq!(m.get(&b), "bob");
     }
 
+    #[cfg(feature = "alloc")]
     #[test]
     fn dynamic_data_root_independent_per_slot() {
         // Distinct header slots must hash to distinct data roots so two
@@ -1505,7 +1580,15 @@ mod tests {
     fn storage_component_slot_count() {
         assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
         assert_eq!(<Mapping<Address, U256> as StorageComponent>::SLOTS, 1);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn storage_component_slot_count_dynamic() {
         assert_eq!(<LazyString as StorageComponent>::SLOTS, 1);
+        assert_eq!(<LazyBytes as StorageComponent>::SLOTS, 1);
+        assert_eq!(<MappingString<Address> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<MappingBytes<Address> as StorageComponent>::SLOTS, 1);
     }
 
     #[test]
@@ -1653,5 +1736,155 @@ mod tests {
             &expected,
             "must match chained `cast index` output"
         );
+    }
+
+    // --- Dynamic keys (String / Vec<u8>) ---
+    // Run with: cargo test -p pvm-storage --features alloc
+
+    #[cfg(feature = "alloc")]
+    use alloc::string::ToString;
+    #[cfg(feature = "alloc")]
+    use alloc::vec;
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_string_key_roundtrip() {
+        let mut m = Mapping::<String, U256>::new(StorageKey::from_slot(0), h());
+        m.insert(&"alice".to_string(), &U256::from(100));
+        assert_eq!(m.get(&"alice".to_string()), U256::from(100));
+        assert_eq!(m.get(&"bob".to_string()), U256::ZERO);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_bytes_key_roundtrip() {
+        let mut m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(0), h());
+        m.insert(&vec![1u8, 2, 3], &U256::from(42));
+        assert_eq!(m.get(&vec![1u8, 2, 3]), U256::from(42));
+        assert_eq!(m.get(&vec![1u8, 2, 4]), U256::ZERO);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_bytes_key_long_roundtrip() {
+        // 100-byte key spans multiple keccak preimage bytes; confirms the
+        // unpadded formula handles arbitrary-length keys.
+        let mut m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(1), h());
+        let key = vec![b'x'; 100];
+        m.insert(&key, &U256::from(7));
+        assert_eq!(m.get(&key), U256::from(7));
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_string_key_solidity_parity() {
+        // cast index string "foo" 1
+        // → 0xb770ea6769bbbd870e326681074f882a4d98de2943bbf7a23e8f4b258b1b8ac9
+        let m = Mapping::<String, U256>::new(StorageKey::from_slot(1), h());
+        let slot = m.slot_of(&"foo".to_string());
+        let expected = [
+            0xb7, 0x70, 0xea, 0x67, 0x69, 0xbb, 0xbd, 0x87, 0x0e, 0x32, 0x66, 0x81, 0x07, 0x4f,
+            0x88, 0x2a, 0x4d, 0x98, 0xde, 0x29, 0x43, 0xbb, 0xf7, 0xa2, 0x3e, 0x8f, 0x4b, 0x25,
+            0x8b, 0x1b, 0x8a, 0xc9,
+        ];
+        assert_eq!(
+            slot.as_bytes(),
+            &expected,
+            "must match `cast index string \"foo\" 1`"
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_bytes_key_solidity_parity() {
+        // cast index bytes "0x010203" 1
+        // → 0x4c6b2a1cad5eaf1e4e6556e0d021d6a22514b15458a60294869177950c245b57
+        let m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(1), h());
+        let slot = m.slot_of(&vec![1u8, 2, 3]);
+        let expected = [
+            0x4c, 0x6b, 0x2a, 0x1c, 0xad, 0x5e, 0xaf, 0x1e, 0x4e, 0x65, 0x56, 0xe0, 0xd0, 0x21,
+            0xd6, 0xa2, 0x25, 0x14, 0xb1, 0x54, 0x58, 0xa6, 0x02, 0x94, 0x86, 0x91, 0x77, 0x95,
+            0x0c, 0x24, 0x5b, 0x57,
+        ];
+        assert_eq!(
+            slot.as_bytes(),
+            &expected,
+            "must match `cast index bytes \"0x010203\" 1`"
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_string_key_empty() {
+        // Empty key: preimage is just the 32-byte root slot.
+        // keccak256(b"" ++ pad32(1)) = b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6
+        let mut m = Mapping::<String, U256>::new(StorageKey::from_slot(1), h());
+        m.insert(&String::new(), &U256::from(9));
+        assert_eq!(m.get(&String::new()), U256::from(9));
+
+        let slot = m.slot_of(&String::new());
+        let expected = [
+            0xb1, 0x0e, 0x2d, 0x52, 0x76, 0x12, 0x07, 0x3b, 0x26, 0xee, 0xcd, 0xfd, 0x71, 0x7e,
+            0x6a, 0x32, 0x0c, 0xf4, 0x4b, 0x4a, 0xfa, 0xc2, 0xb0, 0x73, 0x2d, 0x9f, 0xcb, 0xe2,
+            0xb7, 0xfa, 0x0c, 0xf6,
+        ];
+        assert_eq!(slot.as_bytes(), &expected);
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_string_key_no_padding_collision_safety() {
+        // The 1-byte string "a" (raw bytes: [0x61]) and the 32-byte static key
+        // [0x61, 0x00*31] both have 0x61 as their first preimage byte. With the
+        // padded formula they would collide; with the unpadded formula they
+        // must NOT collide.
+        let host = h();
+        let dyn_map = Mapping::<String, U256>::new(StorageKey::from_slot(0), host.clone());
+        let static_map = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), host.clone());
+
+        let dyn_slot = dyn_map.slot_of(&"a".to_string());
+
+        let mut padded_a = [0u8; 32];
+        padded_a[0] = 0x61;
+        let static_slot = static_map.slot_of(&padded_a);
+
+        assert_ne!(
+            dyn_slot.as_bytes(),
+            static_slot.as_bytes(),
+            "dynamic and static keys with shared prefix must derive distinct slots"
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_string_key_distinct_lengths() {
+        // "a" and "aa" share a prefix; verify distinct slots.
+        let m = Mapping::<String, U256>::new(StorageKey::from_slot(0), h());
+        assert_ne!(
+            m.slot_of(&"a".to_string()).as_bytes(),
+            m.slot_of(&"aa".to_string()).as_bytes(),
+        );
+    }
+
+    #[cfg(feature = "alloc")]
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn mapping_string_key_matches_str_impl() {
+        // The String impl must delegate to the str impl so that derived slots
+        // are byte-identical. This guarantee is what would let a future
+        // `get_by_str` zero-alloc accessor share storage with the String API.
+        let host = h();
+        let root = StorageKey::from_slot(3);
+        let m = Mapping::<String, U256>::new(root, host.clone());
+        let owned_slot = m.slot_of(&"alice".to_string());
+        let borrowed_slot = <str as AsStorageKey>::derive_slot("alice", &host, &root);
+        assert_eq!(owned_slot.as_bytes(), borrowed_slot.as_bytes());
     }
 }
