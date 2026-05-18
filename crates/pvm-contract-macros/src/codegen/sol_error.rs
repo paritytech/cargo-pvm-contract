@@ -9,11 +9,9 @@ use super::sol_type::{
 use crate::{codegen::sol_type::generate_dynamic_decode_body, signature::SolType};
 
 pub fn expand_sol_error_enum(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream> {
-    if !data.variants.iter().all(|x| match &x.fields {
-        Fields::Unnamed(FieldsUnnamed { unnamed, .. }) if unnamed.len() == 1 => true,
-        _ => false,
-    }) || data.variants.len() == 0
-    {
+    if !data.variants.iter().all(|x| {
+        matches!(&x.fields, Fields::Unnamed(FieldsUnnamed { unnamed, .. }) if unnamed.len() == 1)
+    }) || data.variants.is_empty() {
         return Err(syn::Error::new_spanned(
             input,
             "SolError can only be derived for enums that contain unnamed fields with path to a struct that implements SolError",

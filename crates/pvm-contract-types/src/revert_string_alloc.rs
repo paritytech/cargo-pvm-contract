@@ -34,7 +34,7 @@ impl SolError for RevertString {
             .is_some_and(|x| x == Self::SELECTOR)
         {
             let (data,) = <(alloc::string::String,) as SolDecode>::decode(
-                input.get(4..).ok_or_else(|| DecodeError)?,
+                input.get(4..).ok_or(DecodeError)?,
             )?;
             Ok(Some(Self(data)))
         } else {

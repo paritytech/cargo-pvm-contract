@@ -94,7 +94,7 @@ impl SolError for DecodeError {
                     None
                 }
             })
-            .or_else(|| None))
+            .or(None))
     }
 }
 

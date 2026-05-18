@@ -52,7 +52,7 @@ impl CallError {
                     return Err(DecodeError);
                 }
                 host.return_data_copy(&mut buf, 0);
-                T::decode_at(&buf, 0)
+                T::decode_at(buf, 0)
             }
             _ => Ok(None),
         }
