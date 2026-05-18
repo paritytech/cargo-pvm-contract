@@ -62,17 +62,6 @@ fn storage_set_32(host: &Host, key: &[u8; 32], value: &[u8; 32]) {
     host.set_storage_or_clear(StorageFlags::empty(), key, value);
 }
 
-/// Write a 32-byte value without the auto-clear-on-zero optimisation.
-///
-/// `set_storage_or_clear(_, &[0; 32])` deletes the slot — wrong when we need
-/// the slot to exist with zero bytes (e.g. the solc-style header for an empty
-/// `string` / `bytes` value: byte31 = 0 means "inline length 0", and `try_get`
-/// must distinguish it from a never-written slot).
-#[cfg(feature = "alloc")]
-fn storage_write_raw_32(host: &Host, key: &[u8; 32], value: &[u8; 32]) {
-    host.set_storage(StorageFlags::empty(), key.as_slice(), value);
-}
-
 /// Delete a storage slot.
 ///
 /// pallet-revive's uapi only exposes deletion via `set_storage_or_clear` with
@@ -104,13 +93,18 @@ fn storage_derive_key_unpadded(host: &Host, root: &[u8; 32], key: &[u8]) -> [u8;
     output
 }
 
+/// Read a 32-byte slot, treating all-zero as "absent".
+///
+/// pallet-revive's Fix-keyed uapi only exposes `get_storage_or_zero`, which
+/// returns zeros for both deleted and never-written slots. For Solidity-style
+/// storage (which `pvm-storage` targets — see `resolc`) that conflation is
+/// the correct semantics: SSTORE 0 deletes, SLOAD of missing returns 0,
+/// and "set to 0" is indistinguishable from "never written". Dynamic
+/// `bytes` / `string` accessors recover the "set empty vs never written"
+/// distinction by storing a non-zero sentinel in the inline header.
 fn storage_try_get_32(host: &Host, key: &[u8; 32]) -> Option<[u8; 32]> {
-    let mut buf = [0u8; 32];
-    let mut out = &mut buf[..];
-    match host.get_storage(StorageFlags::empty(), key, &mut out) {
-        Ok(()) => Some(buf),
-        Err(_) => None,
-    }
+    let buf = storage_get_32(host, key);
+    (buf != [0u8; 32]).then_some(buf)
 }
 
 /// Hash a 32-byte slot to produce the data root for a dynamic value
@@ -335,12 +329,16 @@ impl AsStorageKey for alloc::vec::Vec<u8> {
 //     slot         = (len * 2 + 1) as big-endian u256   // low bit = 1
 //     keccak256(slot) + i  =  32-byte body chunks (i = 0, 1, ...)
 //
-// `set("")` / `set(vec![])` writes a header of all-zero bytes (length 0,
-// low bit 0, inline). It uses raw `set_storage` (not `set_storage_or_clear`)
-// so the slot stays in the trie — `try_get` then returns `Some(empty)` for
-// "explicitly set to empty" and `None` for "never written / cleared", which
-// matches solc's storage semantics for the read paths and our richer
-// try_get distinction at the same time.
+// Empty-inline sentinel: a literal `set("")` / `set(vec![])` would otherwise
+// produce an all-zero header, which `set_storage_or_clear` (the only Fix-keyed
+// write uapi — see [`storage_set_32`]) auto-deletes. To keep the slot present
+// in the trie so `try_get` can return `Some(empty)`, we stash a non-zero byte
+// at `slot[30]` (an "empty sentinel" — `len = 0` ⇒ body occupies `slot[0..0]`,
+// so the decoder never looks at bytes 0..31). For any non-empty inline value
+// the length lives in `slot[31]` and the slot is already non-zero, so the
+// sentinel is only injected when `len == 0`. Resolc-emitted Solidity has no
+// such distinction (`SLOAD` of missing == 0 == set-to-0); we recover it here
+// only for `bytes` / `string` because the decoder has a spare 31-byte field.
 //
 // `clear` deletes the header (and any long-form body chunks) via
 // `set_storage_or_clear(_, &[0; 32])` — the only deletion path in uapi.
@@ -441,16 +439,21 @@ fn dynamic_bytes_set(host: &Host, slot: &StorageKey, data: &[u8]) {
         let mut packed = [0u8; 32];
         packed[..new_len].copy_from_slice(data);
         packed[31] = (new_len as u8) << 1;
-        // Raw write — for `set("")` the header is `[0; 32]` and we must keep
-        // the slot present (auto-clear would delete and try_get would no
-        // longer distinguish "set empty" from "never written").
-        storage_write_raw_32(host, slot.as_bytes(), &packed);
+        if new_len == 0 {
+            // Empty-inline sentinel: keeps the slot from being auto-cleared
+            // by `set_storage_or_clear`. `slot[30]` is outside both the
+            // (zero-length) body and the length byte, so the decoder ignores
+            // it. Any non-zero value would do; `EMPTY_INLINE_SENTINEL` is the
+            // chosen marker.
+            packed[30] = EMPTY_INLINE_SENTINEL;
+        }
+        storage_set_32(host, slot.as_bytes(), &packed);
         return;
     }
 
     // Long form: header = len * 2 + 1; body chunks at keccak256(slot) + i.
     let header = encode_long_header(new_len);
-    storage_write_raw_32(host, slot.as_bytes(), &header);
+    storage_set_32(host, slot.as_bytes(), &header);
 
     let mut body_slot = dynamic_data_root(host, slot.as_bytes());
     let mut offset = 0usize;
@@ -459,11 +462,22 @@ fn dynamic_bytes_set(host: &Host, slot: &StorageKey, data: &[u8]) {
         let remaining = new_len - offset;
         let take = if remaining >= 32 { 32 } else { remaining };
         chunk[..take].copy_from_slice(&data[offset..offset + take]);
-        storage_write_raw_32(host, &body_slot, &chunk);
+        // Body chunks use `set_storage_or_clear`: an all-zero chunk gets
+        // auto-deleted, but the read side calls `get_storage_or_zero` which
+        // returns zeros for missing slots — so the round-trip is preserved.
+        // This also matches Solidity SSTORE semantics.
+        storage_set_32(host, &body_slot, &chunk);
         offset += take;
         inc_slot(&mut body_slot);
     }
 }
+
+/// Sentinel byte injected at `slot[30]` for an empty-inline dynamic value, so
+/// the slot stays non-zero and survives `set_storage_or_clear`'s auto-delete.
+/// Decoder ignores `slot[..31]` when `len == 0`, so the value is arbitrary;
+/// `0x01` is the smallest non-zero marker.
+#[cfg(feature = "alloc")]
+const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 
 #[cfg(feature = "alloc")]
 fn dynamic_bytes_get(host: &Host, slot: &StorageKey) -> alloc::vec::Vec<u8> {
@@ -1313,6 +1327,54 @@ mod tests {
         assert_eq!(written.get(), "");
         assert_eq!(never.try_get(), None);
         assert_eq!(never.get(), "");
+    }
+
+    /// `set("")` must leave a non-zero header in the slot so that
+    /// `set_storage_or_clear` doesn't auto-delete it; the decoder still
+    /// reports inline-len-0. The sentinel lives at `slot[30]` (outside the
+    /// zero-length body and outside the length byte at `slot[31]`).
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_string_set_empty_writes_non_zero_sentinel_header() {
+        let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+
+        lazy.set("");
+
+        let slot_bytes = storage_get_32(&host, key.as_bytes());
+        assert_ne!(
+            slot_bytes, [0u8; 32],
+            "slot must be non-zero so it persists"
+        );
+        assert_eq!(slot_bytes[31], 0, "length byte: inline + len 0");
+        assert_eq!(slot_bytes[30], EMPTY_INLINE_SENTINEL, "sentinel at byte 30");
+        assert!(
+            slot_bytes[..30].iter().all(|&b| b == 0),
+            "bytes 0..30 must be zero"
+        );
+    }
+
+    /// Overwriting a sentinel-only empty header with a non-empty value must
+    /// clear the sentinel byte (otherwise stale `0x01` at `slot[30]` would
+    /// land inside a future 31-byte inline value's body).
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_string_overwrite_empty_clears_sentinel() {
+        let mut lazy = LazyString::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let key = lazy.key;
+
+        lazy.set("");
+        lazy.set(&"a".repeat(31));
+
+        let slot_bytes = storage_get_32(&host, key.as_bytes());
+        assert_eq!(
+            slot_bytes[30], b'a',
+            "byte 30 is the last body byte for len=31"
+        );
+        assert_eq!(slot_bytes[31], 31 * 2, "length × 2");
+        assert_eq!(lazy.get(), "a".repeat(31));
     }
 
     /// Probe the slot bytes directly: short value lives inline with
