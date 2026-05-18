@@ -77,8 +77,6 @@ mod error_caller {
                 ))))
             );
 
-            let _ = reverts.call(self)?;
-
             Ok(())
         }
 
