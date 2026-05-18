@@ -1307,7 +1307,7 @@ mod tests {
         let mut written = LazyString::new(StorageKey::from_slot(0), h());
         let never = LazyString::new(StorageKey::from_slot(1), written.host.clone());
 
-        written.set(&String::new());
+        written.set("");
 
         assert_eq!(written.try_get(), Some(String::new()));
         assert_eq!(written.get(), "");
@@ -1756,7 +1756,6 @@ mod tests {
     }
 
     #[cfg(feature = "alloc")]
-    #[cfg(feature = "alloc")]
     #[test]
     fn mapping_bytes_key_roundtrip() {
         let mut m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(0), h());
@@ -1765,7 +1764,6 @@ mod tests {
         assert_eq!(m.get(&vec![1u8, 2, 4]), U256::ZERO);
     }
 
-    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_bytes_key_long_roundtrip() {
@@ -1777,7 +1775,6 @@ mod tests {
         assert_eq!(m.get(&key), U256::from(7));
     }
 
-    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_key_solidity_parity() {
@@ -1798,7 +1795,6 @@ mod tests {
     }
 
     #[cfg(feature = "alloc")]
-    #[cfg(feature = "alloc")]
     #[test]
     fn mapping_bytes_key_solidity_parity() {
         // cast index bytes "0x010203" 1
@@ -1818,7 +1814,6 @@ mod tests {
     }
 
     #[cfg(feature = "alloc")]
-    #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_key_empty() {
         // Empty key: preimage is just the 32-byte root slot.
@@ -1836,7 +1831,6 @@ mod tests {
         assert_eq!(slot.as_bytes(), &expected);
     }
 
-    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_key_no_padding_collision_safety() {
@@ -1862,7 +1856,6 @@ mod tests {
     }
 
     #[cfg(feature = "alloc")]
-    #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_key_distinct_lengths() {
         // "a" and "aa" share a prefix; verify distinct slots.
@@ -1873,7 +1866,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "alloc")]
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_key_matches_str_impl() {
