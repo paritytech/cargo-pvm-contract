@@ -16,8 +16,9 @@ pub fn expand_storage(input: &ItemStruct) -> syn::Result<TokenStream> {
         let fvis = &field.vis;
         let ns = proc_macro2::Literal::byte_string(format!("{}::{}", struct_name, name.as_ref().unwrap()).as_bytes());
 
-        // Mapping fields are returned directly; all other types get wrapped in Lazy<T>
-        let (ret_ty, constructor) = if matches!(ty, Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Mapping")) {
+        // Storage handle fields are returned directly; all other types get wrapped in Lazy<T>.
+        let is_handle = matches!(ty, Type::Path(p) if p.path.segments.last().is_some_and(|s| s.ident == "Mapping" || s.ident == "OrderedIndex"));
+        let (ret_ty, constructor) = if is_handle {
             (quote! { #ty }, quote! { <#ty>::new(#ns) })
         } else {
             (quote! { pvm_contract::storage::Lazy<#ty> }, quote! { pvm_contract::storage::Lazy::new(#ns) })

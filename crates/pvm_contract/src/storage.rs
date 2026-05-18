@@ -34,12 +34,19 @@
 //! Storage::balances().insert(&addr, &amount);
 //! ```
 
+mod ordered_index;
+
+pub use ordered_index::OrderedIndex;
+
 use core::marker::PhantomData;
-use pallet_revive_uapi::{HostFn, HostFnImpl as api, StorageFlags};
+use pallet_revive_uapi::{HostFn, HostFnImpl as api, ReturnFlags, StorageFlags};
 use parity_scale_codec::{Decode, Encode};
 
 /// Default buffer size for reading values from storage.
 const DEFAULT_READ_BUFFER_SIZE: usize = 512;
+
+/// Maximum byte length of one durable storage value in the target revive runtime.
+pub const MAX_STORAGE_VALUE_BYTES: usize = 416;
 
 /// A 32-byte storage key.
 pub type StorageKey = [u8; 32];
@@ -107,6 +114,7 @@ pub fn get_with_buffer<T: Decode, const N: usize>(key: &StorageKey) -> Option<T>
 /// Set a value in storage at the given key.
 pub fn set<T: Encode>(key: &StorageKey, value: &T) {
     let encoded = value.encode();
+    ensure_storage_value_size(encoded.len());
     api::set_storage(StorageFlags::empty(), key, &encoded);
 }
 
@@ -118,6 +126,16 @@ pub fn set<T: Encode>(key: &StorageKey, value: &T) {
 /// SSTORE area. Mixing them silently leaves data behind.
 pub fn remove(key: &StorageKey) {
     api::set_storage(StorageFlags::empty(), key, &[]);
+}
+
+fn ensure_storage_value_size(len: usize) {
+    if len > MAX_STORAGE_VALUE_BYTES {
+        revert(b"StorageValueTooLarge")
+    }
+}
+
+fn revert(msg: &[u8]) -> ! {
+    api::return_value(ReturnFlags::REVERT, msg)
 }
 
 /// Check if a key has a value stored at it.
