@@ -68,6 +68,18 @@ target/release/my_contract.polkavm    — deployable bytecode
 target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style only)
 ```
 
+#### Flags
+
+| Flag | Description |
+| ---- | ----------- |
+| `--manifest-path <PATH>` | Path to `Cargo.toml`. Defaults to the current directory. |
+| `-p`, `--package <PKG>` | Select a workspace member by name. Required when `--manifest-path` points at a workspace root. |
+| `--profile <NAME>` | Build profile. Defaults to `release`. |
+| `-o`, `--output-dir <DIR>` | Output directory for `.polkavm` and `.abi.json`. Defaults to the workspace target directory (`target/`). |
+| `--features <FEATURES>` | Space- or comma-separated list of features to activate. Forwarded to both the PolkaVM build and the host-side ABI generation, so features must be host-buildable. |
+| `--no-default-features` | Disable the package's default features for the PolkaVM build. Default features remain enabled for ABI generation so the host-side abi-gen build retains the broadest feature set; if the ABI generator needs to see the same minimized feature set, generate the ABI separately. |
+| `--message-format <FMT>` | Forward a `cargo --message-format` value (e.g. `json`) for tool integration. |
+
 ### Option 2: build.rs
 
 Projects can also use `cargo-pvm-contract-builder` as a build dependency with a `build.rs` file:
@@ -90,6 +102,12 @@ Output:
 target/release/my_contract.polkavm    — deployable bytecode
 target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style only)
 ```
+
+The `build.rs` path does not expose `--features` / `--no-default-features` /
+`--package` knobs — its outer `cargo build` already controls the host-side
+feature set, and the inner PolkaVM build inherits whatever features your
+`Cargo.toml` declares as `default`. Use the CLI (Option 1) when you need
+one-shot feature overrides or to select a workspace member.
 
 ## What Happens Under the Hood
 

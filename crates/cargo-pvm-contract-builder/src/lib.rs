@@ -178,6 +178,7 @@ pub fn build_contract(
     bins: &[String],
     message_format: Option<&str>,
     features: Option<&str>,
+    no_default_features: bool,
 ) -> Result<()> {
     let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
     let build_dir = output_dir.join("pvmbuild");
@@ -189,6 +190,7 @@ pub fn build_contract(
         bins,
         message_format,
         features,
+        no_default_features,
     )?;
 
     let elf_dir = build_dir
@@ -236,6 +238,7 @@ fn build_project(
         &bins_to_build,
         None,
         None,
+        false,
     )?;
 
     let elf_dir = build_dir
@@ -298,6 +301,7 @@ fn build_elf(
     bins: &[String],
     message_format: Option<&str>,
     features: Option<&str>,
+    no_default_features: bool,
 ) -> Result<()> {
     let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
 
@@ -366,6 +370,10 @@ fn build_elf(
 
     if let Some(list) = features {
         cmd.arg("--features").arg(list);
+    }
+
+    if no_default_features {
+        cmd.arg("--no-default-features");
     }
 
     eprintln!("Building PolkaVM binary with profile: {profile}");

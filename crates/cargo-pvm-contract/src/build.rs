@@ -10,7 +10,8 @@ pub struct BuildArgs {
     #[arg(long)]
     manifest_path: Option<PathBuf>,
 
-    /// Package to build (when manifest points at a workspace)
+    /// Package to build. Selects a workspace member by name when the manifest
+    /// is a workspace; also accepts the package's own name for a single crate.
     #[arg(short = 'p', long = "package")]
     package: Option<String>,
 
@@ -30,6 +31,12 @@ pub struct BuildArgs {
     /// Features must be host-buildable since ABI generation runs on the host triple.
     #[arg(long = "features", value_name = "FEATURES")]
     features: Option<String>,
+
+    /// Do not activate the package's default features for the contract build.
+    /// Default features stay enabled for ABI generation so the host-side
+    /// abi-gen build keeps the broadest possible feature set available.
+    #[arg(long = "no-default-features")]
+    no_default_features: bool,
 }
 
 pub fn build_contracts(args: BuildArgs) -> Result<()> {
@@ -75,12 +82,14 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
         &bins,
         args.message_format.as_deref(),
         args.features.as_deref(),
+        args.no_default_features,
     )?;
 
     Ok(())
 }
 
 fn find_target_dir(manifest_path: &Path, workspace_root: Option<&Path>) -> PathBuf {
+    // Precedence mirrors cargo: env var > workspace root > manifest dir.
     if let Ok(dir) = std::env::var("CARGO_TARGET_DIR") {
         return PathBuf::from(dir);
     }
@@ -93,23 +102,24 @@ fn find_target_dir(manifest_path: &Path, workspace_root: Option<&Path>) -> PathB
         .join("target")
 }
 
-/// Resolve `<package>` against the workspace at `manifest_path`, returning the
-/// member's own `Cargo.toml` and the workspace root.
+/// Resolve `<package>` via `cargo metadata` against `manifest_path`. Works
+/// whether the manifest is a workspace root (selecting a member by name) or
+/// a single-crate manifest (where `<package>` must match the crate's own
+/// name). Returns the resolved member's `Cargo.toml` and the workspace root
+/// if cargo reports one.
 fn resolve_workspace_member(
     manifest_path: &Path,
     package: &str,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
-    let mut cmd = Command::new("cargo");
-    cmd.arg("metadata")
+    let output = Command::new("cargo")
+        .arg("metadata")
         .arg("--no-deps")
         .arg("--format-version")
         .arg("1")
         .arg("--manifest-path")
-        .arg(manifest_path);
-    if let Some(dir) = manifest_path.parent() {
-        cmd.current_dir(dir);
-    }
-    let output = cmd.output().context("Failed to invoke `cargo metadata`")?;
+        .arg(manifest_path)
+        .output()
+        .context("Failed to invoke `cargo metadata`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

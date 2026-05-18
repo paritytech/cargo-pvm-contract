@@ -162,7 +162,15 @@ fn run_abi_gen_binary(
         cmd.env_remove("RUSTUP_TOOLCHAIN");
     }
 
-    cmd.env(super::INTERNAL_BUILD_ENV, "1")
+    // Combine `abi-gen` with any user-supplied features into a single
+    // `--features` argument (cargo accepts comma-separated lists).
+    let combined_features = match features {
+        Some(list) if !list.trim().is_empty() => format!("abi-gen,{list}"),
+        _ => "abi-gen".to_string(),
+    };
+
+    let output = cmd
+        .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")
         .arg("--manifest-path")
         .arg(&manifest_path)
@@ -171,13 +179,7 @@ fn run_abi_gen_binary(
         .arg("--config")
         .arg(r#"unstable.build-std=["std","core","alloc"]"#)
         .arg("--features")
-        .arg("abi-gen");
-
-    if let Some(list) = features {
-        cmd.arg("--features").arg(list);
-    }
-
-    let output = cmd
+        .arg(&combined_features)
         .arg("--bin")
         .arg(bin_name)
         .output()

@@ -211,6 +211,7 @@ fn build_variant(
         &bins,
         None,
         None,
+        false,
     )
     .with_context(|| {
         format!(
