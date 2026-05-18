@@ -388,14 +388,17 @@ mod tests {
                     }
                     Ok(None)
                 }
+                #[cfg(feature = "abi-gen")]
                 fn error_signatures() -> impl Iterator<Item = &'static &'static str>
                 where
                     Self: Sized,
                 {
                     let mut arr = [];
                     let arr = arr.into_iter();
-                    arr.chain(Err1.error_signatures()).chain(Err2.error_signatures());
-                    arr.iter()
+                    let arr = arr
+                        .chain(<Err1 as ::pvm_contract_sdk::SolError>::error_signatures())
+                        .chain(<Err2 as ::pvm_contract_sdk::SolError>::error_signatures());
+                    arr.into_iter()
                 }
             }
         "#]]
@@ -435,7 +438,7 @@ mod tests {
                         return Err(::pvm_contract_sdk::DecodeError);
                     }
                     if input.get(offset..offset + 4).is_some_and(|x| x == Self::SELECTOR) {
-                        let res = { Self }?;
+                        let res = { Ok(Self) }?;
                         Ok(Some(res))
                     } else {
                         Ok(None)
