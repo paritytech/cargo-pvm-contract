@@ -120,7 +120,7 @@ fn generate_abi_gen_impl(
         .iter()
         .map(|err_ty| {
             quote! {
-                for __sig in <#err_ty as ::pvm_contract_sdk::SolRevert>::error_signatures() {
+                for __sig in <#err_ty as ::pvm_contract_sdk::SolError>::error_signatures() {
                     let Some(__paren) = __sig.find('(') else { continue; };
                     if !__sig.ends_with(')') { continue; }
                     if __seen_errors.contains(__sig) {

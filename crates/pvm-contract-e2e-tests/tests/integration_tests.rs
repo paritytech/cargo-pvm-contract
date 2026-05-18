@@ -31,6 +31,20 @@ fn flipper_call_toggle_state() {
 }
 
 #[test]
+fn error_call() {
+    let (_anvil, cast, addr) = deploy("error-handling");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("error_caller", "release");
+    let caller_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+    cast.send(
+        &caller_addr,
+        "callError(address)",
+        &[&addr],
+        DEFAULT_PRIVATE_KEY,
+    );
+}
+
+#[test]
 fn point_adder_call() {
     let (_anvil, cast, addr) = deploy("point_adder");
     let c = contract("test-contracts");

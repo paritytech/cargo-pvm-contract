@@ -17,15 +17,14 @@ interface Flipper {
 mod flipper_delegate {
     use super::*;
     use pvm_contract_sdk::CallError;
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     const STORAGE_KEY: [u8; 32] = [0u8; 32];
     use flipper::{self, Flipper};
 
-    sol_revert_enum! {
-        pub enum Error {
-            CallError(CallError)
-        }
+    #[derive(SolError, Debug)]
+    pub enum Error {
+        CallError(CallError),
     }
 
     pub struct FlipperDelegate;
@@ -33,7 +32,8 @@ mod flipper_delegate {
     impl FlipperDelegate {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), Error> {
-            self.host().set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
+            self.host()
+                .set_storage(StorageFlags::empty(), &STORAGE_KEY, &[0u8; 32]);
             Ok(())
         }
 
@@ -56,7 +56,10 @@ mod flipper_delegate {
         fn read_value(&self) -> bool {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host().get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &STORAGE_KEY, &mut out)
+            {
                 Ok(_) => buf[31] != 0,
                 Err(_) => false,
             }

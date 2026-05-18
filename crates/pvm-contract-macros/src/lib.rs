@@ -207,6 +207,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ```ignore
 /// mod my_token {
 ///     #[derive(Debug, pvm_contract_macros::SolError)]
+///     pub struct Unauthorized;
+///     #[derive(Debug, pvm_contract_macros::SolError)]
 ///     pub struct InsufficientBalance;
 ///
 ///     pub struct MyToken;
@@ -215,13 +217,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> { ... }
 ///     }
 ///
-///     // Multiple errors: wrap with sol_revert_enum!
-///     // pvm_contract_sdk::sol_revert_enum! {
-///     //     pub enum TokenError {
-///     //         InsufficientBalance(InsufficientBalance),
-///     //         Unauthorized(Unauthorized),
-///     //     }
-///     // }
+///     #[derive(Debug, pvm_contract_macros::SolError)]
+///     pub enum TokenError {
+///         InsufficientBalance(InsufficientBalance),
+///         Unauthorized(Unauthorized),
+///     }
 /// }
 /// ```
 ///
@@ -323,7 +323,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     Err(e) => {
 ///                         let mut __revert_buf = [0u8; 256];
 ///                         let __revert_len =
-///                             ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+///                             e.encode_to(&mut __revert_buf);
 ///                         this.host().return_value(
 ///                             ::pvm_contract_sdk::ReturnFlags::REVERT,
 ///                             &__revert_buf[..__revert_len]);

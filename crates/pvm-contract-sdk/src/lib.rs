@@ -91,7 +91,6 @@ pub use pvm_contract_types::{
     SolDefaultError,
     SolEncode,
     SolError,
-    SolRevert,
     StaticDecode,
     StaticEncodedLen,
     StorageFlags,
@@ -99,7 +98,6 @@ pub use pvm_contract_types::{
     const_selector,
     // Framework errors
     framework_errors,
-    sol_revert_enum,
     value_transferred_is_nonzero,
 };
 
@@ -183,7 +181,6 @@ pub mod prelude {
         SolEncode,
         // Error traits
         SolError,
-        SolRevert,
         StaticEncodedLen,
         StorageFlags,
         U256,
