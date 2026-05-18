@@ -8,7 +8,7 @@ use super::dispatch::{
     MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
     generate_revert_encoding_boundary, generate_router,
 };
-use super::sol_storage::extract_optional_slot_attr;
+use super::storage_layout::extract_optional_slot_attr;
 use crate::signature::{SolType, compute_selector};
 use crate::utils::{compute_function_signature, to_snake_case};
 

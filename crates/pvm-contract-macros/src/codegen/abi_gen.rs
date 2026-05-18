@@ -3,7 +3,7 @@ use quote::quote;
 
 use super::contract::{ParsedContract, SlotField};
 use super::dispatch::{MethodInfo, StateMutability};
-use super::sol_storage::{generate_layout_entry, layout_json_from_entries};
+use super::storage_layout::{generate_layout_entry, layout_json_from_entries};
 
 /// Generate both the in-module ABI helper and the top-level `main()`.
 ///
