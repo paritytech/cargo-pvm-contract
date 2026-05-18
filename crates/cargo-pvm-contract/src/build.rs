@@ -25,6 +25,11 @@ pub struct BuildArgs {
     /// Cargo message format
     #[arg(long)]
     message_format: Option<String>,
+
+    /// Space or comma separated list of features to activate.
+    /// Features must be host-buildable since ABI generation runs on the host triple.
+    #[arg(long = "features", value_name = "FEATURES")]
+    features: Option<String>,
 }
 
 pub fn build_contracts(args: BuildArgs) -> Result<()> {
@@ -69,6 +74,7 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
         &profile,
         &bins,
         args.message_format.as_deref(),
+        args.features.as_deref(),
     )?;
 
     Ok(())
