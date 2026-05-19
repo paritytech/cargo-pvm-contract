@@ -4,12 +4,18 @@
 //! storage, both using Solidity-compatible key derivation so tools like `cast storage`
 //! and `cast index` work out of the box.
 //!
-//! Static 32-byte values use [`Lazy<T>`] and [`Mapping<K, V>`] with `T`/`V`
-//! bound to `SolEncode + StaticDecode + StaticEncodedLen`. Dynamic `bytes` /
-//! `string` values use the dedicated accessors [`LazyBytes`], [`LazyString`],
-//! [`MappingBytes`], and [`MappingString`] — they encode inline when
-//! `len < 32` and spill to `keccak256(slot) + i` chunks otherwise, matching
-//! `solc`'s storage layout.
+//! Static values use [`Lazy<T>`] and [`Mapping<K, V>`] with `T`/`V` bound to
+//! `SolEncode + StaticDecode + StaticEncodedLen`. The value must have a
+//! compile-time-known size that's a positive multiple of 32 and at most
+//! [`MAX_STATIC_BYTES`]. Single-word values (`U256`, `Address`, `bool`,
+//! `[u8; 32]`, …) occupy one slot; multi-word values like `(U256, U256)` or
+//! `#[derive(SolType)]` structs are striped across `T::ENCODED_SIZE / 32`
+//! consecutive slots, mirroring Solidity's struct-in-storage layout.
+//!
+//! Dynamic `bytes` / `string` values use the dedicated accessors
+//! [`LazyBytes`], [`LazyString`], [`MappingBytes`], and [`MappingString`] —
+//! they encode inline when `len < 32` and spill to `keccak256(slot) + i`
+//! chunks otherwise, matching `solc`'s storage layout.
 //!
 //! All accessors implement [`StorageComponent`], so they participate in the
 //! auto-numbered slot layout produced by the `#[contract]` and `#[storage]`
@@ -43,7 +49,9 @@ extern crate alloc;
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{Host, HostApi, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags};
+#[cfg(feature = "abi-gen")]
+use pvm_contract_types::StaticEncodedLen;
+use pvm_contract_types::{Host, HostApi, SolEncode, StorageDecode, StorageEncode, StorageFlags};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -102,6 +110,10 @@ fn storage_derive_key_unpadded(host: &Host, root: &[u8; 32], key: &[u8]) -> [u8;
 /// and "set to 0" is indistinguishable from "never written". Dynamic
 /// `bytes` / `string` accessors recover the "set empty vs never written"
 /// distinction by storing a non-zero sentinel in the inline header.
+///
+/// Only referenced by dynamic-bytes code (alloc-gated) and tests; the static
+/// `Lazy`/`Mapping` paths go through `storage_try_get_static_into` instead.
+#[cfg(any(feature = "alloc", test))]
 fn storage_try_get_32(host: &Host, key: &[u8; 32]) -> Option<[u8; 32]> {
     let buf = storage_get_32(host, key);
     (buf != [0u8; 32]).then_some(buf)
@@ -118,8 +130,8 @@ fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
 }
 
 /// Increment a 32-byte big-endian integer in-place (used to walk consecutive
-/// storage slots for the body of dynamic values).
-#[cfg(feature = "alloc")]
+/// storage slots — both the body of dynamic values and multi-word static
+/// values that span more than one slot).
 fn inc_slot(slot: &mut [u8; 32]) {
     for byte in slot.iter_mut().rev() {
         let (next, carry) = byte.overflowing_add(1);
@@ -127,6 +139,62 @@ fn inc_slot(slot: &mut [u8; 32]) {
         if !carry {
             return;
         }
+    }
+}
+
+/// Maximum number of 32-byte slots a single static `Lazy<T>` / `Mapping<K, V>`
+/// value can occupy. 8 slots = 256 bytes is enough for typical record types
+/// (e.g. `(Address, U256, U256)`) without allocating heap or requiring
+/// `feature(generic_const_exprs)` to size the stack buffer by
+/// `T::STORAGE_SLOTS`.
+///
+/// Increase this if a contract needs larger inline static values.
+pub const MAX_STATIC_SLOTS: usize = 8;
+
+/// Read `out.len()` consecutive slots starting at `key` into `out`.
+fn read_slots(host: &Host, key: &[u8; 32], out: &mut [[u8; 32]]) {
+    let mut k = *key;
+    for slot in out.iter_mut() {
+        *slot = storage_get_32(host, &k);
+        inc_slot(&mut k);
+    }
+}
+
+/// Read `out.len()` consecutive slots starting at `key`. Returns `None` iff
+/// every slot read back as `[0; 32]` — matches Solidity's "value-zero ≡
+/// deleted ≡ never-written" semantics aggregated across a multi-slot value.
+fn try_read_slots(host: &Host, key: &[u8; 32], out: &mut [[u8; 32]]) -> Option<()> {
+    let mut k = *key;
+    let mut any_present = false;
+    for slot in out.iter_mut() {
+        let read = storage_get_32(host, &k);
+        if read != [0u8; 32] {
+            any_present = true;
+        }
+        *slot = read;
+        inc_slot(&mut k);
+    }
+    any_present.then_some(())
+}
+
+/// Stream-encode `value` slot-by-slot and write to consecutive slots starting
+/// at `key`. Uses a 32-byte stack buffer regardless of `T::STORAGE_SLOTS`.
+fn write_value<T: StorageEncode>(host: &Host, key: &[u8; 32], value: &T) {
+    let mut k = *key;
+    for i in 0..T::STORAGE_SLOTS {
+        let mut buf = [0u8; 32];
+        value.encode_slot(i, &mut buf);
+        storage_set_32(host, &k, &buf);
+        inc_slot(&mut k);
+    }
+}
+
+/// Clear `n` consecutive slots starting at `key`.
+fn clear_n_slots(host: &Host, key: &[u8; 32], n: usize) {
+    let mut k = *key;
+    for _ in 0..n {
+        host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
+        inc_slot(&mut k);
     }
 }
 
@@ -357,18 +425,31 @@ enum DynHeader {
 #[cfg(feature = "alloc")]
 fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
     if slot_bytes[31] & 1 == 0 {
+        // Solidity short form: byte 31 encodes `len * 2` with `len ∈ [0, 31]`,
+        // so any decoded value above 31 means the slot was written with
+        // malformed data (corruption or a non-Solidity-compatible writer to
+        // the same key). Cap to 31 so the subsequent `&slot_bytes[..len]`
+        // slice in `dynamic_bytes_get` / `try_get` cannot panic.
         DynHeader::Inline {
-            len: (slot_bytes[31] >> 1) as usize,
+            len: ((slot_bytes[31] >> 1) as usize).min(31),
         }
     } else {
-        // Spilled: full slot encodes `len * 2 + 1` as a u256.
-        // Length cannot exceed usize::MAX bytes in practice; the upper 192
-        // bits are always zero for any plausible stored value.
+        // Spilled: full slot encodes `len * 2 + 1` as a big-endian u256. Any
+        // real stored length fits in usize (and far less in practice), so the
+        // upper 16 bytes must be zero. Non-zero high bytes mean the slot was
+        // written with malformed data (corruption or a non-Solidity-compatible
+        // writer); treat as empty to avoid reading runaway body chunks. The
+        // `raw > usize::MAX` check covers the same risk on 32-bit targets.
+        let high_zero = slot_bytes[..16].iter().all(|&b| b == 0);
         let mut len_be = [0u8; 16];
         len_be.copy_from_slice(&slot_bytes[16..32]);
         let raw = u128::from_be_bytes(len_be);
+        let raw_len = raw >> 1;
+        if !high_zero || raw_len > usize::MAX as u128 {
+            return DynHeader::Spilled { len: 0 };
+        }
         DynHeader::Spilled {
-            len: (raw >> 1) as usize,
+            len: raw_len as usize,
         }
     }
 }
@@ -604,32 +685,41 @@ impl<K: SolEncode> StorageLayoutType for MappingString<K> {
 // Lazy<T> — static 32-byte value at a fixed storage slot.
 // ---------------------------------------------------------------------------
 
-/// A single typed value at a fixed storage slot.
+/// A single typed value at a fixed storage slot (or a contiguous range of
+/// slots, for multi-word `T`).
 ///
-/// "Lazy" because there is no caching: every [`get`](Lazy::get) reads from host
-/// storage, every [`set`](Lazy::set) writes immediately.
+/// "Lazy" because there is no caching: every [`get`](Lazy::get) reads from
+/// host storage, every [`set`](Lazy::set) writes immediately.
 ///
-/// `T` is restricted to static 32-byte types (`U256`, `Address`, `bool`,
-/// `[u8; 32]`, …). For dynamic values, use [`LazyBytes`] or [`LazyString`].
-///
-/// The decode/encode is inlined at the method site (rather than dispatched
-/// through a value-type trait) so LLVM sees one direct call chain per type
-/// and shares the byte-swap helper with the dispatch encode/decode paths.
+/// `T` must have a compile-time-known size that's a positive multiple of 32
+/// and at most [`MAX_STATIC_BYTES`]. Single-word `T` (`U256`, `Address`,
+/// `bool`, `[u8; 32]`, …) occupies one slot; an `N`-word `T` (e.g.
+/// `(U256, U256)`, or a `#[derive(SolType)]` struct of static fields) is
+/// striped across `N` consecutive slots starting at `self.key`, matching
+/// Solidity's struct-in-storage layout. For dynamic values, use
+/// [`LazyBytes`] or [`LazyString`].
 pub struct Lazy<T> {
     key: StorageKey,
     host: Host,
     _marker: PhantomData<T>,
 }
 
-impl<T: SolEncode + StaticDecode + StaticEncodedLen> Lazy<T> {
+impl<T: StorageEncode + StorageDecode> Lazy<T> {
+    /// Compile-time validation of `T::STORAGE_SLOTS`. Referencing this in
+    /// every public method forces the const evaluator to run the check at
+    /// each monomorphization, even though the actual check lives in one place.
+    const _SIZE_CHECK: () = {
+        assert!(T::STORAGE_SLOTS > 0, "Lazy<T>: T::STORAGE_SLOTS must be positive");
+        assert!(
+            T::STORAGE_SLOTS <= MAX_STATIC_SLOTS,
+            "Lazy<T>: T::STORAGE_SLOTS exceeds MAX_STATIC_SLOTS. \
+             Use a dynamic accessor (LazyBytes/LazyString) or raise MAX_STATIC_SLOTS."
+        );
+    };
+
     /// Create a new `Lazy` at the given storage key, bound to a host handle.
     pub fn new(key: StorageKey, host: Host) -> Self {
-        const {
-            assert!(
-                T::ENCODED_SIZE == 32,
-                "Lazy<T> requires a 32-byte type (U256, Address, bool, [u8; 32], …)"
-            )
-        };
+        let () = Self::_SIZE_CHECK;
         Lazy {
             key,
             host,
@@ -637,47 +727,82 @@ impl<T: SolEncode + StaticDecode + StaticEncodedLen> Lazy<T> {
         }
     }
 
-    /// Read the value from storage.
+    /// Read the value from storage. For multi-slot `T`, reads
+    /// `T::STORAGE_SLOTS` consecutive slots starting at `self.key`.
     ///
     /// Returns the zero value for `T` if the slot was never written,
     /// matching Solidity's default-to-zero semantics.
     pub fn get(&self) -> T {
-        let buf = storage_get_32(&self.host, self.key.as_bytes());
-        unsafe { T::decode_unchecked(&buf, 0) }
+        let () = Self::_SIZE_CHECK;
+        if T::STORAGE_SLOTS == 1 {
+            // Fast path: skip the loop + multi-slot buffer for single-slot V.
+            // The branch is const-folded at monomorphization.
+            let one = [storage_get_32(&self.host, self.key.as_bytes())];
+            T::from_slots(&one)
+        } else {
+            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
+            read_slots(&self.host, self.key.as_bytes(), &mut slots[..T::STORAGE_SLOTS]);
+            T::from_slots(&slots[..T::STORAGE_SLOTS])
+        }
     }
 
     /// Read the value, distinguishing "never written" from "has been set."
     ///
-    /// Returns `None` if the slot was never written or was cleared.
-    /// Returns `Some(value)` if the slot is present.
+    /// Returns `None` if every slot occupied by `T` reads back zero (either
+    /// never written or cleared). Returns `Some(value)` if any occupied slot
+    /// is present.
     ///
-    /// Note: writing an all-zero static value deletes the key
-    /// (Solidity semantics), so `try_get()` returns `None` after writing zero.
+    /// Note: writing an all-zero static value deletes every slot (Solidity
+    /// semantics), so `try_get()` returns `None` after writing the zero
+    /// value of `T`.
     pub fn try_get(&self) -> Option<T> {
-        storage_try_get_32(&self.host, self.key.as_bytes())
-            .map(|buf| unsafe { T::decode_unchecked(&buf, 0) })
+        let () = Self::_SIZE_CHECK;
+        if T::STORAGE_SLOTS == 1 {
+            let read = storage_get_32(&self.host, self.key.as_bytes());
+            if read == [0u8; 32] {
+                None
+            } else {
+                Some(T::from_slots(&[read]))
+            }
+        } else {
+            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
+            try_read_slots(&self.host, self.key.as_bytes(), &mut slots[..T::STORAGE_SLOTS])?;
+            Some(T::from_slots(&slots[..T::STORAGE_SLOTS]))
+        }
     }
 
-    /// Write a value to storage.
+    /// Write a value to storage. Encodes `value` slot-by-slot and writes to
+    /// `T::STORAGE_SLOTS` consecutive slots starting at `self.key`.
     ///
     /// Takes `&mut self` so that view methods (which receive `&Storage`)
     /// cannot call this through an immutable borrow.
     pub fn set(&mut self, value: &T) {
-        let mut buf = [0u8; 32];
-        SolEncode::encode_body_to(value, &mut buf);
-        storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        let () = Self::_SIZE_CHECK;
+        if T::STORAGE_SLOTS == 1 {
+            let mut buf = [0u8; 32];
+            value.encode_slot(0, &mut buf);
+            storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        } else {
+            write_value(&self.host, self.key.as_bytes(), value);
+        }
     }
 
-    /// Clear the storage slot.
-    ///
-    /// Writes all-zero, which the host deletes from storage.
+    /// Clear every slot occupied by this value.
     pub fn clear(&mut self) {
-        storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
+        let () = Self::_SIZE_CHECK;
+        if T::STORAGE_SLOTS == 1 {
+            storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
+        } else {
+            clear_n_slots(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
+        }
     }
 }
 
-impl<T: SolEncode + StaticDecode + StaticEncodedLen> StorageComponent for Lazy<T> {
-    const SLOTS: u64 = 1;
+impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
+    /// One root slot per slot of `T::STORAGE_SLOTS`. A multi-slot `T` (e.g.
+    /// `(U256, U256)`) reserves multiple consecutive slots, mirroring
+    /// Solidity's struct-in-storage layout.
+    const SLOTS: u64 = T::STORAGE_SLOTS as u64;
 
     fn new_at(slot: u64, host: Host) -> Self {
         Lazy::new(StorageKey::from_slot(slot), host)
@@ -825,7 +950,7 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     }
 }
 
-impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K, V> {
+impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// Compute the raw storage key for a given map key.
     ///
     /// Useful for debugging and cross-checking with `cast index`.
@@ -843,30 +968,65 @@ impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K,
         Lazy::new(self.slot_of(key), self.host.clone())
     }
 
-    /// Read the value at the given key.
+    /// Read the value at the given key. For multi-slot `V`, reads
+    /// `V::STORAGE_SLOTS` consecutive slots starting at the derived key.
     ///
     /// Returns the zero value if the key was never written.
     pub fn get(&self, key: &K) -> V {
-        let buf = storage_get_32(&self.host, self.slot_of(key).as_bytes());
-        unsafe { V::decode_unchecked(&buf, 0) }
+        let () = Lazy::<V>::_SIZE_CHECK;
+        let slot = self.slot_of(key);
+        if V::STORAGE_SLOTS == 1 {
+            let one = [storage_get_32(&self.host, slot.as_bytes())];
+            V::from_slots(&one)
+        } else {
+            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
+            read_slots(&self.host, slot.as_bytes(), &mut slots[..V::STORAGE_SLOTS]);
+            V::from_slots(&slots[..V::STORAGE_SLOTS])
+        }
     }
 
-    /// Read the value, returning `None` if the key was never written.
+    /// Read the value, returning `None` if every slot occupied by the entry
+    /// reads back zero (either never written or cleared).
     pub fn try_get(&self, key: &K) -> Option<V> {
-        storage_try_get_32(&self.host, self.slot_of(key).as_bytes())
-            .map(|buf| unsafe { V::decode_unchecked(&buf, 0) })
+        let () = Lazy::<V>::_SIZE_CHECK;
+        let slot = self.slot_of(key);
+        if V::STORAGE_SLOTS == 1 {
+            let read = storage_get_32(&self.host, slot.as_bytes());
+            if read == [0u8; 32] {
+                None
+            } else {
+                Some(V::from_slots(&[read]))
+            }
+        } else {
+            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
+            try_read_slots(&self.host, slot.as_bytes(), &mut slots[..V::STORAGE_SLOTS])?;
+            Some(V::from_slots(&slots[..V::STORAGE_SLOTS]))
+        }
     }
 
-    /// Write a value at the given key.
+    /// Write a value at the given key. Encodes `value` slot-by-slot and writes
+    /// to `V::STORAGE_SLOTS` consecutive slots beneath the derived key.
     pub fn insert(&mut self, key: &K, value: &V) {
-        let mut buf = [0u8; 32];
-        SolEncode::encode_body_to(value, &mut buf);
-        storage_set_32(&self.host, self.slot_of(key).as_bytes(), &buf);
+        let () = Lazy::<V>::_SIZE_CHECK;
+        let slot = self.slot_of(key);
+        if V::STORAGE_SLOTS == 1 {
+            let mut buf = [0u8; 32];
+            value.encode_slot(0, &mut buf);
+            storage_set_32(&self.host, slot.as_bytes(), &buf);
+        } else {
+            write_value(&self.host, slot.as_bytes(), value);
+        }
     }
 
-    /// Delete the value at the given key.
+    /// Delete every slot occupied by the entry at the given key.
     pub fn remove(&mut self, key: &K) {
-        storage_set_32(&self.host, self.slot_of(key).as_bytes(), &[0u8; 32]);
+        let () = Lazy::<V>::_SIZE_CHECK;
+        let slot = self.slot_of(key);
+        if V::STORAGE_SLOTS == 1 {
+            storage_set_32(&self.host, slot.as_bytes(), &[0u8; 32]);
+        } else {
+            clear_n_slots(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
+        }
     }
 }
 
@@ -878,7 +1038,7 @@ impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K,
 /// `Mapping<(Address, Address), U256>` produces the same slots as
 /// `Mapping<Address, Mapping<Address, U256>>`. Tuple key support is
 /// implemented via `AsStorageKey` for tuples up to arity 5.
-impl<K1: AsStorageKey, K2: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen>
+impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
     Mapping<K1, Mapping<K2, V>>
 {
     /// Read path for nested mappings: derives the inner mapping root.
@@ -1135,6 +1295,104 @@ mod tests {
         assert_eq!(lazy.get(), U256::ZERO);
     }
 
+    // --- Multi-slot Lazy<T> (T spans >1 storage slot) ---
+
+    #[test]
+    fn lazy_roundtrip_tuple_two_u256() {
+        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let v = (U256::from(7u64), U256::from(11u64));
+        lazy.set(&v);
+        assert_eq!(lazy.get(), v);
+    }
+
+    #[test]
+    fn lazy_multi_slot_writes_consecutive_keys() {
+        // (U256, U256) has ENCODED_SIZE == 64, so set() must touch slots
+        // `key` and `key + 1`. Confirm the wire format by reading the slots
+        // directly: the first U256 lands at `key`, the second at `key + 1`.
+        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let base = *lazy.key.as_bytes();
+
+        lazy.set(&(U256::from(0xAAu64), U256::from(0xBBu64)));
+
+        let slot0 = storage_get_32(&host, &base);
+        let mut next = base;
+        inc_slot(&mut next);
+        let slot1 = storage_get_32(&host, &next);
+
+        assert_eq!(slot0[31], 0xAA, "first U256 at base slot: {slot0:?}");
+        assert_eq!(slot1[31], 0xBB, "second U256 at base + 1: {slot1:?}");
+    }
+
+    #[test]
+    fn lazy_multi_slot_try_get_some_when_only_second_word_set() {
+        // Direct-write a value where the first 32-byte word is zero but the
+        // second is non-zero. try_get must still observe the entry as present.
+        let host = h();
+        let key = StorageKey::from_slot(0);
+        let mut second = [0u8; 32];
+        second[31] = 0x42;
+        let mut next = *key.as_bytes();
+        inc_slot(&mut next);
+        storage_set_32(&host, &next, &second);
+
+        let lazy = Lazy::<(U256, U256)>::new(key, host);
+        assert_eq!(lazy.try_get(), Some((U256::ZERO, U256::from(0x42u64))));
+    }
+
+    #[test]
+    fn lazy_multi_slot_try_get_none_when_unwritten() {
+        let lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        assert_eq!(lazy.try_get(), None);
+    }
+
+    #[test]
+    fn lazy_multi_slot_clear_removes_all_words() {
+        // Set both words non-zero, clear, then verify each underlying slot
+        // is truly absent (not just zero in the decoded value).
+        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let base = *lazy.key.as_bytes();
+
+        lazy.set(&(U256::from(1u64), U256::from(2u64)));
+        lazy.clear();
+
+        let mut next = base;
+        assert_eq!(storage_try_get_32(&host, &next), None, "word 0 not cleared");
+        inc_slot(&mut next);
+        assert_eq!(storage_try_get_32(&host, &next), None, "word 1 not cleared");
+    }
+
+    #[test]
+    fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
+        // After writing (5, 5), writing (5, 0) must auto-delete slot 1 so
+        // try_get observes the zero on subsequent reads.
+        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let host = lazy.host.clone();
+        let mut next = *lazy.key.as_bytes();
+        inc_slot(&mut next);
+
+        lazy.set(&(U256::from(5u64), U256::from(5u64)));
+        lazy.set(&(U256::from(5u64), U256::ZERO));
+
+        assert_eq!(lazy.get(), (U256::from(5u64), U256::ZERO));
+        assert_eq!(
+            storage_try_get_32(&host, &next),
+            None,
+            "stale slot for word 1 must be auto-deleted"
+        );
+    }
+
+    #[test]
+    fn lazy_multi_slot_slots_const_matches_word_count() {
+        // SLOTS = ENCODED_SIZE / 32. For (U256, U256) that's 2, so an
+        // auto-numbered field after this Lazy would be 2 slots later.
+        assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<Lazy<(U256, U256)> as StorageComponent>::SLOTS, 2);
+        assert_eq!(<Lazy<(U256, U256, U256)> as StorageComponent>::SLOTS, 3);
+    }
+
     // --- Mapping operations ---
 
     #[test]
@@ -1174,6 +1432,68 @@ mod tests {
         m.insert(&b, &U256::from(20));
         assert_eq!(m.get(&a), U256::from(10));
         assert_eq!(m.get(&b), U256::from(20));
+    }
+
+    // --- Multi-slot Mapping<K, V> (V spans >1 storage slot) ---
+
+    #[test]
+    fn mapping_insert_get_tuple_value() {
+        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let addr = Address([0xAB; 20]);
+        let v = (U256::from(123u64), U256::from(456u64));
+        m.insert(&addr, &v);
+        assert_eq!(m.get(&addr), v);
+    }
+
+    #[test]
+    fn mapping_multi_slot_remove_clears_all_words() {
+        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let host = m.host.clone();
+        let addr = Address([0xCD; 20]);
+        let derived = *m.slot_of(&addr).as_bytes();
+
+        m.insert(&addr, &(U256::from(1u64), U256::from(2u64)));
+        m.remove(&addr);
+
+        let mut k = derived;
+        assert_eq!(storage_try_get_32(&host, &k), None, "word 0 not removed");
+        inc_slot(&mut k);
+        assert_eq!(storage_try_get_32(&host, &k), None, "word 1 not removed");
+        assert_eq!(m.try_get(&addr), None);
+    }
+
+    #[test]
+    fn mapping_multi_slot_overwrite_smaller_clears_stale_word() {
+        // insert (1, 2) then insert (1, 0): the second word must be deleted
+        // so a follow-up read doesn't return stale 2.
+        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let host = m.host.clone();
+        let addr = Address([0xEF; 20]);
+        let mut next = *m.slot_of(&addr).as_bytes();
+        inc_slot(&mut next);
+
+        m.insert(&addr, &(U256::from(1u64), U256::from(2u64)));
+        m.insert(&addr, &(U256::from(1u64), U256::ZERO));
+
+        assert_eq!(m.get(&addr), (U256::from(1u64), U256::ZERO));
+        assert_eq!(storage_try_get_32(&host, &next), None);
+    }
+
+    #[test]
+    fn mapping_multi_slot_entry_handle_reads_and_writes_full_value() {
+        // entry() returns a Lazy<V> at the derived key. With multi-slot V it
+        // must still read/write all chunks correctly.
+        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let addr = Address([0x10; 20]);
+        let v = (U256::from(99u64), U256::from(100u64));
+
+        let mut cell = m.entry(&addr);
+        cell.set(&v);
+        assert_eq!(cell.get(), v);
+
+        // And the parent Mapping reads back the same value through its own
+        // derived key, confirming entry() didn't drift off the right key.
+        assert_eq!(m.get(&addr), v);
     }
 
     // --- Nested mappings ---
@@ -1426,6 +1746,50 @@ mod tests {
         assert_eq!(slot_bytes[31], 65);
         assert!(slot_bytes[..31].iter().all(|&b| b == 0));
         assert_eq!(lazy.get(), s);
+    }
+
+    /// A spilled header (low bit of byte 31 set) with non-zero bytes in the
+    /// upper half of the u256 length field cannot be a real stored length —
+    /// any plausible value fits in the low 128 bits. Without validation the
+    /// decoder would silently use the truncated low bits and `read_dyn_body`
+    /// would walk a fabricated number of chunks. The decoder now treats any
+    /// such slot as empty.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_bytes_spilled_high_bytes_treated_as_malformed() {
+        let host = h();
+        let key = StorageKey::from_slot(0);
+        let mut malformed = [0u8; 32];
+        malformed[0] = 0xFF; // non-zero high byte ⇒ malformed
+        malformed[31] = 0x01; // low bit set ⇒ spilled
+        storage_set_32(&host, key.as_bytes(), &malformed);
+
+        let lazy = LazyBytes::new(key, host);
+        assert!(lazy.get().is_empty());
+    }
+
+    /// A malformed inline header (byte31 > 62, low bit 0) encodes a decoded
+    /// length > 31. Without a cap, `dynamic_bytes_get` would slice past the
+    /// 32-byte slot buffer and panic. The decoder caps `len` at 31 so reads
+    /// of corrupted / foreign-written slots return at most 31 bytes instead.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_bytes_inline_len_capped_on_malformed_slot() {
+        let host = h();
+        let key = StorageKey::from_slot(0);
+        // byte31 = 0xFE → decoded len = 127 (way past slot capacity).
+        let mut malformed = [0u8; 32];
+        for (i, b) in malformed.iter_mut().enumerate().take(31) {
+            *b = i as u8 + 1;
+        }
+        malformed[31] = 0xFE;
+        storage_set_32(&host, key.as_bytes(), &malformed);
+
+        let lazy = LazyBytes::new(key, host);
+        // Must not panic. Cap is 31 bytes — the original 31 prefix bytes.
+        let bytes = lazy.get();
+        assert_eq!(bytes.len(), 31);
+        assert_eq!(&bytes[..], &malformed[..31]);
     }
 
     /// Long-spill probe: header is `len * 2 + 1` big-endian, body chunks live

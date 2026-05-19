@@ -89,22 +89,28 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         ));
     }
 
+    // #[storage] fields are always auto-numbered (no `#[slot(N)]` support yet),
+    // so a #[cfg]-disabled field would break the offset const chain *and*
+    // silently shift every later field's slot. Reject up front; users who need
+    // conditional fields should declare them directly on the contract struct
+    // with `#[slot(N)]`.
+    for f in &named.named {
+        if let Some(cfg) = f.attrs.iter().find(|a| a.path().is_ident("cfg")) {
+            return Err(syn::Error::new_spanned(
+                cfg,
+                "#[cfg] is not supported on #[storage] fields: it would shift \
+                 the on-chain slot numbers of every field after it, producing a \
+                 different storage layout per feature combination.",
+            ));
+        }
+    }
+
     let field_names: Vec<&syn::Ident> = named
         .named
         .iter()
         .map(|f| f.ident.as_ref().expect("named fields"))
         .collect();
     let field_types: Vec<&syn::Type> = named.named.iter().map(|f| &f.ty).collect();
-    let field_cfgs: Vec<Vec<&syn::Attribute>> = named
-        .named
-        .iter()
-        .map(|f| {
-            f.attrs
-                .iter()
-                .filter(|a| a.path().is_ident("cfg"))
-                .collect()
-        })
-        .collect();
 
     // The SLOTS const sums every field's contribution.
     let slot_terms: Vec<TokenStream> = field_types
@@ -123,10 +129,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .enumerate()
         .map(|(i, name)| {
             let const_ident = format_ident!("__pvm_storage_offset_{}", name);
-            let cfgs = &field_cfgs[i];
             if i == 0 {
                 quote! {
-                    #(#cfgs)*
                     #[allow(non_upper_case_globals)]
                     const #const_ident: u64 = 0;
                 }
@@ -135,7 +139,6 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 let prev_ty = field_types[i - 1];
                 let prev_const = format_ident!("__pvm_storage_offset_{}", prev_name);
                 quote! {
-                    #(#cfgs)*
                     #[allow(non_upper_case_globals)]
                     const #const_ident: u64 = #prev_const
                         + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
@@ -149,10 +152,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .enumerate()
         .map(|(i, name)| {
             let ty = field_types[i];
-            let cfgs = &field_cfgs[i];
             let const_ident = format_ident!("__pvm_storage_offset_{}", name);
             quote! {
-                #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
                     base + #const_ident,
                     host.clone(),
@@ -253,6 +254,21 @@ mod tests {
         let input = parse("pub struct E {}");
         let err = expand_storage_struct(input).unwrap_err().to_string();
         assert!(err.contains("at least one storage field"), "Got: {err}");
+    }
+
+    #[test]
+    fn rejects_cfg_on_storage_field() {
+        let input = parse(
+            r#"
+            pub struct S {
+                #[cfg(feature = "extra")]
+                a: Lazy<U256>,
+                b: Lazy<U256>,
+            }
+        "#,
+        );
+        let err = expand_storage_struct(input).unwrap_err().to_string();
+        assert!(err.contains("#[cfg] is not supported"), "Got: {err}");
     }
 
     #[test]

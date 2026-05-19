@@ -94,7 +94,10 @@ pub use pvm_contract_types::{
     SolRevert,
     StaticDecode,
     StaticEncodedLen,
+    StorageDecode,
+    StorageEncode,
     StorageFlags,
+    StoragePackable,
     U256,
     const_selector,
     // Framework errors
