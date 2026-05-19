@@ -55,6 +55,8 @@ fn expand_static_sol_type(
     let decode_body = generate_static_decode_body(fields, false);
     let decode_body_unchecked = generate_static_decode_body(fields, true);
 
+    let storage_impls = generate_storage_impls(name, fields, field_info)?;
+
     #[cfg(feature = "abi-gen")]
     let abi_param_fn = generate_abi_param_fn(fields, field_info);
     #[cfg(not(feature = "abi-gen"))]
@@ -95,6 +97,8 @@ fn expand_static_sol_type(
         }
 
         impl ::pvm_contract_sdk::SolArrayElement for #name {}
+
+        #storage_impls
     })
 }
 
@@ -109,6 +113,16 @@ fn expand_dynamic_sol_type(
     let encode_len_body = generate_dynamic_encode_len(fields, field_info, &head_size_expr);
     let encode_body = generate_dynamic_encode_body(fields, field_info, &head_size_expr);
     let decode_body = generate_dynamic_decode_body(fields, field_info);
+
+    // Emit storage impls when every field is storage-compatible (static or
+    // custom). Truly dynamic fields (`Vec`, `String`, etc.) return an error
+    // from `generate_storage_impls`; we silently drop the storage impls in
+    // that case so the struct remains usable for ABI / calldata even though
+    // it can't be a `Mapping<K, V>` or `Lazy<T>` value.
+    let storage_impls = match generate_storage_impls(name, fields, field_info) {
+        Ok(ts) => ts,
+        Err(_) => quote! {},
+    };
 
     #[cfg(feature = "abi-gen")]
     let abi_param_fn = generate_abi_param_fn(fields, field_info);
@@ -143,6 +157,8 @@ fn expand_dynamic_sol_type(
         }
 
         impl ::pvm_contract_sdk::SolArrayElement for #name {}
+
+        #storage_impls
     })
 }
 
@@ -438,6 +454,220 @@ fn generate_static_decode_body(fields: &Fields, unchecked: bool) -> TokenStream 
         quote! {
             Ok({ #res })
         }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Storage codec emission (Solidity-compatible storage layout)
+// -----------------------------------------------------------------------
+
+/// Classify a field's storage-layout role.
+///
+/// Phase 2 supports only directly-packable primitive fields. Custom structs,
+/// tuples, fixed arrays of non-`u8`, and dynamic types fall into `Unsupported`
+/// and cause the macro to silently skip emitting `StorageEncode`/`StorageDecode`
+/// for the enclosing struct (so the user gets a clean "trait not implemented"
+/// error if they try to use it as a storage value, but no hard derive failure).
+#[derive(Debug, Clone, Copy)]
+enum StorageFieldKind {
+    /// Packs into a parent slot at a sub-word offset.
+    Packable,
+    /// Not yet supported as a storage field. See module doc above.
+    Unsupported,
+}
+
+fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
+    match ty {
+        SolType::Address
+        | SolType::Bool
+        | SolType::Uint(_)
+        | SolType::Int(_)
+        | SolType::Bytes(_) => StorageFieldKind::Packable,
+        // Custom types (nested structs) are deferred: we can't determine at
+        // macro expansion time whether the referenced type implements
+        // `StorageEncode`. Emitting an impl that references missing trait
+        // consts would fail const-evaluation. A future phase can add an
+        // explicit opt-in (e.g. via a `#[storage]` attribute on the field
+        // or a separate `#[derive(StorageType)]`).
+        //
+        // `DynBytes` / `String` / `Array`: phase 4 lifts via `LazySlot<T>`.
+        // `FixedArray<T, N>` / `Tuple`: deferred.
+        SolType::Custom(_)
+        | SolType::DynBytes
+        | SolType::String
+        | SolType::Array(_)
+        | SolType::FixedArray(_, _)
+        | SolType::Tuple(_) => StorageFieldKind::Unsupported,
+    }
+}
+
+/// Emit the `StorageEncode` + `StorageDecode` impls for a static struct.
+///
+/// Approach:
+///   1. Compute a const layout array `__STORAGE_LAYOUT = ([(slot, offset); N], total_slots)`
+///      via a const block that walks fields using each field type's
+///      `<T as StorageEncode>::{PACKED_BYTES, STARTS_NEW_SLOT, STORAGE_SLOTS}`.
+///   2. Emit `encode_slot` that loops through fields and, for each, conditionally
+///      packs (Packable) or recurses (Composite) when the field belongs to
+///      `slot_idx`.
+///   3. Emit `decode` that reads each field at its precomputed (slot, offset)
+///      placement.
+fn generate_storage_impls(
+    name: &syn::Ident,
+    fields: &Fields,
+    field_info: &[(Option<syn::Ident>, SolType)],
+) -> syn::Result<TokenStream> {
+    // Skip silently if any field isn't yet storage-compatible. Phase 4 will
+    // lift the restriction on dynamic types (via `LazySlot<T>`); later phases
+    // may add tuples and fixed arrays of non-`u8`. Until then, structs with
+    // those fields don't get a `StorageEncode` impl — users see a clear
+    // "trait not implemented" error if they try to use such a struct in a
+    // `Mapping<K, V>` / `Lazy<T>`.
+    if field_info
+        .iter()
+        .any(|(_, ty)| matches!(classify_storage_field(ty), StorageFieldKind::Unsupported))
+    {
+        return Ok(quote! {});
+    }
+
+    let field_types: Vec<&Type> = get_field_types(fields);
+    let n_fields = field_types.len();
+
+    // ---- const layout walker ----
+    let walker_steps: Vec<TokenStream> = field_types
+        .iter()
+        .enumerate()
+        .map(|(idx, ty)| {
+            quote! {
+                {
+                    let bytes = <#ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES;
+                    let starts = <#ty as ::pvm_contract_sdk::StorageEncode>::STARTS_NEW_SLOT;
+                    let slots = <#ty as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS;
+                    if starts || space < bytes {
+                        if #idx != 0 { slot += 1; }
+                        space = 32;
+                    }
+                    space -= bytes;
+                    placements[#idx] = (slot, space);
+                    if starts {
+                        slot += slots - 1;
+                        space = 0;
+                    }
+                }
+            }
+        })
+        .collect();
+
+    let layout_const = quote! {
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const __STORAGE_LAYOUT: ([(usize, usize); #n_fields], usize) = {
+            let mut placements: [(usize, usize); #n_fields] = [(0, 0); #n_fields];
+            let mut slot: usize = 0;
+            let mut space: usize = 32;
+            #(#walker_steps)*
+            let total = if #n_fields == 0 { 0 } else { slot + 1 };
+            (placements, total)
+        };
+    };
+
+    // ---- encode_slot body ----
+    let mut encode_arms = Vec::with_capacity(n_fields);
+    for (i, (field_name, _)) in field_info.iter().enumerate() {
+        let field_ty = field_types[i];
+        let field_access = field_access_tokens(fields, i, field_name);
+        // All fields are Packable in Phase 2; the early-return above rejects
+        // structs containing any other kind.
+        let arm = quote! {
+            {
+                let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
+                if s == slot_idx {
+                    <#field_ty as ::pvm_contract_sdk::StoragePackable>::pack_into(
+                        &#field_access, buf, o,
+                    );
+                }
+            }
+        };
+        encode_arms.push(arm);
+    }
+
+    // ---- decode body ----
+    let decode_body = match fields {
+        Fields::Named(named) => {
+            let mut field_lets = Vec::new();
+            for (i, field) in named.named.iter().enumerate() {
+                let field_name = field.ident.as_ref().unwrap();
+                let field_ty = &field.ty;
+                let value_expr = quote! {
+                    {
+                        let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
+                        <#field_ty as ::pvm_contract_sdk::StoragePackable>::unpack_from(
+                            &slots[s], o,
+                        )
+                    }
+                };
+                field_lets.push(quote! { #field_name: #value_expr });
+            }
+            quote! { Self { #(#field_lets),* } }
+        }
+        Fields::Unnamed(unnamed) => {
+            let mut field_exprs = Vec::new();
+            for (i, field) in unnamed.unnamed.iter().enumerate() {
+                let field_ty = &field.ty;
+                let value_expr = quote! {
+                    {
+                        let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
+                        <#field_ty as ::pvm_contract_sdk::StoragePackable>::unpack_from(
+                            &slots[s], o,
+                        )
+                    }
+                };
+                field_exprs.push(value_expr);
+            }
+            quote! { Self(#(#field_exprs),*) }
+        }
+        Fields::Unit => quote! { Self },
+    };
+
+    Ok(quote! {
+        impl #name {
+            #layout_const
+        }
+
+        impl ::pvm_contract_sdk::StorageEncode for #name {
+            const STORAGE_SLOTS: usize = Self::__STORAGE_LAYOUT.1;
+            const PACKED_BYTES: usize = 32;
+            const STARTS_NEW_SLOT: bool = true;
+
+            fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]) {
+                *buf = [0u8; 32];
+                #(#encode_arms)*
+            }
+        }
+
+        impl ::pvm_contract_sdk::StorageDecode for #name {
+            fn from_slots(slots: &[[u8; 32]]) -> Self {
+                #decode_body
+            }
+        }
+    })
+}
+
+fn field_access_tokens(
+    fields: &Fields,
+    idx: usize,
+    field_name: &Option<syn::Ident>,
+) -> TokenStream {
+    match fields {
+        Fields::Named(_) => {
+            let name = field_name.as_ref().expect("named field must have ident");
+            quote! { self.#name }
+        }
+        Fields::Unnamed(_) => {
+            let idx = syn::Index::from(idx);
+            quote! { self.#idx }
+        }
+        Fields::Unit => quote! { compile_error!("storage struct cannot be a unit struct") },
     }
 }
 
