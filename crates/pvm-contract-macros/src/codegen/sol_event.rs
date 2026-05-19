@@ -121,8 +121,7 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let topics_body = generate_topics_body(fields, &field_info, &indexed_flags, is_anonymous);
     let (data_len_body, data_body) = generate_data_bodies(fields, &field_info, &indexed_flags);
-    let abi_entry_expr =
-        build_abi_entry_expr(&name_str, fields, &field_info, &indexed_flags, is_anonymous);
+    let abi_item_body = build_abi_item_body(&name_str, fields, &indexed_flags, is_anonymous);
 
     // Check if all non-indexed fields are static (compile-time known size).
     // Only generate emit() for static events; dynamic events require the
@@ -186,8 +185,13 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
 
     Ok(quote! {
         impl #name {
+            /// Build the `AbiItem::Event` description used by the ABI JSON
+            /// generator. Available when the `abi-gen` feature is enabled.
+            #[cfg(feature = "abi-gen")]
             #[doc(hidden)]
-            pub const ABI_ENTRY: &'static str = #abi_entry_expr;
+            pub fn abi_item() -> ::pvm_contract_sdk::AbiItem {
+                #abi_item_body
+            }
 
             #emit_method
         }
@@ -214,58 +218,43 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
     })
 }
 
-fn build_abi_entry_expr(
+/// Generate the body of `abi_item()`: returns `AbiItem::Event { ... }` with
+/// each input built from the field's `SolEncode::abi_param` (which expands
+/// tuples into `type:"tuple"` with nested `components`).
+fn build_abi_item_body(
     event_name: &str,
     fields: &Fields,
-    field_info: &[(Option<syn::Ident>, SolType)],
     indexed_flags: &[bool],
     is_anonymous: bool,
 ) -> TokenStream {
-    let mut parts: Vec<TokenStream> = Vec::new();
-
-    let header = format!(
-        "{{\"type\":\"event\",\"name\":\"{}\",\"inputs\":[",
-        event_name
-    );
-    parts.push(quote! { #header });
+    let mut input_exprs: Vec<TokenStream> = Vec::new();
 
     if let Fields::Named(named) = fields {
         for (i, field) in named.named.iter().enumerate() {
-            if i > 0 {
-                parts.push(quote! { "," });
-            }
             let field_name = field.ident.as_ref().unwrap().to_string();
-            let prefix = format!("{{\"name\":\"{field_name}\",\"type\":\"");
-            parts.push(quote! { #prefix });
-
-            let sol_type = &field_info[i].1;
-            if sol_type.has_custom_types() {
-                let field_ty = &field.ty;
-                parts.push(quote! {
-                    <#field_ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME
-                });
-            } else {
-                let canonical = sol_type.canonical_name();
-                parts.push(quote! { #canonical });
-            }
-
-            let suffix = if indexed_flags[i] {
-                "\",\"indexed\":true}"
-            } else {
-                "\",\"indexed\":false}"
-            };
-            parts.push(quote! { #suffix });
+            let field_ty = &field.ty;
+            let indexed = indexed_flags[i];
+            input_exprs.push(quote! {
+                {
+                    let __p = <#field_ty as ::pvm_contract_sdk::SolEncode>::abi_param(#field_name);
+                    ::pvm_contract_sdk::AbiEventParam {
+                        name: __p.name,
+                        param_type: __p.param_type,
+                        indexed: #indexed,
+                        components: __p.components,
+                    }
+                }
+            });
         }
     }
 
-    let anon_str = if is_anonymous {
-        "],\"anonymous\":true}"
-    } else {
-        "],\"anonymous\":false}"
-    };
-    parts.push(quote! { #anon_str });
-
-    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
+    quote! {
+        ::pvm_contract_sdk::AbiItem::Event {
+            name: ::std::string::String::from(#event_name),
+            inputs: ::std::vec![#(#input_exprs),*],
+            anonymous: #is_anonymous,
+        }
+    }
 }
 
 fn collect_indexed_flags(fields: &Fields) -> syn::Result<Vec<bool>> {
@@ -273,10 +262,19 @@ fn collect_indexed_flags(fields: &Fields) -> syn::Result<Vec<bool>> {
     match fields {
         Fields::Named(named) => {
             for field in &named.named {
-                let is_indexed = field
-                    .attrs
-                    .iter()
-                    .any(|attr| attr.path().is_ident("indexed"));
+                let mut is_indexed = false;
+                for attr in &field.attrs {
+                    if !attr.path().is_ident("indexed") {
+                        continue;
+                    }
+                    if !matches!(attr.meta, syn::Meta::Path(_)) {
+                        return Err(syn::Error::new_spanned(
+                            attr,
+                            "#[indexed] takes no arguments",
+                        ));
+                    }
+                    is_indexed = true;
+                }
                 flags.push(is_indexed);
             }
         }
@@ -502,8 +500,9 @@ fn generate_data_bodies(
                         &self.#fn_, &mut __buf[__tail_offset..__tail_offset + __body_len]);
                     __tail_offset += __body_len;
                 } else {
+                    let __slot = <#ft as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
                     <#ft as ::pvm_contract_sdk::SolEncode>::encode_body_to(
-                        &self.#fn_, &mut __buf[__head_offset..__head_offset + 32]);
+                        &self.#fn_, &mut __buf[__head_offset..__head_offset + __slot]);
                 }
                 __head_offset += <#ft as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
             }

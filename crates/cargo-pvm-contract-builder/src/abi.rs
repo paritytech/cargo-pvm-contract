@@ -503,16 +503,18 @@ fn parse_sol_event_params(params_str: &str) -> Vec<AbiEventParam> {
             if parts.is_empty() {
                 return None;
             }
-            let param_type = parts[0].to_string();
+            let raw_type = parts[0];
             let indexed = parts.contains(&"indexed");
             let name = parts[1..]
                 .iter()
                 .find(|s| !matches!(**s, "indexed" | "memory" | "calldata" | "storage"))
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+            let expanded = parse_type_str(&name, raw_type);
             Some(AbiEventParam {
-                name,
-                param_type,
+                name: expanded.name,
+                param_type: expanded.param_type,
+                components: expanded.components,
                 indexed,
             })
         })
@@ -1288,16 +1290,19 @@ interface Token {{
                     AbiEventParam {
                         name: "from".to_string(),
                         param_type: "address".to_string(),
+                        components: vec![],
                         indexed: true,
                     },
                     AbiEventParam {
                         name: "to".to_string(),
                         param_type: "address".to_string(),
+                        components: vec![],
                         indexed: true,
                     },
                     AbiEventParam {
                         name: "value".to_string(),
                         param_type: "uint256".to_string(),
+                        components: vec![],
                         indexed: false,
                     },
                 ],
@@ -1331,6 +1336,34 @@ interface Token {{
     #[test]
     fn parse_event_not_an_event() {
         assert!(parse_sol_event_line("function transfer(address,uint256)").is_none());
+    }
+
+    #[test]
+    fn parse_event_with_indexed_tuple_param() {
+        assert_eq!(
+            parse_sol_event_line("event PointMoved((uint64,uint64) indexed point);").unwrap(),
+            AbiItem::Event {
+                name: "PointMoved".to_string(),
+                inputs: vec![AbiEventParam {
+                    name: "point".to_string(),
+                    param_type: "tuple".to_string(),
+                    components: vec![
+                        AbiParam {
+                            name: "".to_string(),
+                            param_type: "uint64".to_string(),
+                            components: vec![],
+                        },
+                        AbiParam {
+                            name: "".to_string(),
+                            param_type: "uint64".to_string(),
+                            components: vec![],
+                        },
+                    ],
+                    indexed: true,
+                }],
+                anonymous: false,
+            }
+        );
     }
 
     #[test]

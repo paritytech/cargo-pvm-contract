@@ -2400,8 +2400,8 @@ mod tests {
             .to_string();
 
         assert!(
-            output.contains("Transfer :: ABI_ENTRY") || output.contains("Transfer::ABI_ENTRY"),
-            "abi-gen output should reference Transfer::ABI_ENTRY, got: {output}"
+            output.contains("Transfer :: abi_item") || output.contains("Transfer::abi_item"),
+            "abi-gen output should reference Transfer::abi_item(), got: {output}"
         );
     }
 
@@ -2653,7 +2653,7 @@ mod tests {
             .to_string();
 
         assert!(
-            !output.contains("Plain :: ABI_ENTRY") && !output.contains("Plain::ABI_ENTRY"),
+            !output.contains("Plain :: abi_item") && !output.contains("Plain::abi_item"),
             "Non-event structs should not leak into abi-gen output"
         );
     }

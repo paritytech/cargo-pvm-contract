@@ -855,7 +855,8 @@ pub trait SolEvent {
     /// Canonical Solidity event signature, e.g. `"Transfer(address,address,uint256)"`.
     const SIGNATURE: &'static str;
 
-    /// Number of indexed fields (excluding topic0). Range: 0..=3.
+    /// Number of indexed fields (excluding topic0). Range: 0..=3, or 0..=4
+    /// for anonymous events (no topic0).
     const INDEXED_COUNT: usize;
 
     /// Build the topics array on the stack.

@@ -35,7 +35,7 @@ fn static_event_emit_e2e() {
     assert_eq!(topics[0], Transfer::TOPIC);
     assert_eq!(&topics[1][12..], &[0xAA; 20]);
     assert_eq!(&topics[2][12..], &[0xBB; 20]);
-    assert_eq!(U256::decode(data), U256::from(42u64));
+    assert_eq!(U256::decode(data), Ok(U256::from(42u64)));
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn data_encodes_non_indexed_value() {
     event.data_to(&mut data);
     assert_eq!(data.len(), 32);
     let decoded = <U256 as pvm_contract_types::SolDecode>::decode(&data);
-    assert_eq!(decoded, U256::from(42u64));
+    assert_eq!(decoded, Ok(U256::from(42u64)));
 }
 
 mod alloy_cross_check {
@@ -189,27 +189,51 @@ fn u256_indexed_topic_packing() {
     assert_eq!(&value_topic[..28], &[0u8; 28]);
 }
 
+#[cfg(feature = "abi-gen")]
+fn abi_item_to_json(item: &pvm_contract_types::AbiItem) -> alloc::string::String {
+    pvm_contract_types::serde_json::to_string(item).unwrap()
+}
+
+#[cfg(feature = "abi-gen")]
 #[test]
 fn abi_entry_matches_expected_shape() {
     assert_eq!(
-        Transfer::ABI_ENTRY,
+        abi_item_to_json(&Transfer::abi_item()),
         r#"{"type":"event","name":"Transfer","inputs":[{"name":"from","type":"address","indexed":true},{"name":"to","type":"address","indexed":true},{"name":"value","type":"uint256","indexed":false}],"anonymous":false}"#
     );
 }
 
+#[cfg(feature = "abi-gen")]
 #[test]
 fn abi_entry_no_indexed_fields() {
     assert_eq!(
-        Log::ABI_ENTRY,
+        abi_item_to_json(&Log::abi_item()),
         r#"{"type":"event","name":"Log","inputs":[{"name":"value","type":"uint64","indexed":false},{"name":"flag","type":"bool","indexed":false}],"anonymous":false}"#
     );
 }
 
+#[cfg(feature = "abi-gen")]
 #[test]
 fn abi_entry_all_indexed() {
     assert_eq!(
-        Approval::ABI_ENTRY,
+        abi_item_to_json(&Approval::abi_item()),
         r#"{"type":"event","name":"Approval","inputs":[{"name":"owner","type":"address","indexed":true},{"name":"spender","type":"address","indexed":true},{"name":"value","type":"uint256","indexed":true}],"anonymous":false}"#
+    );
+}
+
+#[cfg(feature = "abi-gen")]
+#[derive(SolEvent)]
+struct PointMoved {
+    point: (u64, u64),
+    label: U256,
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn abi_entry_tuple_field_uses_tuple_with_components() {
+    assert_eq!(
+        abi_item_to_json(&PointMoved::abi_item()),
+        r#"{"type":"event","name":"PointMoved","inputs":[{"name":"point","type":"tuple","components":[{"name":"","type":"uint64"},{"name":"","type":"uint64"}],"indexed":false},{"name":"label","type":"uint256","indexed":false}],"anonymous":false}"#
     );
 }
 
@@ -378,6 +402,32 @@ fn static_plus_two_dynamic_fields_matches_alloy() {
     assert_eq!(
         our_data, alloy_data,
         "(uint256,string,string) event data() must match alloy tuple sequence encoding"
+    );
+}
+
+#[derive(SolEvent)]
+struct StaticTupleEv {
+    pair: (u64, u64),
+    flag: bool,
+}
+
+#[test]
+fn static_tuple_non_indexed_field_matches_alloy() {
+    use alloy_core::sol_types::SolValue;
+
+    let event = StaticTupleEv {
+        pair: (1u64, 2u64),
+        flag: true,
+    };
+    let mut our_data = alloc::vec![0u8; event.data_len()];
+    event.data_to(&mut our_data);
+
+    let alloy_tuple = ((1u64, 2u64), true);
+    let alloy_data = alloy_tuple.abi_encode_sequence();
+
+    assert_eq!(
+        our_data, alloy_data,
+        "((uint64,uint64),bool) event data() must match alloy tuple sequence encoding"
     );
 }
 
@@ -611,13 +661,15 @@ fn anonymous_event_skips_topic0() {
     assert_eq!(&topics[0][12..], &[0xAA; 20]);
 }
 
+#[cfg(feature = "abi-gen")]
 #[test]
 fn anonymous_event_abi_entry_has_anonymous_true() {
-    let abi = AnonymousDeposit::ABI_ENTRY;
-    assert!(
-        abi.contains("\"anonymous\":true"),
-        "anonymous event ABI should have anonymous:true, got: {abi}"
-    );
+    match AnonymousDeposit::abi_item() {
+        pvm_contract_types::AbiItem::Event { anonymous, .. } => {
+            assert!(anonymous, "anonymous event ABI should have anonymous:true");
+        }
+        other => panic!("expected AbiItem::Event, got: {other:?}"),
+    }
 }
 
 #[derive(SolEvent)]
@@ -686,5 +738,5 @@ fn alloc_dynamic_event_emit_e2e() {
     assert_eq!(&topics[1][12..], &[0xCC; 20]);
     // data = ABI-encoded "hello"
     let decoded = alloc::string::String::decode(data);
-    assert_eq!(decoded, "hello");
+    assert_eq!(decoded, Ok(alloc::string::String::from("hello")));
 }

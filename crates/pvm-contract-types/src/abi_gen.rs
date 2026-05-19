@@ -53,9 +53,13 @@ pub enum AbiItem {
 pub struct AbiEventParam {
     /// Parameter name.
     pub name: String,
-    /// Solidity type name.
+    /// Solidity type name (e.g. "uint256", "address", "tuple").
     #[serde(rename = "type")]
     pub param_type: String,
+    /// For tuple types, the list of sub-parameters. Empty for primitives.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<AbiParam>,
     /// Whether this parameter is indexed (becomes a log topic).
     pub indexed: bool,
 }

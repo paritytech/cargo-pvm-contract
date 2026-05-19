@@ -180,8 +180,7 @@ fn generate_abi_gen_impl(
         .iter()
         .map(|ident| {
             quote! {
-                __items.push(::pvm_contract_sdk::serde_json::from_str(#ident::ABI_ENTRY)
-                    .expect("SolEvent ABI_ENTRY is valid JSON"));
+                __items.push(#ident::abi_item());
             }
         })
         .collect();
