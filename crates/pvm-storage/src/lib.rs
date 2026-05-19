@@ -357,18 +357,31 @@ enum DynHeader {
 #[cfg(feature = "alloc")]
 fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
     if slot_bytes[31] & 1 == 0 {
+        // Solidity short form: byte 31 encodes `len * 2` with `len ∈ [0, 31]`,
+        // so any decoded value above 31 means the slot was written with
+        // malformed data (corruption or a non-Solidity-compatible writer to
+        // the same key). Cap to 31 so the subsequent `&slot_bytes[..len]`
+        // slice in `dynamic_bytes_get` / `try_get` cannot panic.
         DynHeader::Inline {
-            len: (slot_bytes[31] >> 1) as usize,
+            len: ((slot_bytes[31] >> 1) as usize).min(31),
         }
     } else {
-        // Spilled: full slot encodes `len * 2 + 1` as a u256.
-        // Length cannot exceed usize::MAX bytes in practice; the upper 192
-        // bits are always zero for any plausible stored value.
+        // Spilled: full slot encodes `len * 2 + 1` as a big-endian u256. Any
+        // real stored length fits in usize (and far less in practice), so the
+        // upper 16 bytes must be zero. Non-zero high bytes mean the slot was
+        // written with malformed data (corruption or a non-Solidity-compatible
+        // writer); treat as empty to avoid reading runaway body chunks. The
+        // `raw > usize::MAX` check covers the same risk on 32-bit targets.
+        let high_zero = slot_bytes[..16].iter().all(|&b| b == 0);
         let mut len_be = [0u8; 16];
         len_be.copy_from_slice(&slot_bytes[16..32]);
         let raw = u128::from_be_bytes(len_be);
+        let raw_len = raw >> 1;
+        if !high_zero || raw_len > usize::MAX as u128 {
+            return DynHeader::Spilled { len: 0 };
+        }
         DynHeader::Spilled {
-            len: (raw >> 1) as usize,
+            len: raw_len as usize,
         }
     }
 }
@@ -847,18 +860,36 @@ impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K,
     ///
     /// Returns the zero value if the key was never written.
     pub fn get(&self, key: &K) -> V {
+        const {
+            assert!(
+                V::ENCODED_SIZE == 32,
+                "Mapping<K, V> requires a 32-byte V (U256, Address, bool, [u8; 32], …)"
+            )
+        };
         let buf = storage_get_32(&self.host, self.slot_of(key).as_bytes());
         unsafe { V::decode_unchecked(&buf, 0) }
     }
 
     /// Read the value, returning `None` if the key was never written.
     pub fn try_get(&self, key: &K) -> Option<V> {
+        const {
+            assert!(
+                V::ENCODED_SIZE == 32,
+                "Mapping<K, V> requires a 32-byte V (U256, Address, bool, [u8; 32], …)"
+            )
+        };
         storage_try_get_32(&self.host, self.slot_of(key).as_bytes())
             .map(|buf| unsafe { V::decode_unchecked(&buf, 0) })
     }
 
     /// Write a value at the given key.
     pub fn insert(&mut self, key: &K, value: &V) {
+        const {
+            assert!(
+                V::ENCODED_SIZE == 32,
+                "Mapping<K, V> requires a 32-byte V (U256, Address, bool, [u8; 32], …)"
+            )
+        };
         let mut buf = [0u8; 32];
         SolEncode::encode_body_to(value, &mut buf);
         storage_set_32(&self.host, self.slot_of(key).as_bytes(), &buf);
@@ -866,6 +897,12 @@ impl<K: AsStorageKey, V: SolEncode + StaticDecode + StaticEncodedLen> Mapping<K,
 
     /// Delete the value at the given key.
     pub fn remove(&mut self, key: &K) {
+        const {
+            assert!(
+                V::ENCODED_SIZE == 32,
+                "Mapping<K, V> requires a 32-byte V (U256, Address, bool, [u8; 32], …)"
+            )
+        };
         storage_set_32(&self.host, self.slot_of(key).as_bytes(), &[0u8; 32]);
     }
 }
@@ -1426,6 +1463,50 @@ mod tests {
         assert_eq!(slot_bytes[31], 65);
         assert!(slot_bytes[..31].iter().all(|&b| b == 0));
         assert_eq!(lazy.get(), s);
+    }
+
+    /// A spilled header (low bit of byte 31 set) with non-zero bytes in the
+    /// upper half of the u256 length field cannot be a real stored length —
+    /// any plausible value fits in the low 128 bits. Without validation the
+    /// decoder would silently use the truncated low bits and `read_dyn_body`
+    /// would walk a fabricated number of chunks. The decoder now treats any
+    /// such slot as empty.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_bytes_spilled_high_bytes_treated_as_malformed() {
+        let host = h();
+        let key = StorageKey::from_slot(0);
+        let mut malformed = [0u8; 32];
+        malformed[0] = 0xFF; // non-zero high byte ⇒ malformed
+        malformed[31] = 0x01; // low bit set ⇒ spilled
+        storage_set_32(&host, key.as_bytes(), &malformed);
+
+        let lazy = LazyBytes::new(key, host);
+        assert!(lazy.get().is_empty());
+    }
+
+    /// A malformed inline header (byte31 > 62, low bit 0) encodes a decoded
+    /// length > 31. Without a cap, `dynamic_bytes_get` would slice past the
+    /// 32-byte slot buffer and panic. The decoder caps `len` at 31 so reads
+    /// of corrupted / foreign-written slots return at most 31 bytes instead.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_bytes_inline_len_capped_on_malformed_slot() {
+        let host = h();
+        let key = StorageKey::from_slot(0);
+        // byte31 = 0xFE → decoded len = 127 (way past slot capacity).
+        let mut malformed = [0u8; 32];
+        for (i, b) in malformed.iter_mut().enumerate().take(31) {
+            *b = i as u8 + 1;
+        }
+        malformed[31] = 0xFE;
+        storage_set_32(&host, key.as_bytes(), &malformed);
+
+        let lazy = LazyBytes::new(key, host);
+        // Must not panic. Cap is 31 bytes — the original 31 prefix bytes.
+        let bytes = lazy.get();
+        assert_eq!(bytes.len(), 31);
+        assert_eq!(&bytes[..], &malformed[..31]);
     }
 
     /// Long-spill probe: header is `len * 2 + 1` big-endian, body chunks live

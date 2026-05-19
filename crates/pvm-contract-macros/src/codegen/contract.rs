@@ -1642,6 +1642,21 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
         let slot = if let Some(n) = raw.explicit {
             Slot::Explicit(n)
         } else {
+            // Auto-numbered fields share a const chain across slot consts;
+            // a #[cfg]-disabled field in the middle of the chain would break
+            // compilation of every later const and silently shift on-chain
+            // slot numbers based on the active feature set. Explicit-slot
+            // fields are unaffected (each uses a literal N) and remain allowed.
+            if !raw.cfg_attrs.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &raw.original_field,
+                    "#[cfg] is not supported on auto-numbered storage fields: \
+                     a cfg-disabled field would shift the on-chain slot numbers \
+                     of every field after it, producing a different storage layout \
+                     per feature combination. Pin the slot with `#[slot(N)]` if you \
+                     need conditional fields.",
+                ));
+            }
             let s = Slot::Auto { index: auto_index };
             auto_index += 1;
             s
@@ -2874,6 +2889,67 @@ mod tests {
             "Auto-numbered fields should pass their slot const to new_at.\n\
              Expanded output:\n{output}"
         );
+    }
+
+    #[test]
+    fn auto_numbered_storage_field_with_cfg_rejected() {
+        // A #[cfg] on an auto-numbered field would shift every later field's
+        // slot number depending on feature flags. Reject it; users can pin
+        // with `#[slot(N)]` if they need conditional fields.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[cfg(feature = "extra")]
+                    extra: Lazy<U256>,
+                    counter: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("#[cfg] is not supported on auto-numbered storage fields"),
+            "Expected cfg rejection. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_slot_storage_field_with_cfg_allowed() {
+        // Explicit-slot fields use a literal N (no const chain), so #[cfg]
+        // gating is safe — the slot number is pinned regardless of which
+        // branch is active. This is the supported way to do conditional
+        // storage fields.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[cfg(feature = "v1")]
+                    #[slot(0)]
+                    value: Lazy<U256>,
+                    #[cfg(not(feature = "v1"))]
+                    #[slot(0)]
+                    value: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        // Should expand without error.
+        let _ = expand_contract(ContractArgs::default(), item).unwrap();
     }
 
     #[test]
