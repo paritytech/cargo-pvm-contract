@@ -111,15 +111,17 @@ fn resolve_workspace_member(
     manifest_path: &Path,
     package: &str,
 ) -> Result<(PathBuf, Option<PathBuf>)> {
-    let output = Command::new("cargo")
-        .arg("metadata")
+    let mut cmd = Command::new("cargo");
+    cmd.arg("metadata")
         .arg("--no-deps")
         .arg("--format-version")
         .arg("1")
         .arg("--manifest-path")
-        .arg(manifest_path)
-        .output()
-        .context("Failed to invoke `cargo metadata`")?;
+        .arg(manifest_path);
+    if let Some(dir) = manifest_path.parent() {
+        cmd.current_dir(dir);
+    }
+    let output = cmd.output().context("Failed to invoke `cargo metadata`")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
