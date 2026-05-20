@@ -21,11 +21,28 @@
 //!   sub-word byte offset within a slot. The `#[derive(SolType)]` macro calls
 //!   `pack_into` / `unpack_from` when emitting struct field encoders.
 //!
-//! Composite types (structs, fixed arrays of compound elements, dynamic
-//! markers like `LazySlot<T>`) always start a new slot and never pack — they
-//! implement only [`StorageEncode`] / [`StorageDecode`].
+//! Composite types (structs, fixed arrays of compound elements) and dynamic
+//! types (`String`, `Vec<u8>`) always start a new slot and never pack — they
+//! implement only [`StorageEncode`] / [`StorageDecode`]. Dynamic types
+//! additionally set [`HAS_DYNAMIC_BODY`](StorageEncode::HAS_DYNAMIC_BODY) so
+//! `Mapping` / `Lazy` route reads and writes through the host-aware
+//! [`write_to_storage`](StorageEncode::write_to_storage) /
+//! [`read_from_storage`](StorageDecode::read_from_storage) path.
 
-use crate::{Address, I256, U256};
+use crate::{Address, Host, HostApi, I256, StorageFlags, U256};
+
+/// Increment a 32-byte big-endian integer in-place. Used to walk consecutive
+/// storage slots for multi-slot values.
+#[inline]
+fn inc_be_32(slot: &mut [u8; 32]) {
+    for byte in slot.iter_mut().rev() {
+        let (next, carry) = byte.overflowing_add(1);
+        *byte = next;
+        if !carry {
+            return;
+        }
+    }
+}
 
 /// Top-level storage encoder.
 ///
@@ -59,6 +76,16 @@ pub trait StorageEncode {
     /// it to `false` so they can pack with neighbours.
     const STARTS_NEW_SLOT: bool;
 
+    /// `true` iff this type stores data outside its `STORAGE_SLOTS` (e.g.
+    /// `LazySlot<String>` spills its body to `keccak256(slot)+i`). Containers
+    /// like `Mapping<K, V>` and `Lazy<T>` use this to route reads/writes
+    /// through the host-aware [`write_to_storage`](Self::write_to_storage) /
+    /// [`StorageDecode::read_from_storage`] path instead of the
+    /// single-slot fast path.
+    ///
+    /// Default `false` so primitives and pure-static structs aren't affected.
+    const HAS_DYNAMIC_BODY: bool = false;
+
     /// Encode slot `slot_idx` of this value into `buf`. Caller passes a
     /// freshly-zeroed (or to-be-zeroed) `buf`; for top-level primitive types
     /// the implementation overwrites the entire slot, for composite types it
@@ -66,6 +93,34 @@ pub trait StorageEncode {
     ///
     /// `slot_idx` must satisfy `slot_idx < STORAGE_SLOTS`.
     fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]);
+
+    /// Write self to storage starting at `base_key`. The default impl writes
+    /// `STORAGE_SLOTS` consecutive 32-byte slots via [`encode_slot`]; types
+    /// with [`HAS_DYNAMIC_BODY`] = `true` override this to also write body
+    /// chunks at `keccak256(base_key) + i`.
+    ///
+    /// [`encode_slot`]: Self::encode_slot
+    /// [`HAS_DYNAMIC_BODY`]: Self::HAS_DYNAMIC_BODY
+    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
+        let mut k = *base_key;
+        for i in 0..Self::STORAGE_SLOTS {
+            let mut buf = [0u8; 32];
+            self.encode_slot(i, &mut buf);
+            host.set_storage_or_clear(StorageFlags::empty(), &k, &buf);
+            inc_be_32(&mut k);
+        }
+    }
+
+    /// Clear every slot this type occupies at `base_key`. Default impl writes
+    /// `STORAGE_SLOTS` zero-slots (`set_storage_or_clear` auto-deletes).
+    /// Dynamic types override to also clear body chunks.
+    fn clear_storage(host: &Host, base_key: &[u8; 32], slots: usize) {
+        let mut k = *base_key;
+        for _ in 0..slots {
+            host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
+            inc_be_32(&mut k);
+        }
+    }
 }
 
 /// Top-level storage decoder.
@@ -81,7 +136,41 @@ pub trait StorageDecode: StorageEncode + Sized {
     /// [`SolDecode::decode`](crate::SolDecode::decode); the two codecs are
     /// distinct and a type implementing both must dispatch through trait
     /// qualification at the call site.
+    ///
+    /// Note: for types with [`StorageEncode::HAS_DYNAMIC_BODY`] = `true`,
+    /// `from_slots` cannot fully reconstruct the value (the body lives
+    /// outside the passed slots). Such types still need to provide a
+    /// `from_slots` impl (it returns a placeholder) and override
+    /// [`read_from_storage`](Self::read_from_storage) with the full read.
     fn from_slots(slots: &[[u8; 32]]) -> Self;
+
+    /// Read self from storage starting at `base_key`. Default impl reads
+    /// `STORAGE_SLOTS` consecutive slots and decodes via [`from_slots`].
+    /// Types with [`StorageEncode::HAS_DYNAMIC_BODY`] = `true` override
+    /// this to also read body chunks at `keccak256(base_key) + i`.
+    ///
+    /// `MAX_INLINE_SLOTS` caps the stack buffer used by the default impl.
+    /// Callers (like `Mapping::get`) sized this for the typical record
+    /// shape; types occupying more slots must override.
+    ///
+    /// [`from_slots`]: Self::from_slots
+    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
+        host: &Host,
+        base_key: &[u8; 32],
+    ) -> Self {
+        debug_assert!(
+            Self::STORAGE_SLOTS <= MAX_INLINE_SLOTS,
+            "STORAGE_SLOTS exceeds MAX_INLINE_SLOTS",
+        );
+        let mut slots = [[0u8; 32]; MAX_INLINE_SLOTS];
+        let n = Self::STORAGE_SLOTS;
+        let mut k = *base_key;
+        for slot in slots[..n].iter_mut() {
+            host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
+            inc_be_32(&mut k);
+        }
+        Self::from_slots(&slots[..n])
+    }
 }
 
 /// Sub-word packable primitive.
@@ -455,6 +544,275 @@ impl_storage_tuple! {
     (A: 0, B: 1, C: 2, D: 3, E: 4, F: 5),
     (A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6),
     (A: 0, B: 1, C: 2, D: 3, E: 4, F: 5, G: 6, H: 7),
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic-body machinery (solc `string` / `bytes` layout): header in the
+// field's own slot, body chunks at `keccak256(slot) + i`. Used by the
+// `StorageEncode` / `StorageDecode` impls for `String` and `Vec<u8>` below.
+// ---------------------------------------------------------------------------
+
+/// Sentinel byte stored at `slot[30]` when a dynamic value is set to empty
+/// (`""` / `vec![]`). Keeps the slot from being auto-deleted by
+/// `set_storage_or_clear` so `try_get` can distinguish "explicitly empty"
+/// from "never written". The decoder ignores `slot[..31]` when len == 0, so
+/// the sentinel byte is invisible at read time.
+#[cfg(feature = "alloc")]
+const EMPTY_INLINE_SENTINEL: u8 = 0x01;
+
+#[cfg(feature = "alloc")]
+enum DynHeader {
+    Inline { len: usize },
+    Spilled { len: usize },
+}
+
+#[cfg(feature = "alloc")]
+fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
+    if slot_bytes[31] & 1 == 0 {
+        // Short form: byte 31 encodes `len * 2`, len in [0, 31]. Cap to 31
+        // so a malformed read can't trigger a slice panic downstream.
+        DynHeader::Inline {
+            len: ((slot_bytes[31] >> 1) as usize).min(31),
+        }
+    } else {
+        // Spilled: whole slot encodes `len * 2 + 1` as big-endian u256.
+        // Real-world lengths fit in usize; non-zero high bytes indicate
+        // corruption / non-Solidity writer — treat as empty.
+        let high_zero = slot_bytes[..16].iter().all(|&b| b == 0);
+        let mut len_be = [0u8; 16];
+        len_be.copy_from_slice(&slot_bytes[16..32]);
+        let raw = u128::from_be_bytes(len_be);
+        let raw_len = raw >> 1;
+        if !high_zero || raw_len > usize::MAX as u128 {
+            return DynHeader::Spilled { len: 0 };
+        }
+        DynHeader::Spilled {
+            len: raw_len as usize,
+        }
+    }
+}
+
+#[cfg(feature = "alloc")]
+fn encode_long_header(len: usize) -> [u8; 32] {
+    let raw: u128 = (len as u128) * 2 + 1;
+    let mut out = [0u8; 32];
+    out[16..32].copy_from_slice(&raw.to_be_bytes());
+    out
+}
+
+#[cfg(feature = "alloc")]
+fn dyn_body_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    host.hash_keccak_256(slot, &mut output);
+    output
+}
+
+#[cfg(feature = "alloc")]
+fn read_dyn_body(host: &Host, slot: &[u8; 32], len: usize) -> alloc::vec::Vec<u8> {
+    let mut out = alloc::vec::Vec::with_capacity(len);
+    let mut body_slot = dyn_body_root(host, slot);
+    let mut remaining = len;
+    while remaining > 0 {
+        let mut chunk = [0u8; 32];
+        host.get_storage_or_zero(StorageFlags::empty(), &body_slot, &mut chunk);
+        let take = if remaining >= 32 { 32 } else { remaining };
+        out.extend_from_slice(&chunk[..take]);
+        remaining -= take;
+        inc_be_32(&mut body_slot);
+    }
+    out
+}
+
+#[cfg(feature = "alloc")]
+fn clear_dyn_body_range(host: &Host, slot: &[u8; 32], start_chunk: usize, count: usize) {
+    if count == 0 {
+        return;
+    }
+    let mut body_slot = dyn_body_root(host, slot);
+    for _ in 0..start_chunk {
+        inc_be_32(&mut body_slot);
+    }
+    for _ in 0..count {
+        host.set_storage_or_clear(StorageFlags::empty(), &body_slot, &[0u8; 32]);
+        inc_be_32(&mut body_slot);
+    }
+}
+
+/// Write `data` at the dynamic field located at `slot` (header + spilled
+/// body chunks). Clears stale body chunks left over from a longer previous
+/// value so storage doesn't leak.
+#[cfg(feature = "alloc")]
+fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
+    let new_len = data.len();
+    let new_chunks = if new_len < 32 { 0 } else { new_len.div_ceil(32) };
+
+    // Inspect old layout to free body chunks the new value no longer needs.
+    let mut old_slot_bytes = [0u8; 32];
+    host.get_storage_or_zero(StorageFlags::empty(), slot, &mut old_slot_bytes);
+    if let DynHeader::Spilled { len: old_len } = decode_dyn_header(&old_slot_bytes) {
+        let old_chunks = old_len.div_ceil(32);
+        if old_chunks > new_chunks {
+            clear_dyn_body_range(host, slot, new_chunks, old_chunks - new_chunks);
+        }
+    }
+
+    if new_len < 32 {
+        let mut packed = [0u8; 32];
+        packed[..new_len].copy_from_slice(data);
+        packed[31] = (new_len as u8) << 1;
+        if new_len == 0 {
+            packed[30] = EMPTY_INLINE_SENTINEL;
+        }
+        host.set_storage_or_clear(StorageFlags::empty(), slot, &packed);
+        return;
+    }
+
+    let header = encode_long_header(new_len);
+    host.set_storage_or_clear(StorageFlags::empty(), slot, &header);
+
+    let mut body_slot = dyn_body_root(host, slot);
+    let mut offset = 0usize;
+    while offset < new_len {
+        let mut chunk = [0u8; 32];
+        let remaining = new_len - offset;
+        let take = if remaining >= 32 { 32 } else { remaining };
+        chunk[..take].copy_from_slice(&data[offset..offset + take]);
+        host.set_storage_or_clear(StorageFlags::empty(), &body_slot, &chunk);
+        offset += take;
+        inc_be_32(&mut body_slot);
+    }
+}
+
+/// Read the dynamic value stored at `slot`, materialising any spilled body.
+#[cfg(feature = "alloc")]
+fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
+    let mut slot_bytes = [0u8; 32];
+    host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
+    match decode_dyn_header(&slot_bytes) {
+        DynHeader::Inline { len } => alloc::vec::Vec::from(&slot_bytes[..len]),
+        DynHeader::Spilled { len } => read_dyn_body(host, slot, len),
+    }
+}
+
+/// Clear the dynamic value at `slot` (header + any spilled body chunks).
+#[cfg(feature = "alloc")]
+fn clear_dynamic_bytes(host: &Host, slot: &[u8; 32]) {
+    let mut slot_bytes = [0u8; 32];
+    host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
+    if let DynHeader::Spilled { len } = decode_dyn_header(&slot_bytes) {
+        let chunks = len.div_ceil(32);
+        clear_dyn_body_range(host, slot, 0, chunks);
+    }
+    host.set_storage_or_clear(StorageFlags::empty(), slot, &[0u8; 32]);
+}
+
+// ---------------------------------------------------------------------------
+// String / Vec<u8>: native dynamic storage impls.
+//
+// Solidity-compatible `string` / `bytes` storage layout:
+//   - Short (`len < 32`):  inline data + `byte 31 = len * 2`; empty values
+//     carry the [`EMPTY_INLINE_SENTINEL`] at byte 30 so `try_get` can tell
+//     them apart from a never-written slot.
+//   - Long (`len >= 32`):  header at the slot encodes `len * 2 + 1` as a
+//     big-endian u256; body chunks live at `keccak256(slot) + i`.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "alloc")]
+impl StorageEncode for alloc::vec::Vec<u8> {
+    const STORAGE_SLOTS: usize = 1;
+    const PACKED_BYTES: usize = 32;
+    const STARTS_NEW_SLOT: bool = true;
+    const HAS_DYNAMIC_BODY: bool = true;
+
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert_eq!(_slot_idx, 0);
+        *buf = [0u8; 32];
+        let len = self.len();
+        if len < 32 {
+            buf[..len].copy_from_slice(self);
+            buf[31] = (len as u8) << 1;
+            if len == 0 {
+                buf[30] = EMPTY_INLINE_SENTINEL;
+            }
+        } else {
+            *buf = encode_long_header(len);
+        }
+    }
+
+    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
+        write_dynamic_bytes(host, base_key, self);
+    }
+
+    fn clear_storage(host: &Host, base_key: &[u8; 32], _slots: usize) {
+        clear_dynamic_bytes(host, base_key);
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl StorageDecode for alloc::vec::Vec<u8> {
+    /// Placeholder. The canonical read path goes through
+    /// [`read_from_storage`](Self::read_from_storage) which has host access
+    /// to materialise the body. `from_slots` returns an empty `Vec` because
+    /// the spilled body lives outside the slot buffer.
+    fn from_slots(_slots: &[[u8; 32]]) -> Self {
+        alloc::vec::Vec::new()
+    }
+
+    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
+        host: &Host,
+        base_key: &[u8; 32],
+    ) -> Self {
+        read_dynamic_bytes(host, base_key)
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl StorageEncode for alloc::string::String {
+    const STORAGE_SLOTS: usize = 1;
+    const PACKED_BYTES: usize = 32;
+    const STARTS_NEW_SLOT: bool = true;
+    const HAS_DYNAMIC_BODY: bool = true;
+
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert_eq!(_slot_idx, 0);
+        let bytes = self.as_bytes();
+        *buf = [0u8; 32];
+        let len = bytes.len();
+        if len < 32 {
+            buf[..len].copy_from_slice(bytes);
+            buf[31] = (len as u8) << 1;
+            if len == 0 {
+                buf[30] = EMPTY_INLINE_SENTINEL;
+            }
+        } else {
+            *buf = encode_long_header(len);
+        }
+    }
+
+    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
+        write_dynamic_bytes(host, base_key, self.as_bytes());
+    }
+
+    fn clear_storage(host: &Host, base_key: &[u8; 32], _slots: usize) {
+        clear_dynamic_bytes(host, base_key);
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl StorageDecode for alloc::string::String {
+    fn from_slots(_slots: &[[u8; 32]]) -> Self {
+        alloc::string::String::new()
+    }
+
+    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
+        host: &Host,
+        base_key: &[u8; 32],
+    ) -> Self {
+        let bytes = read_dynamic_bytes(host, base_key);
+        // solc requires `string` storage to be UTF-8; use lossy decoding so
+        // a foreign writer that stored non-UTF-8 doesn't trap the read.
+        alloc::string::String::from_utf8_lossy(&bytes).into_owned()
+    }
 }
 
 // ---------------------------------------------------------------------------

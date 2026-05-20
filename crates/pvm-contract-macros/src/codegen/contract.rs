@@ -172,6 +172,47 @@ pub(super) enum Slot {
     Auto { index: usize },
 }
 
+/// Build the chain of `__pvm_storage_slot_<name>` const items for auto-numbered
+/// fields. Field K's const equals `prev_const + <PrevTy as StorageComponent>::SLOTS`,
+/// so user-defined storage components with `SLOTS > 1` get a correct contiguous
+/// range without the macro knowing their size. Consumed by both the riscv64
+/// `deploy()`/`call()` entry points and the abi-gen `__storage_layout_json()`
+/// helper — each emits the consts inside its own function body.
+pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
+    slot_fields
+        .iter()
+        .filter_map(|sf| match sf.slot {
+            Slot::Auto { index } => {
+                let name = &sf.name;
+                let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
+                let cfgs = &sf.cfg_attrs;
+                if index == 0 {
+                    Some(quote! {
+                        #(#cfgs)*
+                        #[allow(non_upper_case_globals)]
+                        const #const_ident: u64 = 0;
+                    })
+                } else {
+                    let prev = slot_fields
+                        .iter()
+                        .filter(|s| matches!(s.slot, Slot::Auto { .. }))
+                        .nth(index - 1)
+                        .expect("auto_index walks in order");
+                    let prev_const = quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
+                    let prev_ty = &prev.ty;
+                    Some(quote! {
+                        #(#cfgs)*
+                        #[allow(non_upper_case_globals)]
+                        const #const_ident: u64 = #prev_const
+                            + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                    })
+                }
+            }
+            Slot::Explicit(_) => None,
+        })
+        .collect()
+}
+
 impl SlotField {
     /// Explicit slot value, or `None` if auto-numbered.
     pub(super) fn explicit_slot(&self) -> Option<u64> {
@@ -1080,53 +1121,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     // Generate the `this` construction, shared by deploy() and call().
     //
     // Each storage field is initialised through `StorageComponent::new_at` with
-    // a clone of the host handle so cells share the same backing store.
-    //
-    // Slot assignment:
-    //
-    // - Explicit `#[slot(N)]`: the literal `N` is used directly.
-    // - Auto-numbered: a chain of `const` items emits the slot for field K as
-    //   `prev_const + <FieldType K-1 as StorageComponent>::SLOTS`. The compiler
-    //   evaluates the chain at monomorphization, so user-defined storage
-    //   components with `SLOTS > 1` (embedded sub-storage structs) get the
-    //   correct contiguous range without the macro knowing their size.
-    //
-    // The `#[allow(non_upper_case_globals)]` is needed because the const idents
-    // include the field name verbatim (which is snake_case).
-    let auto_slot_consts: Vec<TokenStream> = slot_fields
-        .iter()
-        .filter_map(|sf| match sf.slot {
-            Slot::Auto { index } => {
-                let name = &sf.name;
-                let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                let cfgs = &sf.cfg_attrs;
-                if index == 0 {
-                    Some(quote! {
-                        #(#cfgs)*
-                        #[allow(non_upper_case_globals)]
-                        const #const_ident: u64 = 0;
-                    })
-                } else {
-                    // Reference the previous auto-numbered field's const.
-                    // We need to look up the previous auto-numbered name.
-                    let prev = slot_fields
-                        .iter()
-                        .filter(|s| matches!(s.slot, Slot::Auto { .. }))
-                        .nth(index - 1)
-                        .expect("auto_index walks in order");
-                    let prev_const = quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
-                    let prev_ty = &prev.ty;
-                    Some(quote! {
-                        #(#cfgs)*
-                        #[allow(non_upper_case_globals)]
-                        const #const_ident: u64 = #prev_const
-                            + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
-                    })
-                }
-            }
-            Slot::Explicit(_) => None,
-        })
-        .collect();
+    // a clone of the host handle so cells share the same backing store. Explicit
+    // `#[slot(N)]` fields use `N` directly; auto-numbered fields read their slot
+    // from the `__pvm_storage_slot_*` const chain built by `auto_slot_consts`.
+    let auto_slot_consts = auto_slot_consts(&slot_fields);
 
     let slot_field_inits: Vec<TokenStream> = slot_fields
         .iter()
