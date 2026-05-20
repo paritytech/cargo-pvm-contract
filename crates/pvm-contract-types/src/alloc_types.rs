@@ -68,6 +68,50 @@ impl From<Bytes> for alloc::vec::Vec<u8> {
     }
 }
 
+impl Default for Bytes {
+    fn default() -> Self {
+        Bytes(alloc::vec::Vec::new())
+    }
+}
+
+/// `Bytes` uses solc's `bytes` storage layout — delegates to the
+/// `Vec<u8>` impls in `storage_codec`.
+impl crate::StorageEncode for Bytes {
+    const STORAGE_SLOTS: usize = <alloc::vec::Vec<u8> as crate::StorageEncode>::STORAGE_SLOTS;
+    const PACKED_BYTES: usize = <alloc::vec::Vec<u8> as crate::StorageEncode>::PACKED_BYTES;
+    const STARTS_NEW_SLOT: bool =
+        <alloc::vec::Vec<u8> as crate::StorageEncode>::STARTS_NEW_SLOT;
+    const HAS_DYNAMIC_BODY: bool =
+        <alloc::vec::Vec<u8> as crate::StorageEncode>::HAS_DYNAMIC_BODY;
+
+    fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]) {
+        <alloc::vec::Vec<u8> as crate::StorageEncode>::encode_slot(&self.0, slot_idx, buf)
+    }
+
+    fn write_to_storage(&self, host: &crate::Host, base_key: &[u8; 32]) {
+        <alloc::vec::Vec<u8> as crate::StorageEncode>::write_to_storage(&self.0, host, base_key)
+    }
+
+    fn clear_storage(host: &crate::Host, base_key: &[u8; 32], slots: usize) {
+        <alloc::vec::Vec<u8> as crate::StorageEncode>::clear_storage(host, base_key, slots)
+    }
+}
+
+impl crate::StorageDecode for Bytes {
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        Bytes(<alloc::vec::Vec<u8> as crate::StorageDecode>::from_slots(slots))
+    }
+
+    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
+        host: &crate::Host,
+        base_key: &[u8; 32],
+    ) -> Self {
+        Bytes(<alloc::vec::Vec<u8> as crate::StorageDecode>::read_from_storage::<MAX_INLINE_SLOTS>(
+            host, base_key,
+        ))
+    }
+}
+
 impl SolEncode for alloc::string::String {
     const IS_DYNAMIC: bool = true;
     const SOL_NAME: &'static str = "string";

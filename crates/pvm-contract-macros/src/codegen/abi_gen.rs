@@ -58,38 +58,7 @@ pub fn generate_abi_gen(
 fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
     use super::contract::Slot;
 
-    let auto_slot_consts: Vec<TokenStream> = slot_fields
-        .iter()
-        .filter_map(|sf| match sf.slot {
-            Slot::Auto { index } => {
-                let name = &sf.name;
-                let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                let cfgs = &sf.cfg_attrs;
-                if index == 0 {
-                    Some(quote! {
-                        #(#cfgs)*
-                        #[allow(non_upper_case_globals)]
-                        const #const_ident: u64 = 0;
-                    })
-                } else {
-                    let prev = slot_fields
-                        .iter()
-                        .filter(|s| matches!(s.slot, Slot::Auto { .. }))
-                        .nth(index - 1)
-                        .expect("auto_index walks in order");
-                    let prev_const = quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
-                    let prev_ty = &prev.ty;
-                    Some(quote! {
-                        #(#cfgs)*
-                        #[allow(non_upper_case_globals)]
-                        const #const_ident: u64 = #prev_const
-                            + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
-                    })
-                }
-            }
-            Slot::Explicit(_) => None,
-        })
-        .collect();
+    let auto_slot_consts = super::contract::auto_slot_consts(slot_fields);
 
     let layout_pushes: Vec<TokenStream> = slot_fields
         .iter()

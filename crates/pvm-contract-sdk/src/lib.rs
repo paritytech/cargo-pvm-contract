@@ -117,15 +117,12 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
-// Typed storage helpers. `Lazy<T>`/`Mapping<K, V>` are the declarable field
-// types for static 32-byte values. `LazyString`/`LazyBytes`/`MappingString<K>`/
-// `MappingBytes<K>` are the dedicated dynamic-value accessors. `StorageComponent`
-// is the trait typed storage helpers implement to participate in auto-numbered
-// slot layout.
-pub use pvm_storage::{AsStorageKey, Lazy, Mapping, StorageComponent, StorageKey};
-
-#[cfg(feature = "alloc")]
-pub use pvm_storage::{LazyBytes, LazyString, MappingBytes, MappingString};
+// Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
+// 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones
+// (`String`, `Vec<u8>`, `Bytes`, structs with dynamic fields) through their
+// `StorageEncode`/`StorageDecode` impls. `StorageComponent` is the trait
+// typed storage helpers implement to participate in auto-numbered slot layout.
+pub use pvm_storage::{AsStorageKey, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey};
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_storage::StorageLayoutType;
