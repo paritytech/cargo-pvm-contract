@@ -18,4 +18,4 @@ trybuild = { workspace = true }
 default = []
 alloc = ["pvm-contract-types/alloc"]
 std = ["alloc"]
-abi-gen = ["std"]
+abi-gen = ["std", "pvm-contract-types/abi-gen"]

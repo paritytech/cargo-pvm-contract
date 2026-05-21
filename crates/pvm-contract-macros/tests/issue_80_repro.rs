@@ -102,7 +102,7 @@ fn issue_80_dynamic_review_takes_two_slots() {
     // reviewer (Address, 20 bytes) packs into slot 0; comment_uri (`String`,
     // STARTS_NEW_SLOT=true) starts a new slot at slot 1.
     assert_eq!(<DynamicReview as StorageEncode>::STORAGE_SLOTS, 2);
-    assert!(<DynamicReview as StorageEncode>::HAS_DYNAMIC_BODY);
+    const { assert!(<DynamicReview as StorageEncode>::HAS_DYNAMIC_BODY) };
 }
 
 #[test]

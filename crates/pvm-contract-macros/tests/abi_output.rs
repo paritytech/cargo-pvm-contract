@@ -83,3 +83,26 @@ fn host_api_calls_produces_valid_abi() {
     expect_test::expect_file!("./test_abi_contract/abi_host_api_calls.json")
         .assert_eq(&cargo_run_abi("host-api-calls"))
 }
+
+/// Contract with a mix of static and dynamic storage value types. Verifies
+/// that the storageLayout JSON resolves type names for `Lazy<T>` and
+/// `Mapping<K, V>` syntactically via `SolEncode::SOL_NAME`, including dynamic
+/// `V` (`String`, `Bytes`) and nested mappings — i.e. the case the old
+/// `StorageLayoutType` trait blocked under coherence rules.
+#[test]
+fn storage_layout_mixed_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_storage_layout_mixed.json")
+        .assert_eq(&cargo_run_abi("storage-layout-mixed"))
+}
+
+/// Contract that embeds two `#[storage]` sub-structs (`Erc20State`,
+/// `MetadataState`) alongside a flat `Lazy<bool>` field. Verifies that
+/// composed storage flattens correctly under abi-gen: each leaf becomes a
+/// dotted-label entry (`erc20.total_supply`, `metadata.name`, …) via
+/// `StorageLayoutEmit::emit_entries`, with slot ranges chained through
+/// the sub-structs' `StorageComponent::SLOTS`.
+#[test]
+fn storage_layout_composed_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_storage_layout_composed.json")
+        .assert_eq(&cargo_run_abi("storage-layout-composed"))
+}

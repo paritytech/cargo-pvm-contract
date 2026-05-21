@@ -22,7 +22,7 @@
 //!   `pack_into` / `unpack_from` when emitting struct field encoders.
 //!
 //! Composite types (structs, fixed arrays of compound elements) and dynamic
-//! types (`String`, `Vec<u8>`) always start a new slot and never pack — they
+//! types (`String`, `Bytes`) always start a new slot and never pack — they
 //! implement only [`StorageEncode`] / [`StorageDecode`]. Dynamic types
 //! additionally set [`HAS_DYNAMIC_BODY`](StorageEncode::HAS_DYNAMIC_BODY) so
 //! `Mapping` / `Lazy` route reads and writes through the host-aware
@@ -549,7 +549,8 @@ impl_storage_tuple! {
 // ---------------------------------------------------------------------------
 // Dynamic-body machinery (solc `string` / `bytes` layout): header in the
 // field's own slot, body chunks at `keccak256(slot) + i`. Used by the
-// `StorageEncode` / `StorageDecode` impls for `String` and `Vec<u8>` below.
+// `StorageEncode` / `StorageDecode` impls for `String` below and `Bytes`
+// (in `alloc_types.rs`), which both call into the `pub(crate)` helpers.
 // ---------------------------------------------------------------------------
 
 /// Sentinel byte stored at `slot[30]` when a dynamic value is set to empty
@@ -558,7 +559,7 @@ impl_storage_tuple! {
 /// from "never written". The decoder ignores `slot[..31]` when len == 0, so
 /// the sentinel byte is invisible at read time.
 #[cfg(feature = "alloc")]
-const EMPTY_INLINE_SENTINEL: u8 = 0x01;
+pub(crate) const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 
 #[cfg(feature = "alloc")]
 enum DynHeader {
@@ -593,7 +594,7 @@ fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
 }
 
 #[cfg(feature = "alloc")]
-fn encode_long_header(len: usize) -> [u8; 32] {
+pub(crate) fn encode_long_header(len: usize) -> [u8; 32] {
     let raw: u128 = (len as u128) * 2 + 1;
     let mut out = [0u8; 32];
     out[16..32].copy_from_slice(&raw.to_be_bytes());
@@ -642,7 +643,7 @@ fn clear_dyn_body_range(host: &Host, slot: &[u8; 32], start_chunk: usize, count:
 /// body chunks). Clears stale body chunks left over from a longer previous
 /// value so storage doesn't leak.
 #[cfg(feature = "alloc")]
-fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
+pub(crate) fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
     let new_len = data.len();
     let new_chunks = if new_len < 32 { 0 } else { new_len.div_ceil(32) };
 
@@ -685,7 +686,7 @@ fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
 
 /// Read the dynamic value stored at `slot`, materialising any spilled body.
 #[cfg(feature = "alloc")]
-fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
+pub(crate) fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
     let mut slot_bytes = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
     match decode_dyn_header(&slot_bytes) {
@@ -696,7 +697,7 @@ fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
 
 /// Clear the dynamic value at `slot` (header + any spilled body chunks).
 #[cfg(feature = "alloc")]
-fn clear_dynamic_bytes(host: &Host, slot: &[u8; 32]) {
+pub(crate) fn clear_dynamic_bytes(host: &Host, slot: &[u8; 32]) {
     let mut slot_bytes = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
     if let DynHeader::Spilled { len } = decode_dyn_header(&slot_bytes) {
@@ -707,7 +708,15 @@ fn clear_dynamic_bytes(host: &Host, slot: &[u8; 32]) {
 }
 
 // ---------------------------------------------------------------------------
-// String / Vec<u8>: native dynamic storage impls.
+// String / Bytes: native dynamic storage impls.
+//
+// `Vec<u8>` intentionally has no storage impl: its `SolEncode::SOL_NAME` is
+// `"uint8[]"` (Solidity dynamic array of bytes, padded per-element), which
+// disagrees with the short/long inline layout `solc` uses for storage `bytes`.
+// `Lazy<Vec<u8>>` and `Mapping<K, Vec<u8>>` therefore fail to compile —
+// contracts must use [`Bytes`](crate::Bytes) (`SolEncode::SOL_NAME = "bytes"`),
+// whose `StorageEncode` impl lives in `alloc_types.rs` and uses the same
+// dynamic-body machinery as `String` below.
 //
 // Solidity-compatible `string` / `bytes` storage layout:
 //   - Short (`len < 32`):  inline data + `byte 31 = len * 2`; empty values
@@ -716,55 +725,6 @@ fn clear_dynamic_bytes(host: &Host, slot: &[u8; 32]) {
 //   - Long (`len >= 32`):  header at the slot encodes `len * 2 + 1` as a
 //     big-endian u256; body chunks live at `keccak256(slot) + i`.
 // ---------------------------------------------------------------------------
-
-#[cfg(feature = "alloc")]
-impl StorageEncode for alloc::vec::Vec<u8> {
-    const STORAGE_SLOTS: usize = 1;
-    const PACKED_BYTES: usize = 32;
-    const STARTS_NEW_SLOT: bool = true;
-    const HAS_DYNAMIC_BODY: bool = true;
-
-    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
-        *buf = [0u8; 32];
-        let len = self.len();
-        if len < 32 {
-            buf[..len].copy_from_slice(self);
-            buf[31] = (len as u8) << 1;
-            if len == 0 {
-                buf[30] = EMPTY_INLINE_SENTINEL;
-            }
-        } else {
-            *buf = encode_long_header(len);
-        }
-    }
-
-    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
-        write_dynamic_bytes(host, base_key, self);
-    }
-
-    fn clear_storage(host: &Host, base_key: &[u8; 32], _slots: usize) {
-        clear_dynamic_bytes(host, base_key);
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl StorageDecode for alloc::vec::Vec<u8> {
-    /// Placeholder. The canonical read path goes through
-    /// [`read_from_storage`](Self::read_from_storage) which has host access
-    /// to materialise the body. `from_slots` returns an empty `Vec` because
-    /// the spilled body lives outside the slot buffer.
-    fn from_slots(_slots: &[[u8; 32]]) -> Self {
-        alloc::vec::Vec::new()
-    }
-
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
-        host: &Host,
-        base_key: &[u8; 32],
-    ) -> Self {
-        read_dynamic_bytes(host, base_key)
-    }
-}
 
 #[cfg(feature = "alloc")]
 impl StorageEncode for alloc::string::String {
@@ -980,7 +940,7 @@ mod tests {
     fn const_invariants() {
         assert_eq!(<u32 as StorageEncode>::STORAGE_SLOTS, 1);
         assert_eq!(<u32 as StorageEncode>::PACKED_BYTES, 4);
-        assert!(!<u32 as StorageEncode>::STARTS_NEW_SLOT);
+        const { assert!(!<u32 as StorageEncode>::STARTS_NEW_SLOT) };
         assert_eq!(<u32 as StoragePackable>::CANONICAL_OFFSET, 28);
 
         assert_eq!(<Address as StorageEncode>::PACKED_BYTES, 20);

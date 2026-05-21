@@ -62,6 +62,8 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Fields, ItemStruct};
 
+use super::storage_layout::{ChainField, generate_layout_emit, slot_chain_consts};
+
 pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
@@ -113,39 +115,26 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let field_types: Vec<&syn::Type> = named.named.iter().map(|f| &f.ty).collect();
 
     // The SLOTS const sums every field's contribution.
-    let slot_terms: Vec<TokenStream> = field_types
-        .iter()
-        .map(|ty| quote! { <#ty as ::pvm_contract_sdk::StorageComponent>::SLOTS })
-        .collect();
-    let slots_expr = if slot_terms.is_empty() {
-        quote! { 0u64 }
-    } else {
-        quote! { #(#slot_terms)+* }
+    let slots_expr = {
+        let terms: Vec<TokenStream> = field_types
+            .iter()
+            .map(|ty| quote! { <#ty as ::pvm_contract_sdk::StorageComponent>::SLOTS })
+            .collect();
+        quote! { #(#terms)+* }
     };
 
-    // Per-field offset const chain (relative to base).
-    let offset_consts: Vec<TokenStream> = field_names
+    // Per-field offset const chain (relative to base). Shared with `#[contract]`
+    // via `slot_chain_consts` so both macros agree on the chain shape.
+    let chain_fields: Vec<ChainField<'_>> = field_names
         .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let const_ident = format_ident!("__pvm_storage_offset_{}", name);
-            if i == 0 {
-                quote! {
-                    #[allow(non_upper_case_globals)]
-                    const #const_ident: u64 = 0;
-                }
-            } else {
-                let prev_name = field_names[i - 1];
-                let prev_ty = field_types[i - 1];
-                let prev_const = format_ident!("__pvm_storage_offset_{}", prev_name);
-                quote! {
-                    #[allow(non_upper_case_globals)]
-                    const #const_ident: u64 = #prev_const
-                        + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
-                }
-            }
+        .zip(field_types.iter())
+        .map(|(name, ty)| ChainField {
+            name,
+            ty,
+            cfg_attrs: &[],
         })
         .collect();
+    let offset_consts = slot_chain_consts("__pvm_storage_offset_", &chain_fields);
 
     let field_inits: Vec<TokenStream> = field_names
         .iter()
@@ -161,6 +150,23 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             }
         })
         .collect();
+
+    // Per-field layout-emit code: leaves push directly, embedded `#[storage]`
+    // sub-structs recurse via `StorageLayoutEmit::emit_entries`.
+    let layout_emits: Vec<TokenStream> = field_names
+        .iter()
+        .zip(field_types.iter())
+        .map(|(name, ty)| {
+            let const_ident = format_ident!("__pvm_storage_offset_{}", name);
+            let slot_expr = quote! { base + #const_ident };
+            generate_layout_emit(&name.to_string(), ty, slot_expr, quote! { name_prefix })
+        })
+        .collect();
+
+    // Reuse the offset chain inside the layout helper. Each `emit_entries`
+    // call rebuilds it locally so the consts stay in fn scope and the helper
+    // doesn't have to track an external chain.
+    let offset_consts_for_layout = offset_consts.clone();
 
     // The user's struct, unchanged.
     let user_struct = &input;
@@ -179,6 +185,25 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 #struct_name {
                     #(#field_inits),*
                 }
+            }
+        }
+
+        #[cfg(feature = "abi-gen")]
+        impl #impl_generics ::pvm_contract_sdk::StorageLayoutEmit
+            for #struct_name #ty_generics
+        #where_clause
+        {
+            // `entries: &mut Vec<...>` matches the call shape in
+            // `__storage_layout_json` and in the macro-generated leaf-push /
+            // trait-recursion code: leaves use auto-deref for `entries.push(...)`,
+            // recursions pass `entries` directly to reborrow.
+            fn emit_entries(
+                base: u64,
+                name_prefix: &str,
+                entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
+            ) {
+                #(#offset_consts_for_layout)*
+                #(#layout_emits)*
             }
         }
     })

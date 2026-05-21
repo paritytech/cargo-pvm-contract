@@ -34,7 +34,7 @@ struct AddrAndCounter {
 #[test]
 fn addr_and_counter_packs_into_one_slot() {
     assert_eq!(<AddrAndCounter as StorageEncode>::STORAGE_SLOTS, 1);
-    assert!(<AddrAndCounter as StorageEncode>::STARTS_NEW_SLOT);
+    const { assert!(<AddrAndCounter as StorageEncode>::STARTS_NEW_SLOT) };
 }
 
 #[test]

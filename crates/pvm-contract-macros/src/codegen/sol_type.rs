@@ -560,15 +560,15 @@ fn generate_storage_impls(
             "`{name}` cannot be used in on-chain storage: {field_label} has type \
              `{unsupported_ty}` (Rust: `{field_ty_str}`), which is not yet \
              supported as a `StorageEncode` field. Only fixed-size primitives \
-             (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, `bytes`, \
-             and `Vec<u8>` are supported today. \
+             (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, and `bytes` \
+             (Rust `Bytes`) are supported today. \
              Hint: `#[derive(SolType)]` still emits SolEncode/SolDecode, so \
              the struct remains usable for calldata and event encoding — \
              only `Lazy<{name}>` and `Mapping<_, {name}>` are blocked.",
             name = name,
             field_label = field_label,
             unsupported_ty = unsupported_ty,
-            field_ty_str = quote!(#field_ty).to_string(),
+            field_ty_str = quote!(#field_ty),
         );
 
         return Ok(quote! {

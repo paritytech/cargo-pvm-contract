@@ -13,10 +13,14 @@
 //! consecutive slots, mirroring Solidity's struct-in-storage layout.
 //!
 //! Dynamic `bytes` / `string` values ride the same `Lazy<T>` / `Mapping<K, V>`
-//! accessors as static types — `Lazy<String>`, `Lazy<Vec<u8>>`,
+//! accessors as static types — `Lazy<String>`, `Lazy<Bytes>`,
 //! `Mapping<K, String>`, `Mapping<K, Bytes>` encode inline when `len < 32` and
 //! spill to `keccak256(slot) + i` chunks otherwise, matching `solc`'s storage
-//! layout.
+//! layout. `Vec<u8>` is intentionally **not** a storage value — its `SolEncode`
+//! name is `"uint8[]"` (a different on-chain layout from Solidity `bytes`), so
+//! `Lazy<Vec<u8>>` and `Mapping<K, Vec<u8>>` fail to compile. Use [`Bytes`]
+//! ([`pvm_contract_types::Bytes`]) for `bytes`-shaped storage. `Vec<u8>` is
+//! still a valid mapping *key* (`mapping(bytes => _)`) and a valid ABI param.
 //!
 //! All accessors implement [`StorageComponent`], so they participate in the
 //! auto-numbered slot layout produced by the `#[contract]` and `#[storage]`
@@ -50,8 +54,6 @@ extern crate alloc;
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-#[cfg(feature = "abi-gen")]
-use pvm_contract_types::StaticEncodedLen;
 use pvm_contract_types::{Host, HostApi, SolEncode, StorageDecode, StorageEncode, StorageFlags};
 
 // ---------------------------------------------------------------------------
@@ -392,7 +394,7 @@ const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 /// Implementations:
 ///
 /// - [`Lazy<T>`]      — 1 slot. `T` may be static (e.g. `U256`) or dynamic
-///   (e.g. `String`, `Vec<u8>`) with solc-compatible inline/spilled layout.
+///   (e.g. `String`, [`Bytes`](pvm_contract_types::Bytes)) with solc-compatible inline/spilled layout.
 /// - [`Mapping<K,V>`] — 1 slot (the root; entries live at derived keys).
 ///   `V` may likewise be static or dynamic.
 /// - user storage structs annotated with `#[storage]` — sum of their fields'
@@ -410,51 +412,48 @@ pub trait StorageComponent: Sized {
 }
 
 // ---------------------------------------------------------------------------
-// StorageLayoutType: for storageLayout JSON generation (abi-gen only)
+// StorageLayoutEmit: per-struct hook for emitting layout JSON leaves.
 // ---------------------------------------------------------------------------
 
-/// Trait for resolving Solidity type names in `storageLayout` JSON.
+/// Push flattened storage-layout entries for a composable storage component.
 ///
-/// Only used at build time (behind `cfg(feature = "abi-gen")`).
-/// Implementations use `SolEncode::SOL_NAME` for leaf types and
-/// construct mapping type strings for `Mapping`.
+/// The `#[contract]` macro generates the top-level `__storage_layout_json()`
+/// function by iterating contract-struct fields: leaf fields (`Lazy<T>` /
+/// `Mapping<K, V>`) get inlined as single entries via the macro's syntactic
+/// type resolver; embedded `#[storage]` sub-structs dispatch through this
+/// trait, which recursively flattens their fields and prefixes each entry's
+/// label with the field path (`erc20.total_supply`, `metadata.name`, …) to
+/// match solc's storage-layout convention.
+///
+/// `#[storage]` auto-emits this impl. Hand-rolled storage components need to
+/// implement it explicitly to participate in abi-gen layout output.
 #[cfg(feature = "abi-gen")]
-pub trait StorageLayoutType {
-    /// Returns the Solidity storage type name (e.g., "uint256", "mapping(address,uint256)").
-    fn sol_type_name() -> String
-    where
-        Self: Sized;
+pub trait StorageLayoutEmit {
+    /// Append entries for this component into `out`, rooted at `base` and
+    /// prefixed by `name_prefix` (empty string at top level).
+    fn emit_entries(
+        base: u64,
+        name_prefix: &str,
+        out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+    );
 }
 
+/// Join `prefix` and `name` with a `.` separator, or return `name` alone when
+/// `prefix` is empty. Used by macro-generated layout helpers to build dotted
+/// field paths like `erc20.balances`.
 #[cfg(feature = "abi-gen")]
-impl<T: SolEncode + StaticEncodedLen> StorageLayoutType for T {
-    fn sol_type_name() -> String {
-        String::from(T::SOL_NAME)
+pub fn join_label(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        String::from(name)
+    } else {
+        let mut out = String::with_capacity(prefix.len() + 1 + name.len());
+        out.push_str(prefix);
+        out.push('.');
+        out.push_str(name);
+        out
     }
 }
 
-#[cfg(feature = "abi-gen")]
-impl<T: SolEncode + StaticEncodedLen> StorageLayoutType for Lazy<T> {
-    fn sol_type_name() -> String {
-        String::from(T::SOL_NAME)
-    }
-}
-
-#[cfg(feature = "abi-gen")]
-impl<K: SolEncode, V: StorageLayoutType> StorageLayoutType for Mapping<K, V> {
-    fn sol_type_name() -> String {
-        format!("mapping({},{})", K::SOL_NAME, V::sol_type_name())
-    }
-}
-
-// Note: `StorageLayoutType` for dynamic value types (`String`, `Bytes`,
-// `Vec<u8>`) is intentionally not implemented. Adding explicit impls clashes
-// with the static blanket above (`impl<T: SolEncode + StaticEncodedLen> ..`)
-// under Rust's coherence rules — the compiler cannot rule out a future
-// `StaticEncodedLen` impl for these foreign types. Contracts that declare a
-// dynamic-value mapping as a `#[slot]` field on the contract struct will get
-// a clear "trait `StorageLayoutType` is not implemented" error at the abi-gen
-// site. Resolving this requires sealing the blanket (separate refactor).
 // ---------------------------------------------------------------------------
 // Lazy<T> — static 32-byte value at a fixed storage slot.
 // ---------------------------------------------------------------------------
@@ -472,9 +471,12 @@ impl<K: SolEncode, V: StorageLayoutType> StorageLayoutType for Mapping<K, V> {
 /// striped across `N` consecutive slots starting at `self.key`, matching
 /// Solidity's struct-in-storage layout.
 ///
-/// Dynamic `T` (`String`, `Vec<u8>`, `Bytes`, or `#[derive(SolType)]` structs
-/// with dynamic fields) uses the same `Lazy<T>` accessor: the header lives
-/// inline at `self.key` and any spilled body sits at `keccak256(key) + i`.
+/// Dynamic `T` (`String`, [`Bytes`](pvm_contract_types::Bytes), or
+/// `#[derive(SolType)]` structs with dynamic fields) uses the same `Lazy<T>`
+/// accessor: the header lives inline at `self.key` and any spilled body sits
+/// at `keccak256(key) + i`. `Vec<u8>` is rejected at compile time — use
+/// [`Bytes`](pvm_contract_types::Bytes) instead, since `Vec<u8>` is ABI
+/// `"uint8[]"` and would disagree with the on-chain `bytes` layout.
 pub struct Lazy<T> {
     key: StorageKey,
     host: Host,
@@ -490,7 +492,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         assert!(
             T::STORAGE_SLOTS <= MAX_STATIC_SLOTS,
             "Lazy<T>: T::STORAGE_SLOTS exceeds MAX_STATIC_SLOTS. \
-             Use a dynamic value (String, Vec<u8>, Bytes) or raise MAX_STATIC_SLOTS."
+             Use a dynamic value (String, Bytes) or raise MAX_STATIC_SLOTS."
         );
     };
 
@@ -550,11 +552,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             // header may be the only non-zero slot — checking just slot 0
             // would miss it.
             let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            if try_read_slots(&self.host, self.key.as_bytes(), &mut buf[..T::STORAGE_SLOTS])
-                .is_none()
-            {
-                return None;
-            }
+            try_read_slots(&self.host, self.key.as_bytes(), &mut buf[..T::STORAGE_SLOTS])?;
             Some(T::read_from_storage::<MAX_STATIC_SLOTS>(
                 &self.host,
                 self.key.as_bytes(),
@@ -774,9 +772,7 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
         let slot = self.slot_of(key);
         if V::HAS_DYNAMIC_BODY {
             let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            if try_read_slots(&self.host, slot.as_bytes(), &mut buf[..V::STORAGE_SLOTS]).is_none() {
-                return None;
-            }
+            try_read_slots(&self.host, slot.as_bytes(), &mut buf[..V::STORAGE_SLOTS])?;
             Some(V::read_from_storage::<MAX_STATIC_SLOTS>(
                 &self.host,
                 slot.as_bytes(),
@@ -880,6 +876,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     use alloc::vec::Vec;
     use pvm_contract_types::Address;
+    #[cfg(feature = "alloc")]
+    use pvm_contract_types::Bytes;
     use pvm_contract_types::MockHostBuilder;
     use ruint::aliases::U256;
 
@@ -1232,7 +1230,7 @@ mod tests {
         assert_eq!(m.get(&key), U256::from(42));
     }
 
-    // --- Dynamic accessors: Lazy<String> / Lazy<Vec<u8>> ---
+    // --- Dynamic accessors: Lazy<String> / Lazy<Bytes> ---
 
     #[cfg(feature = "alloc")]
     #[test]
@@ -1430,8 +1428,8 @@ mod tests {
         malformed[31] = 0x01; // low bit set ⇒ spilled
         storage_set_32(&host, key.as_bytes(), &malformed);
 
-        let lazy = Lazy::<Vec<u8>>::new(key, host);
-        assert!(lazy.get().is_empty());
+        let lazy = Lazy::<Bytes>::new(key, host);
+        assert!(lazy.get().0.is_empty());
     }
 
     /// A malformed inline header (byte31 > 62, low bit 0) encodes a decoded
@@ -1451,11 +1449,11 @@ mod tests {
         malformed[31] = 0xFE;
         storage_set_32(&host, key.as_bytes(), &malformed);
 
-        let lazy = Lazy::<Vec<u8>>::new(key, host);
+        let lazy = Lazy::<Bytes>::new(key, host);
         // Must not panic. Cap is 31 bytes — the original 31 prefix bytes.
         let bytes = lazy.get();
-        assert_eq!(bytes.len(), 31);
-        assert_eq!(&bytes[..], &malformed[..31]);
+        assert_eq!(bytes.0.len(), 31);
+        assert_eq!(&bytes.0[..], &malformed[..31]);
     }
 
     /// Long-spill probe: header is `len * 2 + 1` big-endian, body chunks live
@@ -1568,38 +1566,38 @@ mod tests {
 
     #[cfg(feature = "alloc")]
     #[test]
-    fn lazy_roundtrip_vec_u8() {
-        let mut lazy = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
-        lazy.set(&alloc::vec![1, 2, 3, 4, 5]);
-        assert_eq!(lazy.get(), alloc::vec![1, 2, 3, 4, 5]);
+    fn lazy_roundtrip_bytes() {
+        let mut lazy = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        lazy.set(&Bytes(alloc::vec![1, 2, 3, 4, 5]));
+        assert_eq!(lazy.get(), Bytes(alloc::vec![1, 2, 3, 4, 5]));
     }
 
     #[cfg(feature = "alloc")]
     #[test]
-    fn lazy_vec_u8_large() {
-        let mut lazy = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
-        let data: Vec<u8> = (0..=255u8).collect();
+    fn lazy_bytes_large() {
+        let mut lazy = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        let data = Bytes((0..=255u8).collect());
         lazy.set(&data);
         assert_eq!(lazy.get(), data);
     }
 
-    /// `Vec<u8>` rides the same solc-compatible path as `String`. Cover the
+    /// `Bytes` rides the same solc-compatible path as `String`. Cover the
     /// inline / spill boundary explicitly: 31 bytes inline, 32 bytes spills.
     #[cfg(feature = "alloc")]
     #[test]
-    fn lazy_vec_u8_boundary() {
-        let mut a = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
+    fn lazy_bytes_boundary() {
+        let mut a = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
         let host = a.host.clone();
         let key_a = a.key;
 
-        let inline: Vec<u8> = (0..31).collect();
+        let inline = Bytes((0..31).collect());
         a.set(&inline);
         let slot_bytes = storage_get_32(&host, key_a.as_bytes());
         assert_eq!(slot_bytes[31], 31 * 2, "31B vec inline, byte31 = 62");
         assert_eq!(a.get(), inline);
 
-        let mut b = Lazy::<Vec<u8>>::new(StorageKey::from_slot(1), host);
-        let spill: Vec<u8> = (0..32).collect();
+        let mut b = Lazy::<Bytes>::new(StorageKey::from_slot(1), host);
+        let spill = Bytes((0..32).collect());
         b.set(&spill);
         let slot_b = storage_get_32(&b.host, b.key.as_bytes());
         assert_eq!(slot_b[31], 32 * 2 + 1, "32B vec spills, byte31 = 65");
@@ -1678,9 +1676,9 @@ mod tests {
     #[test]
     fn storage_component_slot_count_dynamic() {
         assert_eq!(<Lazy<String> as StorageComponent>::SLOTS, 1);
-        assert_eq!(<Lazy<Vec<u8>> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<Lazy<Bytes> as StorageComponent>::SLOTS, 1);
         assert_eq!(<Mapping<Address, String> as StorageComponent>::SLOTS, 1);
-        assert_eq!(<Mapping<Address, Vec<u8>> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<Mapping<Address, Bytes> as StorageComponent>::SLOTS, 1);
     }
 
     #[test]
@@ -1993,7 +1991,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // Native String / Vec<u8> in Lazy / Mapping
+    // Native String / Bytes in Lazy / Mapping
     // ---------------------------------------------------------------------
 
     #[cfg(feature = "alloc")]
@@ -2066,8 +2064,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_native_round_trip() {
-        let mut lazy = Lazy::<Vec<u8>>::new(StorageKey::from_slot(0), h());
-        let payload: Vec<u8> = (0..50).collect();
+        let mut lazy = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        let payload = Bytes((0..50).collect());
         lazy.set(&payload);
         assert_eq!(lazy.get(), payload);
     }

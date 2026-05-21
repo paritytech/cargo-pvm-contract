@@ -166,51 +166,27 @@ pub(super) struct SlotField {
 pub(super) enum Slot {
     /// Explicit `#[slot(N)]` attribute.
     Explicit(u64),
-    /// Auto-numbered: computed at compile time from declaration order and
-    /// each preceding field's `<Type as StorageComponent>::SLOTS`.
-    /// `index` is the position among auto-numbered fields (0, 1, 2, ...).
-    Auto { index: usize },
+    /// Auto-numbered: position among auto-numbered fields is taken from
+    /// declaration order during the slot-chain build.
+    Auto,
 }
 
 /// Build the chain of `__pvm_storage_slot_<name>` const items for auto-numbered
-/// fields. Field K's const equals `prev_const + <PrevTy as StorageComponent>::SLOTS`,
-/// so user-defined storage components with `SLOTS > 1` get a correct contiguous
-/// range without the macro knowing their size. Consumed by both the riscv64
-/// `deploy()`/`call()` entry points and the abi-gen `__storage_layout_json()`
-/// helper — each emits the consts inside its own function body.
+/// contract-struct fields. Walks only the auto-numbered subset (explicit
+/// `#[slot(N)]` fields do not participate). Delegates to the shared
+/// [`super::storage_layout::slot_chain_consts`] helper so the chain logic
+/// matches `#[storage]`'s offset chain.
 pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
-    slot_fields
+    let auto: Vec<super::storage_layout::ChainField<'_>> = slot_fields
         .iter()
-        .filter_map(|sf| match sf.slot {
-            Slot::Auto { index } => {
-                let name = &sf.name;
-                let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                let cfgs = &sf.cfg_attrs;
-                if index == 0 {
-                    Some(quote! {
-                        #(#cfgs)*
-                        #[allow(non_upper_case_globals)]
-                        const #const_ident: u64 = 0;
-                    })
-                } else {
-                    let prev = slot_fields
-                        .iter()
-                        .filter(|s| matches!(s.slot, Slot::Auto { .. }))
-                        .nth(index - 1)
-                        .expect("auto_index walks in order");
-                    let prev_const = quote::format_ident!("__pvm_storage_slot_{}", &prev.name);
-                    let prev_ty = &prev.ty;
-                    Some(quote! {
-                        #(#cfgs)*
-                        #[allow(non_upper_case_globals)]
-                        const #const_ident: u64 = #prev_const
-                            + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
-                    })
-                }
-            }
-            Slot::Explicit(_) => None,
+        .filter(|sf| matches!(sf.slot, Slot::Auto))
+        .map(|sf| super::storage_layout::ChainField {
+            name: &sf.name,
+            ty: &sf.ty,
+            cfg_attrs: &sf.cfg_attrs,
         })
-        .collect()
+        .collect();
+    super::storage_layout::slot_chain_consts("__pvm_storage_slot_", &auto)
 }
 
 impl SlotField {
@@ -218,7 +194,7 @@ impl SlotField {
     pub(super) fn explicit_slot(&self) -> Option<u64> {
         match self.slot {
             Slot::Explicit(n) => Some(n),
-            Slot::Auto { .. } => None,
+            Slot::Auto => None,
         }
     }
 }
@@ -1134,7 +1110,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let cfgs = &sf.cfg_attrs;
             let slot_expr: TokenStream = match sf.slot {
                 Slot::Explicit(n) => quote! { #n },
-                Slot::Auto { .. } => {
+                Slot::Auto => {
                     let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
                     quote! { #const_ident }
                 }
@@ -1635,7 +1611,6 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     }
 
     let mut fields = Vec::new();
-    let mut auto_index = 0usize;
     for raw in raws {
         let slot = if let Some(n) = raw.explicit {
             Slot::Explicit(n)
@@ -1655,9 +1630,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
                      need conditional fields.",
                 ));
             }
-            let s = Slot::Auto { index: auto_index };
-            auto_index += 1;
-            s
+            Slot::Auto
         };
         fields.push(SlotField {
             name: raw.name,
