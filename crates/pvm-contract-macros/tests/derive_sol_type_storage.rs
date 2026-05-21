@@ -337,3 +337,68 @@ fn dynamic_field_struct_via_mapping_round_trip_spilled() {
     m.insert(&5u64, &v);
     assert_eq!(m.get(&5u64), v);
 }
+
+// ========================================================================
+// Workaround for the "Lazy<T> doesn't pack at contract-field level" issue.
+//
+// Background: at the contract field level (chain of `__pvm_storage_slot_*`
+// const items via `StorageComponent::SLOTS`), two adjacent `Lazy<u128>`
+// fields take 2 slots — no sub-word packing. Solidity's layout would put
+// `uint128 a; uint128 b;` in slot 0 at offsets 16 and 0 respectively.
+//
+// Workaround: group packable fields into a `#[derive(SolType)]` struct
+// and store the struct under one `Lazy<S>`. Inside the derive, the
+// `__STORAGE_LAYOUT` walker uses `PACKED_BYTES` / `STARTS_NEW_SLOT` and
+// produces solc-compatible sub-word packing.
+//
+// These tests pin both halves so the layout divergence stays documented.
+// ========================================================================
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct U128Pair {
+    a: u128,
+    b: u128,
+}
+
+#[test]
+fn u128_pair_packs_into_one_slot_via_soltype() {
+    // The SolType derive's layout walker packs two u128s (16 bytes each)
+    // into a single 32-byte slot — the user-facing workaround for the
+    // contract-field non-packing limitation.
+    assert_eq!(<U128Pair as StorageEncode>::STORAGE_SLOTS, 1);
+    assert_eq!(<U128Pair as StorageEncode>::PACKED_BYTES, 32);
+}
+
+#[test]
+fn u128_pair_layout_matches_solc_packing() {
+    // solc layout for `struct { uint128 a; uint128 b; }`:
+    //   field 0 (a) lower-order aligned:  bytes 16..32 = a (BE)
+    //   field 1 (b) packed above:         bytes 0..16  = b (BE)
+    let v = U128Pair {
+        a: 0x1111_1111_1111_1111u128,
+        b: 0x2222_2222_2222_2222u128,
+    };
+    let slots = encode_all(&v);
+    assert_eq!(slots.len(), 1, "packs into a single 32-byte slot");
+
+    let s = slots[0];
+    assert_eq!(&s[16..32], &v.a.to_be_bytes(), "a at bytes 16..31");
+    assert_eq!(&s[0..16], &v.b.to_be_bytes(), "b at bytes 0..15");
+}
+
+#[test]
+fn lazy_of_u128_pair_advances_chain_by_one_slot() {
+    // The whole point of the workaround: storing `Lazy<U128Pair>` advances
+    // the contract's slot chain by exactly 1, while `Lazy<u128>; Lazy<u128>;`
+    // would advance by 2. `StorageComponent::SLOTS` is what the contract
+    // macro reads to compute the next field's slot.
+    assert_eq!(
+        <Lazy<U128Pair> as pvm_contract_sdk::StorageComponent>::SLOTS,
+        1
+    );
+    assert_eq!(
+        <Lazy<u128> as pvm_contract_sdk::StorageComponent>::SLOTS,
+        1,
+        "for comparison: each Lazy<u128> takes its own slot"
+    );
+}

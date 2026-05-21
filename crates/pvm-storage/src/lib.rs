@@ -1745,6 +1745,122 @@ mod tests {
         assert_eq!(<Mapping<Address, Bytes> as StorageComponent>::SLOTS, 1);
     }
 
+    // --- Packing semantics (vs. Solidity storageLayout) ---
+
+    /// Adjacent contract storage fields of `Lazy<u128>` do NOT pack into a
+    /// single 32-byte slot, even though `u128` is only 16 bytes wide.
+    ///
+    /// Solidity:
+    ///   contract C { uint128 a; uint128 b; }
+    /// would lay both at slot 0 (a at offset 16, b at offset 0).
+    ///
+    /// This SDK: `Lazy<u128>::SLOTS == 1` and the contract macro's slot chain
+    /// is `next = prev_const + <PrevTy>::SLOTS`, so `b` lands at slot 1. The
+    /// `storageLayout` JSON therefore diverges from solc whenever a contract
+    /// declares adjacent sub-32-byte primitives as separate `Lazy<T>` fields.
+    ///
+    /// Workaround (proved by the next test): group packable fields into a
+    /// `#[derive(SolType)]` struct and store the struct under one `Lazy<S>`.
+    #[test]
+    fn adjacent_lazy_u128_does_not_pack_at_contract_field_level() {
+        assert_eq!(<u128 as StorageEncode>::PACKED_BYTES, 16);
+        assert_eq!(<u128 as StorageEncode>::STORAGE_SLOTS, 1);
+        assert_eq!(<Lazy<u128> as StorageComponent>::SLOTS, 1);
+
+        let slot_a: u64 = 0;
+        let slot_b: u64 = slot_a + <Lazy<u128> as StorageComponent>::SLOTS;
+        assert_eq!(
+            slot_b, 1,
+            "adjacent Lazy<u128> fields land at distinct slots — no sub-word packing across Lazy boundaries"
+        );
+    }
+
+    /// Same point at the wire level: writing two `Lazy<u128>` cells at slots
+    /// 0 and 1 does not overlap. Solidity's solc would put them in the same
+    /// slot at different offsets; we cannot.
+    #[test]
+    fn two_lazy_u128_cells_use_two_distinct_slots() {
+        let host = h();
+        let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), host.clone()) };
+        let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(1), host.clone()) };
+
+        a.set(&0x1111_1111_1111_1111u128);
+        b.set(&0x2222_2222_2222_2222u128);
+
+        let slot_0 = storage_get_32(&host, &StorageKey::from_slot(0).as_bytes().clone());
+        let slot_1 = storage_get_32(&host, &StorageKey::from_slot(1).as_bytes().clone());
+        assert_ne!(
+            slot_0, [0u8; 32],
+            "slot 0 holds `a` only — `b` did not pack into the high half"
+        );
+        assert_ne!(
+            slot_1, [0u8; 32],
+            "slot 1 holds `b` separately, not at slot 0 + offset 0"
+        );
+        // u128's `CANONICAL_OFFSET = 16` puts the value in bytes 16..31 of its
+        // slot (right-aligned big-endian, matching solc). solc would then fit
+        // `b` into bytes 0..15 of the same slot — but we don't, so those bytes
+        // stay zero and `b` consumes a whole new slot at index 1.
+        assert!(
+            slot_0[..16].iter().all(|&x| x == 0),
+            "slot 0 bytes 0..15 are empty — solc would pack `b` here, we don't"
+        );
+        assert!(
+            slot_0[16..].iter().any(|&x| x != 0),
+            "slot 0 bytes 16..31 hold `a` (right-aligned u128)"
+        );
+        assert!(
+            slot_1[16..].iter().any(|&x| x != 0),
+            "slot 1 bytes 16..31 hold `b` (its own slot, not packed with `a`)"
+        );
+    }
+
+    // --- Solidity `string` decode is lossy ---
+
+    /// `Lazy<String>::get()` silently substitutes invalid UTF-8 with U+FFFD.
+    ///
+    /// Rationale (already in `storage_codec::String::read_from_storage`):
+    /// a foreign contract sharing the same storage slot may have written
+    /// non-UTF-8 bytes. Trapping the read would brick our contract; lossy
+    /// decoding preserves liveness at the cost of silent data substitution.
+    ///
+    /// User impact: contracts that *require* exact byte preservation must
+    /// use `Lazy<Bytes>` (or `Lazy<Vec<u8>>`), not `Lazy<String>`.
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn lazy_string_decode_silently_replaces_invalid_utf8_with_replacement_char() {
+        let host = h();
+        let key = StorageKey::from_slot(0);
+
+        // Short-form solidity `string` header: byte 31 = len * 2 (low bit 0 = inline).
+        // Body bytes 0..3 are an isolated UTF-8 continuation (0xff is never
+        // valid as a leading or continuation byte).
+        let mut raw = [0u8; 32];
+        raw[0] = 0xff;
+        raw[1] = 0xfe;
+        raw[2] = 0xfd;
+        raw[3] = 0xfc;
+        raw[31] = 4 * 2;
+        storage_set_32(&host, key.as_bytes(), &raw);
+
+        let lazy = unsafe { Lazy::<String>::new(key, host.clone()) };
+        let read = lazy.get();
+        // Each invalid byte becomes one U+FFFD. The roundtrip is *not* the
+        // bytes we wrote — this is the lossy substitution the docstring on
+        // try_get does not currently mention.
+        assert_eq!(
+            read.chars().filter(|c| *c == '\u{FFFD}').count(),
+            4,
+            "all four invalid bytes substituted; no error returned"
+        );
+
+        // Counter-check: the same wire bytes through `Lazy<Bytes>` preserve
+        // the exact content, no substitution.
+        let lazy_bytes = unsafe { Lazy::<Bytes>::new(key, host) };
+        let preserved = lazy_bytes.get();
+        assert_eq!(preserved.0, alloc::vec![0xff, 0xfe, 0xfd, 0xfc]);
+    }
+
     #[test]
     fn storage_component_new_at_matches_new() {
         let host = h();
