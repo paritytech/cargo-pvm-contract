@@ -153,6 +153,17 @@ fn generate_abi_gen_impl(
         .map(generate_method_entry)
         .collect::<syn::Result<Vec<_>>>()?;
 
+    let receive_entry = if parsed.has_receive {
+        let mutability = StateMutability::Payable.as_abi_str();
+        quote! {
+            __items.push(::pvm_contract_sdk::AbiItem::Receive {
+                state_mutability: Some(#mutability.into()),
+            });
+        }
+    } else {
+        quote! {}
+    };
+
     // Emit error ABI entries by calling error_signatures() on each error type.
     // Deduplication uses exact-match on the full signature ("Name(type1,type2)")
     // so that overloaded errors with different params are all emitted.
@@ -247,6 +258,8 @@ fn generate_abi_gen_impl(
             #constructor_entry
 
             #(#method_entries)*
+
+            #receive_entry
 
             #(#error_entries)*
 
@@ -350,6 +363,9 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
         };
 
@@ -456,6 +472,9 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
         }
     }
@@ -545,6 +564,9 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
         };
 
@@ -591,6 +613,9 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
         };
 
@@ -630,6 +655,9 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
         };
 

@@ -1,0 +1,6 @@
+error: `#[receive]` must take no arguments other than `&mut self`
+ --> tests/ui/receive_with_args.rs:6:9
+  |
+6 | /         #[pvm_contract_macros::receive]
+7 | |         pub fn receive(&mut self, _value: u64) {}
+  | |_________________________________________________^

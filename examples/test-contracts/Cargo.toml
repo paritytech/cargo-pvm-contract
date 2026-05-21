@@ -71,10 +71,19 @@ path = "src/constructor-args.rs"
 name = "payable"
 path = "src/payable.rs"
 
+[[bin]]
+name = "receive"
+path = "src/receive.rs"
+
+[[bin]]
+name = "receive_dsl"
+path = "src/receive_dsl.rs"
+
 [dependencies]
 pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = [
     "alloc",
 ] }
+pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
 polkavm-derive = { version = "0.31.0" } # required by proc macro generated code
 picoalloc = { version = "5", default-features = false }
 

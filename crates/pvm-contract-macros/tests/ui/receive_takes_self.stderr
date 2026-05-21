@@ -1,0 +1,6 @@
+error: `#[receive]` must take `&mut self`
+ --> tests/ui/receive_takes_self.rs:6:9
+  |
+6 | /         #[pvm_contract_macros::receive]
+7 | |         pub fn receive(&self) {}
+  | |________________________________^

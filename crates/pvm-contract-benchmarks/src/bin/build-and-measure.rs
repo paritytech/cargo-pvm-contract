@@ -210,6 +210,8 @@ fn build_variant(
         &build_profile,
         &bins,
         None,
+        None,
+        false,
     )
     .with_context(|| {
         format!(
