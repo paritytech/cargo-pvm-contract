@@ -1,11 +1,10 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_builder_dsl::pvm_contract_types::{
-    HostApi, PolkaVmHost, SolEncode, StaticEncodedLen, StorageFlags,
+    Host, HostApi, PolkaVmHost, SolEncode, StaticEncodedLen, StorageFlags,
 };
 use pvm_contract_builder_dsl::ruint::aliases::U256;
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_builder_dsl::{solidity_selector, ContractBuilder, HandlerResult};
 
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
@@ -82,13 +81,10 @@ pub extern "C" fn deploy() {}
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
-    let host = PolkaVmHost;
-    ContractBuilder::<PolkaVmHost>::new()
-        .method(
-            TOTAL_RECEIVED_SELECTOR,
-            total_received_handler::<PolkaVmHost>,
-        )
-        .method(RECEIVE_COUNT_SELECTOR, receive_count_handler::<PolkaVmHost>)
-        .receive(receive_handler::<PolkaVmHost>)
+    let host = Host::new();
+    ContractBuilder::new()
+        .method(TOTAL_RECEIVED_SELECTOR, total_received_handler)
+        .method(RECEIVE_COUNT_SELECTOR, receive_count_handler)
+        .receive(receive_handler)
         .dispatch_impl::<256>(&host);
 }
