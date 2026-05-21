@@ -168,7 +168,7 @@ impl ContractBuilder {
 
     /// Attach a non-payable fallback handler, transitioning to
     /// [`ContractBuilderWithHandlers`]. See the type's docs for semantics.
-    pub fn fallback(self, handler: MethodHandler<H>) -> ContractBuilderWithHandlers<H> {
+    pub fn fallback(self, handler: MethodHandler) -> ContractBuilderWithHandlers {
         ContractBuilderWithHandlers {
             inner: self,
             fallback: Some(handler),
@@ -179,7 +179,7 @@ impl ContractBuilder {
 
     /// Attach a payable fallback handler, transitioning to
     /// [`ContractBuilderWithHandlers`]. See the type's docs for semantics.
-    pub fn payable_fallback(self, handler: MethodHandler<H>) -> ContractBuilderWithHandlers<H> {
+    pub fn payable_fallback(self, handler: MethodHandler) -> ContractBuilderWithHandlers {
         ContractBuilderWithHandlers {
             inner: self,
             fallback: Some(handler),
@@ -190,7 +190,7 @@ impl ContractBuilder {
 
     /// Attach a `#[receive]`-equivalent handler, transitioning to
     /// [`ContractBuilderWithHandlers`]. See the type's docs for semantics.
-    pub fn receive(self, handler: MethodHandler<H>) -> ContractBuilderWithHandlers<H> {
+    pub fn receive(self, handler: MethodHandler) -> ContractBuilderWithHandlers {
         ContractBuilderWithHandlers {
             inner: self,
             fallback: None,
@@ -315,46 +315,46 @@ impl ContractBuilder {
 ///   [`payable_fallback`](ContractBuilder::payable_fallback) to accept value.
 /// - Without a fallback registered, the unmatched-selector path still
 ///   reverts with `NO_SELECTOR` / `UNKNOWN_SELECTOR` as before.
-pub struct ContractBuilderWithHandlers<H: pvm_contract_types::HostApi> {
-    inner: ContractBuilder<H>,
+pub struct ContractBuilderWithHandlers {
+    inner: ContractBuilder,
     /// `None` keeps the original "revert with `UNKNOWN_SELECTOR` /
     /// `NO_SELECTOR`" behaviour on unmatched selectors.
-    fallback: Option<MethodHandler<H>>,
+    fallback: Option<MethodHandler>,
     /// Ignored when `fallback` is `None`.
     fallback_is_payable: bool,
     /// Implicitly payable; mirrors Solidity's `receive() external payable`.
-    receive: Option<MethodHandler<H>>,
+    receive: Option<MethodHandler>,
 }
 
-impl<H: pvm_contract_types::HostApi> ContractBuilderWithHandlers<H> {
+impl ContractBuilderWithHandlers {
     /// Forward a non-payable method to the inner [`ContractBuilder`].
-    pub fn method(mut self, selector: Selector, handler: MethodHandler<H>) -> Self {
+    pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         self.inner = self.inner.method(selector, handler);
         self
     }
 
     /// Forward a payable method to the inner [`ContractBuilder`].
-    pub fn payable_method(mut self, selector: Selector, handler: MethodHandler<H>) -> Self {
+    pub fn payable_method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         self.inner = self.inner.payable_method(selector, handler);
         self
     }
 
     /// Set (or replace) the non-payable fallback handler.
-    pub fn fallback(mut self, handler: MethodHandler<H>) -> Self {
+    pub fn fallback(mut self, handler: MethodHandler) -> Self {
         self.fallback = Some(handler);
         self.fallback_is_payable = false;
         self
     }
 
     /// Set (or replace) the payable fallback handler.
-    pub fn payable_fallback(mut self, handler: MethodHandler<H>) -> Self {
+    pub fn payable_fallback(mut self, handler: MethodHandler) -> Self {
         self.fallback = Some(handler);
         self.fallback_is_payable = true;
         self
     }
 
     /// Set (or replace) the receive handler.
-    pub fn receive(mut self, handler: MethodHandler<H>) -> Self {
+    pub fn receive(mut self, handler: MethodHandler) -> Self {
         self.receive = Some(handler);
         self
     }
@@ -363,7 +363,7 @@ impl<H: pvm_contract_types::HostApi> ContractBuilderWithHandlers<H> {
     /// [`ContractBuilderWithHandlers`].
     #[inline]
     #[allow(unreachable_code)]
-    pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &H) {
+    pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &Host) {
         let call_data_len = host.call_data_size() as usize;
 
         if call_data_len > BUF_SIZE {
@@ -495,6 +495,7 @@ mod tests {
 
     use pvm_contract_types::MockHostBuilder;
     extern crate alloc;
+    use alloc::rc::Rc;
     use alloc::vec;
 
     fn ok_marker_handler<H: pvm_contract_types::HostApi>(
@@ -508,11 +509,12 @@ mod tests {
 
     #[test]
     fn empty_calldata_invokes_receive() {
-        let host = MockHostBuilder::new().build();
-        ContractBuilder::<MockHost>::new()
-            .method(TRANSFER, dummy_handler::<MockHost>)
-            .receive(ok_marker_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(MockHostBuilder::new().build());
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .receive(ok_marker_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host
             .take_return_value()
             .expect("receive should call return_value");
@@ -526,10 +528,11 @@ mod tests {
 
     #[test]
     fn empty_calldata_without_receive_or_fallback_reverts_no_selector() {
-        let host = MockHostBuilder::new().build();
-        ContractBuilder::<MockHost>::new()
-            .method(TRANSFER, dummy_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(MockHostBuilder::new().build());
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.contains(ReturnFlags::REVERT));
         assert_eq!(
@@ -540,11 +543,12 @@ mod tests {
 
     #[test]
     fn empty_calldata_without_receive_routes_to_fallback() {
-        let host = MockHostBuilder::new().build();
-        ContractBuilder::<MockHost>::new()
-            .method(TRANSFER, dummy_handler::<MockHost>)
-            .fallback(ok_marker_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(MockHostBuilder::new().build());
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .fallback(ok_marker_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.is_empty());
         assert_eq!(&rv.data[..], b"hit");
@@ -553,13 +557,16 @@ mod tests {
     #[test]
     fn unmatched_selector_routes_to_fallback() {
         // Calldata = a selector that doesn't match TRANSFER.
-        let host = MockHostBuilder::new()
-            .calldata(vec![0xff, 0xff, 0xff, 0xff])
-            .build();
-        ContractBuilder::<MockHost>::new()
-            .method(TRANSFER, dummy_handler::<MockHost>)
-            .fallback(ok_marker_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xff, 0xff, 0xff, 0xff])
+                .build(),
+        );
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .fallback(ok_marker_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.is_empty());
         assert_eq!(&rv.data[..], b"hit");
@@ -567,12 +574,15 @@ mod tests {
 
     #[test]
     fn unmatched_selector_without_fallback_reverts_unknown_selector() {
-        let host = MockHostBuilder::new()
-            .calldata(vec![0xff, 0xff, 0xff, 0xff])
-            .build();
-        ContractBuilder::<MockHost>::new()
-            .method(TRANSFER, dummy_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xff, 0xff, 0xff, 0xff])
+                .build(),
+        );
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.contains(ReturnFlags::REVERT));
         assert_eq!(
@@ -583,16 +593,19 @@ mod tests {
 
     #[test]
     fn non_payable_fallback_rejects_value() {
-        let host = MockHostBuilder::new()
-            .calldata(vec![0xff, 0xff, 0xff, 0xff])
-            .value_transferred([
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 1,
-            ])
-            .build();
-        ContractBuilder::<MockHost>::new()
-            .fallback(ok_marker_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xff, 0xff, 0xff, 0xff])
+                .value_transferred([
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 1,
+                ])
+                .build(),
+        );
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .fallback(ok_marker_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.contains(ReturnFlags::REVERT));
         assert_eq!(
@@ -603,16 +616,19 @@ mod tests {
 
     #[test]
     fn payable_fallback_accepts_value() {
-        let host = MockHostBuilder::new()
-            .calldata(vec![0xff, 0xff, 0xff, 0xff])
-            .value_transferred([
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 1,
-            ])
-            .build();
-        ContractBuilder::<MockHost>::new()
-            .payable_fallback(ok_marker_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+        let host = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xff, 0xff, 0xff, 0xff])
+                .value_transferred([
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                    0, 0, 0, 0, 0, 1,
+                ])
+                .build(),
+        );
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .payable_fallback(ok_marker_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.is_empty(), "payable fallback must accept value");
         assert_eq!(&rv.data[..], b"hit");
@@ -620,14 +636,15 @@ mod tests {
 
     #[test]
     fn receive_fires_before_fallback_on_empty_calldata() {
-        let host = MockHostBuilder::new().build();
-        ContractBuilder::<MockHost>::new()
-            .receive(ok_marker_handler::<MockHost>)
+        let host = Rc::new(MockHostBuilder::new().build());
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
+            .receive(ok_marker_handler)
             .fallback(|_, _, output| {
                 output[..8].copy_from_slice(b"fallback");
                 HandlerResult::Ok(8)
             })
-            .dispatch_impl::<256>(&host);
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert_eq!(
             &rv.data[..],
@@ -638,11 +655,12 @@ mod tests {
 
     #[test]
     fn one_to_three_byte_calldata_routes_to_fallback() {
-        let host = MockHostBuilder::new().calldata(vec![0xab, 0xcd]).build();
-        ContractBuilder::<MockHost>::new()
+        let host = Rc::new(MockHostBuilder::new().calldata(vec![0xab, 0xcd]).build());
+        let host_api = Host::from_dyn(host.clone());
+        ContractBuilder::new()
             .receive(|_, _, _| panic!("receive must NOT fire for 1..=3 byte calldata"))
-            .fallback(ok_marker_handler::<MockHost>)
-            .dispatch_impl::<256>(&host);
+            .fallback(ok_marker_handler)
+            .dispatch_impl::<256>(&host_api);
         let rv = host.take_return_value().unwrap();
         assert!(rv.flags.is_empty());
         assert_eq!(&rv.data[..], b"hit");
