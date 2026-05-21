@@ -6,7 +6,7 @@ use crate::{DecodeError, SolDecode, SolEncode};
 /// `Vec<u8>` encodes as `uint8[]` (array of 32-byte-padded elements), while
 /// `Bytes` encodes as `bytes` (length-prefixed packed data), matching alloy's
 /// distinction between `Bytes` and `Vec<u8>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Bytes(pub alloc::vec::Vec<u8>);
 
 impl SolEncode for Bytes {
@@ -68,47 +68,53 @@ impl From<Bytes> for alloc::vec::Vec<u8> {
     }
 }
 
-impl Default for Bytes {
-    fn default() -> Self {
-        Bytes(alloc::vec::Vec::new())
-    }
-}
-
-/// `Bytes` uses solc's `bytes` storage layout — delegates to the
-/// `Vec<u8>` impls in `storage_codec`.
+/// `Bytes` uses solc's `bytes` storage layout: short (< 32 B) values fit
+/// inline at the field's slot; longer ones store the length in the slot and
+/// spill the body to `keccak256(slot) + i`. Same machinery as `String`.
 impl crate::StorageEncode for Bytes {
-    const STORAGE_SLOTS: usize = <alloc::vec::Vec<u8> as crate::StorageEncode>::STORAGE_SLOTS;
-    const PACKED_BYTES: usize = <alloc::vec::Vec<u8> as crate::StorageEncode>::PACKED_BYTES;
-    const STARTS_NEW_SLOT: bool =
-        <alloc::vec::Vec<u8> as crate::StorageEncode>::STARTS_NEW_SLOT;
-    const HAS_DYNAMIC_BODY: bool =
-        <alloc::vec::Vec<u8> as crate::StorageEncode>::HAS_DYNAMIC_BODY;
+    const STORAGE_SLOTS: usize = 1;
+    const PACKED_BYTES: usize = 32;
+    const STARTS_NEW_SLOT: bool = true;
+    const HAS_DYNAMIC_BODY: bool = true;
 
-    fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]) {
-        <alloc::vec::Vec<u8> as crate::StorageEncode>::encode_slot(&self.0, slot_idx, buf)
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert_eq!(_slot_idx, 0);
+        *buf = [0u8; 32];
+        let len = self.0.len();
+        if len < 32 {
+            buf[..len].copy_from_slice(&self.0);
+            buf[31] = (len as u8) << 1;
+            if len == 0 {
+                buf[30] = crate::storage_codec::EMPTY_INLINE_SENTINEL;
+            }
+        } else {
+            *buf = crate::storage_codec::encode_long_header(len);
+        }
     }
 
     fn write_to_storage(&self, host: &crate::Host, base_key: &[u8; 32]) {
-        <alloc::vec::Vec<u8> as crate::StorageEncode>::write_to_storage(&self.0, host, base_key)
+        crate::storage_codec::write_dynamic_bytes(host, base_key, &self.0);
     }
 
-    fn clear_storage(host: &crate::Host, base_key: &[u8; 32], slots: usize) {
-        <alloc::vec::Vec<u8> as crate::StorageEncode>::clear_storage(host, base_key, slots)
+    fn clear_storage(host: &crate::Host, base_key: &[u8; 32], _slots: usize) {
+        crate::storage_codec::clear_dynamic_bytes(host, base_key);
     }
 }
 
 impl crate::StorageDecode for Bytes {
-    fn from_slots(slots: &[[u8; 32]]) -> Self {
-        Bytes(<alloc::vec::Vec<u8> as crate::StorageDecode>::from_slots(slots))
+    /// Placeholder. The canonical read path goes through
+    /// [`read_from_storage`](Self::read_from_storage) which has host access
+    /// to materialise the body. `from_slots` returns an empty `Bytes` because
+    /// the spilled body lives outside the slot buffer.
+    fn from_slots(_slots: &[[u8; 32]]) -> Self {
+        Bytes(alloc::vec::Vec::new())
     }
 
     fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
         host: &crate::Host,
         base_key: &[u8; 32],
     ) -> Self {
-        Bytes(<alloc::vec::Vec<u8> as crate::StorageDecode>::read_from_storage::<MAX_INLINE_SLOTS>(
-            host, base_key,
-        ))
+        Bytes(crate::storage_codec::read_dynamic_bytes(host, base_key))
     }
 }
 

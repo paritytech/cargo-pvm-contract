@@ -3,7 +3,7 @@ use quote::quote;
 
 use super::contract::{ParsedContract, SlotField};
 use super::dispatch::{MethodInfo, StateMutability};
-use super::storage_layout::{generate_layout_entry, layout_json_from_entries};
+use super::storage_layout::generate_layout_emit;
 
 /// Generate both the in-module ABI helper and the top-level `main()`.
 ///
@@ -54,40 +54,52 @@ pub fn generate_abi_gen(
 /// declared inside the helper fn (mirroring the chain produced for the
 /// `this` construction in `deploy()`/`call()`). This way the slot value is
 /// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
-/// is not trivially 1 (e.g. for embedded sub-storage structs).
+/// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
+/// fields run through [`generate_layout_emit`] with an empty prefix —
+/// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
+/// `#[storage]` sub-structs dispatch through `StorageLayoutEmit::emit_entries`
+/// to recursively flatten their leaves with dotted labels.
 fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
     use super::contract::Slot;
 
     let auto_slot_consts = super::contract::auto_slot_consts(slot_fields);
 
-    let layout_pushes: Vec<TokenStream> = slot_fields
+    let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
         .map(|sf| {
             let slot_expr: TokenStream = match sf.slot {
                 Slot::Explicit(n) => quote! { #n },
-                Slot::Auto { .. } => {
+                Slot::Auto => {
                     let const_ident = quote::format_ident!("__pvm_storage_slot_{}", &sf.name);
                     quote! { #const_ident }
                 }
             };
-            let entry = generate_layout_entry(&sf.name.to_string(), &sf.ty, slot_expr);
+            let emit = generate_layout_emit(&sf.name.to_string(), &sf.ty, slot_expr, quote! { "" });
             let cfgs = &sf.cfg_attrs;
             quote! {
                 #(#cfgs)*
-                entries.push(#entry);
+                {
+                    #emit
+                }
             }
         })
         .collect();
-    let json_assembly = layout_json_from_entries();
 
+    // `storage` owns the Vec. `entries` is a `&mut Vec` alias used by the
+    // generated `layout_emits` so leaf pushes (`entries.push(...)`) and trait
+    // recursions (`StorageLayoutEmit::emit_entries(..., entries)`) compile
+    // identically inside both this function and the per-`#[storage]` impl.
     quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
         pub fn __storage_layout_json() -> ::std::string::String {
             #(#auto_slot_consts)*
-            let mut entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> = ::std::vec::Vec::new();
-            #(#layout_pushes)*
-            #json_assembly
+            let mut storage: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                ::std::vec::Vec::new();
+            let entries = &mut storage;
+            #(#layout_emits)*
+            let layout = ::pvm_contract_sdk::StorageLayout { storage };
+            ::pvm_contract_sdk::storage_layout_to_json(&layout)
         }
     }
 }
