@@ -261,7 +261,7 @@ struct RunningAverage {
 fn packed_struct_single_slot_via_mapping_round_trip() {
     assert_eq!(<RunningAverage as StorageEncode>::STORAGE_SLOTS, 1);
     let host = fresh_host();
-    let mut m = Mapping::<u64, RunningAverage>::new(StorageKey::from_slot(0), host);
+    let mut m = unsafe { Mapping::<u64, RunningAverage>::new(StorageKey::from_slot(0), host) };
     let v = RunningAverage { sum: 10, total: 3 };
     m.insert(&1u64, &v);
     assert_eq!(m.get(&1u64), v);
@@ -270,7 +270,7 @@ fn packed_struct_single_slot_via_mapping_round_trip() {
 #[test]
 fn packed_struct_single_slot_via_lazy_round_trip() {
     let host = fresh_host();
-    let mut lazy = Lazy::<RunningAverage>::new(StorageKey::from_slot(0), host);
+    let mut lazy = unsafe { Lazy::<RunningAverage>::new(StorageKey::from_slot(0), host) };
     let v = RunningAverage { sum: 7, total: 11 };
     lazy.set(&v);
     assert_eq!(lazy.get(), v);
@@ -293,7 +293,7 @@ fn multi_slot_static_struct_takes_three_slots() {
 #[test]
 fn multi_slot_static_struct_via_mapping_round_trip() {
     let host = fresh_host();
-    let mut m = Mapping::<u64, ThreeWords>::new(StorageKey::from_slot(0), host);
+    let mut m = unsafe { Mapping::<u64, ThreeWords>::new(StorageKey::from_slot(0), host) };
     let v = ThreeWords {
         a: U256::from(1u64),
         b: U256::from(2u64),
@@ -322,7 +322,7 @@ fn dynamic_field_struct_takes_two_slots_and_marks_dynamic_body() {
 #[test]
 fn dynamic_field_struct_via_mapping_round_trip_inline() {
     let host = fresh_host();
-    let mut m = Mapping::<u64, DynamicReview>::new(StorageKey::from_slot(0), host);
+    let mut m = unsafe { Mapping::<u64, DynamicReview>::new(StorageKey::from_slot(0), host) };
     let v = DynamicReview {
         reviewer: Address([0x42; 20]),
         comment_uri: alloc::string::String::from("ipfs://short"),
@@ -334,7 +334,7 @@ fn dynamic_field_struct_via_mapping_round_trip_inline() {
 #[test]
 fn dynamic_field_struct_via_mapping_round_trip_spilled() {
     let host = fresh_host();
-    let mut m = Mapping::<u64, DynamicReview>::new(StorageKey::from_slot(0), host);
+    let mut m = unsafe { Mapping::<u64, DynamicReview>::new(StorageKey::from_slot(0), host) };
     let long_uri = alloc::string::String::from(
         "ipfs://this-is-a-much-longer-uri-that-will-spill-into-the-keccak-derived-body-slots",
     );

@@ -69,7 +69,7 @@ fn erc20_state_new_at_assigns_contiguous_slots() {
 
     // Cross-check: a standalone Mapping rooted at slot 6 should see the same
     // entry.
-    let independent = Mapping::<Address, U256>::new(StorageKey::from_slot(6), host);
+    let independent = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(6), host) };
     assert_eq!(independent.get(&alice), U256::from(1_000));
 }
 
@@ -149,28 +149,29 @@ fn composed_contract_layout_matches_hand_constructed() {
 
     // Read back via slot-pinned standalone helpers and confirm the slot
     // arithmetic from `#[storage]` matches our manual `new_at` calls above.
-    let supply_slot = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
+    let supply_slot = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
     assert_eq!(supply_slot.get(), U256::from(1_000));
 
-    let balances_slot = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone());
+    let balances_slot = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
     assert_eq!(balances_slot.get(&alice), U256::from(42));
 
     // `allowances` claims slot 2 — write/read via two paths to confirm.
-    let mut allowances_via_outer =
-        <Mapping<Address, Mapping<Address, U256>>>::new(StorageKey::from_slot(2), host.clone());
+    let mut allowances_via_outer = unsafe {
+        <Mapping<Address, Mapping<Address, U256>>>::new(StorageKey::from_slot(2), host.clone())
+    };
     let bob = Address([0xBB; 20]);
     allowances_via_outer
         .entry(&alice)
         .insert(&bob, &U256::from(7));
     assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
 
-    let name_slot = Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone());
+    let name_slot = unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone()) };
     assert_eq!(name_slot.get(), "Composed");
 
-    let symbol_slot = Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), host.clone());
+    let symbol_slot = unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), host.clone()) };
     assert_eq!(symbol_slot.get(), "CMP");
 
-    let paused_slot = Lazy::<bool>::new(StorageKey::from_slot(5), host);
+    let paused_slot = unsafe { Lazy::<bool>::new(StorageKey::from_slot(5), host) };
     assert!(paused_slot.get());
 }
 
@@ -197,10 +198,10 @@ fn nested_storage_struct_uses_offset() {
     outer.flag.set(&true);
     outer.erc20.total_supply.set(&U256::from(999));
 
-    let flag_check = Lazy::<bool>::new(StorageKey::from_slot(10), host.clone());
+    let flag_check = unsafe { Lazy::<bool>::new(StorageKey::from_slot(10), host.clone()) };
     assert!(flag_check.get());
 
-    let supply_check = Lazy::<U256>::new(StorageKey::from_slot(11), host);
+    let supply_check = unsafe { Lazy::<U256>::new(StorageKey::from_slot(11), host) };
     assert_eq!(supply_check.get(), U256::from(999));
 }
 

@@ -24,7 +24,7 @@ pub struct MultiDyn {
 #[test]
 fn struct_with_multiple_dynamic_fields_round_trip() {
     let host = h();
-    let mut m = Mapping::<u64, MultiDyn>::new(StorageKey::from_slot(0), host);
+    let mut m = unsafe { Mapping::<u64, MultiDyn>::new(StorageKey::from_slot(0), host) };
     let v = MultiDyn {
         name: "alice".to_string(),
         bio: "y".repeat(80), // long, spills to body
@@ -39,7 +39,7 @@ fn struct_with_multiple_dynamic_fields_round_trip() {
 fn struct_with_multiple_dynamic_fields_overwrite_clears_bodies() {
     use pvm_contract_sdk::{HostApi, StorageFlags};
     let host = h();
-    let mut m = Mapping::<u64, MultiDyn>::new(StorageKey::from_slot(0), host.clone());
+    let mut m = unsafe { Mapping::<u64, MultiDyn>::new(StorageKey::from_slot(0), host.clone()) };
     m.insert(
         &9,
         &MultiDyn {
@@ -86,7 +86,7 @@ fn struct_with_multiple_dynamic_fields_overwrite_clears_bodies() {
 #[test]
 fn try_get_recognizes_dynamic_only_set() {
     let host = h();
-    let mut m = Mapping::<u64, R>::new(StorageKey::from_slot(0), host);
+    let mut m = unsafe { Mapping::<u64, R>::new(StorageKey::from_slot(0), host) };
     m.insert(
         &7,
         &R {
@@ -106,7 +106,7 @@ fn try_get_recognizes_dynamic_only_set() {
 fn remove_must_clear_dynamic_body_chunks() {
     use pvm_contract_sdk::{HostApi, StorageFlags};
     let host = h();
-    let mut m = Mapping::<u64, R>::new(StorageKey::from_slot(0), host.clone());
+    let mut m = unsafe { Mapping::<u64, R>::new(StorageKey::from_slot(0), host.clone()) };
     let long = "z".repeat(80);
     m.insert(
         &3,
@@ -153,7 +153,7 @@ fn remove_must_clear_dynamic_body_chunks() {
 fn long_then_short_must_clear_stale_body_chunks() {
     use pvm_contract_sdk::{HostApi, StorageFlags};
     let host = h();
-    let mut m = Mapping::<u64, R>::new(StorageKey::from_slot(0), host.clone());
+    let mut m = unsafe { Mapping::<u64, R>::new(StorageKey::from_slot(0), host.clone()) };
     // Long value: 80 bytes → 3 body chunks at keccak256(s_slot)+i.
     let long = "x".repeat(80);
     m.insert(

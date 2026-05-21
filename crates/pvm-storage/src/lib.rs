@@ -30,19 +30,27 @@
 //!
 //! Inside a `#[contract]` module, declare storage fields on the contract struct.
 //! Slot numbers are assigned in declaration order by default; opt out with
-//! `#[slot(N)]` if you need to pin a specific slot.
+//! `#[slot(N)]` if you need to pin a specific slot. The macro constructs each
+//! field via the safe [`StorageComponent::new_at`] entry point.
 //!
 //! ```ignore
-//! use pvm_storage::{Lazy, Mapping, StorageKey};
+//! use pvm_storage::{Lazy, Mapping, StorageComponent};
 //!
-//! let mut total_supply = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
+//! // The `#[contract]` macro emits calls like the lines below. Direct user
+//! // code shouldn't need to construct handles by hand — use macro-managed
+//! // storage fields and access them via `self.balances.get(&caller)` etc.
+//! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(0, host.clone());
 //! total_supply.set(&U256::from(1000));
 //! assert_eq!(total_supply.get(), U256::from(1000));
 //!
-//! let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host);
+//! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(1, host);
 //! balances.insert(&caller, &U256::from(500));
 //! assert_eq!(balances.get(&caller), U256::from(500));
 //! ```
+//!
+//! `Lazy::new` and `Mapping::new` themselves are `unsafe fn` — direct
+//! construction lets a `&self` (view) method bypass the borrow-check
+//! mutation gate. See their docs for the safety contract.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -497,7 +505,26 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     };
 
     /// Create a new `Lazy` at the given storage key, bound to a host handle.
-    pub fn new(key: StorageKey, host: Host) -> Self {
+    ///
+    /// # Safety
+    ///
+    /// Fabricating a `Lazy` outside the `#[contract]` / `#[storage]` macro
+    /// expansion path bypasses the view-vs-mutating compile-time gate that
+    /// the SDK normally enforces. A `&self` (view) method that calls
+    /// `unsafe { Lazy::new(slot, self.host().clone()) }` can obtain a writable
+    /// handle, call `set`, and mutate storage — defeating Rust's borrow
+    /// checker.
+    ///
+    /// The runtime backstop (pallet-revive's STATICCALL boundary) still
+    /// rejects the SSTORE at execution time, so this is not a soundness hole
+    /// — only an SDK-level safety contract. Use
+    /// [`StorageComponent::new_at`] (safe) from macro-generated code; reach
+    /// for this constructor only when you need an arbitrary `StorageKey`
+    /// (e.g. a manually-derived key) and you've ensured the resulting handle
+    /// is reached only from `&mut self` paths. Contract crates that want
+    /// belt-and-braces enforcement should add `#![forbid(unsafe_code)]` at
+    /// the crate root.
+    pub unsafe fn new(key: StorageKey, host: Host) -> Self {
         let () = Self::_SIZE_CHECK;
         Lazy {
             key,
@@ -613,7 +640,14 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
     const SLOTS: u64 = T::STORAGE_SLOTS as u64;
 
     fn new_at(slot: u64, host: Host) -> Self {
-        Lazy::new(StorageKey::from_slot(slot), host)
+        // SAFETY: `new_at` is the safe public entry point for macro-generated
+        // storage construction. The macro emits this call inside a contract
+        // struct's field initializer, where Rust's borrow check on the
+        // surrounding struct then gates `&self` / `&mut self` access to the
+        // resulting handle. `Lazy::new` is `unsafe` only because direct
+        // user-code calls would let `&self` methods reconstruct a writable
+        // handle — that bypass cannot happen through this trait method.
+        unsafe { Lazy::new(StorageKey::from_slot(slot), host) }
     }
 }
 
@@ -702,7 +736,15 @@ pub struct Mapping<K, V> {
 
 impl<K, V> Mapping<K, V> {
     /// Create a new mapping rooted at the given storage key, bound to a host handle.
-    pub fn new(root: StorageKey, host: Host) -> Self {
+    ///
+    /// # Safety
+    ///
+    /// See [`Lazy::new`] for the safety contract. Fabricating a `Mapping`
+    /// outside macro-generated code lets a `&self` method reconstruct a
+    /// writable handle and bypass the borrow-check view gate. Use
+    /// [`StorageComponent::new_at`] from macro expansion; reach for this
+    /// constructor only when an arbitrary `StorageKey` is required.
+    pub unsafe fn new(root: StorageKey, host: Host) -> Self {
         Mapping {
             root,
             host,
@@ -715,7 +757,10 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     const SLOTS: u64 = 1;
 
     fn new_at(slot: u64, host: Host) -> Self {
-        Mapping::new(StorageKey::from_slot(slot), host)
+        // SAFETY: same justification as `Lazy::new_at` — this is the
+        // macro-only safe entry point; bypass via direct `Mapping::new` is
+        // what the `unsafe` keyword on `new` exists to mark.
+        unsafe { Mapping::new(StorageKey::from_slot(slot), host) }
     }
 }
 
@@ -734,7 +779,11 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     ///
     /// This saves a keccak host call when doing read-then-write on the same key.
     pub fn entry(&mut self, key: &K) -> Lazy<V> {
-        Lazy::new(self.slot_of(key), self.host.clone())
+        // SAFETY: `entry` takes `&mut self`, so the caller already has
+        // mutating access through the surrounding borrow. The returned
+        // `Lazy` is a typed handle to the derived slot; producing it via
+        // `Lazy::new` here does not introduce a new bypass surface.
+        unsafe { Lazy::new(self.slot_of(key), self.host.clone()) }
     }
 
     /// Read the value at the given key. For multi-slot `V`, reads
@@ -842,10 +891,15 @@ impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
     /// `try_get`, `slot_of`) are reachable through it; `insert` / `entry`
     /// / `remove` would require `&mut self` and are blocked at compile time.
     pub fn get(&self, key: &K1) -> Ref<'_, Mapping<K2, V>> {
-        Ref::new(Mapping::new(
-            self.root.derive(&self.host, key),
-            self.host.clone(),
-        ))
+        // SAFETY: the returned inner `Mapping` is immediately wrapped in
+        // `Ref<'_, _>`, which only forwards `&self` methods of `Mapping`.
+        // No bypass is exposed: `insert`/`entry` are unreachable from a
+        // `Ref`-guarded handle, so producing the inner `Mapping` via the
+        // `unsafe` constructor here doesn't widen the surface available
+        // to the `&self` caller.
+        Ref::new(unsafe {
+            Mapping::new(self.root.derive(&self.host, key), self.host.clone())
+        })
     }
 
     /// Write path for nested mappings: derives the inner mapping root and
@@ -853,10 +907,13 @@ impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
     /// full mutating API on `Mapping<K2, V>` is reachable through the
     /// returned guard.
     pub fn entry(&mut self, key: &K1) -> RefMut<'_, Mapping<K2, V>> {
-        RefMut::new(Mapping::new(
-            self.root.derive(&self.host, key),
-            self.host.clone(),
-        ))
+        // SAFETY: `entry` requires `&mut self`. The caller has already
+        // proved mutating access through the parent borrow; producing the
+        // inner `Mapping` via `unsafe { Mapping::new }` only forwards
+        // that capability, it doesn't manufacture one.
+        RefMut::new(unsafe {
+            Mapping::new(self.root.derive(&self.host, key), self.host.clone())
+        })
     }
 }
 
@@ -891,7 +948,7 @@ mod tests {
 
     #[test]
     fn lazy_roundtrip_u256() {
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&U256::from(42));
         assert_eq!(lazy.get(), U256::from(42));
     }
@@ -899,14 +956,14 @@ mod tests {
     #[test]
     fn lazy_roundtrip_address() {
         let addr = Address([0xAA; 20]);
-        let mut lazy = Lazy::<Address>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<Address>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&addr);
         assert_eq!(lazy.get(), addr);
     }
 
     #[test]
     fn lazy_roundtrip_bool() {
-        let mut lazy = Lazy::<bool>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<bool>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&true);
         assert!(lazy.get());
         lazy.set(&false);
@@ -916,26 +973,26 @@ mod tests {
 
     #[test]
     fn lazy_default_is_zero() {
-        let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         assert_eq!(lazy.get(), U256::ZERO);
     }
 
     #[test]
     fn lazy_try_get_uninitialized() {
-        let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         assert_eq!(lazy.try_get(), None);
     }
 
     #[test]
     fn lazy_try_get_nonzero_value() {
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&U256::from(99));
         assert_eq!(lazy.try_get(), Some(U256::from(99)));
     }
 
     #[test]
     fn lazy_set_zero_deletes() {
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&U256::from(42));
         assert_eq!(lazy.try_get(), Some(U256::from(42)));
         lazy.set(&U256::ZERO);
@@ -945,7 +1002,7 @@ mod tests {
 
     #[test]
     fn lazy_clear_then_try_get() {
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&U256::from(42));
         lazy.clear();
         assert_eq!(lazy.try_get(), None);
@@ -953,7 +1010,7 @@ mod tests {
 
     #[test]
     fn lazy_clear() {
-        let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&U256::from(42));
         lazy.clear();
         assert_eq!(lazy.get(), U256::ZERO);
@@ -963,7 +1020,7 @@ mod tests {
 
     #[test]
     fn lazy_roundtrip_tuple_two_u256() {
-        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let v = (U256::from(7u64), U256::from(11u64));
         lazy.set(&v);
         assert_eq!(lazy.get(), v);
@@ -974,7 +1031,7 @@ mod tests {
         // (U256, U256) has ENCODED_SIZE == 64, so set() must touch slots
         // `key` and `key + 1`. Confirm the wire format by reading the slots
         // directly: the first U256 lands at `key`, the second at `key + 1`.
-        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let base = *lazy.key.as_bytes();
 
@@ -1001,13 +1058,13 @@ mod tests {
         inc_slot(&mut next);
         storage_set_32(&host, &next, &second);
 
-        let lazy = Lazy::<(U256, U256)>::new(key, host);
+        let lazy = unsafe { Lazy::<(U256, U256)>::new(key, host) };
         assert_eq!(lazy.try_get(), Some((U256::ZERO, U256::from(0x42u64))));
     }
 
     #[test]
     fn lazy_multi_slot_try_get_none_when_unwritten() {
-        let lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
         assert_eq!(lazy.try_get(), None);
     }
 
@@ -1015,7 +1072,7 @@ mod tests {
     fn lazy_multi_slot_clear_removes_all_words() {
         // Set both words non-zero, clear, then verify each underlying slot
         // is truly absent (not just zero in the decoded value).
-        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let base = *lazy.key.as_bytes();
 
@@ -1032,7 +1089,7 @@ mod tests {
     fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
         // After writing (5, 5), writing (5, 0) must auto-delete slot 1 so
         // try_get observes the zero on subsequent reads.
-        let mut lazy = Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let mut next = *lazy.key.as_bytes();
         inc_slot(&mut next);
@@ -1061,7 +1118,7 @@ mod tests {
 
     #[test]
     fn mapping_insert_get() {
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0xBB; 20]);
         m.insert(&addr, &U256::from(100));
         assert_eq!(m.get(&addr), U256::from(100));
@@ -1069,7 +1126,7 @@ mod tests {
 
     #[test]
     fn mapping_remove() {
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0xCC; 20]);
         m.insert(&addr, &U256::from(50));
         m.remove(&addr);
@@ -1078,7 +1135,7 @@ mod tests {
 
     #[test]
     fn mapping_remove_then_try_get() {
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0xDD; 20]);
         m.insert(&addr, &U256::from(50));
         assert_eq!(m.try_get(&addr), Some(U256::from(50)));
@@ -1089,7 +1146,7 @@ mod tests {
 
     #[test]
     fn mapping_different_keys_independent() {
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(0), h()) };
         let a = Address([0x01; 20]);
         let b = Address([0x02; 20]);
         m.insert(&a, &U256::from(10));
@@ -1102,7 +1159,7 @@ mod tests {
 
     #[test]
     fn mapping_insert_get_tuple_value() {
-        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0xAB; 20]);
         let v = (U256::from(123u64), U256::from(456u64));
         m.insert(&addr, &v);
@@ -1111,7 +1168,7 @@ mod tests {
 
     #[test]
     fn mapping_multi_slot_remove_clears_all_words() {
-        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let host = m.host.clone();
         let addr = Address([0xCD; 20]);
         let derived = *m.slot_of(&addr).as_bytes();
@@ -1130,7 +1187,7 @@ mod tests {
     fn mapping_multi_slot_overwrite_smaller_clears_stale_word() {
         // insert (1, 2) then insert (1, 0): the second word must be deleted
         // so a follow-up read doesn't return stale 2.
-        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let host = m.host.clone();
         let addr = Address([0xEF; 20]);
         let mut next = *m.slot_of(&addr).as_bytes();
@@ -1147,7 +1204,7 @@ mod tests {
     fn mapping_multi_slot_entry_handle_reads_and_writes_full_value() {
         // entry() returns a Lazy<V> at the derived key. With multi-slot V it
         // must still read/write all chunks correctly.
-        let mut m = Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, (U256, U256)>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0x10; 20]);
         let v = (U256::from(99u64), U256::from(100u64));
 
@@ -1165,7 +1222,7 @@ mod tests {
     #[test]
     fn nested_mapping_allowances() {
         let mut allowances =
-            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h());
+            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h()) };
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
 
@@ -1184,18 +1241,18 @@ mod tests {
 
         // Write via nested mapping chaining
         let mut chained =
-            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone());
+            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone()) };
         chained.entry(&owner).insert(&spender, &amount);
 
         // Read via tuple key (same slot, same host state)
         let tuple_map =
-            Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone());
+            unsafe { Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone()) };
         assert_eq!(tuple_map.get(&(owner, spender)), amount);
     }
 
     #[test]
     fn tuple_key_write_and_read() {
-        let mut m = Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0), h()) };
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
 
@@ -1224,7 +1281,7 @@ mod tests {
 
     #[test]
     fn bytes32_as_mapping_key() {
-        let mut m = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), h()) };
         let key = [0xAB; 32];
         m.insert(&key, &U256::from(42));
         assert_eq!(m.get(&key), U256::from(42));
@@ -1235,7 +1292,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_string_short() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&String::from("hello"));
         assert_eq!(lazy.get(), "hello");
     }
@@ -1243,7 +1300,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_string_long() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let long = "a".repeat(200);
         lazy.set(&long);
         assert_eq!(lazy.get(), long);
@@ -1252,7 +1309,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_empty_is_default() {
-        let lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         assert_eq!(lazy.get(), "");
         assert_eq!(lazy.try_get(), None);
     }
@@ -1260,7 +1317,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_clear() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&String::from("payload"));
         assert_eq!(lazy.try_get().as_deref(), Some("payload"));
         lazy.clear();
@@ -1271,7 +1328,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_overwrite_smaller() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let long =
@@ -1302,8 +1359,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_set_empty_distinct_from_never_written() {
-        let mut written = Lazy::<String>::new(StorageKey::from_slot(0), h());
-        let never = Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone());
+        let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone()) };
 
         written.set(&String::new());
 
@@ -1320,7 +1377,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_set_empty_writes_non_zero_sentinel_header() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
 
@@ -1345,7 +1402,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_overwrite_empty_clears_sentinel() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
 
@@ -1367,7 +1424,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_short_inline_layout() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         lazy.set(&String::from("hello"));
@@ -1382,7 +1439,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_boundary_31_bytes_inline() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let s = "a".repeat(31);
@@ -1398,7 +1455,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_boundary_32_bytes_spilled() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let s = "b".repeat(32);
@@ -1428,7 +1485,7 @@ mod tests {
         malformed[31] = 0x01; // low bit set ⇒ spilled
         storage_set_32(&host, key.as_bytes(), &malformed);
 
-        let lazy = Lazy::<Bytes>::new(key, host);
+        let lazy = unsafe { Lazy::<Bytes>::new(key, host) };
         assert!(lazy.get().0.is_empty());
     }
 
@@ -1449,7 +1506,7 @@ mod tests {
         malformed[31] = 0xFE;
         storage_set_32(&host, key.as_bytes(), &malformed);
 
-        let lazy = Lazy::<Bytes>::new(key, host);
+        let lazy = unsafe { Lazy::<Bytes>::new(key, host) };
         // Must not panic. Cap is 31 bytes — the original 31 prefix bytes.
         let bytes = lazy.get();
         assert_eq!(bytes.0.len(), 31);
@@ -1461,7 +1518,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_long_spill_layout() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         // 40 bytes spans two 32-byte chunks (8 bytes into the second).
@@ -1490,7 +1547,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_grow_short_to_long() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&String::from("short"));
         assert_eq!(lazy.get(), "short");
 
@@ -1504,7 +1561,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_shrink_long_to_short_clears_chunks() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let long = "y".repeat(100); // 4 chunks of 32B
@@ -1527,7 +1584,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_clear_after_long_deletes_chunks() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let long = "z".repeat(70); // 3 chunks
@@ -1555,7 +1612,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_with_long_string_value() {
-        let mut m = Mapping::<Address, String>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, String>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0x11; 20]);
         let value = "w".repeat(100);
         m.insert(&addr, &value);
@@ -1567,7 +1624,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_bytes() {
-        let mut lazy = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&Bytes(alloc::vec![1, 2, 3, 4, 5]));
         assert_eq!(lazy.get(), Bytes(alloc::vec![1, 2, 3, 4, 5]));
     }
@@ -1575,7 +1632,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_large() {
-        let mut lazy = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
         let data = Bytes((0..=255u8).collect());
         lazy.set(&data);
         assert_eq!(lazy.get(), data);
@@ -1586,7 +1643,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_boundary() {
-        let mut a = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        let mut a = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
         let host = a.host.clone();
         let key_a = a.key;
 
@@ -1596,7 +1653,7 @@ mod tests {
         assert_eq!(slot_bytes[31], 31 * 2, "31B vec inline, byte31 = 62");
         assert_eq!(a.get(), inline);
 
-        let mut b = Lazy::<Bytes>::new(StorageKey::from_slot(1), host);
+        let mut b = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(1), host) };
         let spill = Bytes((0..32).collect());
         b.set(&spill);
         let slot_b = storage_get_32(&b.host, b.key.as_bytes());
@@ -1607,7 +1664,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_address_to_string() {
-        let mut m = Mapping::<Address, String>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, String>::new(StorageKey::from_slot(0), h()) };
         let a = Address([0x01; 20]);
         let b = Address([0x02; 20]);
         m.insert(&a, &String::from("alice"));
@@ -1624,9 +1681,9 @@ mod tests {
     fn dynamic_data_root_independent_per_slot() {
         // Distinct header slots must hash to distinct data roots so two
         // dynamic values on adjacent slots can't trample each other.
-        let mut a = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut a = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = a.host.clone();
-        let mut b = Lazy::<String>::new(StorageKey::from_slot(1), host);
+        let mut b = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), host) };
         a.set(&String::from("first"));
         b.set(&String::from("second"));
         assert_eq!(a.get(), "first");
@@ -1684,7 +1741,7 @@ mod tests {
     #[test]
     fn storage_component_new_at_matches_new() {
         let host = h();
-        let mut a = Lazy::<U256>::new(StorageKey::from_slot(7), host.clone());
+        let mut a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(7), host.clone()) };
         let mut b = <Lazy<U256> as StorageComponent>::new_at(7, host);
         a.set(&U256::from(99));
         // `b` shares the host, so should see the same write.
@@ -1702,7 +1759,7 @@ mod tests {
     #[test]
     fn try_get_returns_none_after_inserting_zero() {
         let host = h();
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), host);
+        let mut m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(0), host) };
         let addr = Address([0x77; 20]);
 
         m.insert(&addr, &U256::from(42));
@@ -1717,7 +1774,7 @@ mod tests {
 
     #[test]
     fn entry_reuse_for_read_write() {
-        let mut m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(0), h()) };
         let addr = Address([0xEE; 20]);
         m.insert(&addr, &U256::from(100));
 
@@ -1735,8 +1792,8 @@ mod tests {
     #[test]
     fn multi_field_storage() {
         let host = h();
-        let mut counter = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
-        let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host);
+        let mut counter = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let mut balances = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host) };
 
         counter.set(&U256::from(42));
         assert_eq!(counter.get(), U256::from(42));
@@ -1751,10 +1808,10 @@ mod tests {
     #[test]
     fn erc20_storage_example() {
         let host = h();
-        let mut total_supply = Lazy::<U256>::new(StorageKey::from_slot(0), host.clone());
-        let mut balances = Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone());
+        let mut total_supply = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let mut balances = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
         let mut allowances =
-            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host);
+            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host) };
 
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
@@ -1793,8 +1850,8 @@ mod tests {
     #[test]
     fn different_slots_dont_interfere() {
         let host = h();
-        let mut value_a = Lazy::<U256>::new(StorageKey::from_slot(5), host.clone());
-        let mut value_b = Lazy::<U256>::new(StorageKey::from_slot(10), host);
+        let mut value_a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(5), host.clone()) };
+        let mut value_b = unsafe { Lazy::<U256>::new(StorageKey::from_slot(10), host) };
 
         value_a.set(&U256::from(111));
         value_b.set(&U256::from(222));
@@ -1808,7 +1865,7 @@ mod tests {
     fn mapping_solidity_slot_compat() {
         // `cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB 1`
         // → 0x8f22848572deaf321ecb41095a0a57d3f19eda24b92a3f4a8e554a2e56f45bc4
-        let m = Mapping::<Address, U256>::new(StorageKey::from_slot(1), h());
+        let m = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), h()) };
         let addr = Address([0xBB; 20]);
         let slot = m.slot_of(&addr);
 
@@ -1828,7 +1885,7 @@ mod tests {
         // outer = cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB <inner>
         //       → 0x35815c850ac7d4d0af322824699787b146e33c6cac5d0a52ab3225d6985a27a7
         let allowances =
-            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h());
+            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h()) };
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
 
@@ -1859,7 +1916,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_key_roundtrip() {
-        let mut m = Mapping::<String, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(0), h()) };
         m.insert(&"alice".to_string(), &U256::from(100));
         assert_eq!(m.get(&"alice".to_string()), U256::from(100));
         assert_eq!(m.get(&"bob".to_string()), U256::ZERO);
@@ -1868,7 +1925,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_bytes_key_roundtrip() {
-        let mut m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(0), h()) };
         m.insert(&vec![1u8, 2, 3], &U256::from(42));
         assert_eq!(m.get(&vec![1u8, 2, 3]), U256::from(42));
         assert_eq!(m.get(&vec![1u8, 2, 4]), U256::ZERO);
@@ -1879,7 +1936,7 @@ mod tests {
     fn mapping_bytes_key_long_roundtrip() {
         // 100-byte key spans multiple keccak preimage bytes; confirms the
         // unpadded formula handles arbitrary-length keys.
-        let mut m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(1), h());
+        let mut m = unsafe { Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(1), h()) };
         let key = vec![b'x'; 100];
         m.insert(&key, &U256::from(7));
         assert_eq!(m.get(&key), U256::from(7));
@@ -1890,7 +1947,7 @@ mod tests {
     fn mapping_string_key_solidity_parity() {
         // cast index string "foo" 1
         // → 0xb770ea6769bbbd870e326681074f882a4d98de2943bbf7a23e8f4b258b1b8ac9
-        let m = Mapping::<String, U256>::new(StorageKey::from_slot(1), h());
+        let m = unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(1), h()) };
         let slot = m.slot_of(&"foo".to_string());
         let expected = [
             0xb7, 0x70, 0xea, 0x67, 0x69, 0xbb, 0xbd, 0x87, 0x0e, 0x32, 0x66, 0x81, 0x07, 0x4f,
@@ -1909,7 +1966,7 @@ mod tests {
     fn mapping_bytes_key_solidity_parity() {
         // cast index bytes "0x010203" 1
         // → 0x4c6b2a1cad5eaf1e4e6556e0d021d6a22514b15458a60294869177950c245b57
-        let m = Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(1), h());
+        let m = unsafe { Mapping::<Vec<u8>, U256>::new(StorageKey::from_slot(1), h()) };
         let slot = m.slot_of(&vec![1u8, 2, 3]);
         let expected = [
             0x4c, 0x6b, 0x2a, 0x1c, 0xad, 0x5e, 0xaf, 0x1e, 0x4e, 0x65, 0x56, 0xe0, 0xd0, 0x21,
@@ -1928,7 +1985,7 @@ mod tests {
     fn mapping_string_key_empty() {
         // Empty key: preimage is just the 32-byte root slot.
         // keccak256(b"" ++ pad32(1)) = b10e2d527612073b26eecdfd717e6a320cf44b4afac2b0732d9fcbe2b7fa0cf6
-        let mut m = Mapping::<String, U256>::new(StorageKey::from_slot(1), h());
+        let mut m = unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(1), h()) };
         m.insert(&String::new(), &U256::from(9));
         assert_eq!(m.get(&String::new()), U256::from(9));
 
@@ -1949,8 +2006,8 @@ mod tests {
         // padded formula they would collide; with the unpadded formula they
         // must NOT collide.
         let host = h();
-        let dyn_map = Mapping::<String, U256>::new(StorageKey::from_slot(0), host.clone());
-        let static_map = Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), host.clone());
+        let dyn_map = unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let static_map = unsafe { Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), host.clone()) };
 
         let dyn_slot = dyn_map.slot_of(&"a".to_string());
 
@@ -1969,7 +2026,7 @@ mod tests {
     #[test]
     fn mapping_string_key_distinct_lengths() {
         // "a" and "aa" share a prefix; verify distinct slots.
-        let m = Mapping::<String, U256>::new(StorageKey::from_slot(0), h());
+        let m = unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(0), h()) };
         assert_ne!(
             m.slot_of(&"a".to_string()).as_bytes(),
             m.slot_of(&"aa".to_string()).as_bytes(),
@@ -1984,7 +2041,7 @@ mod tests {
         // `get_by_str` zero-alloc accessor share storage with the String API.
         let host = h();
         let root = StorageKey::from_slot(3);
-        let m = Mapping::<String, U256>::new(root, host.clone());
+        let m = unsafe { Mapping::<String, U256>::new(root, host.clone()) };
         let owned_slot = m.slot_of(&"alice".to_string());
         let borrowed_slot = <str as AsStorageKey>::derive_slot("alice", &host, &root);
         assert_eq!(owned_slot.as_bytes(), borrowed_slot.as_bytes());
@@ -1997,7 +2054,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_short_round_trip() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         lazy.set(&String::from("hello"));
         assert_eq!(lazy.get(), "hello");
     }
@@ -2005,7 +2062,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_long_round_trip() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let long: String = "x".repeat(80); // spills across multiple body chunks
         lazy.set(&long);
         assert_eq!(lazy.get(), long);
@@ -2014,8 +2071,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_try_get_distinguishes_set_empty_from_unset() {
-        let mut written = Lazy::<String>::new(StorageKey::from_slot(0), h());
-        let never = Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone());
+        let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone()) };
 
         written.set(&String::new());
         let got = written.try_get();
@@ -2026,7 +2083,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_clear_removes_header_and_body() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
 
@@ -2048,7 +2105,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn mapping_string_native_round_trip() {
-        let mut m = Mapping::<u64, String>::new(StorageKey::from_slot(0), h());
+        let mut m = unsafe { Mapping::<u64, String>::new(StorageKey::from_slot(0), h()) };
         m.insert(&1u64, &String::from("hello"));
         m.insert(&2u64, &"y".repeat(64));
 
@@ -2064,7 +2121,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_native_round_trip() {
-        let mut lazy = Lazy::<Bytes>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
         let payload = Bytes((0..50).collect());
         lazy.set(&payload);
         assert_eq!(lazy.get(), payload);
@@ -2073,7 +2130,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_layout_matches_solc_short() {
-        let mut lazy = Lazy::<String>::new(StorageKey::from_slot(0), h());
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         lazy.set(&String::from("hello"));

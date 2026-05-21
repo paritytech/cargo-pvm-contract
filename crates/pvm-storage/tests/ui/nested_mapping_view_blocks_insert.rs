@@ -27,7 +27,11 @@ impl Storage {
 fn main() {
     let host = Host::from_dyn(Rc::new(MockHostBuilder::new().build()));
     let s = Storage {
-        allowances: Mapping::new(StorageKey::from_slot(0), host),
+        // SAFETY: this is a UI test setting up a storage scenario; the
+        // bypass attempt being tested happens inside `try_bypass_view`
+        // above, which is what `trybuild` checks for. `Mapping::new` is
+        // unsafe to discourage `&self`-context fabrication elsewhere.
+        allowances: unsafe { Mapping::new(StorageKey::from_slot(0), host) },
     };
     s.try_bypass_view(Address([0x11; 20]), Address([0x22; 20]));
 }
