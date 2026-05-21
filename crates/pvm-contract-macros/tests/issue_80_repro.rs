@@ -34,10 +34,8 @@ fn issue_80_running_average_packs_into_one_slot() {
 #[test]
 fn issue_80_mapping_to_running_average() {
     let host = h();
-    let mut m = Mapping::<u64, RunningAverage>::new(
-        pvm_contract_sdk::StorageKey::from_slot(0),
-        host,
-    );
+    let mut m =
+        Mapping::<u64, RunningAverage>::new(pvm_contract_sdk::StorageKey::from_slot(0), host);
     let v = RunningAverage { sum: 10, total: 3 };
     m.insert(&1u64, &v);
     assert_eq!(m.get(&1u64), v);
@@ -76,10 +74,7 @@ fn issue_80_big_static_takes_three_slots() {
 #[test]
 fn issue_80_mapping_to_big_static() {
     let host = h();
-    let mut m = Mapping::<u64, BigStatic>::new(
-        pvm_contract_sdk::StorageKey::from_slot(0),
-        host,
-    );
+    let mut m = Mapping::<u64, BigStatic>::new(pvm_contract_sdk::StorageKey::from_slot(0), host);
     let v = BigStatic {
         a: U256::from(1u64),
         b: U256::from(2u64),
@@ -108,10 +103,8 @@ fn issue_80_dynamic_review_takes_two_slots() {
 #[test]
 fn issue_80_dynamic_review_round_trip_short_uri() {
     let host = h();
-    let mut m = Mapping::<u64, DynamicReview>::new(
-        pvm_contract_sdk::StorageKey::from_slot(0),
-        host,
-    );
+    let mut m =
+        Mapping::<u64, DynamicReview>::new(pvm_contract_sdk::StorageKey::from_slot(0), host);
     let v = DynamicReview {
         reviewer: Address([0x42; 20]),
         comment_uri: alloc::string::String::from("ipfs://short"),
@@ -124,10 +117,8 @@ fn issue_80_dynamic_review_round_trip_short_uri() {
 #[test]
 fn issue_80_dynamic_review_round_trip_long_uri() {
     let host = h();
-    let mut m = Mapping::<u64, DynamicReview>::new(
-        pvm_contract_sdk::StorageKey::from_slot(0),
-        host,
-    );
+    let mut m =
+        Mapping::<u64, DynamicReview>::new(pvm_contract_sdk::StorageKey::from_slot(0), host);
     let long_uri = alloc::string::String::from(
         "ipfs://this-is-a-much-longer-uri-that-will-spill-into-the-keccak-derived-body-slots",
     );

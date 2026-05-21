@@ -154,10 +154,7 @@ pub trait StorageDecode: StorageEncode + Sized {
     /// shape; types occupying more slots must override.
     ///
     /// [`from_slots`]: Self::from_slots
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
-        host: &Host,
-        base_key: &[u8; 32],
-    ) -> Self {
+    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(host: &Host, base_key: &[u8; 32]) -> Self {
         debug_assert!(
             Self::STORAGE_SLOTS <= MAX_INLINE_SLOTS,
             "STORAGE_SLOTS exceeds MAX_INLINE_SLOTS",
@@ -409,7 +406,12 @@ impl<const N: usize> StorageEncode for [u8; N] {
 
     #[inline]
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        const { assert!(N >= 1 && N <= 32, "bytesN storage only valid for N in 1..=32") };
+        const {
+            assert!(
+                N >= 1 && N <= 32,
+                "bytesN storage only valid for N in 1..=32"
+            )
+        };
         debug_assert_eq!(_slot_idx, 0);
         *buf = [0u8; 32];
         self.pack_into(buf, <Self as StoragePackable>::CANONICAL_OFFSET);
@@ -433,13 +435,23 @@ impl<const N: usize> StoragePackable for [u8; N] {
 
     #[inline]
     fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        const { assert!(N >= 1 && N <= 32, "bytesN storage only valid for N in 1..=32") };
+        const {
+            assert!(
+                N >= 1 && N <= 32,
+                "bytesN storage only valid for N in 1..=32"
+            )
+        };
         buf[offset..offset + N].copy_from_slice(self);
     }
 
     #[inline]
     fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
-        const { assert!(N >= 1 && N <= 32, "bytesN storage only valid for N in 1..=32") };
+        const {
+            assert!(
+                N >= 1 && N <= 32,
+                "bytesN storage only valid for N in 1..=32"
+            )
+        };
         let mut out = [0u8; N];
         out.copy_from_slice(&buf[offset..offset + N]);
         out
@@ -645,7 +657,11 @@ fn clear_dyn_body_range(host: &Host, slot: &[u8; 32], start_chunk: usize, count:
 #[cfg(feature = "alloc")]
 pub(crate) fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
     let new_len = data.len();
-    let new_chunks = if new_len < 32 { 0 } else { new_len.div_ceil(32) };
+    let new_chunks = if new_len < 32 {
+        0
+    } else {
+        new_len.div_ceil(32)
+    };
 
     // Inspect old layout to free body chunks the new value no longer needs.
     let mut old_slot_bytes = [0u8; 32];
@@ -764,10 +780,7 @@ impl StorageDecode for alloc::string::String {
         alloc::string::String::new()
     }
 
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
-        host: &Host,
-        base_key: &[u8; 32],
-    ) -> Self {
+    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(host: &Host, base_key: &[u8; 32]) -> Self {
         let bytes = read_dynamic_bytes(host, base_key);
         // solc requires `string` storage to be UTF-8; use lossy decoding so
         // a foreign writer that stored non-UTF-8 doesn't trap the read.

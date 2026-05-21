@@ -488,7 +488,10 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// every public method forces the const evaluator to run the check at
     /// each monomorphization, even though the actual check lives in one place.
     const _SIZE_CHECK: () = {
-        assert!(T::STORAGE_SLOTS > 0, "Lazy<T>: T::STORAGE_SLOTS must be positive");
+        assert!(
+            T::STORAGE_SLOTS > 0,
+            "Lazy<T>: T::STORAGE_SLOTS must be positive"
+        );
         assert!(
             T::STORAGE_SLOTS <= MAX_STATIC_SLOTS,
             "Lazy<T>: T::STORAGE_SLOTS exceeds MAX_STATIC_SLOTS. \
@@ -524,7 +527,11 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             T::from_slots(&one)
         } else {
             let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            read_slots(&self.host, self.key.as_bytes(), &mut slots[..T::STORAGE_SLOTS]);
+            read_slots(
+                &self.host,
+                self.key.as_bytes(),
+                &mut slots[..T::STORAGE_SLOTS],
+            );
             T::from_slots(&slots[..T::STORAGE_SLOTS])
         }
     }
@@ -552,7 +559,11 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             // header may be the only non-zero slot — checking just slot 0
             // would miss it.
             let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, self.key.as_bytes(), &mut buf[..T::STORAGE_SLOTS])?;
+            try_read_slots(
+                &self.host,
+                self.key.as_bytes(),
+                &mut buf[..T::STORAGE_SLOTS],
+            )?;
             Some(T::read_from_storage::<MAX_STATIC_SLOTS>(
                 &self.host,
                 self.key.as_bytes(),
@@ -566,7 +577,11 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             }
         } else {
             let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, self.key.as_bytes(), &mut slots[..T::STORAGE_SLOTS])?;
+            try_read_slots(
+                &self.host,
+                self.key.as_bytes(),
+                &mut slots[..T::STORAGE_SLOTS],
+            )?;
             Some(T::from_slots(&slots[..T::STORAGE_SLOTS]))
         }
     }
@@ -593,11 +608,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     pub fn clear(&mut self) {
         let () = Self::_SIZE_CHECK;
         if T::HAS_DYNAMIC_BODY {
-            <T as StorageEncode>::clear_storage(
-                &self.host,
-                self.key.as_bytes(),
-                T::STORAGE_SLOTS,
-            );
+            <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
         } else if T::STORAGE_SLOTS == 1 {
             storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
         } else {
@@ -812,11 +823,7 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
         if V::HAS_DYNAMIC_BODY {
-            <V as StorageEncode>::clear_storage(
-                &self.host,
-                slot.as_bytes(),
-                V::STORAGE_SLOTS,
-            );
+            <V as StorageEncode>::clear_storage(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
         } else if V::STORAGE_SLOTS == 1 {
             storage_set_32(&self.host, slot.as_bytes(), &[0u8; 32]);
         } else {
