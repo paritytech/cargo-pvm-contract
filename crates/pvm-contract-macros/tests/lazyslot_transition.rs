@@ -179,7 +179,10 @@ fn long_then_short_must_clear_stale_body_chunks() {
     host.hash_keccak_256(&s_slot, &mut body0);
     let mut probe = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), &body0, &mut probe);
-    assert_ne!(probe, [0u8; 32], "long write should have populated body chunk 0");
+    assert_ne!(
+        probe, [0u8; 32],
+        "long write should have populated body chunk 0"
+    );
 
     m.insert(
         &1,

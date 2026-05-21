@@ -496,7 +496,10 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// every public method forces the const evaluator to run the check at
     /// each monomorphization, even though the actual check lives in one place.
     const _SIZE_CHECK: () = {
-        assert!(T::STORAGE_SLOTS > 0, "Lazy<T>: T::STORAGE_SLOTS must be positive");
+        assert!(
+            T::STORAGE_SLOTS > 0,
+            "Lazy<T>: T::STORAGE_SLOTS must be positive"
+        );
         assert!(
             T::STORAGE_SLOTS <= MAX_STATIC_SLOTS,
             "Lazy<T>: T::STORAGE_SLOTS exceeds MAX_STATIC_SLOTS. \
@@ -551,7 +554,11 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             T::from_slots(&one)
         } else {
             let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            read_slots(&self.host, self.key.as_bytes(), &mut slots[..T::STORAGE_SLOTS]);
+            read_slots(
+                &self.host,
+                self.key.as_bytes(),
+                &mut slots[..T::STORAGE_SLOTS],
+            );
             T::from_slots(&slots[..T::STORAGE_SLOTS])
         }
     }
@@ -579,7 +586,11 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             // header may be the only non-zero slot — checking just slot 0
             // would miss it.
             let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, self.key.as_bytes(), &mut buf[..T::STORAGE_SLOTS])?;
+            try_read_slots(
+                &self.host,
+                self.key.as_bytes(),
+                &mut buf[..T::STORAGE_SLOTS],
+            )?;
             Some(T::read_from_storage::<MAX_STATIC_SLOTS>(
                 &self.host,
                 self.key.as_bytes(),
@@ -593,7 +604,11 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             }
         } else {
             let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, self.key.as_bytes(), &mut slots[..T::STORAGE_SLOTS])?;
+            try_read_slots(
+                &self.host,
+                self.key.as_bytes(),
+                &mut slots[..T::STORAGE_SLOTS],
+            )?;
             Some(T::from_slots(&slots[..T::STORAGE_SLOTS]))
         }
     }
@@ -620,11 +635,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     pub fn clear(&mut self) {
         let () = Self::_SIZE_CHECK;
         if T::HAS_DYNAMIC_BODY {
-            <T as StorageEncode>::clear_storage(
-                &self.host,
-                self.key.as_bytes(),
-                T::STORAGE_SLOTS,
-            );
+            <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
         } else if T::STORAGE_SLOTS == 1 {
             storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
         } else {
@@ -861,11 +872,7 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
         if V::HAS_DYNAMIC_BODY {
-            <V as StorageEncode>::clear_storage(
-                &self.host,
-                slot.as_bytes(),
-                V::STORAGE_SLOTS,
-            );
+            <V as StorageEncode>::clear_storage(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
         } else if V::STORAGE_SLOTS == 1 {
             storage_set_32(&self.host, slot.as_bytes(), &[0u8; 32]);
         } else {
@@ -897,9 +904,7 @@ impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
         // `Ref`-guarded handle, so producing the inner `Mapping` via the
         // `unsafe` constructor here doesn't widen the surface available
         // to the `&self` caller.
-        Ref::new(unsafe {
-            Mapping::new(self.root.derive(&self.host, key), self.host.clone())
-        })
+        Ref::new(unsafe { Mapping::new(self.root.derive(&self.host, key), self.host.clone()) })
     }
 
     /// Write path for nested mappings: derives the inner mapping root and
@@ -911,9 +916,7 @@ impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
         // proved mutating access through the parent borrow; producing the
         // inner `Mapping` via `unsafe { Mapping::new }` only forwards
         // that capability, it doesn't manufacture one.
-        RefMut::new(unsafe {
-            Mapping::new(self.root.derive(&self.host, key), self.host.clone())
-        })
+        RefMut::new(unsafe { Mapping::new(self.root.derive(&self.host, key), self.host.clone()) })
     }
 }
 
@@ -1221,8 +1224,9 @@ mod tests {
 
     #[test]
     fn nested_mapping_allowances() {
-        let mut allowances =
-            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h()) };
+        let mut allowances = unsafe {
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h())
+        };
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
 
@@ -1240,19 +1244,22 @@ mod tests {
         let amount = U256::from(123);
 
         // Write via nested mapping chaining
-        let mut chained =
-            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone()) };
+        let mut chained = unsafe {
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone())
+        };
         chained.entry(&owner).insert(&spender, &amount);
 
         // Read via tuple key (same slot, same host state)
-        let tuple_map =
-            unsafe { Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone()) };
+        let tuple_map = unsafe {
+            Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(2), host.clone())
+        };
         assert_eq!(tuple_map.get(&(owner, spender)), amount);
     }
 
     #[test]
     fn tuple_key_write_and_read() {
-        let mut m = unsafe { Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0), h()) };
+        let mut m =
+            unsafe { Mapping::<(Address, Address), U256>::new(StorageKey::from_slot(0), h()) };
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
 
@@ -1809,9 +1816,11 @@ mod tests {
     fn erc20_storage_example() {
         let host = h();
         let mut total_supply = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
-        let mut balances = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
-        let mut allowances =
-            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host) };
+        let mut balances =
+            unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
+        let mut allowances = unsafe {
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host)
+        };
 
         let alice = Address([0xAA; 20]);
         let bob = Address([0xBB; 20]);
@@ -1884,8 +1893,9 @@ mod tests {
         //       → 0xe1e81504ed8609a5b03379f97b221e3dede4a62d6d61a87a4ab7ed7b1b9c0553
         // outer = cast index address 0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB <inner>
         //       → 0x35815c850ac7d4d0af322824699787b146e33c6cac5d0a52ab3225d6985a27a7
-        let allowances =
-            unsafe { Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h()) };
+        let allowances = unsafe {
+            Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), h())
+        };
         let owner = Address([0xAA; 20]);
         let spender = Address([0xBB; 20]);
 
@@ -2006,8 +2016,10 @@ mod tests {
         // padded formula they would collide; with the unpadded formula they
         // must NOT collide.
         let host = h();
-        let dyn_map = unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(0), host.clone()) };
-        let static_map = unsafe { Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let dyn_map =
+            unsafe { Mapping::<String, U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let static_map =
+            unsafe { Mapping::<[u8; 32], U256>::new(StorageKey::from_slot(0), host.clone()) };
 
         let dyn_slot = dyn_map.slot_of(&"a".to_string());
 

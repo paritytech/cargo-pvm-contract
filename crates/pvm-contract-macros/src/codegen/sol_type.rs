@@ -497,10 +497,9 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         // `StorageEncode`. A future phase may add an explicit opt-in.
         //
         // `Array<T>` (T != u8), `FixedArray`, `Tuple` in struct fields: deferred.
-        SolType::Custom(_)
-        | SolType::Array(_)
-        | SolType::FixedArray(_, _)
-        | SolType::Tuple(_) => StorageFieldKind::Unsupported,
+        SolType::Custom(_) | SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
+            StorageFieldKind::Unsupported
+        }
     }
 }
 
@@ -544,10 +543,8 @@ fn generate_storage_impls(
     // panic only fires during `cargo build` / `cargo test`. This means
     // `trybuild` (which uses `cargo check`) can't pin the error message
     // via a UI fixture. Real users hit `cargo build` and see the message.
-    if let Some((field_idx, field_ty, unsupported_ty)) = field_info
-        .iter()
-        .enumerate()
-        .find_map(|(idx, (_, ty))| {
+    if let Some((field_idx, field_ty, unsupported_ty)) =
+        field_info.iter().enumerate().find_map(|(idx, (_, ty))| {
             matches!(classify_storage_field(ty), StorageFieldKind::Unsupported)
                 .then(|| (idx, get_field_types(fields)[idx], ty.canonical_name()))
         })

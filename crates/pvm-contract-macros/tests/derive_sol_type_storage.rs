@@ -113,11 +113,7 @@ fn user_info_layout_matches_solc() {
 
     let s0 = slots[0];
     assert_eq!(s0[31], 1, "bool at byte 31 = 0x01");
-    assert_eq!(
-        &s0[27..31],
-        &v.joined_at.to_be_bytes(),
-        "uint32 at 27..31"
-    );
+    assert_eq!(&s0[27..31], &v.joined_at.to_be_bytes(), "uint32 at 27..31");
     assert_eq!(&s0[7..27], &v.addr.0, "address at 7..27");
     assert!(s0[..7].iter().all(|&b| b == 0), "padding zero");
 
@@ -207,11 +203,7 @@ fn spill_layout() {
     // slot 1: c in low half (16..32).
     assert_eq!(<Spill as StorageEncode>::STORAGE_SLOTS, 2);
 
-    let v = Spill {
-        a: 1,
-        b: 2,
-        c: 3,
-    };
+    let v = Spill { a: 1, b: 2, c: 3 };
     let slots = encode_all(&v);
     assert_eq!(slots.len(), 2);
 

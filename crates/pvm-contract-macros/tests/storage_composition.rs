@@ -152,7 +152,8 @@ fn composed_contract_layout_matches_hand_constructed() {
     let supply_slot = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
     assert_eq!(supply_slot.get(), U256::from(1_000));
 
-    let balances_slot = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
+    let balances_slot =
+        unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
     assert_eq!(balances_slot.get(&alice), U256::from(42));
 
     // `allowances` claims slot 2 — write/read via two paths to confirm.
@@ -165,10 +166,12 @@ fn composed_contract_layout_matches_hand_constructed() {
         .insert(&bob, &U256::from(7));
     assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
 
-    let name_slot = unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone()) };
+    let name_slot =
+        unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone()) };
     assert_eq!(name_slot.get(), "Composed");
 
-    let symbol_slot = unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), host.clone()) };
+    let symbol_slot =
+        unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), host.clone()) };
     assert_eq!(symbol_slot.get(), "CMP");
 
     let paused_slot = unsafe { Lazy::<bool>::new(StorageKey::from_slot(5), host) };
