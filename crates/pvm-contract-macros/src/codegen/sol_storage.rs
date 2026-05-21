@@ -41,8 +41,11 @@
 //!             balances: <_ as StorageComponent>::new_at(
 //!                 base + __OFF_balances, host.clone()),
 //!             allowances: <_ as StorageComponent>::new_at(
-//!                 base + __OFF_allowances, host),
+//!                 base + __OFF_allowances, host.clone()),
 //!         }
+//!         // Every field — including the last — receives `host.clone()`.
+//!         // `Host` is a ZST on riscv64 and a cheap `Rc` clone on host
+//!         // targets, so cloning per-field has no measurable cost.
 //!     }
 //! }
 //! ```
@@ -125,6 +128,11 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
 
     // Per-field offset const chain (relative to base). Shared with `#[contract]`
     // via `slot_chain_consts` so both macros agree on the chain shape.
+    //
+    // `cfg_attrs: &[]` is safe here because the `#[cfg]`-on-field check above
+    // rejects every cfg-attributed field with a compile error. If that
+    // restriction is ever relaxed, this must be replaced with `&f.cfg_attrs`
+    // so the chain consts are gated consistently with their fields.
     let chain_fields: Vec<ChainField<'_>> = field_names
         .iter()
         .zip(field_types.iter())

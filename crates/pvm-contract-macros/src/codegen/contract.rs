@@ -18,6 +18,13 @@ pub struct ContractArgs {
     pub sol_path: Option<String>,
     pub allocator: Option<AllocatorKind>,
     pub allocator_size: usize,
+    /// Suppress the abi-gen `fn main()` emission. Set via `#[contract(no_main)]`
+    /// when the macro is invoked inside a host context that supplies its own
+    /// `main`/test harness (integration tests, library crates that embed a
+    /// `#[contract]` for codegen verification). The macro still emits
+    /// `__abi_json()` / `__storage_layout_json()` so callers can pull the
+    /// outputs directly.
+    pub no_main: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +40,7 @@ impl Default for ContractArgs {
             sol_path: None,
             allocator: None,
             allocator_size: 1024,
+            no_main: false,
         }
     }
 }
@@ -83,6 +91,11 @@ impl Parse for ContractArgs {
                     let size: LitInt = input.parse()?;
                     args.allocator_size = size.base10_parse()?;
                     allocator_size_set = true;
+                }
+                "no_main" => {
+                    // Standalone flag — no `= value`. Caller (e.g. a test
+                    // harness or library crate) provides its own `main`.
+                    args.no_main = true;
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -1029,7 +1042,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let slot_fields = extract_slot_fields(&input, struct_name)?;
     let (abi_gen_helper, abi_gen_main) =
-        generate_abi_gen(&parsed, args.sol_path.is_some(), &slot_fields);
+        generate_abi_gen(&parsed, args.sol_path.is_some(), &slot_fields, args.no_main);
 
     let mod_content = strip_pvm_attrs(&input, struct_name)?;
 
@@ -1362,6 +1375,29 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 }
 
 /// Rewrite the contract module body:
+/// True iff a `use` tree's leading path segment is `alloc` (after stripping
+/// an optional leading `::`). Identifies imports like `use alloc::vec::Vec` /
+/// `use ::alloc::string::String` that depend on the `alloc` crate, so the
+/// outer `#[contract]` macro can cfg-gate them away from the abi-gen host
+/// build (which doesn't compile against the `alloc`-feature surface).
+///
+/// Crucially does **not** false-positive on user crate names that happen to
+/// contain `alloc` in their path (e.g. `use my_alloc_helper::*` would have
+/// been gated by the prior substring-match implementation).
+fn use_tree_imports_alloc(tree: &syn::UseTree) -> bool {
+    match tree {
+        syn::UseTree::Path(p) => p.ident == "alloc",
+        // `use alloc;` (rare but legal) — the leading segment is the name.
+        syn::UseTree::Name(n) => n.ident == "alloc",
+        // `use alloc as foo;`
+        syn::UseTree::Rename(r) => r.ident == "alloc",
+        // `use {alloc::vec::Vec, std::fmt};` — match if any branch imports alloc.
+        syn::UseTree::Group(g) => g.items.iter().any(use_tree_imports_alloc),
+        // `use *;` at the crate root — can't tell, treat as not alloc.
+        syn::UseTree::Glob(_) => false,
+    }
+}
+
 /// - Inject a `host: ::pvm_contract_sdk::Host` field on the storage struct.
 /// - Strip `#[method]` / `#[constructor]` / `#[fallback]` attrs from methods.
 /// - Strip `#[slot(N)]` attrs from struct fields.
@@ -1401,8 +1437,7 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                 });
             }
             syn::Item::Use(use_item) => {
-                let use_str = quote! { #use_item }.to_string();
-                if use_str.contains("alloc ::") || use_str.contains("alloc::") {
+                if use_tree_imports_alloc(&use_item.tree) {
                     items.push(quote! {
                         #[cfg(not(feature = "abi-gen"))]
                         #use_item
@@ -2176,6 +2211,7 @@ mod tests {
                 sol_path: Some("MyToken.sol".to_string()),
                 allocator: None,
                 allocator_size: 1024,
+                no_main: false,
             }
         );
     }
@@ -2192,6 +2228,7 @@ mod tests {
                 sol_path: None,
                 allocator: Some(super::AllocatorKind::Pico),
                 allocator_size: 2048,
+                no_main: false,
             }
         );
     }

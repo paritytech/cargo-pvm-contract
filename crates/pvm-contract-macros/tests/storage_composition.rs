@@ -1,4 +1,3 @@
-#![cfg(not(feature = "abi-gen"))]
 //! End-to-end test for the new storage composition surface:
 //!
 //! - Auto-numbered slots on the `#[contract]` struct (no `#[slot(N)]` needed).
@@ -7,6 +6,12 @@
 //! - `StorageComponent::SLOTS` chained through both levels so the outer
 //!   contract gets the correct overall layout without manual offset math.
 //! - Dynamic `String` value stored via native `Lazy<String>` (Gap 1).
+//!
+//! The contract module uses `#[contract(no_main)]` so cargo's integration-test
+//! harness keeps its own `main`. The abi-gen `__abi_json()` /
+//! `__storage_layout_json()` accessors are still emitted under
+//! `#[cfg(feature = "abi-gen")]` and exercised by
+//! `composed_contract_emits_storage_layout_under_abi_gen` below.
 
 use pvm_contract_sdk::{Lazy, Mapping, StorageComponent, StorageKey};
 use pvm_contract_types::{Address, Host, MockHostBuilder};
@@ -84,7 +89,7 @@ fn erc20_state_new_at_assigns_contiguous_slots() {
 /// references the const at codegen time so the chain `0 + 3 + 2 = 5` is
 /// resolved at compile time.
 #[allow(dead_code)] // route(), deploy(), call() are riscv64-gated
-#[pvm_contract_macros::contract]
+#[pvm_contract_macros::contract(no_main)]
 mod composed_contract {
     use super::*;
 
@@ -197,4 +202,19 @@ fn nested_storage_struct_uses_offset() {
 
     let supply_check = Lazy::<U256>::new(StorageKey::from_slot(11), host);
     assert_eq!(supply_check.get(), U256::from(999));
+}
+
+/// Under `--features abi-gen`, the `#[contract]` macro emits
+/// `__abi_json()` / `__storage_layout_json()` accessors on the module. With
+/// `no_main`, the integration-test harness's own `main` is preserved and
+/// these accessors are reachable from a `#[test]` fn. Verifies that
+/// embedded `#[storage]` sub-structs flatten into the layout JSON with
+/// dotted labels (`erc20.total_supply`, `metadata.name`, …) via
+/// `StorageLayoutEmit::emit_entries`.
+#[cfg(feature = "abi-gen")]
+#[test]
+fn composed_contract_emits_storage_layout_under_abi_gen() {
+    let layout = composed_contract::__storage_layout_json();
+    let expected = r#"{"storage":[{"label":"erc20.total_supply","slot":"0","type":"uint256"},{"label":"erc20.balances","slot":"1","type":"mapping(address,uint256)"},{"label":"erc20.allowances","slot":"2","type":"mapping(address,mapping(address,uint256))"},{"label":"metadata.name","slot":"3","type":"string"},{"label":"metadata.symbol","slot":"4","type":"string"},{"label":"paused","slot":"5","type":"bool"}]}"#;
+    assert_eq!(layout, expected);
 }

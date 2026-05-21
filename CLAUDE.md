@@ -274,6 +274,8 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 - `set(&mut self)` / `insert(&mut self)` / `entry(&mut self)` take `&mut self` for future view enforcement
 - `Mapping::entry()` returns a `Lazy<V>` handle for the derived slot, allowing read-then-write on the same key with a single keccak derivation instead of two
 - Nested mappings via chaining: `self.allowances.get(&owner).get(&spender)`
+- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). Hand-rolled storage components (e.g. a future `StorageVec<T>`) must implement both traits to participate in auto-numbered layouts and abi-gen output
+- **Test-harness contract modules:** `#[contract(no_main)]` suppresses the abi-gen `fn main()` emission so a `#[contract]` can sit inside a `tests/` integration test or library crate without colliding with the test harness's own `main`. `__abi_json()` / `__storage_layout_json()` accessors are still emitted on the module
 
 ### Storage on the contract struct
 

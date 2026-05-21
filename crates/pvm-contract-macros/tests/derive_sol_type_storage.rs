@@ -8,7 +8,14 @@
 extern crate alloc;
 
 use pvm_contract_sdk::SolType;
-use pvm_contract_sdk::{Address, StorageDecode, StorageEncode, StoragePackable, U256};
+use pvm_contract_sdk::{
+    Address, Lazy, Mapping, StorageDecode, StorageEncode, StorageKey, StoragePackable, U256,
+};
+use pvm_contract_types::MockHostBuilder;
+
+fn fresh_host() -> pvm_contract_sdk::Host {
+    pvm_contract_sdk::Host::from_dyn(alloc::rc::Rc::new(MockHostBuilder::new().build()))
+}
 
 // Helper to encode all slots of a value via the streaming encoder.
 fn encode_all<T: StorageEncode>(value: &T) -> alloc::vec::Vec<[u8; 32]> {
@@ -234,4 +241,107 @@ fn primitives_implement_storage_packable() {
     assert_packable::<Address>();
     assert_packable::<U256>();
     assert_packable::<[u8; 20]>();
+}
+
+// ========================================================================
+// End-to-end through `Lazy<T>` / `Mapping<K, V>`: a `#[derive(SolType)]`
+// struct must round-trip through the typed-storage helpers for every shape —
+// single-slot packed, multi-slot static, and dynamic-bodied.
+// ========================================================================
+
+// --- Two `u64`s pack into a single slot (sub-word static path) -------------
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct RunningAverage {
+    sum: u64,
+    total: u64,
+}
+
+#[test]
+fn packed_struct_single_slot_via_mapping_round_trip() {
+    assert_eq!(<RunningAverage as StorageEncode>::STORAGE_SLOTS, 1);
+    let host = fresh_host();
+    let mut m = Mapping::<u64, RunningAverage>::new(StorageKey::from_slot(0), host);
+    let v = RunningAverage { sum: 10, total: 3 };
+    m.insert(&1u64, &v);
+    assert_eq!(m.get(&1u64), v);
+}
+
+#[test]
+fn packed_struct_single_slot_via_lazy_round_trip() {
+    let host = fresh_host();
+    let mut lazy = Lazy::<RunningAverage>::new(StorageKey::from_slot(0), host);
+    let v = RunningAverage { sum: 7, total: 11 };
+    lazy.set(&v);
+    assert_eq!(lazy.get(), v);
+}
+
+// --- Three `U256`s — genuinely multi-slot static (3 slots) -----------------
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct ThreeWords {
+    a: U256,
+    b: U256,
+    c: U256,
+}
+
+#[test]
+fn multi_slot_static_struct_takes_three_slots() {
+    assert_eq!(<ThreeWords as StorageEncode>::STORAGE_SLOTS, 3);
+}
+
+#[test]
+fn multi_slot_static_struct_via_mapping_round_trip() {
+    let host = fresh_host();
+    let mut m = Mapping::<u64, ThreeWords>::new(StorageKey::from_slot(0), host);
+    let v = ThreeWords {
+        a: U256::from(1u64),
+        b: U256::from(2u64),
+        c: U256::from(3u64),
+    };
+    m.insert(&5u64, &v);
+    assert_eq!(m.get(&5u64), v);
+}
+
+// --- Struct with a dynamic `String` field: solc's header + spilled body ----
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct DynamicReview {
+    reviewer: Address,
+    comment_uri: alloc::string::String,
+}
+
+#[test]
+fn dynamic_field_struct_takes_two_slots_and_marks_dynamic_body() {
+    // `reviewer` (Address, 20 bytes) packs into slot 0; `comment_uri`
+    // (`String`, STARTS_NEW_SLOT=true) starts a new slot at slot 1.
+    assert_eq!(<DynamicReview as StorageEncode>::STORAGE_SLOTS, 2);
+    const { assert!(<DynamicReview as StorageEncode>::HAS_DYNAMIC_BODY) };
+}
+
+#[test]
+fn dynamic_field_struct_via_mapping_round_trip_inline() {
+    let host = fresh_host();
+    let mut m = Mapping::<u64, DynamicReview>::new(StorageKey::from_slot(0), host);
+    let v = DynamicReview {
+        reviewer: Address([0x42; 20]),
+        comment_uri: alloc::string::String::from("ipfs://short"),
+    };
+    m.insert(&1u64, &v);
+    assert_eq!(m.get(&1u64), v);
+}
+
+#[test]
+fn dynamic_field_struct_via_mapping_round_trip_spilled() {
+    let host = fresh_host();
+    let mut m = Mapping::<u64, DynamicReview>::new(StorageKey::from_slot(0), host);
+    let long_uri = alloc::string::String::from(
+        "ipfs://this-is-a-much-longer-uri-that-will-spill-into-the-keccak-derived-body-slots",
+    );
+    let v = DynamicReview {
+        reviewer: Address([0xab; 20]),
+        comment_uri: long_uri,
+    };
+    m.insert(&5u64, &v);
+    assert_eq!(m.get(&5u64), v);
 }

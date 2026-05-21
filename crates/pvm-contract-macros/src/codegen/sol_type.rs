@@ -576,7 +576,12 @@ fn generate_storage_impls(
                 const STORAGE_SLOTS: usize = ::core::panic!(#msg);
                 const PACKED_BYTES: usize = 32;
                 const STARTS_NEW_SLOT: bool = true;
-                const HAS_DYNAMIC_BODY: bool = false;
+                // Fail-safe: route reads/writes through the dynamic-body path,
+                // so any consumer that bypasses the `STORAGE_SLOTS` const-panic
+                // guard still hits one of the `unreachable!`s below instead of
+                // silently using the static fast path on a value that might
+                // have a dynamic body.
+                const HAS_DYNAMIC_BODY: bool = true;
 
                 fn encode_slot(&self, _slot_idx: usize, _buf: &mut [u8; 32]) {
                     unreachable!("storage encode not implemented for {}", stringify!(#name))
@@ -662,7 +667,16 @@ fn generate_storage_impls(
             while __mi < #n_fields {
                 if dynamic_field_flags[__mi] {
                     let s = placements[__mi].0;
-                    debug_assert!(s < 64);
+                    // Hard `assert!` (not `debug_assert!`) so the error fires
+                    // identically in dev and release: in release the
+                    // `1u64 << s` shift below would otherwise become a less
+                    // legible "left shift overflowed" const-eval panic.
+                    assert!(
+                        s < 64,
+                        "`#[derive(SolType)]`: dynamic field at slot >= 64 \
+                         exceeds the u64 `dynamic_mask` bitmask. Reduce the \
+                         struct's static-field count or remove the dynamic field.",
+                    );
                     dynamic_mask |= 1u64 << s;
                 }
                 __mi += 1;
@@ -794,12 +808,39 @@ fn generate_storage_impls(
             }
         }
 
+        // Compile-time guard for the `dynamic_mask: u64` bitmask in
+        // `__STORAGE_LAYOUT`: with `STORAGE_SLOTS > 64`, the runtime loops
+        // below shift `1u64 << __i` past the bit width of `u64`, which is
+        // UB in release builds and panics in debug. Force a clean compile
+        // error instead. The check only applies when the struct contains
+        // at least one Dynamic field (the only path that uses the mask).
+        //
+        // Uses `const { ... }` block expression (not a `const _: () = ...`
+        // item) because the block form sees `Self` from the enclosing impl
+        // while const items do not.
+        let slot_count_assert = quote! {
+            let _: () = const {
+                assert!(
+                    <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS <= 64,
+                    concat!(
+                        "`#[derive(SolType)]` on `",
+                        stringify!(#name),
+                        "`: structs with more than 64 storage slots cannot contain dynamic ",
+                        "fields (String / Bytes / nested dynamic structs). The internal ",
+                        "`dynamic_mask: u64` bitmask runs out of bits. Either reduce the ",
+                        "static-field count or remove the dynamic field.",
+                    ),
+                );
+            };
+        };
+
         quote! {
             fn write_to_storage(
                 &self,
                 host: &::pvm_contract_sdk::Host,
                 base_key: &[u8; 32],
             ) {
+                #slot_count_assert
                 #[inline]
                 fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
                     for byte in slot.iter_mut().rev() {
@@ -839,6 +880,7 @@ fn generate_storage_impls(
                 base_key: &[u8; 32],
                 _slots: usize,
             ) {
+                #slot_count_assert
                 #[inline]
                 fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
                     for byte in slot.iter_mut().rev() {
@@ -1294,8 +1336,9 @@ fn type_to_sol_type(ty: &Type) -> syn::Result<SolType> {
         syn::Error::new_spanned(
             ty,
             "Unsupported type for SolType derive. Supported types: \
-                 U256, u128, u64, u32, u16, u8, i128, i64, i32, i16, i8, \
-                 bool, [u8; 20] (address), [u8; N] (bytesN), String. \
+                 U256, u128, u64, u32, u16, u8, I256, i128, i64, i32, i16, i8, \
+                 bool, Address, [u8; N] (bytesN), String, Bytes (bytes), \
+                 Vec<T> (T[]), [T; N] (T[N]), tuples (T1, T2, …). \
                  For custom structs, derive SolType on them first."
                 .to_string(),
         )
