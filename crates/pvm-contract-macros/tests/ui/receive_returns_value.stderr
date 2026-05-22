@@ -1,0 +1,5 @@
+error: `#[receive]` must return `()` or `Result<(), E>`; Solidity's receive cannot return a value
+ --> tests/ui/receive_returns_value.rs:7:35
+  |
+7 |         pub fn receive(&mut self) -> u64 {
+  |                                   ^^^^^^

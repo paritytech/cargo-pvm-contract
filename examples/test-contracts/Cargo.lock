@@ -1308,6 +1308,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pvm-contract-builder-dsl"
+version = "0.3.0"
+dependencies = [
+ "pallet-revive-uapi",
+ "polkavm-derive 0.31.0",
+ "pvm-contract-types",
+ "ruint",
+]
+
+[[package]]
 name = "pvm-contract-core"
 version = "0.3.0"
 dependencies = [
@@ -1860,6 +1870,7 @@ dependencies = [
  "cargo-pvm-contract-builder",
  "picoalloc",
  "polkavm-derive 0.31.0",
+ "pvm-contract-builder-dsl",
  "pvm-contract-sdk",
 ]
 

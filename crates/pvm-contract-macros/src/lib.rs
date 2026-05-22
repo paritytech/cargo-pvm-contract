@@ -374,6 +374,14 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
 ///         if call_data_len < 4 {
+///             // With #[receive]: dispatches receive on empty calldata (returns
+///             // after). The empty-calldata branch is only emitted when a
+///             // #[receive] handler is present — contracts without it pay zero
+///             // bytecode cost here.
+///             if call_data_len == 0 {
+///                 this.receive();
+///                 return;
+///             }
 ///             // With #[fallback]: calls fallback. Without: reverts with NoSelector.
 ///             HostFnImpl::return_value(ReturnFlags::REVERT,
 ///                 &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
@@ -766,6 +774,47 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemFn);
 
     match codegen::expand_fallback(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Marks a function as the receive handler — invoked when the contract is
+/// called with empty calldata (plain value transfers).
+///
+/// Mirrors Solidity's `receive() external payable`. The receive function is
+/// implicitly `payable`: there is no such thing as a non-payable receive,
+/// so adding `#[payable]` is a compile error. Must take `&mut self`, take no
+/// other arguments, and return either `()` or `Result<(), Error>`.
+///
+/// Dispatch precedence on empty calldata:
+/// 1. `#[receive]` fires if defined.
+/// 2. Otherwise, the call falls through to `#[fallback]` (which must be
+///    `#[payable]` if value is attached).
+/// 3. Otherwise, the call reverts.
+///
+/// # Example
+///
+/// ```ignore
+/// #[pvm_contract::receive]
+/// pub fn receive(&mut self) {
+///     // value already credited; record receipt, emit event, etc.
+/// }
+/// ```
+///
+/// Fallible form:
+///
+/// ```ignore
+/// #[pvm_contract::receive]
+/// pub fn receive(&mut self) -> Result<(), MyError> {
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn receive(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemFn);
+
+    match codegen::expand_receive(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
