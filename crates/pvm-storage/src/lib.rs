@@ -541,6 +541,17 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     ///
     /// Returns the zero value for `T` if the slot was never written,
     /// matching Solidity's default-to-zero semantics.
+    ///
+    /// **Lossy decode for `T = String`:** Rust's `String` must hold valid
+    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD
+    /// (matching Stylus's `StorageString::get_string`). A Solidity contract
+    /// reading the same slot sees the raw bytes verbatim — `string` in solc
+    /// is just `bytes` with a UTF-8 hint and has no decode step. If you need
+    /// byte-exact roundtrips (e.g. on-chain `keccak256` matching an off-chain
+    /// hash), use [`Lazy<Bytes>`] instead — it preserves every byte. See
+    /// also `Mapping::get` for the same caveat on `V = String`.
+    ///
+    /// [`Lazy<Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self) -> T {
         let () = Self::_SIZE_CHECK;
         if T::HAS_DYNAMIC_BODY {
@@ -801,6 +812,16 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// `V::STORAGE_SLOTS` consecutive slots starting at the derived key.
     ///
     /// Returns the zero value if the key was never written.
+    ///
+    /// **Lossy decode for `V = String`:** Rust's `String` must hold valid
+    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD
+    /// (matching Stylus's `StorageString::get_string`). A Solidity contract
+    /// reading the same slot sees the raw bytes verbatim — `string` in solc
+    /// is just `bytes` with a UTF-8 hint and has no decode step. If you need
+    /// byte-exact roundtrips (e.g. on-chain `keccak256` matching an off-chain
+    /// hash), use [`Mapping<K, Bytes>`] instead — it preserves every byte.
+    ///
+    /// [`Mapping<K, Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self, key: &K) -> V {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);

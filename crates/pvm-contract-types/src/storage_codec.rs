@@ -782,8 +782,23 @@ impl StorageDecode for alloc::string::String {
 
     fn read_from_storage<const MAX_INLINE_SLOTS: usize>(host: &Host, base_key: &[u8; 32]) -> Self {
         let bytes = read_dynamic_bytes(host, base_key);
-        // solc requires `string` storage to be UTF-8; use lossy decoding so
-        // a foreign writer that stored non-UTF-8 doesn't trap the read.
+        // Rust's `String` invariant requires valid UTF-8. We use lossy decoding
+        // to keep `get()` infallible: invalid sequences are replaced with
+        // U+FFFD instead of trapping.
+        //
+        // This matches Stylus's `StorageString::get_string`
+        // (`stylus-sdk/src/storage/bytes.rs:528`) — also lossy, also infallible,
+        // also offers a `Bytes` escape hatch for byte-exact reads. It diverges
+        // from a Solidity contract reading the same slot, which sees the raw
+        // bytes verbatim because solc never decodes `string` (it's just `bytes`
+        // with a UTF-8 hint). Trapping on invalid bytes (ink!'s choice via
+        // SCALE decode) would be a DoS vector when storage is shared with a
+        // Solidity contract that doesn't validate.
+        //
+        // Contracts needing byte-exact roundtrips (e.g. computing a keccak256
+        // that matches what an off-chain client hashed) must use
+        // `Lazy<Bytes>` / `Mapping<K, Bytes>` instead — `Bytes` round-trips
+        // every byte verbatim, no substitution.
         alloc::string::String::from_utf8_lossy(&bytes).into_owned()
     }
 }
