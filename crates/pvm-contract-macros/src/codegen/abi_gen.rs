@@ -286,7 +286,7 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
                 && path
                     .segments
                     .last()
-                    .is_some_and(|segment| segment.ident.to_string() == "Option")
+                    .is_some_and(|segment| segment.ident == "Option")
             {
                 quote! { <#ty as ::pvm_contract_sdk::SolEncode>::abi_param("option").components }
             } else {

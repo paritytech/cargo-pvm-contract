@@ -360,9 +360,9 @@ fn expand_items<'a>(
     ctxt: &mut Ctxt,
 ) -> impl Iterator<Item = TokenStream> {
     items.filter_map(move |x| match x {
-        syn_solidity::Item::Struct(x) => Some(expand_struct(&x, ctxt, alloc)),
-        syn_solidity::Item::Error(x) => Some(expand_error(&x, ctxt, alloc)),
-        syn_solidity::Item::Udt(x) => Some(expand_udt(&x, ctxt, alloc)),
+        syn_solidity::Item::Struct(x) => Some(expand_struct(x, ctxt, alloc)),
+        syn_solidity::Item::Error(x) => Some(expand_error(x, ctxt, alloc)),
+        syn_solidity::Item::Udt(x) => Some(expand_udt(x, ctxt, alloc)),
         _ => None,
     })
 }
@@ -3030,7 +3030,7 @@ mod test {
                 .print_constructors(true)
                 .for_sol_macro(true);
 
-            let unparsed = &parsed.to_sol(&"b", Some(config));
+            let unparsed = &parsed.to_sol("b", Some(config));
             let tts = syn::parse_str::<proc_macro2::TokenStream>(unparsed).unwrap();
 
             let file = syn_solidity::parse2(quote::quote! {
@@ -3388,7 +3388,7 @@ mod test {
                     uint b;
                 }
                 interface B {
-                    function t() returns (bool present, Point value);
+                    function reflect((bool, Point) opt) returns (bool present, Point value);
                 }
         };
         let file = {
@@ -3404,7 +3404,7 @@ mod test {
                 /// the code is derived from this interface
                 /**```solidity
             interface B {
-                function t() returns (bool present, Point value);
+                function reflect((bool,Point) opt) returns (bool present, Point value);
             }
             ```*/
                 ///
@@ -3422,12 +3422,19 @@ mod test {
                     Inputs: SolEncode,
                     Outputs: SolDecode,
                 > B<Mutability, Inputs, Outputs, false> {
-                    pub fn t(mut self) -> B<NonPayable, (), Option<super::Point>, true> {
-                        B::<NonPayable, (), Option<super::Point>, true> {
+                    pub fn reflect(
+                        mut self,
+                        opt: Option<super::Point>,
+                    ) -> B<NonPayable, (Option<super::Point>), Option<super::Point>, true> {
+                        B::<NonPayable, (Option<super::Point>), Option<super::Point>, true> {
                             address: self.address,
-                            call_builder: CallBuilder::<NonPayable, (), Option<super::Point>> {
-                                payload: (),
-                                selector: [146u8, 208u8, 209u8, 83u8],
+                            call_builder: CallBuilder::<
+                                NonPayable,
+                                (Option<super::Point>),
+                                Option<super::Point>,
+                            > {
+                                payload: (opt),
+                                selector: [212u8, 3u8, 42u8, 226u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,

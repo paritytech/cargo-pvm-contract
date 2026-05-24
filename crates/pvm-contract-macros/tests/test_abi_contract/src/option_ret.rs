@@ -30,10 +30,5 @@ mod my_contract {
         pub fn reflect(&self, line: Line) -> Option<Line> {
             line
         }
-
-        #[pvm_contract_sdk::method]
-        pub fn reflect_2(&self, line: Line) -> (bool, Line) {
-            (false, Line)
-        }
     }
 }
