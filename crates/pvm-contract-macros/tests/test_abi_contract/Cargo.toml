@@ -39,6 +39,10 @@ path = "src/dynamic_custom_return.rs"
 name = "host-api-calls"
 path = "src/host_api_calls.rs"
 
+[[bin]]
+name = "option_ret"
+path = "src/option_ret.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-sdk = { path = "../../../pvm-contract-sdk", features = ["alloc"] }

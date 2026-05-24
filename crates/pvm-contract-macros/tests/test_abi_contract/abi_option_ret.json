@@ -1,0 +1,290 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "present",
+                "type": "bool"
+              },
+              {
+                "components": [
+                  {
+                    "name": "x",
+                    "type": "uint64"
+                  },
+                  {
+                    "name": "y",
+                    "type": "uint64"
+                  }
+                ],
+                "name": "value",
+                "type": "tuple"
+              }
+            ],
+            "name": "c",
+            "type": "tuple"
+          }
+        ],
+        "name": "line",
+        "type": "tuple"
+      }
+    ],
+    "name": "reflect",
+    "outputs": [
+      {
+        "name": "present",
+        "type": "bool"
+      },
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "present",
+                "type": "bool"
+              },
+              {
+                "components": [
+                  {
+                    "name": "x",
+                    "type": "uint64"
+                  },
+                  {
+                    "name": "y",
+                    "type": "uint64"
+                  }
+                ],
+                "name": "value",
+                "type": "tuple"
+              }
+            ],
+            "name": "c",
+            "type": "tuple"
+          }
+        ],
+        "name": "value",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "present",
+                "type": "bool"
+              },
+              {
+                "components": [
+                  {
+                    "name": "x",
+                    "type": "uint64"
+                  },
+                  {
+                    "name": "y",
+                    "type": "uint64"
+                  }
+                ],
+                "name": "value",
+                "type": "tuple"
+              }
+            ],
+            "name": "c",
+            "type": "tuple"
+          }
+        ],
+        "name": "line",
+        "type": "tuple"
+      }
+    ],
+    "name": "reflect2",
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      },
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "a",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "x",
+                "type": "uint64"
+              },
+              {
+                "name": "y",
+                "type": "uint64"
+              }
+            ],
+            "name": "b",
+            "type": "tuple"
+          },
+          {
+            "components": [
+              {
+                "name": "present",
+                "type": "bool"
+              },
+              {
+                "components": [
+                  {
+                    "name": "x",
+                    "type": "uint64"
+                  },
+                  {
+                    "name": "y",
+                    "type": "uint64"
+                  }
+                ],
+                "name": "value",
+                "type": "tuple"
+              }
+            ],
+            "name": "c",
+            "type": "tuple"
+          }
+        ],
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
+]

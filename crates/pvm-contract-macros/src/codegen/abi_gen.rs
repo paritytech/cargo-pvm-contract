@@ -282,19 +282,43 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         .return_types
         .iter()
         .map(|ty| {
-            quote! {
-                <#ty as ::pvm_contract_sdk::SolEncode>::abi_param("")
+            if let syn::Type::Path(syn::TypePath { qself: _, path }) = ty
+                && path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident.to_string() == "Option")
+            {
+                quote! { <#ty as ::pvm_contract_sdk::SolEncode>::abi_param("option").components }
+            } else {
+                quote! {
+                    [<#ty as ::pvm_contract_sdk::SolEncode>::abi_param("")]
+                }
             }
         })
         .collect();
 
     let mutability = method.mutability.as_abi_str();
-
+    for param in &output_params {
+        dbg!(&param.to_string());
+    }
+    dbg!(
+        quote! {vec![#(#output_params),*].into_iter().flatten().collect::<Vec<::pvm_contract_sdk::AbiParam>>()}.to_string()
+    );
+    let outputs = if output_params.is_empty() {
+        quote! {
+            let __outputs: Vec<::pvm_contract_sdk::AbiParam> = vec![];
+        }
+    } else {
+        quote! {
+            let __outputs: Vec<::pvm_contract_sdk::AbiParam> = vec![#(#output_params),*].concat();
+        }
+    };
     Ok(quote! {
+        #outputs
         __items.push(::pvm_contract_sdk::AbiItem::Function {
             name: #method_name.into(),
             inputs: vec![#(#input_params),*],
-            outputs: vec![#(#output_params),*],
+            outputs: __outputs,
             state_mutability: Some(#mutability.into()),
         });
     })

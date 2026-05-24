@@ -1,7 +1,7 @@
 use ctxt::Ctxt;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn_solidity::{File, ItemFunction, SolIdent};
+use syn_solidity::{File, ItemFunction, SolIdent, Type, TypeTuple};
 pub mod parse;
 use crate::signature::compute_selector;
 use crate::utils::{capitalize, compute_function_signature, to_pascal_case, to_snake_case};
@@ -165,12 +165,27 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
             quote! { #ident }
         }
         syn_solidity::Type::Tuple(type_tuple) => {
-            let args = type_tuple
-                .types
-                .iter()
-                .map(|x| to_rust_type(x, alloc, ctxt));
-            quote! {
-                (#(#args),*)
+            if let TypeTuple {
+                tuple_token: _,
+                paren_token: _,
+                types,
+            } = type_tuple
+                && types.len() == 2
+                && let Some(Type::Bool(_)) = types.first()
+                && let Some(typ) = types.last()
+            {
+                let typ = to_rust_type(typ, alloc, ctxt);
+                quote! {
+                    Option<#typ>
+                }
+            } else {
+                let args = type_tuple
+                    .types
+                    .iter()
+                    .map(|x| to_rust_type(x, alloc, ctxt));
+                quote! {
+                    (#(#args),*)
+                }
             }
         }
         syn_solidity::Type::Array(type_array) => {
@@ -345,9 +360,9 @@ fn expand_items<'a>(
     ctxt: &mut Ctxt,
 ) -> impl Iterator<Item = TokenStream> {
     items.filter_map(move |x| match x {
-        syn_solidity::Item::Struct(x) => Some(expand_struct(x, ctxt, alloc)),
-        syn_solidity::Item::Error(x) => Some(expand_error(x, ctxt, alloc)),
-        syn_solidity::Item::Udt(x) => Some(expand_udt(x, ctxt, alloc)),
+        syn_solidity::Item::Struct(x) => Some(expand_struct(&x, ctxt, alloc)),
+        syn_solidity::Item::Error(x) => Some(expand_error(&x, ctxt, alloc)),
+        syn_solidity::Item::Udt(x) => Some(expand_udt(&x, ctxt, alloc)),
         _ => None,
     })
 }
@@ -622,6 +637,7 @@ mod test {
     use quote::{ToTokens, quote};
     use std::{fs, path::PathBuf};
     use syn::parse::{Parse, Parser};
+
     fn test_abi_contract_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
@@ -2702,6 +2718,942 @@ mod test {
             impl StaticDecode for Example {
                 unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
                     unsafe { U256::decode_unchecked(input, offset).into() }
+                }
+            }
+            #[derive(SolType, PartialEq, Eq, Debug)]
+            pub struct Point {
+                pub a: U256,
+                pub b: U256,
+            }
+        "#]]
+        .assert_eq(&file);
+    }
+
+    #[test]
+    fn option_json() {
+        let raw = serde_json::json!(
+            [
+                {
+                  "inputs": [],
+                  "stateMutability": "nonpayable",
+                  "type": "constructor"
+                },
+                {
+                  "inputs": [
+                    {
+                      "components": [
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "a",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "b",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "present",
+                              "type": "bool"
+                            },
+                            {
+                              "components": [
+                                {
+                                  "name": "x",
+                                  "type": "uint64"
+                                },
+                                {
+                                  "name": "y",
+                                  "type": "uint64"
+                                }
+                              ],
+                              "name": "value",
+                              "type": "tuple"
+                            }
+                          ],
+                          "name": "c",
+                          "type": "tuple"
+                        }
+                      ],
+                      "name": "line",
+                      "type": "tuple"
+                    }
+                  ],
+                  "name": "reflect",
+                  "outputs": [
+                    {
+                      "name": "present",
+                      "type": "bool"
+                    },
+                    {
+                      "components": [
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "a",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "b",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "present",
+                              "type": "bool"
+                            },
+                            {
+                              "components": [
+                                {
+                                  "name": "x",
+                                  "type": "uint64"
+                                },
+                                {
+                                  "name": "y",
+                                  "type": "uint64"
+                                }
+                              ],
+                              "name": "value",
+                              "type": "tuple"
+                            }
+                          ],
+                          "name": "c",
+                          "type": "tuple"
+                        }
+                      ],
+                      "name": "value",
+                      "type": "tuple"
+                    }
+                  ],
+                  "stateMutability": "view",
+                  "type": "function"
+                },
+                {
+                  "inputs": [
+                    {
+                      "components": [
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "a",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "b",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "present",
+                              "type": "bool"
+                            },
+                            {
+                              "components": [
+                                {
+                                  "name": "x",
+                                  "type": "uint64"
+                                },
+                                {
+                                  "name": "y",
+                                  "type": "uint64"
+                                }
+                              ],
+                              "name": "value",
+                              "type": "tuple"
+                            }
+                          ],
+                          "name": "c",
+                          "type": "tuple"
+                        }
+                      ],
+                      "name": "line",
+                      "type": "tuple"
+                    }
+                  ],
+                  "name": "reflect2",
+                  "outputs": [
+                    {
+                      "name": "",
+                      "type": "bool"
+                    },
+                    {
+                      "components": [
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "a",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "x",
+                              "type": "uint64"
+                            },
+                            {
+                              "name": "y",
+                              "type": "uint64"
+                            }
+                          ],
+                          "name": "b",
+                          "type": "tuple"
+                        },
+                        {
+                          "components": [
+                            {
+                              "name": "present",
+                              "type": "bool"
+                            },
+                            {
+                              "components": [
+                                {
+                                  "name": "x",
+                                  "type": "uint64"
+                                },
+                                {
+                                  "name": "y",
+                                  "type": "uint64"
+                                }
+                              ],
+                              "name": "value",
+                              "type": "tuple"
+                            }
+                          ],
+                          "name": "c",
+                          "type": "tuple"
+                        }
+                      ],
+                      "name": "",
+                      "type": "tuple"
+                    }
+                  ],
+                  "stateMutability": "view",
+                  "type": "function"
+                },
+                {
+                  "inputs": [],
+                  "name": "InvalidCalldata",
+                  "type": "error"
+                },
+                {
+                  "inputs": [],
+                  "name": "CalldataTooLarge",
+                  "type": "error"
+                },
+                {
+                  "inputs": [],
+                  "name": "NoSelector",
+                  "type": "error"
+                },
+                {
+                  "inputs": [],
+                  "name": "UnknownSelector",
+                  "type": "error"
+                },
+                {
+                  "inputs": [],
+                  "name": "NonPayableValueReceived",
+                  "type": "error"
+                }
+              ]
+        )
+        .to_string();
+        let file = {
+            let parsed: alloy_json_abi::JsonAbi = serde_json::from_str(&raw).unwrap();
+            let config = ToSolConfig::new()
+                .print_constructors(true)
+                .for_sol_macro(true);
+
+            let unparsed = &parsed.to_sol(&"b", Some(config));
+            let tts = syn::parse_str::<proc_macro2::TokenStream>(unparsed).unwrap();
+
+            let file = syn_solidity::parse2(quote::quote! {
+                #tts
+            })
+            .unwrap();
+            let tokens = expand_to_module(&file, true).to_token_stream();
+            prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+        };
+        expect_test::expect![[r#"
+            use pvm_contract_sdk::*;
+            pub mod b {
+                use super::*;
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
+            interface b {
+                error CalldataTooLarge();
+                error InvalidCalldata();
+                error NoSelector();
+                error NonPayableValueReceived();
+                error UnknownSelector();
+                constructor();
+                function reflect(((uint64,uint64),(uint64,uint64),(bool,(uint64,uint64))) memory line) external view returns (bool present, ((uint64,uint64),(uint64,uint64),(bool,(uint64,uint64))) memory value);
+                function reflect2(((uint64,uint64),(uint64,uint64),(bool,(uint64,uint64))) memory line) external view returns (bool, ((uint64,uint64),(uint64,uint64),(bool,(uint64,uint64))) memory);
+            }
+            ```*/
+                ///
+                pub struct B<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > B<Mutability, Inputs, Outputs, false> {
+                    pub fn reflect(
+                        mut self,
+                        line: ((u64, u64), (u64, u64), Option<(u64, u64)>),
+                    ) -> B<
+                        View,
+                        (((u64, u64), (u64, u64), Option<(u64, u64)>)),
+                        Option<((u64, u64), (u64, u64), Option<(u64, u64)>)>,
+                        true,
+                    > {
+                        B::<
+                            View,
+                            (((u64, u64), (u64, u64), Option<(u64, u64)>)),
+                            Option<((u64, u64), (u64, u64), Option<(u64, u64)>)>,
+                            true,
+                        > {
+                            address: self.address,
+                            call_builder: CallBuilder::<
+                                View,
+                                (((u64, u64), (u64, u64), Option<(u64, u64)>)),
+                                Option<((u64, u64), (u64, u64), Option<(u64, u64)>)>,
+                            > {
+                                payload: (line),
+                                selector: [158u8, 24u8, 249u8, 138u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                allow_reentry: false,
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                    pub fn reflect2(
+                        mut self,
+                        line: ((u64, u64), (u64, u64), Option<(u64, u64)>),
+                    ) -> B<
+                        View,
+                        (((u64, u64), (u64, u64), Option<(u64, u64)>)),
+                        Option<((u64, u64), (u64, u64), Option<(u64, u64)>)>,
+                        true,
+                    > {
+                        B::<
+                            View,
+                            (((u64, u64), (u64, u64), Option<(u64, u64)>)),
+                            Option<((u64, u64), (u64, u64), Option<(u64, u64)>)>,
+                            true,
+                        > {
+                            address: self.address,
+                            call_builder: CallBuilder::<
+                                View,
+                                (((u64, u64), (u64, u64), Option<(u64, u64)>)),
+                                Option<((u64, u64), (u64, u64), Option<(u64, u64)>)>,
+                            > {
+                                payload: (line),
+                                selector: [173u8, 10u8, 131u8, 204u8],
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                allow_reentry: false,
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                }
+                impl B<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> B<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
+                    }
+                }
+                pub fn new_b() -> B<Payable, (), (), true> {
+                    B::<Payable, (), (), true> {
+                        address: [0u8; 20].into(),
+                        call_builder: CallBuilder::<Payable, (), ()> {
+                            payload: (),
+                            selector: [0u8, 0u8, 0u8, 0u8],
+                            witness: Payable::default(),
+                            call_limits: Default::default(),
+                            allow_reentry: false,
+                            _ret: core::marker::PhantomData,
+                        },
+                    }
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > B<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call.
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a delegated call to another contract.
+                    ///
+                    /// Always requires `&mut impl ContractContext` regardless of the
+                    /// callee's declared mutability: the callee runs in caller's
+                    /// storage context, so even a "view" callee can mutate state.
+                    pub fn delegate_call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract.
+                    pub fn delegate_call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .delegate_call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<View, Inputs, Outputs, true> {
+                    /// Perform a call to a `view` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<Pure, Inputs, Outputs, true> {
+                    /// Perform a call to a `pure` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<NonPayable, Inputs, Outputs, true> {
+                    /// Perform a call to a `nonpayable` callee. Caller must take
+                    /// `&mut self` — `&self` (view) caller methods cannot construct
+                    /// the `&mut impl ContractContext` argument.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<Payable, Inputs, Outputs, true> {
+                    /// Perform a call to a `payable` callee. Caller must take
+                    /// `&mut self`.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                    /// Instantiate another contract by it's code_hash. Always
+                    /// requires `&mut impl ContractContext`: instantiation transfers
+                    /// value, emits a deploy event, and bumps the caller's nonce.
+                    pub fn instantiate_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .instantiate_raw(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf.as_mut_slice(),
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        let output = self
+                            .call_builder
+                            .extract_output(&host, output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call.
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
+                }
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct CalldataTooLarge {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct InvalidCalldata {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NoSelector {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct NonPayableValueReceived {}
+                #[derive(SolError, PartialEq, Eq, Debug)]
+                pub struct UnknownSelector {}
+            }
+        "#]].assert_eq(&file);
+    }
+
+    #[test]
+    fn option_point() {
+        let file = quote! {
+                struct Point {
+                    uint a;
+                    uint b;
+                }
+                interface B {
+                    function t() returns (bool present, Point value);
+                }
+        };
+        let file = {
+            let file = syn_solidity::parse2(file).unwrap();
+            let tokens = expand_to_module(&file, true).to_token_stream();
+            prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+        };
+        expect_test::expect![[r#"
+            use pvm_contract_sdk::*;
+            pub mod b {
+                use super::*;
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
+            interface B {
+                function t() returns (bool present, Point value);
+            }
+            ```*/
+                ///
+                pub struct B<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > B<Mutability, Inputs, Outputs, false> {
+                    pub fn t(mut self) -> B<NonPayable, (), Option<super::Point>, true> {
+                        B::<NonPayable, (), Option<super::Point>, true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (), Option<super::Point>> {
+                                payload: (),
+                                selector: [146u8, 208u8, 209u8, 83u8],
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                allow_reentry: false,
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                }
+                impl B<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> B<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
+                    }
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > B<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call.
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a delegated call to another contract.
+                    ///
+                    /// Always requires `&mut impl ContractContext` regardless of the
+                    /// callee's declared mutability: the callee runs in caller's
+                    /// storage context, so even a "view" callee can mutate state.
+                    pub fn delegate_call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract.
+                    pub fn delegate_call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .delegate_call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<View, Inputs, Outputs, true> {
+                    /// Perform a call to a `view` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<Pure, Inputs, Outputs, true> {
+                    /// Perform a call to a `pure` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<NonPayable, Inputs, Outputs, true> {
+                    /// Perform a call to a `nonpayable` callee. Caller must take
+                    /// `&mut self` — `&self` (view) caller methods cannot construct
+                    /// the `&mut impl ContractContext` argument.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> B<Payable, Inputs, Outputs, true> {
+                    /// Perform a call to a `payable` callee. Caller must take
+                    /// `&mut self`.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                    /// Instantiate another contract by it's code_hash. Always
+                    /// requires `&mut impl ContractContext`: instantiation transfers
+                    /// value, emits a deploy event, and bumps the caller's nonce.
+                    pub fn instantiate_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .instantiate_raw(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf.as_mut_slice(),
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        let output = self
+                            .call_builder
+                            .extract_output(&host, output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call.
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
                 }
             }
             #[derive(SolType, PartialEq, Eq, Debug)]

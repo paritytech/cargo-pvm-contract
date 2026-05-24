@@ -1171,6 +1171,79 @@ impl StaticDecode for () {
     unsafe fn decode_unchecked(_input: &[u8], _offset: usize) -> Self {}
 }
 
+impl<T: SolEncode + Sized> SolEncode for &T {
+    const IS_DYNAMIC: bool = T::IS_DYNAMIC;
+
+    const SOL_NAME: &'static str = T::SOL_NAME;
+
+    const IS_TUPLE: bool = T::IS_TUPLE;
+
+    const HEAD_SIZE: usize = T::HEAD_SIZE;
+    const SLOT_SIZE: usize = T::SLOT_SIZE;
+
+    fn encode_body_len(&self) -> usize {
+        <T>::encode_body_len(self)
+    }
+
+    fn encode_body_to(&self, buf: &mut [u8]) {
+        <T>::encode_body_to(self, buf)
+    }
+}
+
+impl<T: SolEncode + Sized + Default> SolEncode for Option<T> {
+    const IS_DYNAMIC: bool = <(bool, T)>::IS_DYNAMIC;
+
+    const SOL_NAME: &'static str = <(bool, T)>::SOL_NAME;
+
+    const HEAD_SIZE: usize = <(bool, T)>::HEAD_SIZE;
+
+    const IS_TUPLE: bool = <(bool, T)>::IS_TUPLE;
+
+    const SLOT_SIZE: usize = <(bool, T)>::SLOT_SIZE;
+
+    fn encode_body_len(&self) -> usize {
+        self.as_ref().map_or_else(
+            || <(bool, T)>::encode_body_len(&(false, T::default())),
+            |x| <(bool, &T)>::encode_body_len(&(true, x)),
+        )
+    }
+
+    fn encode_body_to(&self, buf: &mut [u8]) {
+        match self {
+            Some(x) => <(bool, &T)>::encode_body_to(&(true, x), buf),
+            None => <(bool, T)>::encode_body_to(&(false, T::default()), buf),
+        }
+    }
+
+    #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> AbiParam {
+        extern crate alloc;
+        AbiParam {
+            name: alloc::string::String::from(name),
+            param_type: alloc::string::String::from("tuple"),
+            components: alloc::vec![<bool>::abi_param("present"), <T>::abi_param("value")],
+        }
+    }
+}
+
+impl<T: StaticEncodedLen + Sized + Default> StaticEncodedLen for Option<T> {
+    const ENCODED_SIZE: usize = <(bool, T)>::ENCODED_SIZE;
+}
+
+impl<T: SolDecode + Sized + Default> SolDecode for Option<T> {
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
+        let (exists, res) = <(bool, T)>::decode_at(input, offset)?;
+        if exists { Ok(Some(res)) } else { Ok(None) }
+    }
+}
+
+impl<T: StaticDecode + Sized + Default> StaticDecode for Option<T> {
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+        let (exists, res) = unsafe { <(bool, T)>::decode_unchecked(input, offset) };
+        if exists { Some(res) } else { None }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // [u8; N] impl — encodes as Solidity `bytesN` (left-aligned in one word),
 // matching alloy's behavior. For `T[N]` array semantics, see the
@@ -1497,4 +1570,65 @@ impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_),
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J), (10: K), (11: L));
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use crate::{SolDecode, SolEncode};
+    #[cfg(feature = "alloc")]
+    mod test_inner {
+        use ruint::aliases::U256;
+
+        use super::*;
+        use crate::alloc::string::ToString;
+
+        macro_rules! test_cases {
+        ($case:expr) => {{
+                let mut buf = [0u8; 512];
+                $case.data.encode_to(&mut buf);
+                let decoded = $case.decode(&buf);
+                assert_eq!($case, decoded)
+            }};
+        ($($case:expr),+) => {
+            $({
+                test_cases!($case)
+             };)+
+        };
+    }
+        #[test]
+        fn option_tests() {
+            #[derive(Debug, PartialEq)]
+            struct TestData<T: SolDecode + SolEncode + Sized + PartialEq + Default> {
+                data: Option<T>,
+            }
+
+            impl<T: SolDecode + SolEncode + Sized + PartialEq + Default> TestData<T> {
+                fn decode(&self, buf: &[u8]) -> TestData<T> {
+                    let res: Option<T> = <Option<T>>::decode(buf).unwrap();
+                    Self { data: res }
+                }
+            }
+
+            test_cases!(
+                TestData { data: Some(false) },
+                TestData {
+                    data: Some("test".to_string())
+                },
+                TestData {
+                    data: Some(("test".to_string(), alloc::vec![1, 2, 3])),
+                },
+                TestData {
+                    data: None::<alloc::string::String>,
+                },
+                TestData {
+                    data: None::<(U256, alloc::string::String, u32, (bool, U256))>
+                },
+                TestData {
+                    data: Some((
+                        U256::from(55),
+                        "test".to_string(),
+                        192u32,
+                        (true, U256::from(75))
+                    ))
+                }
+            );
+        }
+    }
+}

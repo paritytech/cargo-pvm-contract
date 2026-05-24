@@ -83,3 +83,10 @@ fn host_api_calls_produces_valid_abi() {
     expect_test::expect_file!("./test_abi_contract/abi_host_api_calls.json")
         .assert_eq(&cargo_run_abi("host-api-calls"))
 }
+
+/// Contract with option returns produces correct abi
+#[test]
+fn option_returns_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_option_ret.json")
+        .assert_eq(&cargo_run_abi("option_ret"))
+}
