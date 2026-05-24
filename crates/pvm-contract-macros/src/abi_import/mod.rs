@@ -165,12 +165,12 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
             quote! { #ident }
         }
         syn_solidity::Type::Tuple(type_tuple) => {
-            if let TypeTuple {
+            let TypeTuple {
                 tuple_token: _,
                 paren_token: _,
                 types,
-            } = type_tuple
-                && types.len() == 2
+            } = type_tuple;
+            if types.len() == 2
                 && let Some(Type::Bool(_)) = types.first()
                 && let Some(typ) = types.last()
             {
