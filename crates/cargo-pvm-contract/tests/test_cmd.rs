@@ -114,16 +114,6 @@ fn build_streams_json_message_format_and_writes_artifacts() {
         "total": "<matches streamed compiler-artifact count>",
         "unit": plan.get("unit").cloned(),
     });
-    expect_test::expect![[r#"
-        {
-          "reason": "cargo-pvm-contract-build-plan",
-          "schema_version": 1,
-          "total": "<matches streamed compiler-artifact count>",
-          "unit": "compiler-artifact"
-        }"#]]
-    .assert_eq(
-        &serde_json::to_string_pretty(&plan_snapshot).expect("serialize normalized build plan"),
-    );
 
     let planned_total = plan
         .get("total")
@@ -135,6 +125,54 @@ fn build_streams_json_message_format_and_writes_artifacts() {
             line.get("reason").and_then(serde_json::Value::as_str) == Some("compiler-artifact")
         })
         .count() as u64;
+    let build_finished = json_lines
+        .iter()
+        .filter(|line| {
+            line.get("reason").and_then(serde_json::Value::as_str) == Some("build-finished")
+        })
+        .count() as u64;
+
+    let polkavm_path = project_dir
+        .join("target")
+        .join("release")
+        .join("json-build-output.polkavm");
+    let abi_path = project_dir
+        .join("target")
+        .join("release")
+        .join("json-build-output.abi.json");
+    let summary_snapshot = serde_json::json!({
+        "build_plan": plan_snapshot,
+        "cargo_stream": {
+            "compiler_artifacts": "<matches build_plan.total>",
+            "build_finished": build_finished,
+        },
+        "artifacts": {
+            "polkavm": polkavm_path.exists(),
+            "abi_json": abi_path.exists(),
+        },
+    });
+    expect_test::expect![[r#"
+        {
+          "artifacts": {
+            "abi_json": true,
+            "polkavm": true
+          },
+          "build_plan": {
+            "reason": "cargo-pvm-contract-build-plan",
+            "schema_version": 1,
+            "total": "<matches streamed compiler-artifact count>",
+            "unit": "compiler-artifact"
+          },
+          "cargo_stream": {
+            "build_finished": 1,
+            "compiler_artifacts": "<matches build_plan.total>"
+          }
+        }"#]]
+    .assert_eq(
+        &serde_json::to_string_pretty(&summary_snapshot)
+            .expect("serialize normalized build summary"),
+    );
+
     assert!(
         compiler_artifacts > 0,
         "stdout should include cargo compiler-artifact JSON lines, got:\n{stdout}"
