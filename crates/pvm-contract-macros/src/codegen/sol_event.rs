@@ -85,32 +85,23 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
-    // Reject #[indexed] on custom/alias types. The proc macro cannot
-    // distinguish type aliases (type Owner = Address) from actual custom
-    // structs (#[derive(SolType)]). For aliases, indexed_topic() would
-    // produce correct output, but for custom structs it produces topics
-    // incompatible with Solidity. Reject all to guarantee correctness.
+    // Reject #[indexed] on dynamic arrays (`Vec<T>`). The proc macro cannot
+    // statically size a runtime-variable encode buffer in no-alloc mode.
+    // Custom struct types are allowed: SolType derive overrides
+    // `indexed_topic()` to do `keccak256(abi.encode(self))`, and primitive
+    // aliases (e.g. `type Owner = Address`) fall through to the default
+    // right-aligned `indexed_topic()` which is also correct.
     if let Fields::Named(named) = fields {
         for (i, field) in named.named.iter().enumerate() {
             if !indexed_flags[i] {
                 continue;
             }
-            match &field_info[i].1 {
-                SolType::Custom(_) => {
-                    return Err(syn::Error::new_spanned(
-                        &field.ty,
-                        "#[indexed] does not support custom/alias types; \
-                         use the concrete Solidity-mapped type directly",
-                    ));
-                }
-                SolType::Array(_) => {
-                    return Err(syn::Error::new_spanned(
-                        &field.ty,
-                        "#[indexed] does not support dynamic arrays (Vec<T>); \
-                         use a fixed-size array instead",
-                    ));
-                }
-                _ => {}
+            if let SolType::Array(_) = &field_info[i].1 {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "#[indexed] does not support dynamic arrays (Vec<T>); \
+                     use a fixed-size array instead",
+                ));
             }
         }
     }
@@ -174,13 +165,28 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
                 use ::pvm_contract_sdk::HostApi as _;
                 let __topics = self.topics();
                 let __len = self.data_len();
-                let mut __data = alloc::vec![0u8; __len];
+                let mut __data = ::alloc::vec![0u8; __len];
                 self.data_to(&mut __data);
                 host.deposit_event(&__topics, &__data);
             }
         }
     } else {
-        quote! {}
+        // Dynamic event without `#[alloc]`: emit a deprecated stub so callers
+        // get a clear diagnostic instead of a confusing "method not found".
+        quote! {
+            #[deprecated(
+                note = "this event has dynamic non-indexed fields; \
+                        add `#[alloc]` to enable emit(), or use \
+                        SolEvent::data_len()/data_to() manually"
+            )]
+            #[allow(unused_variables)]
+            pub fn emit(&self, host: &::pvm_contract_sdk::Host) {
+                panic!(
+                    "emit() requires #[alloc] on this event \
+                     (or call data_len()/data_to() manually)"
+                );
+            }
+        }
     };
 
     Ok(quote! {
@@ -248,6 +254,8 @@ fn build_abi_item_body(
         }
     }
 
+    // `::std` is fine here: `abi_item()` is gated on `feature = "abi-gen"`,
+    // which always implies a std-host build for ABI JSON generation.
     quote! {
         ::pvm_contract_sdk::AbiItem::Event {
             name: ::std::string::String::from(#event_name),
@@ -377,18 +385,19 @@ fn generate_indexed_topic_pack(
     sol_type: &SolType,
     rust_type: &syn::Type,
 ) -> TokenStream {
-    // Arrays, fixed arrays, and tuples use keccak256(abi.encode(value)) per Solidity spec.
-    // Custom types are rejected at validation time, so only primitives reach the else branch.
+    // Arrays, fixed arrays, and tuples are encoded as `keccak256(abi.encode(value))`
+    // per the Solidity event spec — done inline here because the proc macro
+    // can identify them syntactically and the trait's default `indexed_topic`
+    // is the right-aligned primitive form.
     let needs_abi_encode_hash = matches!(
         sol_type,
         SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_)
     );
 
     if needs_abi_encode_hash {
-        // Solidity hashes indexed reference types via keccak256(abi.encode(value)).
-        // Uses a stack buffer sized by HEAD_SIZE, which is only correct for
-        // static types. Dynamic composites (tuples/arrays with dynamic elements)
-        // are rejected at compile time.
+        // Stack buffer sized by HEAD_SIZE — only correct for static composites.
+        // Dynamic composites (tuples/arrays with dynamic elements) are caught
+        // by the IS_DYNAMIC assertion.
         quote! {
             {
                 const _: () = assert!(
@@ -403,8 +412,31 @@ fn generate_indexed_topic_pack(
                 __topics.push(::pvm_contract_sdk::keccak256(&__enc_buf));
             }
         }
+    } else if matches!(sol_type, SolType::Custom(_)) {
+        // Custom types include both primitive aliases (`type Owner = Address`)
+        // and `#[derive(SolType)]` structs. The proc macro can't distinguish
+        // the two, so we dispatch via the `indexed_topic` trait method:
+        // - Primitive aliases inherit the default right-aligned encoding.
+        // - `SolType` derive overrides `indexed_topic` to do
+        //   `keccak256(abi.encode(self))`, matching Solidity for structs.
+        // Indexed dynamic composites are rejected at compile time.
+        quote! {
+            {
+                const _: () = assert!(
+                    !<#rust_type as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC,
+                    "SolEvent: #[indexed] custom types must be static. \
+                     Dynamic composites are not supported."
+                );
+                __topics.push(
+                    <#rust_type as ::pvm_contract_sdk::SolEncode>::indexed_topic(&self.#field_name)
+                );
+            }
+        }
     } else {
-        // Static and dynamic primitives use indexed_topic() directly.
+        // Built-in primitives (uintN, intN, bool, address, bytesN) and
+        // dynamic primitives (string, bytes) — `indexed_topic` defaults are
+        // correct. The HEAD_SIZE assertion guards against a manual SolEncode
+        // impl that would silently truncate or panic on a value > 32 bytes.
         quote! {
             {
                 const _: () = assert!(
@@ -685,23 +717,20 @@ mod tests {
         assert!(expand_sol_event(input).is_ok());
     }
 
-    // Custom/alias types are rejected as indexed fields. The proc macro
-    // cannot distinguish type aliases from actual custom structs, so all
-    // Custom types are rejected to guarantee correctness.
+    // Custom types (`#[derive(SolType)]` structs and type aliases) are now
+    // accepted as indexed fields. SolType derive overrides `indexed_topic`
+    // to produce `keccak256(abi.encode(self))`, and primitive aliases fall
+    // through to the default right-aligned encoding.
     #[test]
-    fn rejects_indexed_custom_type() {
+    fn accepts_indexed_custom_type() {
         let input: DeriveInput = syn::parse_str(
             r#"struct Ownership {
-                #[indexed] inner: MyAlias,
+                #[indexed] inner: MyType,
                 value: U256,
             }"#,
         )
         .unwrap();
-        let err = expand_sol_event(input).unwrap_err().to_string();
-        assert!(
-            err.contains("custom/alias"),
-            "should reject indexed custom types: {err}"
-        );
+        assert!(expand_sol_event(input).is_ok());
     }
 
     #[test]
@@ -719,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_not_generated_for_dynamic_non_indexed_fields() {
+    fn emit_is_deprecated_stub_for_dynamic_non_indexed_fields_without_alloc() {
         let input: DeriveInput = syn::parse_str(
             r#"struct Log {
                 #[indexed] who: Address,
@@ -729,8 +758,12 @@ mod tests {
         .unwrap();
         let output = expand_sol_event(input).unwrap().to_string();
         assert!(
-            !output.contains("fn emit"),
-            "emit() should not be generated for events with dynamic non-indexed fields"
+            output.contains("fn emit"),
+            "emit() stub should be generated so callers see a diagnostic"
+        );
+        assert!(
+            output.contains("deprecated"),
+            "stub should carry a #[deprecated] note guiding the user to add #[alloc]"
         );
     }
 

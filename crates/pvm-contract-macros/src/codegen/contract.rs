@@ -1013,6 +1013,34 @@ fn parse_contract(
                 ),
             ));
         }
+
+        // Validate every Rust `#[derive(SolEvent)]` struct has a matching
+        // `event Name(...)` declaration in the `.sol` interface. Without this
+        // check, a Rust event declared without a corresponding `.sol` entry
+        // would be silently absent from the generated ABI JSON (the builder
+        // reads events from `.sol` when a sol_path is set).
+        let sol_event_names: Vec<String> = sol_iface
+            .body
+            .iter()
+            .filter_map(|item| match item {
+                syn_solidity::Item::Event(item_event) => Some(item_event.name.to_string()),
+                _ => None,
+            })
+            .collect();
+        let missing_events: Vec<String> = event_idents
+            .iter()
+            .map(|ident| ident.to_string())
+            .filter(|name| !sol_event_names.contains(name))
+            .collect();
+        if !missing_events.is_empty() {
+            return Err(syn::Error::new_spanned(
+                input,
+                format!(
+                    "Rust events missing matching `event` declarations in the .sol interface: {}",
+                    missing_events.join(", ")
+                ),
+            ));
+        }
     }
 
     Ok(ParsedContract {

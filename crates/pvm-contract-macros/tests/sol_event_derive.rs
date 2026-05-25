@@ -1,7 +1,7 @@
 extern crate alloc;
 
-use pvm_contract_macros::SolEvent;
-use pvm_contract_types::{Address, SolEvent as SolEventTrait};
+use pvm_contract_macros::{SolEvent, SolType};
+use pvm_contract_types::{Address, SolEncode, SolEvent as SolEventTrait};
 use ruint::aliases::U256;
 
 #[derive(SolEvent)]
@@ -402,6 +402,45 @@ fn static_plus_two_dynamic_fields_matches_alloy() {
     assert_eq!(
         our_data, alloy_data,
         "(uint256,string,string) event data() must match alloy tuple sequence encoding"
+    );
+}
+
+#[derive(SolType)]
+struct UserId {
+    chain: u64,
+    addr: Address,
+}
+
+#[derive(SolEvent)]
+struct UserCreated {
+    #[indexed]
+    user: UserId,
+    block_number: u64,
+}
+
+#[test]
+fn indexed_custom_struct_topic_is_keccak_of_abi_encoded_value() {
+    let user = UserId {
+        chain: 1u64,
+        addr: Address([0xAA; 20]),
+    };
+    let event = UserCreated {
+        user: UserId {
+            chain: 1u64,
+            addr: Address([0xAA; 20]),
+        },
+        block_number: 42,
+    };
+
+    let topics = event.topics();
+    assert_eq!(topics.len(), 2, "topic0 + 1 indexed");
+
+    let mut encoded = [0u8; <UserId as SolEncode>::HEAD_SIZE];
+    <UserId as SolEncode>::encode_to(&user, &mut encoded);
+    let expected = alloy_core::primitives::keccak256(&encoded).0;
+    assert_eq!(
+        topics[1], expected,
+        "Indexed custom struct must hash keccak256(abi.encode(value))"
     );
 }
 
