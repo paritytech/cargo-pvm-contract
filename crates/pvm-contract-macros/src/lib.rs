@@ -538,6 +538,16 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// - `#[slot(N)]` pinning inside a `#[storage]` struct is *not* supported.
 ///   Use auto-numbering, or write the leaf fields directly on the contract
 ///   struct if you need explicit slots.
+/// - On the contract struct, `#[slot(N)]` accepts only full-slot types
+///   (`PACKED_BYTES == 32`): `Mapping`, `Lazy<U256>`, `Lazy<String>`,
+///   `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and
+///   `#[storage]` sub-structs. Sub-word types (`Lazy<bool>`, `Lazy<u32>`,
+///   `Lazy<Address>`, etc.) are rejected at compile time — explicit-mode
+///   would place them at byte 0 of the slot while solc places them
+///   right-aligned, producing a non-solc layout. Sub-word packing is the
+///   auto-numbered walker's job (it packs siblings per solc via
+///   `layout_step`); wrap the field in a `#[storage]` sub-struct if you
+///   need to pin the group at a specific slot.
 #[proc_macro_attribute]
 pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as syn::ItemStruct);

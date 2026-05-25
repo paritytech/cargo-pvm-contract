@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: explicit `#[slot(N)]` on field `flag` requires a full-slot type (`PACKED_BYTES == 32`). Sub-word types (e.g. `Lazy<bool>`, `Lazy<u32>`, `Lazy<u128>`, `Lazy<Address>`) cannot use explicit slot pinning because solc places them right-aligned within their slot — explicit mode would place them at byte 0, producing a non-solc layout. Use auto-numbering (which packs sub-word fields per solc via the `layout_step` walker) or wrap this field in a `#[storage]` sub-struct.
+ --> tests/ui/explicit_slot_sub_word_rejected.rs:8:1
+  |
+8 | #[pvm_contract_macros::contract]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `c::__pvm_storage_full_slot_only_flag` failed here

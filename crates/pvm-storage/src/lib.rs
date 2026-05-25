@@ -414,26 +414,12 @@ const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 // StorageComponent: how a typed storage object claims root slots.
 // ---------------------------------------------------------------------------
 
-/// A typed storage helper that occupies one or more contiguous root slots.
-///
-/// Implementations:
-///
-/// - [`Lazy<T>`]      — 1 slot. `T` may be static (e.g. `U256`) or dynamic
-///   (e.g. `String`, [`Bytes`](pvm_contract_types::Bytes)) with solc-compatible inline/spilled layout.
-/// - [`Mapping<K,V>`] — 1 slot (the root; entries live at derived keys).
-///   `V` may likewise be static or dynamic.
-/// - user storage structs annotated with `#[storage]` — sum of their fields'
-///   `SLOTS`, assigned in declaration order.
-///
-/// The `#[contract]` macro reads `SLOTS` to assign slot numbers to fields. The
-/// macro-generated constructor calls [`StorageComponent::new_at`] with the
-/// assigned base slot and a clone of the contract's host handle.
 /// One step in the const-folded contract-field layout walker.
 ///
 /// Used by the `#[contract]` and `#[storage]` macros to compute each field's
 /// placement at compile time. The walker carries the chain state as a
 /// `LayoutStep`: the placement of the current field plus the entry conditions
-/// for the next one. See [`step`] for the algorithm.
+/// for the next one. See [`layout_step`] for the algorithm.
 #[derive(Copy, Clone)]
 pub struct LayoutStep {
     /// Slot the current field starts at.
@@ -469,11 +455,7 @@ impl LayoutStep {
 /// contract-field chain (`contract.rs`), the `#[storage]` sub-struct chain
 /// (`sol_storage.rs`), and the SolType-derive struct walker (`sol_type.rs`)
 /// agree on layout byte-for-byte.
-pub const fn layout_step(
-    prev: LayoutStep,
-    packed_bytes: usize,
-    slots: u64,
-) -> LayoutStep {
+pub const fn layout_step(prev: LayoutStep, packed_bytes: usize, slots: u64) -> LayoutStep {
     let bytes = packed_bytes as u8;
     // Decide whether the current field fits in `prev.next_slot` or must
     // advance to a fresh slot.
@@ -499,6 +481,20 @@ pub const fn layout_step(
     }
 }
 
+/// A typed storage helper that occupies one or more contiguous root slots.
+///
+/// Implementations:
+///
+/// - [`Lazy<T>`]      — 1 slot. `T` may be static (e.g. `U256`) or dynamic
+///   (e.g. `String`, [`Bytes`](pvm_contract_types::Bytes)) with solc-compatible inline/spilled layout.
+/// - [`Mapping<K,V>`] — 1 slot (the root; entries live at derived keys).
+///   `V` may likewise be static or dynamic.
+/// - user storage structs annotated with `#[storage]` — sum of their fields'
+///   `SLOTS`, assigned in declaration order.
+///
+/// The `#[contract]` macro reads `SLOTS` to assign slot numbers to fields. The
+/// macro-generated constructor calls [`StorageComponent::new_at`] with the
+/// assigned base slot and a clone of the contract's host handle.
 pub trait StorageComponent: Sized {
     /// Number of root storage slots claimed by this component.
     const SLOTS: u64;
@@ -667,11 +663,14 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     pub fn get(&self) -> T {
         let () = Self::_SIZE_CHECK;
         if T::PACKED_BYTES < 32 {
-            // Packed sub-slot path: read the slot, unpack our byte window.
-            // `unpack_from` is a no-zeroing reader; the caller (us) doesn't
-            // touch the rest of the buffer, so neighbours stay correct.
+            // Packed sub-slot path: read the slot, unpack our byte window via
+            // the polymorphic dispatch hook. `__unpack_from_dispatched` is a
+            // no-zeroing reader; the caller (us) doesn't touch the rest of the
+            // buffer, so neighbours stay correct. The hook delegates to
+            // `<T as StoragePackable>::unpack_from` for packable T; full-slot
+            // T never reaches this branch.
             let buf = storage_get_32(&self.host, self.key.as_bytes());
-            T::unpack_from(&buf, self.offset as usize)
+            T::__unpack_from_dispatched(&buf, self.offset as usize)
         } else if T::HAS_DYNAMIC_BODY {
             // Dispatch to the type's host-aware reader (e.g. LazySlot<String>
             // reads its body from `keccak256(key) + i`).
@@ -713,6 +712,16 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// be misleading — a neighbour's write to the same slot would make
     /// `try_get` indistinguishable from `get`. For packed fields, use
     /// `.get()` and compare to the zero value of `T` instead.
+    ///
+    /// ```compile_fail,E0080
+    /// # use pvm_contract_types::{Host, MockHostBuilder};
+    /// # use pvm_storage::{Lazy, StorageKey};
+    /// # use std::rc::Rc;
+    /// let host = Host::from_dyn(Rc::new(MockHostBuilder::new().build()));
+    /// // `u128` has PACKED_BYTES = 16 — try_get is rejected at codegen time.
+    /// let lazy = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 16, host) };
+    /// let _ = lazy.try_get();
+    /// ```
     pub fn try_get(&self) -> Option<T> {
         let () = Self::_SIZE_CHECK;
         // try_get is only meaningful for full-slot types. For sub-slot packed
@@ -781,13 +790,16 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         let () = Self::_SIZE_CHECK;
         if T::PACKED_BYTES < 32 {
             // Packed sub-slot RMW: load slot, zero our window, write our
-            // bytes back, store. One extra SLOAD on each write vs. the
-            // full-slot path — same gas profile as solc / Stylus for
-            // adjacent sub-32-byte fields sharing a slot.
+            // bytes back via the polymorphic dispatch hook, store. One extra
+            // SLOAD on each write vs. the full-slot path — same gas profile
+            // as solc / Stylus for adjacent sub-32-byte fields sharing a
+            // slot. `__pack_into_dispatched` delegates to
+            // `<T as StoragePackable>::pack_into` for packable T; full-slot T
+            // never reaches this branch.
             let mut buf = storage_get_32(&self.host, self.key.as_bytes());
             let off = self.offset as usize;
             buf[off..off + T::PACKED_BYTES].fill(0);
-            value.pack_into(&mut buf, off);
+            value.__pack_into_dispatched(&mut buf, off);
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
         } else if T::HAS_DYNAMIC_BODY {
             value.write_to_storage(&self.host, self.key.as_bytes());
@@ -955,7 +967,10 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     const PACKED_BYTES: usize = 32;
 
     fn new_at(slot: u64, offset: u8, host: Host) -> Self {
-        debug_assert_eq!(offset, 0, "Mapping<K, V> always full-slot; offset must be 0");
+        debug_assert_eq!(
+            offset, 0,
+            "Mapping<K, V> always full-slot; offset must be 0"
+        );
         let _ = offset;
         // SAFETY: same justification as `Lazy::new_at` — this is the
         // macro-only safe entry point; bypass via direct `Mapping::new` is
@@ -1566,7 +1581,8 @@ mod tests {
     #[test]
     fn lazy_string_set_empty_distinct_from_never_written() {
         let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
-        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, written.host.clone()) };
+        let never =
+            unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, written.host.clone()) };
 
         written.set(&String::new());
 
@@ -2019,10 +2035,26 @@ mod tests {
         let step_c = crate::layout_step(step_b, 20, 1);
         let step_d = crate::layout_step(step_c, 32, 1);
 
-        assert_eq!((step_a.slot, step_a.offset), (0, 31), "bool at slot 0 offset 31");
-        assert_eq!((step_b.slot, step_b.offset), (0, 27), "u32 at slot 0 offset 27");
-        assert_eq!((step_c.slot, step_c.offset), (0, 7), "address at slot 0 offset 7");
-        assert_eq!((step_d.slot, step_d.offset), (1, 0), "U256 at slot 1 offset 0");
+        assert_eq!(
+            (step_a.slot, step_a.offset),
+            (0, 31),
+            "bool at slot 0 offset 31"
+        );
+        assert_eq!(
+            (step_b.slot, step_b.offset),
+            (0, 27),
+            "u32 at slot 0 offset 27"
+        );
+        assert_eq!(
+            (step_c.slot, step_c.offset),
+            (0, 7),
+            "address at slot 0 offset 7"
+        );
+        assert_eq!(
+            (step_d.slot, step_d.offset),
+            (1, 0),
+            "U256 at slot 1 offset 0"
+        );
     }
 
     /// RMW correctness: writing one packed field does not clobber the other
@@ -2062,7 +2094,11 @@ mod tests {
         b.set(&0xBBBB_BBBB_BBBB_BBBBu128);
         b.clear();
 
-        assert_eq!(a.get(), 0xAAAA_AAAA_AAAA_AAAAu128, "a untouched after b.clear()");
+        assert_eq!(
+            a.get(),
+            0xAAAA_AAAA_AAAA_AAAAu128,
+            "a untouched after b.clear()"
+        );
         assert_eq!(b.get(), 0, "b is zero after clear");
         // Slot stays non-zero overall (a's bytes are still there).
         let slot = storage_get_32(&host, &StorageKey::from_slot(0).as_bytes().clone());
@@ -2079,17 +2115,28 @@ mod tests {
         let step_u32 = crate::layout_step(step_tuple, 4, 1);
 
         assert_eq!((step_bool.slot, step_bool.offset), (0, 31));
-        assert_eq!((step_tuple.slot, step_tuple.offset), (1, 0), "tuple starts fresh");
+        assert_eq!(
+            (step_tuple.slot, step_tuple.offset),
+            (1, 0),
+            "tuple starts fresh"
+        );
         assert_eq!(step_tuple.next_slot, 2, "tuple consumes slots 1 and 2");
         assert_eq!(step_tuple.next_space, 0, "tuple consumed slot 2 to its end");
-        assert_eq!((step_u32.slot, step_u32.offset), (3, 28), "u32 lands at slot 3");
+        assert_eq!(
+            (step_u32.slot, step_u32.offset),
+            (3, 28),
+            "u32 lands at slot 3"
+        );
     }
 
     /// Walker sanity check: `Mapping` reports `PACKED_BYTES = 32` so it
     /// always advances to a fresh slot and never packs with neighbours.
     #[test]
     fn mapping_packed_bytes_is_full_slot() {
-        assert_eq!(<Mapping<Address, U256> as StorageComponent>::PACKED_BYTES, 32);
+        assert_eq!(
+            <Mapping<Address, U256> as StorageComponent>::PACKED_BYTES,
+            32
+        );
         // bool + mapping + bool: mapping forces fresh slot; second bool can
         // pack at offset 31 of its own fresh slot (post-mapping).
         let step_a = crate::layout_step(crate::LayoutStep::FIRST, 1, 1);
@@ -2217,7 +2264,8 @@ mod tests {
     #[test]
     fn erc20_storage_example() {
         let host = h();
-        let mut total_supply = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, host.clone()) };
+        let mut total_supply =
+            unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, host.clone()) };
         let mut balances =
             unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
         let mut allowances = unsafe {
@@ -2486,7 +2534,8 @@ mod tests {
     #[test]
     fn lazy_string_native_try_get_distinguishes_set_empty_from_unset() {
         let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
-        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, written.host.clone()) };
+        let never =
+            unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, written.host.clone()) };
 
         written.set(&String::new());
         let got = written.try_get();

@@ -304,10 +304,30 @@ mod tests {
         let layout = StorageLayout {
             storage: vec![
                 // Classic solc packing example: bool + uint32 + address fit in slot 0.
-                StorageLayoutEntry { label: "a".into(),  slot: "0".into(), offset: 31, ty: "bool".into() },
-                StorageLayoutEntry { label: "b".into(),  slot: "0".into(), offset: 27, ty: "uint32".into() },
-                StorageLayoutEntry { label: "c".into(),  slot: "0".into(), offset: 7,  ty: "address".into() },
-                StorageLayoutEntry { label: "d".into(),  slot: "1".into(), offset: 0,  ty: "uint256".into() },
+                StorageLayoutEntry {
+                    label: "a".into(),
+                    slot: "0".into(),
+                    offset: 31,
+                    ty: "bool".into(),
+                },
+                StorageLayoutEntry {
+                    label: "b".into(),
+                    slot: "0".into(),
+                    offset: 27,
+                    ty: "uint32".into(),
+                },
+                StorageLayoutEntry {
+                    label: "c".into(),
+                    slot: "0".into(),
+                    offset: 7,
+                    ty: "address".into(),
+                },
+                StorageLayoutEntry {
+                    label: "d".into(),
+                    slot: "1".into(),
+                    offset: 0,
+                    ty: "uint256".into(),
+                },
             ],
         };
         let json = storage_layout_to_json(&layout);

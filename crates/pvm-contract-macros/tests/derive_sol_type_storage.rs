@@ -339,19 +339,15 @@ fn dynamic_field_struct_via_mapping_round_trip_spilled() {
 }
 
 // ========================================================================
-// Workaround for the "Lazy<T> doesn't pack at contract-field level" issue.
+// Sub-word packing inside a `#[derive(SolType)]` struct stored under one
+// `Lazy<S>`.
 //
-// Background: at the contract field level (chain of `__pvm_storage_slot_*`
-// const items via `StorageComponent::SLOTS`), two adjacent `Lazy<u128>`
-// fields take 2 slots — no sub-word packing. Solidity's layout would put
-// `uint128 a; uint128 b;` in slot 0 at offsets 16 and 0 respectively.
-//
-// Workaround: group packable fields into a `#[derive(SolType)]` struct
-// and store the struct under one `Lazy<S>`. Inside the derive, the
-// `__STORAGE_LAYOUT` walker uses `PACKED_BYTES` / `STARTS_NEW_SLOT` and
-// produces solc-compatible sub-word packing.
-//
-// These tests pin both halves so the layout divergence stays documented.
+// The derive's `__STORAGE_LAYOUT` walker uses `PACKED_BYTES` /
+// `STARTS_NEW_SLOT` to lay out fields with solc-compatible sub-word
+// packing — two `u128` fields share a single 32-byte slot. The
+// contract-field walker now does the same for adjacent `Lazy<u128>`
+// fields, so this is no longer a workaround; it's the same packing rule
+// applied one level down, exercised here on the derive path.
 // ========================================================================
 
 #[derive(Clone, Debug, PartialEq, Eq, SolType)]
@@ -363,8 +359,7 @@ struct U128Pair {
 #[test]
 fn u128_pair_packs_into_one_slot_via_soltype() {
     // The SolType derive's layout walker packs two u128s (16 bytes each)
-    // into a single 32-byte slot — the user-facing workaround for the
-    // contract-field non-packing limitation.
+    // into a single 32-byte slot.
     assert_eq!(<U128Pair as StorageEncode>::STORAGE_SLOTS, 1);
     assert_eq!(<U128Pair as StorageEncode>::PACKED_BYTES, 32);
 }
@@ -388,17 +383,14 @@ fn u128_pair_layout_matches_solc_packing() {
 
 #[test]
 fn lazy_of_u128_pair_advances_chain_by_one_slot() {
-    // The whole point of the workaround: storing `Lazy<U128Pair>` advances
-    // the contract's slot chain by exactly 1, while `Lazy<u128>; Lazy<u128>;`
-    // would advance by 2. `StorageComponent::SLOTS` is what the contract
-    // macro reads to compute the next field's slot.
+    // `Lazy<U128Pair>` claims a single root slot. Each `Lazy<u128>` also
+    // reports `SLOTS = 1` — the contract-field walker packs adjacent
+    // sub-word `Lazy` fields into the same slot via `PACKED_BYTES`, so
+    // `Lazy<u128>; Lazy<u128>;` lands at (slot=0, offset=16) and
+    // (slot=0, offset=0) rather than consuming two slots.
     assert_eq!(
         <Lazy<U128Pair> as pvm_contract_sdk::StorageComponent>::SLOTS,
         1
     );
-    assert_eq!(
-        <Lazy<u128> as pvm_contract_sdk::StorageComponent>::SLOTS,
-        1,
-        "for comparison: each Lazy<u128> takes its own slot"
-    );
+    assert_eq!(<Lazy<u128> as pvm_contract_sdk::StorageComponent>::SLOTS, 1);
 }

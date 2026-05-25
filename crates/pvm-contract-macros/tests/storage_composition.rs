@@ -228,7 +228,11 @@ fn nested_storage_struct_uses_offset() {
 #[cfg(feature = "abi-gen")]
 #[test]
 fn composed_contract_emits_storage_layout_under_abi_gen() {
-    let layout = composed_contract::__storage_layout_json();
-    let expected = r#"{"storage":[{"label":"erc20.total_supply","slot":"0","type":"uint256"},{"label":"erc20.balances","slot":"1","type":"mapping(address,uint256)"},{"label":"erc20.allowances","slot":"2","type":"mapping(address,mapping(address,uint256))"},{"label":"metadata.name","slot":"3","type":"string"},{"label":"metadata.symbol","slot":"4","type":"string"},{"label":"paused","slot":"5","type":"bool"}]}"#;
-    assert_eq!(layout, expected);
+    let actual: serde_json::Value =
+        serde_json::from_str(&composed_contract::__storage_layout_json()).unwrap();
+    let golden: serde_json::Value = serde_json::from_str(include_str!(
+        "test_abi_contract/abi_storage_layout_composed.json"
+    ))
+    .unwrap();
+    assert_eq!(actual, golden["storageLayout"]);
 }

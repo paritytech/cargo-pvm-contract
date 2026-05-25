@@ -290,7 +290,14 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 
 ### Storage on the contract struct
 
-Declare `#[slot(N)]` fields directly on the contract struct. The `#[contract]` macro constructs each field with a `StorageKey` and a clone of the host handle. Methods access storage via `self`:
+Declare storage fields directly on the contract struct. Two modes:
+
+- **Auto-numbering (default).** Drop the `#[slot]` attribute and let the macro assign slots in declaration order via `layout_step`. Sub-word siblings pack into the same slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, sharing slot 0). Accepts every storage type.
+- **Explicit pinning (`#[slot(N)]`).** Restricted to full-slot types — `Mapping`, `Lazy<U256>`, `Lazy<String>`, `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and `#[storage]` sub-structs (anything with `StorageComponent::PACKED_BYTES == 32`). Sub-word types are rejected at compile time (explicit mode would place them at byte 0 of the slot while solc places them right-aligned). Use auto-numbering for sub-word packing or wrap the field in a `#[storage]` sub-struct if you need to pin the group at a specific slot. The primary reason to reach for `#[slot(N)]` over auto-numbering is `#[cfg(...)]`-gated storage variants — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
+
+Mixing the two modes is not supported (either all fields are explicit or all are auto-numbered).
+
+The `#[contract]` macro constructs each field with a `StorageKey` and a clone of the host handle. Methods access storage via `self`:
 
 ```rust
 #[contract("MyToken.sol")]

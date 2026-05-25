@@ -165,9 +165,30 @@ pub(super) struct ParsedContract {
 /// A storage field on the contract struct.
 ///
 /// `slot` is either pinned by an explicit `#[slot(N)]` attribute (`Slot::Explicit`)
-/// or auto-numbered by declaration order (`Slot::Auto`). Auto-numbering computes
-/// the slot at compile time via the field type's [`StorageComponent::SLOTS`],
-/// summed left-to-right across all preceding auto-numbered fields.
+/// or auto-numbered by declaration order (`Slot::Auto`).
+///
+/// **Auto-numbered** fields run through the shared `layout_step` walker, which
+/// packs sub-word siblings into a single slot (e.g. `count: Lazy<u32>; flag:
+/// Lazy<bool>;` share slot 0 at bytes 28 and 27) — matching solc's packing
+/// rules.
+///
+/// **Explicit-slot** fields are restricted to full-slot types
+/// (`PACKED_BYTES == 32`): `Mapping`, `Lazy<U256>`, `Lazy<String>`,
+/// `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and
+/// `#[storage]` sub-structs. Sub-word types (`Lazy<bool>`, `Lazy<u32>`, …)
+/// are rejected at compile time via a per-field const-assert emitted by
+/// [`explicit_slot_full_slot_only_checks`]: explicit mode would place them
+/// at byte 0 of the slot while solc places them right-aligned, so the
+/// silent layout divergence is forbidden. Use auto-numbering for sub-word
+/// packing, or wrap in a `#[storage]` sub-struct if you need to pin the
+/// group.
+///
+/// The primary use cases for explicit slots are:
+/// - Pinning full-slot fields to known positions (e.g. matching an
+///   externally-deployed storage layout).
+/// - `#[cfg(...)]`-gated storage variants — auto-numbered fields can't be
+///   `#[cfg]`-gated because that would shift later slot indices based on
+///   the active feature set.
 #[derive(Debug, Clone)]
 pub(super) struct SlotField {
     pub name: Ident,
@@ -180,10 +201,13 @@ pub(super) struct SlotField {
 /// How a storage field's slot is determined.
 #[derive(Debug, Clone)]
 pub(super) enum Slot {
-    /// Explicit `#[slot(N)]` attribute.
+    /// Explicit `#[slot(N)]` attribute. Restricted to full-slot types
+    /// (`PACKED_BYTES == 32`); sub-word types must use auto-numbering.
+    /// See [`SlotField`] for the rationale.
     Explicit(u64),
     /// Auto-numbered: position among auto-numbered fields is taken from
-    /// declaration order during the slot-chain build.
+    /// declaration order during the slot-chain build. Packs sub-word
+    /// siblings via `layout_step`.
     Auto,
 }
 
@@ -1176,6 +1200,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     // from the `__pvm_storage_slot_*` const chain built by `auto_slot_consts`.
     let auto_slot_consts = auto_slot_consts(&slot_fields);
     let explicit_overlap_checks = explicit_slot_overlap_checks(&slot_fields);
+    let explicit_full_slot_checks = explicit_slot_full_slot_only_checks(&slot_fields);
 
     let slot_field_inits: Vec<TokenStream> = slot_fields
         .iter()
@@ -1449,6 +1474,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             // const items, so misconfigurations surface at check time, not
             // only at build/link.
             #(#explicit_overlap_checks)*
+            // Per-field full-slot-only checks: each emits a `const _: () = ...;`
+            // item that const-asserts PACKED_BYTES == 32 for explicit-slot
+            // fields, rejecting sub-word types (Lazy<bool>, Lazy<u32>, …) at
+            // compile time. Sub-word packing is the auto-numbered walker's job.
+            #(#explicit_full_slot_checks)*
 
             #mod_content
 
@@ -1829,6 +1859,54 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
 /// When both fields are `#[cfg]`-gated AND share the same name, the check
 /// is skipped: the compiler enforces single-field-per-name, so at most
 /// one branch is active and overlap is impossible.
+/// Emit `const _: () = { … };` items that compile-fail when an explicit-slot
+/// field carries a sub-word type (`PACKED_BYTES < 32`).
+///
+/// `#[slot(N)]` always starts a fresh slot at the pinned position with the
+/// field placed at byte 0. For full-slot types (`PACKED_BYTES == 32`) that
+/// matches solc. For sub-word types solc places them right-aligned within
+/// the slot (canonical offset = `32 - PACKED_BYTES`), so the explicit-mode
+/// offset of 0 would silently produce a non-solc layout. Rather than
+/// emit the wrong placement we reject the combination — sub-word packing is
+/// the auto-numbered walker's job (`layout_step` already packs solc-correctly).
+///
+/// Each check is gated by the field's own `#[cfg(...)]` attributes so that
+/// cfg-disabled branches don't fire spurious errors.
+pub(super) fn explicit_slot_full_slot_only_checks(slot_fields: &[SlotField]) -> Vec<TokenStream> {
+    slot_fields
+        .iter()
+        .filter_map(|sf| {
+            // Only explicit-slot fields are gated by this check.
+            let _ = sf.explicit_slot()?;
+            let name = &sf.name;
+            let ty = &sf.ty;
+            let cfgs = &sf.cfg_attrs;
+            let check_ident = quote::format_ident!("__pvm_storage_full_slot_only_{}", name);
+            let msg = format!(
+                "explicit `#[slot(N)]` on field `{}` requires a full-slot type \
+                 (`PACKED_BYTES == 32`). Sub-word types (e.g. `Lazy<bool>`, \
+                 `Lazy<u32>`, `Lazy<u128>`, `Lazy<Address>`) cannot use explicit \
+                 slot pinning because solc places them right-aligned within their \
+                 slot — explicit mode would place them at byte 0, producing a \
+                 non-solc layout. Use auto-numbering (which packs sub-word fields \
+                 per solc via the `layout_step` walker) or wrap this field in a \
+                 `#[storage]` sub-struct.",
+                name,
+            );
+            Some(quote! {
+                #(#cfgs)*
+                #[allow(non_upper_case_globals)]
+                const #check_ident: () = {
+                    ::core::assert!(
+                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES == 32,
+                        #msg,
+                    );
+                };
+            })
+        })
+        .collect()
+}
+
 pub(super) fn explicit_slot_overlap_checks(slot_fields: &[SlotField]) -> Vec<TokenStream> {
     let mut checks = Vec::new();
     for (i, a) in slot_fields.iter().enumerate() {
@@ -3126,6 +3204,91 @@ mod tests {
 
         // Should expand without error.
         let _ = expand_contract(ContractArgs::default(), item).unwrap();
+    }
+
+    #[test]
+    fn explicit_slot_full_slot_types_compile_with_check_consts() {
+        // Every accepted full-slot type (Lazy<U256>, Mapping, Lazy<String>,
+        // Lazy<(U256, U256)>, etc.) should expand cleanly AND emit a
+        // `__pvm_storage_full_slot_only_<name>` const-assert that the
+        // compiler will evaluate to confirm `PACKED_BYTES == 32`.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[slot(0)]
+                    total: Lazy<U256>,
+                    #[slot(1)]
+                    balances: Mapping<Address, U256>,
+                    #[slot(2)]
+                    metadata: Lazy<String>,
+                    #[slot(3)]
+                    pair: Lazy<(U256, U256)>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        for name in ["total", "balances", "metadata", "pair"] {
+            let ident = format!("__pvm_storage_full_slot_only_{name}");
+            assert!(
+                output.contains(&ident),
+                "Expected full-slot-only check const `{ident}` to be emitted. \
+                 Output:\n{output}",
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_slot_full_slot_check_propagates_cfg_attrs() {
+        // The const-assert must carry the field's #[cfg(...)] attrs so that
+        // cfg-disabled branches don't fire spurious errors. This is what
+        // makes the cfg-gated storage variant pattern work.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
+                    #[cfg(feature = "v1")]
+                    #[slot(0)]
+                    data: Lazy<U256>,
+                    #[cfg(not(feature = "v1"))]
+                    #[slot(0)]
+                    data: Mapping<Address, U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        // Both cfg-gated branches should emit the check, each gated by its
+        // own cfg. The TokenStream serializer renders attrs as `# [cfg (…)]`.
+        assert!(
+            output
+                .contains("# [cfg (feature = \"v1\")] # [allow (non_upper_case_globals)] const __pvm_storage_full_slot_only_data"),
+            "Expected feature=\"v1\" branch to carry its cfg on the check const. \
+             Output:\n{output}",
+        );
+        assert!(
+            output
+                .contains("# [cfg (not (feature = \"v1\"))] # [allow (non_upper_case_globals)] const __pvm_storage_full_slot_only_data"),
+            "Expected !feature=\"v1\" branch to carry its cfg on the check const. \
+             Output:\n{output}",
+        );
     }
 
     #[test]

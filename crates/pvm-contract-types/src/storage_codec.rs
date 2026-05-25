@@ -2,9 +2,9 @@
 //!
 //! Encodes Rust values into the byte layout that `solc` uses for contract
 //! storage — sub-word packing for primitives that fit, multi-slot spread for
-//! larger composites, big-endian right-aligned for integers, left-aligned for
-//! `bytesN`. The on-chain bytes produced by [`StorageEncode`] / [`StorageDecode`]
-//! match what an equivalent solc-compiled contract would write, so tools like
+//! larger composites, big-endian right-aligned for both integers and `bytesN`.
+//! The on-chain bytes produced by [`StorageEncode`] / [`StorageDecode`] match
+//! what an equivalent solc-compiled contract would write, so tools like
 //! `cast storage` interoperate transparently.
 //!
 //! This codec is intentionally separate from [`SolEncode`](crate::SolEncode) /
@@ -17,9 +17,21 @@
 //! - [`StorageEncode`] / [`StorageDecode`] describe a top-level (possibly
 //!   multi-slot) storage value. They drive `Mapping<K, V>` / `Lazy<T>` writes
 //!   and reads.
-//! - [`StoragePackable`] is implemented by primitives that can be packed at a
-//!   sub-word byte offset within a slot. The `#[derive(SolType)]` macro calls
-//!   `pack_into` / `unpack_from` when emitting struct field encoders.
+//! - [`StoragePackable`] is the public sub-word packing API for primitives
+//!   that can share a slot with siblings at arbitrary byte offsets. It owns
+//!   the [`pack_into`](StoragePackable::pack_into) /
+//!   [`unpack_from`](StoragePackable::unpack_from) operations as required
+//!   methods (no defaults), so the bound enforces that callers can actually
+//!   pack the type — used by tuple `StorageEncode` impls and the
+//!   `#[derive(SolType)]` macro's struct field encoders.
+//!
+//! `StorageEncode` / `StorageDecode` also carry hidden polymorphic dispatch
+//! hooks (`__pack_into_dispatched` / `__unpack_from_dispatched`) used by
+//! `Lazy<T>`'s packed-path. Those hooks panic by default; in-tree packable
+//! impls override them to delegate to `StoragePackable`. Downstream code
+//! should impl `StoragePackable` (which compile-checks the operations) and
+//! mirror the delegation pattern in its `StorageEncode` / `StorageDecode`
+//! impls so `Lazy<T>` works.
 //!
 //! Composite types (structs, fixed arrays of compound elements) and dynamic
 //! types (`String`, `Bytes`) always start a new slot and never pack — they
@@ -52,8 +64,8 @@ fn inc_be_32(slot: &mut [u8; 32]) {
 ///
 /// For primitives, [`STORAGE_SLOTS`](Self::STORAGE_SLOTS) is 1 and
 /// [`encode_slot`](Self::encode_slot) writes the value at the type's canonical
-/// position within a freshly-zeroed slot (right-aligned for integers,
-/// left-aligned for `bytesN`).
+/// position within a freshly-zeroed slot (right-aligned for both integers and
+/// `bytesN`).
 ///
 /// For structs, [`STARTS_NEW_SLOT`](Self::STARTS_NEW_SLOT) is `true` and
 /// [`encode_slot`](Self::encode_slot) walks the per-slot field placements
@@ -94,15 +106,18 @@ pub trait StorageEncode {
     /// `slot_idx` must satisfy `slot_idx < STORAGE_SLOTS`.
     fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]);
 
-    /// Pack self into `buf[offset..offset + Self::PACKED_BYTES]` WITHOUT
-    /// zeroing surrounding bytes. Used by the contract-field walker when
-    /// adjacent sub-32-byte fields share a slot. Default impl panics —
-    /// only sub-32-byte types that opt into packing override. Full-slot
-    /// types never reach this (Lazy<T>::set takes the full-slot fast path
-    /// when PACKED_BYTES == 32).
-    fn pack_into(&self, _buf: &mut [u8; 32], _offset: usize) {
+    /// Internal polymorphic dispatch hook for `Lazy<T>`'s packed-path
+    /// (`Lazy<T>::set` when `PACKED_BYTES < 32`). The canonical
+    /// `pack_into` operation lives on [`StoragePackable`]; this hook lets
+    /// `Lazy<T>`, whose `T` is only bound by `StorageEncode + StorageDecode`,
+    /// reach a packable impl through a const-folded `T::PACKED_BYTES < 32`
+    /// branch. Default impl panics — packable types override to delegate
+    /// to `<Self as StoragePackable>::pack_into`. Full-slot types never
+    /// reach this branch.
+    #[doc(hidden)]
+    fn __pack_into_dispatched(&self, _buf: &mut [u8; 32], _offset: usize) {
         panic!(
-            "pack_into not implemented for full-slot type; Lazy<T>::set should never reach this branch",
+            "__pack_into_dispatched not implemented for full-slot type; Lazy<T>::set should never reach this branch",
         );
     }
 
@@ -156,14 +171,15 @@ pub trait StorageDecode: StorageEncode + Sized {
     /// [`read_from_storage`](Self::read_from_storage) with the full read.
     fn from_slots(slots: &[[u8; 32]]) -> Self;
 
-    /// Unpack self from `buf[offset..offset + Self::PACKED_BYTES]`. Used by the
-    /// contract-field walker when reading a packed sub-32-byte field. Default
-    /// impl panics — only sub-32-byte types override. Full-slot types never
-    /// reach this (Lazy<T>::get takes the full-slot fast path when
-    /// PACKED_BYTES == 32).
-    fn unpack_from(_buf: &[u8; 32], _offset: usize) -> Self {
+    /// Internal polymorphic dispatch hook for `Lazy<T>`'s packed-path
+    /// (`Lazy<T>::get` when `PACKED_BYTES < 32`). Symmetric with
+    /// [`StorageEncode::__pack_into_dispatched`]; the canonical
+    /// `unpack_from` lives on [`StoragePackable`]. Default impl panics —
+    /// packable types override to delegate.
+    #[doc(hidden)]
+    fn __unpack_from_dispatched(_buf: &[u8; 32], _offset: usize) -> Self {
         panic!(
-            "unpack_from not implemented for full-slot type; Lazy<T>::get should never reach this branch",
+            "__unpack_from_dispatched not implemented for full-slot type; Lazy<T>::get should never reach this branch",
         );
     }
 
@@ -193,24 +209,41 @@ pub trait StorageDecode: StorageEncode + Sized {
     }
 }
 
-/// Marker trait: sub-word packable primitive.
+/// Sub-word packable primitive.
 ///
 /// Implemented by types that fit in a single 32-byte slot and can share that
-/// slot with sibling fields at arbitrary byte offsets. The actual packing
-/// operations now live on [`StorageEncode::pack_into`] and
-/// [`StorageDecode::unpack_from`] (with panicking defaults that packable
-/// types override); this trait remains as a marker / bound for code that
-/// needs to gate on "can be packed inside a slot" (e.g. tuple impls,
-/// derived struct fields).
+/// slot with sibling fields at arbitrary byte offsets. Owns the canonical
+/// [`pack_into`](Self::pack_into) / [`unpack_from`](Self::unpack_from)
+/// operations as required methods — the bound `T: StoragePackable` enforces
+/// at compile time that callers can actually pack/unpack the type. Used by
+/// tuple `StorageEncode` impls and the `#[derive(SolType)]` macro's struct
+/// field encoders.
 ///
 /// Composite types do not implement this trait — they always start a new
 /// slot and never pack.
-pub trait StoragePackable: StorageEncode + Sized {
+///
+/// Implementing this trait for a downstream type also requires implementing
+/// `StorageEncode` and `StorageDecode` (the supertraits) and overriding
+/// their `__pack_into_dispatched` / `__unpack_from_dispatched` hooks to
+/// delegate to the `StoragePackable` methods. This delegation is what lets
+/// `Lazy<T>` reach the packed-path code through its polymorphic
+/// `T: StorageEncode + StorageDecode` bound.
+pub trait StoragePackable: StorageEncode + StorageDecode + Sized {
     /// Byte offset within a slot where this type lives when it occupies a slot
-    /// on its own (solc's "right-aligned for integers, left-aligned for
-    /// `bytesN`" rule). Always equals `32 - PACKED_BYTES` in practice; kept
-    /// as an explicit const for documentation and call-site clarity.
+    /// on its own (solc's right-aligned rule for both integers and `bytesN`).
+    /// Always equals `32 - PACKED_BYTES` in practice; kept as an explicit
+    /// const for documentation and call-site clarity.
     const CANONICAL_OFFSET: usize;
+
+    /// Pack self into `buf[offset..offset + Self::PACKED_BYTES]` WITHOUT
+    /// zeroing surrounding bytes. The caller is responsible for any
+    /// pre-zeroing of the target byte window (e.g. the contract-field
+    /// walker zeros the window before a read-modify-write).
+    fn pack_into(&self, buf: &mut [u8; 32], offset: usize);
+
+    /// Unpack self from `buf[offset..offset + Self::PACKED_BYTES]`.
+    /// Symmetric with [`pack_into`](Self::pack_into).
+    fn unpack_from(buf: &[u8; 32], offset: usize) -> Self;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,19 +261,33 @@ macro_rules! impl_uint {
             fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
                 debug_assert_eq!(_slot_idx, 0);
                 *buf = [0u8; 32];
-                <Self as StorageEncode>::pack_into(self, buf, 32 - $bytes);
+                <Self as StoragePackable>::pack_into(self, buf, 32 - $bytes);
             }
 
             #[inline]
-            fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-                buf[offset..offset + $bytes].copy_from_slice(&self.to_be_bytes());
+            fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+                <Self as StoragePackable>::pack_into(self, buf, offset)
             }
         }
 
         impl StorageDecode for $ty {
             #[inline]
             fn from_slots(slots: &[[u8; 32]]) -> Self {
-                <Self as StorageDecode>::unpack_from(&slots[0], 32 - $bytes)
+                <Self as StoragePackable>::unpack_from(&slots[0], 32 - $bytes)
+            }
+
+            #[inline]
+            fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+                <Self as StoragePackable>::unpack_from(buf, offset)
+            }
+        }
+
+        impl StoragePackable for $ty {
+            const CANONICAL_OFFSET: usize = 32 - $bytes;
+
+            #[inline]
+            fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
+                buf[offset..offset + $bytes].copy_from_slice(&self.to_be_bytes());
             }
 
             #[inline]
@@ -249,10 +296,6 @@ macro_rules! impl_uint {
                 bytes.copy_from_slice(&buf[offset..offset + $bytes]);
                 <$ty>::from_be_bytes(bytes)
             }
-        }
-
-        impl StoragePackable for $ty {
-            const CANONICAL_OFFSET: usize = 32 - $bytes;
         }
     };
 }
@@ -282,9 +325,8 @@ impl StorageEncode for U256 {
     }
 
     #[inline]
-    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        debug_assert_eq!(offset, 0, "U256 takes a full slot");
-        *buf = self.to_be_bytes::<32>();
+    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+        <Self as StoragePackable>::pack_into(self, buf, offset)
     }
 }
 
@@ -295,14 +337,25 @@ impl StorageDecode for U256 {
     }
 
     #[inline]
-    fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
-        debug_assert_eq!(offset, 0, "U256 takes a full slot");
-        U256::from_be_bytes(*buf)
+    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+        <Self as StoragePackable>::unpack_from(buf, offset)
     }
 }
 
 impl StoragePackable for U256 {
     const CANONICAL_OFFSET: usize = 0;
+
+    #[inline]
+    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
+        debug_assert_eq!(offset, 0, "U256 takes a full slot");
+        *buf = self.to_be_bytes::<32>();
+    }
+
+    #[inline]
+    fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
+        debug_assert_eq!(offset, 0, "U256 takes a full slot");
+        U256::from_be_bytes(*buf)
+    }
 }
 
 impl StorageEncode for I256 {
@@ -317,9 +370,8 @@ impl StorageEncode for I256 {
     }
 
     #[inline]
-    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        debug_assert_eq!(offset, 0, "I256 takes a full slot");
-        *buf = self.to_be_bytes();
+    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+        <Self as StoragePackable>::pack_into(self, buf, offset)
     }
 }
 
@@ -330,14 +382,25 @@ impl StorageDecode for I256 {
     }
 
     #[inline]
-    fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
-        debug_assert_eq!(offset, 0, "I256 takes a full slot");
-        I256::from_be_slice(buf)
+    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+        <Self as StoragePackable>::unpack_from(buf, offset)
     }
 }
 
 impl StoragePackable for I256 {
     const CANONICAL_OFFSET: usize = 0;
+
+    #[inline]
+    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
+        debug_assert_eq!(offset, 0, "I256 takes a full slot");
+        *buf = self.to_be_bytes();
+    }
+
+    #[inline]
+    fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
+        debug_assert_eq!(offset, 0, "I256 takes a full slot");
+        I256::from_be_slice(buf)
+    }
 }
 
 // bool — 1 byte, right-aligned (solc convention).
@@ -350,29 +413,39 @@ impl StorageEncode for bool {
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
         debug_assert_eq!(_slot_idx, 0);
         *buf = [0u8; 32];
-        <Self as StorageEncode>::pack_into(self, buf, 31);
+        <Self as StoragePackable>::pack_into(self, buf, 31);
     }
 
     #[inline]
-    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        buf[offset] = u8::from(*self);
+    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+        <Self as StoragePackable>::pack_into(self, buf, offset)
     }
 }
 
 impl StorageDecode for bool {
     #[inline]
     fn from_slots(slots: &[[u8; 32]]) -> Self {
-        <Self as StorageDecode>::unpack_from(&slots[0], 31)
+        <Self as StoragePackable>::unpack_from(&slots[0], 31)
+    }
+
+    #[inline]
+    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+        <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl StoragePackable for bool {
+    const CANONICAL_OFFSET: usize = 31;
+
+    #[inline]
+    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
+        buf[offset] = u8::from(*self);
     }
 
     #[inline]
     fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
         buf[offset] != 0
     }
-}
-
-impl StoragePackable for bool {
-    const CANONICAL_OFFSET: usize = 31;
 }
 
 // Address — 20 bytes, right-aligned (solc convention).
@@ -385,19 +458,33 @@ impl StorageEncode for Address {
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
         debug_assert_eq!(_slot_idx, 0);
         *buf = [0u8; 32];
-        <Self as StorageEncode>::pack_into(self, buf, 12);
+        <Self as StoragePackable>::pack_into(self, buf, 12);
     }
 
     #[inline]
-    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        buf[offset..offset + 20].copy_from_slice(&self.0);
+    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+        <Self as StoragePackable>::pack_into(self, buf, offset)
     }
 }
 
 impl StorageDecode for Address {
     #[inline]
     fn from_slots(slots: &[[u8; 32]]) -> Self {
-        <Self as StorageDecode>::unpack_from(&slots[0], 12)
+        <Self as StoragePackable>::unpack_from(&slots[0], 12)
+    }
+
+    #[inline]
+    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+        <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl StoragePackable for Address {
+    const CANONICAL_OFFSET: usize = 12;
+
+    #[inline]
+    fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
+        buf[offset..offset + 20].copy_from_slice(&self.0);
     }
 
     #[inline]
@@ -408,11 +495,8 @@ impl StorageDecode for Address {
     }
 }
 
-impl StoragePackable for Address {
-    const CANONICAL_OFFSET: usize = 12;
-}
-
-// [u8; N] — Solidity `bytesN`, left-aligned in the slot.
+// [u8; N] — Solidity `bytesN`, right-aligned in the slot (see the
+// `StoragePackable` impl below for the verification against solc).
 //
 // Note: N is bounded at 1..=32 to match solc's `bytesN` types. A const assert
 // in each method enforces the bound at monomorphisation.
@@ -431,8 +515,34 @@ impl<const N: usize> StorageEncode for [u8; N] {
         };
         debug_assert_eq!(_slot_idx, 0);
         *buf = [0u8; 32];
-        <Self as StorageEncode>::pack_into(self, buf, 32 - N);
+        <Self as StoragePackable>::pack_into(self, buf, 32 - N);
     }
+
+    #[inline]
+    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+        <Self as StoragePackable>::pack_into(self, buf, offset)
+    }
+}
+
+impl<const N: usize> StorageDecode for [u8; N] {
+    #[inline]
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        <Self as StoragePackable>::unpack_from(&slots[0], 32 - N)
+    }
+
+    #[inline]
+    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+        <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl<const N: usize> StoragePackable for [u8; N] {
+    /// `bytesN` is **right-aligned** in solc storage (verified against
+    /// solc 0.8.30 bytecode for `bytes4 public a; a = 0xdeadbeef;` which
+    /// emits an SSTORE of `0x000000...deadbeef`). The Solidity docs phrasing
+    /// "stored from the start of the array" refers to in-memory ABI layout,
+    /// not on-chain storage.
+    const CANONICAL_OFFSET: usize = 32 - N;
 
     #[inline]
     fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
@@ -443,13 +553,6 @@ impl<const N: usize> StorageEncode for [u8; N] {
             )
         };
         buf[offset..offset + N].copy_from_slice(self);
-    }
-}
-
-impl<const N: usize> StorageDecode for [u8; N] {
-    #[inline]
-    fn from_slots(slots: &[[u8; 32]]) -> Self {
-        <Self as StorageDecode>::unpack_from(&slots[0], 32 - N)
     }
 
     #[inline]
@@ -464,15 +567,6 @@ impl<const N: usize> StorageDecode for [u8; N] {
         out.copy_from_slice(&buf[offset..offset + N]);
         out
     }
-}
-
-impl<const N: usize> StoragePackable for [u8; N] {
-    /// `bytesN` is **right-aligned** in solc storage (verified against
-    /// solc 0.8.30 bytecode for `bytes4 public a; a = 0xdeadbeef;` which
-    /// emits an SSTORE of `0x000000...deadbeef`). The Solidity docs phrasing
-    /// "stored from the start of the array" refers to in-memory ABI layout,
-    /// not on-chain storage.
-    const CANONICAL_OFFSET: usize = 32 - N;
 }
 
 // ---------------------------------------------------------------------------
@@ -526,7 +620,7 @@ macro_rules! impl_storage_tuple {
                         }
                         space -= bytes;
                         if slot == slot_idx {
-                            <$T as StorageEncode>::pack_into(&self.$idx, buf, space);
+                            <$T as StoragePackable>::pack_into(&self.$idx, buf, space);
                         }
                         placed += 1;
                     )+
@@ -534,7 +628,7 @@ macro_rules! impl_storage_tuple {
                 }
             }
 
-            impl<$($T: StoragePackable + StorageDecode),+> StorageDecode for ($($T,)+) {
+            impl<$($T: StoragePackable),+> StorageDecode for ($($T,)+) {
                 fn from_slots(slots: &[[u8; 32]]) -> Self {
                     let mut slot: usize = 0;
                     let mut space: usize = 32;
@@ -548,7 +642,7 @@ macro_rules! impl_storage_tuple {
                                     space = 32;
                                 }
                                 space -= bytes;
-                                let v = <$T as StorageDecode>::unpack_from(
+                                let v = <$T as StoragePackable>::unpack_from(
                                     &slots[slot], space,
                                 );
                                 placed += 1;

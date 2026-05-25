@@ -507,8 +507,9 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
 ///
 /// Approach:
 ///   1. Compute a const layout array `__STORAGE_LAYOUT = ([(slot, offset); N], total_slots)`
-///      via a const block that walks fields using each field type's
-///      `<T as StorageEncode>::{PACKED_BYTES, STARTS_NEW_SLOT, STORAGE_SLOTS}`.
+///      via a const block that walks fields via `pvm_contract_sdk::layout_step`,
+///      using each field type's
+///      `<T as StorageEncode>::{PACKED_BYTES, STORAGE_SLOTS}`.
 ///   2. Emit `encode_slot` that loops through fields and, for each, conditionally
 ///      packs (Packable) or recurses (Composite) when the field belongs to
 ///      `slot_idx`.
@@ -597,25 +598,25 @@ fn generate_storage_impls(
     let n_fields = field_types.len();
 
     // ---- const layout walker ----
+    //
+    // Delegates each step to the shared `layout_step` const fn in
+    // `pvm-storage` so the SolType-derive layout stays byte-for-byte
+    // aligned with the contract-field chain and the `#[storage]` sub-struct
+    // chain. A previous inline copy of this algorithm here was equivalent
+    // for all current types but free to drift on future ones; the shared
+    // const fn eliminates that risk.
     let walker_steps: Vec<TokenStream> = field_types
         .iter()
         .enumerate()
         .map(|(idx, ty)| {
             quote! {
                 {
-                    let bytes = <#ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES;
-                    let starts = <#ty as ::pvm_contract_sdk::StorageEncode>::STARTS_NEW_SLOT;
-                    let slots = <#ty as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS;
-                    if starts || space < bytes {
-                        if #idx != 0 { slot += 1; }
-                        space = 32;
-                    }
-                    space -= bytes;
-                    placements[#idx] = (slot, space);
-                    if starts {
-                        slot += slots - 1;
-                        space = 0;
-                    }
+                    step = ::pvm_contract_sdk::layout_step(
+                        step,
+                        <#ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES,
+                        <#ty as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS as u64,
+                    );
+                    placements[#idx] = (step.slot as usize, step.offset as usize);
                 }
             }
         })
@@ -644,10 +645,13 @@ fn generate_storage_impls(
         #[allow(non_upper_case_globals)]
         const __STORAGE_LAYOUT: ([(usize, usize); #n_fields], usize, u64) = {
             let mut placements: [(usize, usize); #n_fields] = [(0, 0); #n_fields];
-            let mut slot: usize = 0;
-            let mut space: usize = 32;
+            let mut step: ::pvm_contract_sdk::LayoutStep =
+                ::pvm_contract_sdk::LayoutStep::FIRST;
             #(#walker_steps)*
-            let total = if #n_fields == 0 { 0 } else { slot + 1 };
+            // After the final step, `step.next_slot` is the last slot any
+            // field touched; total = next_slot + 1. For an empty struct no
+            // step ran, so total is 0.
+            let total = if #n_fields == 0 { 0 } else { step.next_slot as usize + 1 };
 
             // Build a bitmask of slot indices owned by `Dynamic` fields.
             // Each `Dynamic` field has `STARTS_NEW_SLOT = true` and
@@ -692,7 +696,7 @@ fn generate_storage_impls(
                 {
                     let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
                     if s == slot_idx {
-                        <#field_ty as ::pvm_contract_sdk::StorageEncode>::pack_into(
+                        <#field_ty as ::pvm_contract_sdk::StoragePackable>::pack_into(
                             &#field_access, buf, o,
                         );
                     }
@@ -723,7 +727,7 @@ fn generate_storage_impls(
             StorageFieldKind::Packable => quote! {
                 {
                     let (s, o) = Self::__STORAGE_LAYOUT.0[#idx];
-                    <#field_ty as ::pvm_contract_sdk::StorageDecode>::unpack_from(
+                    <#field_ty as ::pvm_contract_sdk::StoragePackable>::unpack_from(
                         &slots[s], o,
                     )
                 }
@@ -917,7 +921,7 @@ fn generate_storage_impls(
                 StorageFieldKind::Packable => quote! {
                     {
                         let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
-                        <#field_ty as ::pvm_contract_sdk::StorageDecode>::unpack_from(
+                        <#field_ty as ::pvm_contract_sdk::StoragePackable>::unpack_from(
                             &__slots[s], o,
                         )
                     }
