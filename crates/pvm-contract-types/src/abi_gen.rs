@@ -54,10 +54,23 @@ pub enum AbiItem {
 pub struct AbiJson(pub Vec<AbiItem>);
 
 /// A single entry in the `storageLayout.storage` array.
+///
+/// Field order and naming match solc's `--storage-layout` JSON output so
+/// downstream tooling (Hardhat, Foundry, Tenderly) consumes both
+/// interchangeably.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayoutEntry {
     pub label: String,
     pub slot: String,
+    /// Byte offset within the slot where this field begins. `0` for full-slot
+    /// fields (the previous default); non-zero for packed sub-slot fields
+    /// sharing a 32-byte word with neighbours. Matches solc's behavior.
+    ///
+    /// `#[serde(default)]` lets the SDK deserialize older `storageLayout`
+    /// JSON (emitted before packing existed) without error — missing field
+    /// reads as `0`, which is correct for any layout without packing.
+    #[serde(default)]
+    pub offset: u8,
     #[serde(rename = "type")]
     pub ty: String,
 }
@@ -242,11 +255,13 @@ mod tests {
                 StorageLayoutEntry {
                     label: "total_supply".into(),
                     slot: "0".into(),
+                    offset: 0,
                     ty: "uint256".into(),
                 },
                 StorageLayoutEntry {
                     label: "balances".into(),
                     slot: "1".into(),
+                    offset: 0,
                     ty: "mapping(address,uint256)".into(),
                 },
             ],
@@ -255,10 +270,51 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"storage":[{"label":"total_supply","slot":"0","type":"uint256"},{"label":"balances","slot":"1","type":"mapping(address,uint256)"}]}"#
+            r#"{"storage":[{"label":"total_supply","slot":"0","offset":0,"type":"uint256"},{"label":"balances","slot":"1","offset":0,"type":"mapping(address,uint256)"}]}"#
         );
 
         // Roundtrip.
+        let parsed: StorageLayout = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, layout);
+    }
+
+    /// Backward-compat: storageLayout JSON emitted before the `offset` field
+    /// existed (i.e. without an `"offset"` key per entry) must deserialize
+    /// without error, defaulting `offset = 0` on every entry. Pins the
+    /// `#[serde(default)]` contract.
+    #[test]
+    fn storage_layout_from_json_without_offset_defaults_to_zero() {
+        let legacy = r#"{
+            "storage": [
+                {"label": "total_supply", "slot": "0", "type": "uint256"},
+                {"label": "balances", "slot": "1", "type": "mapping(address,uint256)"}
+            ]
+        }"#;
+        let parsed: StorageLayout = serde_json::from_str(legacy).unwrap();
+        assert_eq!(parsed.storage.len(), 2);
+        assert_eq!(parsed.storage[0].offset, 0);
+        assert_eq!(parsed.storage[1].offset, 0);
+    }
+
+    /// Forward-emit: a layout containing a packed sub-slot field (offset != 0)
+    /// serializes with the offset visible — the load-bearing JSON parity
+    /// requirement for solc-compatible tooling.
+    #[test]
+    fn storage_layout_emits_non_zero_offsets_for_packed_fields() {
+        let layout = StorageLayout {
+            storage: vec![
+                // Classic solc packing example: bool + uint32 + address fit in slot 0.
+                StorageLayoutEntry { label: "a".into(),  slot: "0".into(), offset: 31, ty: "bool".into() },
+                StorageLayoutEntry { label: "b".into(),  slot: "0".into(), offset: 27, ty: "uint32".into() },
+                StorageLayoutEntry { label: "c".into(),  slot: "0".into(), offset: 7,  ty: "address".into() },
+                StorageLayoutEntry { label: "d".into(),  slot: "1".into(), offset: 0,  ty: "uint256".into() },
+            ],
+        };
+        let json = storage_layout_to_json(&layout);
+        assert_eq!(
+            json,
+            r#"{"storage":[{"label":"a","slot":"0","offset":31,"type":"bool"},{"label":"b","slot":"0","offset":27,"type":"uint32"},{"label":"c","slot":"0","offset":7,"type":"address"},{"label":"d","slot":"1","offset":0,"type":"uint256"}]}"#
+        );
         let parsed: StorageLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, layout);
     }

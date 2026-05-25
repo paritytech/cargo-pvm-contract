@@ -77,14 +77,20 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
     let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
         .map(|sf| {
-            let slot_expr: TokenStream = match sf.slot {
-                Slot::Explicit(n) => quote! { #n },
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
                 Slot::Auto => {
                     let const_ident = quote::format_ident!("__pvm_storage_slot_{}", &sf.name);
-                    quote! { #const_ident }
+                    (quote! { #const_ident.slot }, quote! { #const_ident.offset })
                 }
             };
-            let emit = generate_layout_emit(&sf.name.to_string(), &sf.ty, slot_expr, quote! { "" });
+            let emit = generate_layout_emit(
+                &sf.name.to_string(),
+                &sf.ty,
+                slot_expr,
+                offset_expr,
+                quote! { "" },
+            );
             let cfgs = &sf.cfg_attrs;
             quote! {
                 #(#cfgs)*

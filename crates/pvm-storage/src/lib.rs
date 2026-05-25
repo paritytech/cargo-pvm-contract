@@ -26,6 +26,23 @@
 //! auto-numbered slot layout produced by the `#[contract]` and `#[storage]`
 //! macros.
 //!
+//! # Field-level packing
+//!
+//! Adjacent sub-32-byte primitive fields share a single 32-byte slot,
+//! matching solc's `storageLayout`. Two adjacent `Lazy<u128>` fields land
+//! at `(slot=0, offset=16)` and `(slot=0, offset=0)` respectively — exactly
+//! what solc emits for `uint128 a; uint128 b;`. The macro walker
+//! ([`layout_step`]) is the const-fn that decides each field's placement.
+//!
+//! Packed writes are read-modify-write (one SLOAD + one SSTORE), matching
+//! solc/Stylus. Full-slot writes are a single SSTORE — no overhead from the
+//! packing infrastructure.
+//!
+//! Multi-slot composites (`Lazy<(U256, U256)>`, multi-slot
+//! `#[derive(SolType)]` structs), mappings, and `#[storage]` sub-structs
+//! always start a fresh slot and never pack with neighbours. They report
+//! `PACKED_BYTES = 32`.
+//!
 //! # Usage
 //!
 //! Inside a `#[contract]` module, declare storage fields on the contract struct.
@@ -39,11 +56,11 @@
 //! // The `#[contract]` macro emits calls like the lines below. Direct user
 //! // code shouldn't need to construct handles by hand — use macro-managed
 //! // storage fields and access them via `self.balances.get(&caller)` etc.
-//! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(0, host.clone());
+//! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(0, 0, host.clone());
 //! total_supply.set(&U256::from(1000));
 //! assert_eq!(total_supply.get(), U256::from(1000));
 //!
-//! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(1, host);
+//! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(1, 0, host);
 //! balances.insert(&caller, &U256::from(500));
 //! assert_eq!(balances.get(&caller), U256::from(500));
 //! ```
@@ -411,12 +428,94 @@ const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 /// The `#[contract]` macro reads `SLOTS` to assign slot numbers to fields. The
 /// macro-generated constructor calls [`StorageComponent::new_at`] with the
 /// assigned base slot and a clone of the contract's host handle.
+/// One step in the const-folded contract-field layout walker.
+///
+/// Used by the `#[contract]` and `#[storage]` macros to compute each field's
+/// placement at compile time. The walker carries the chain state as a
+/// `LayoutStep`: the placement of the current field plus the entry conditions
+/// for the next one. See [`step`] for the algorithm.
+#[derive(Copy, Clone)]
+pub struct LayoutStep {
+    /// Slot the current field starts at.
+    pub slot: u64,
+    /// Byte offset within `slot` where the current field begins.
+    pub offset: u8,
+    /// Slot the next field's chain step should start from.
+    pub next_slot: u64,
+    /// Bytes remaining in `next_slot` (32 if `next_slot` is fresh, 0 if
+    /// the current field consumed the slot to its end).
+    pub next_space: u8,
+}
+
+impl LayoutStep {
+    /// Sentinel value used to seed the chain for the first field.
+    pub const FIRST: LayoutStep = LayoutStep {
+        slot: 0,
+        offset: 0,
+        next_slot: 0,
+        next_space: 32,
+    };
+}
+
+/// Compute one step of the contract-field layout walker, given the chain
+/// state from the previous step and this field's `PACKED_BYTES` + `SLOTS`.
+///
+/// Mirrors solc's layout rule: a field starts on the current slot if it has
+/// enough remaining bytes, else advances to the next fresh slot. Multi-slot
+/// composites (`SLOTS > 1`) always claim from the start of a fresh slot and
+/// consume to its end.
+///
+/// This is the SHARED const-fn used by every walker site so the
+/// contract-field chain (`contract.rs`), the `#[storage]` sub-struct chain
+/// (`sol_storage.rs`), and the SolType-derive struct walker (`sol_type.rs`)
+/// agree on layout byte-for-byte.
+pub const fn layout_step(
+    prev: LayoutStep,
+    packed_bytes: usize,
+    slots: u64,
+) -> LayoutStep {
+    let bytes = packed_bytes as u8;
+    // Decide whether the current field fits in `prev.next_slot` or must
+    // advance to a fresh slot.
+    let (slot, space) = if prev.next_space < bytes {
+        (prev.next_slot + 1, 32u8)
+    } else {
+        (prev.next_slot, prev.next_space)
+    };
+    let space_after = space - bytes;
+    let offset = space_after;
+    // Multi-slot composites: this field occupies `slots` consecutive slots
+    // starting at `slot`, consuming the last one to its end.
+    let (next_slot, next_space) = if slots > 1 {
+        (slot + slots - 1, 0u8)
+    } else {
+        (slot, space_after)
+    };
+    LayoutStep {
+        slot,
+        offset,
+        next_slot,
+        next_space,
+    }
+}
+
 pub trait StorageComponent: Sized {
     /// Number of root storage slots claimed by this component.
     const SLOTS: u64;
 
-    /// Construct the component rooted at `slot`, bound to `host`.
-    fn new_at(slot: u64, host: Host) -> Self;
+    /// Number of bytes consumed within the component's *first* slot when it
+    /// participates in field-level packing alongside siblings. `32` means the
+    /// component always starts a fresh slot and claims it fully (the case for
+    /// composites, mappings, dynamic-bodied types, and full-slot primitives).
+    /// `< 32` means the component is a packable sub-word value and may share
+    /// a slot with adjacent fields.
+    const PACKED_BYTES: usize;
+
+    /// Construct the component at `(slot, offset)`, bound to `host`. The
+    /// `offset` is the byte position within `slot` where the component begins;
+    /// it's only meaningful when `PACKED_BYTES < 32` (i.e. the component packs
+    /// with siblings). Full-slot components expect `offset == 0`.
+    fn new_at(slot: u64, offset: u8, host: Host) -> Self;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +586,10 @@ pub fn join_label(prefix: &str, name: &str) -> String {
 /// `"uint8[]"` and would disagree with the on-chain `bytes` layout.
 pub struct Lazy<T> {
     key: StorageKey,
+    /// Byte offset within `key`'s 32-byte slot where this value lives.
+    /// `0` for full-slot types (`T::PACKED_BYTES == 32`); non-zero only when
+    /// the contract macro places the field after a sub-word neighbour.
+    offset: u8,
     host: Host,
     _marker: PhantomData<T>,
 }
@@ -514,7 +617,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// Fabricating a `Lazy` outside the `#[contract]` / `#[storage]` macro
     /// expansion path bypasses the view-vs-mutating compile-time gate that
     /// the SDK normally enforces. A `&self` (view) method that calls
-    /// `unsafe { Lazy::new(slot, self.host().clone()) }` can obtain a writable
+    /// `unsafe { Lazy::new(slot, 0, self.host().clone()) }` can obtain a writable
     /// handle, call `set`, and mutate storage — defeating Rust's borrow
     /// checker.
     ///
@@ -527,10 +630,19 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// is reached only from `&mut self` paths. Contract crates that want
     /// belt-and-braces enforcement should add `#![forbid(unsafe_code)]` at
     /// the crate root.
-    pub unsafe fn new(key: StorageKey, host: Host) -> Self {
+    pub unsafe fn new(key: StorageKey, offset: u8, host: Host) -> Self {
         let () = Self::_SIZE_CHECK;
+        debug_assert!(
+            (offset as usize) + T::PACKED_BYTES <= 32,
+            "Lazy::new: offset + T::PACKED_BYTES exceeds slot width",
+        );
+        debug_assert!(
+            offset == 0 || T::PACKED_BYTES < 32,
+            "Lazy::new: non-zero offset only valid for sub-32-byte (packable) T",
+        );
         Lazy {
             key,
+            offset,
             host,
             _marker: PhantomData,
         }
@@ -554,7 +666,13 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// [`Lazy<Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self) -> T {
         let () = Self::_SIZE_CHECK;
-        if T::HAS_DYNAMIC_BODY {
+        if T::PACKED_BYTES < 32 {
+            // Packed sub-slot path: read the slot, unpack our byte window.
+            // `unpack_from` is a no-zeroing reader; the caller (us) doesn't
+            // touch the rest of the buffer, so neighbours stay correct.
+            let buf = storage_get_32(&self.host, self.key.as_bytes());
+            T::unpack_from(&buf, self.offset as usize)
+        } else if T::HAS_DYNAMIC_BODY {
             // Dispatch to the type's host-aware reader (e.g. LazySlot<String>
             // reads its body from `keccak256(key) + i`).
             T::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, self.key.as_bytes())
@@ -588,8 +706,31 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// slot** at `self.key`: a non-zero header (including the empty-string
     /// sentinel) → `Some(value)` with the full body loaded; a zero header
     /// → `None`.
+    ///
+    /// **Not available for packed fields:** when `T::PACKED_BYTES < 32`
+    /// (sub-32-byte primitives sharing a slot with neighbours), `try_get`
+    /// fails to compile with a const-assert message. The semantics would
+    /// be misleading — a neighbour's write to the same slot would make
+    /// `try_get` indistinguishable from `get`. For packed fields, use
+    /// `.get()` and compare to the zero value of `T` instead.
     pub fn try_get(&self) -> Option<T> {
         let () = Self::_SIZE_CHECK;
+        // try_get is only meaningful for full-slot types. For sub-slot packed
+        // fields, "is this written?" cannot be answered honestly — a neighbor
+        // writing to the same slot makes our `try_get` return Some(zero) even
+        // if we never wrote. Solidity has the same conflation; Stylus avoids
+        // it by not exposing try_get at all. We keep it for full-slot and
+        // reject it for packed with a clear compile-time message.
+        const {
+            assert!(
+                T::PACKED_BYTES == 32,
+                "Lazy::try_get is only available on full-slot types \
+                 (PACKED_BYTES == 32). For packed sub-slot fields, use \
+                 `.get()` and compare to the zero value of T — a neighbour's \
+                 write to the same slot would otherwise make `try_get` \
+                 indistinguishable from `get`.",
+            );
+        }
         if T::HAS_DYNAMIC_BODY {
             // Multi-slot dynamic V: "set" iff any header slot is non-zero.
             // For a single-slot LazySlot<T>, the header itself is the marker.
@@ -629,9 +770,26 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     ///
     /// Takes `&mut self` so that view methods (which receive `&Storage`)
     /// cannot call this through an immutable borrow.
+    ///
+    /// **Read-modify-write for packed fields:** when `T::PACKED_BYTES < 32`
+    /// (sub-32-byte primitives that share a slot with neighbours via the
+    /// macro walker), `set` performs one SLOAD + one SSTORE: it loads the
+    /// shared slot, zeros only the field's byte window, writes the new
+    /// bytes back, and stores. This matches solc and Stylus's gas profile
+    /// for packed `SSTORE`s — neighbours sharing the slot are preserved.
     pub fn set(&mut self, value: &T) {
         let () = Self::_SIZE_CHECK;
-        if T::HAS_DYNAMIC_BODY {
+        if T::PACKED_BYTES < 32 {
+            // Packed sub-slot RMW: load slot, zero our window, write our
+            // bytes back, store. One extra SLOAD on each write vs. the
+            // full-slot path — same gas profile as solc / Stylus for
+            // adjacent sub-32-byte fields sharing a slot.
+            let mut buf = storage_get_32(&self.host, self.key.as_bytes());
+            let off = self.offset as usize;
+            buf[off..off + T::PACKED_BYTES].fill(0);
+            value.pack_into(&mut buf, off);
+            storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        } else if T::HAS_DYNAMIC_BODY {
             value.write_to_storage(&self.host, self.key.as_bytes());
         } else if T::STORAGE_SLOTS == 1 {
             let mut buf = [0u8; 32];
@@ -645,7 +803,17 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// Clear every slot occupied by this value.
     pub fn clear(&mut self) {
         let () = Self::_SIZE_CHECK;
-        if T::HAS_DYNAMIC_BODY {
+        if T::PACKED_BYTES < 32 {
+            // Packed sub-slot clear: RMW that zeros only our window. Calling
+            // `set_storage_or_clear` with an all-zero buffer would auto-delete
+            // the slot and clobber any neighbour bytes — so we load, zero
+            // OUR range, write back. If our zeroing leaves the slot all-zero
+            // (no neighbour present), the host auto-deletes on store anyway.
+            let mut buf = storage_get_32(&self.host, self.key.as_bytes());
+            let off = self.offset as usize;
+            buf[off..off + T::PACKED_BYTES].fill(0);
+            storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        } else if T::HAS_DYNAMIC_BODY {
             <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
         } else if T::STORAGE_SLOTS == 1 {
             storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
@@ -661,7 +829,12 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
     /// Solidity's struct-in-storage layout.
     const SLOTS: u64 = T::STORAGE_SLOTS as u64;
 
-    fn new_at(slot: u64, host: Host) -> Self {
+    /// Propagates `T::PACKED_BYTES`. A `Lazy<u128>` has `PACKED_BYTES = 16`
+    /// (packable); a `Lazy<U256>` or `Lazy<(U256, U256)>` has
+    /// `PACKED_BYTES = 32` (full-slot).
+    const PACKED_BYTES: usize = T::PACKED_BYTES;
+
+    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
         // SAFETY: `new_at` is the safe public entry point for macro-generated
         // storage construction. The macro emits this call inside a contract
         // struct's field initializer, where Rust's borrow check on the
@@ -669,7 +842,7 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
         // resulting handle. `Lazy::new` is `unsafe` only because direct
         // user-code calls would let `&self` methods reconstruct a writable
         // handle — that bypass cannot happen through this trait method.
-        unsafe { Lazy::new(StorageKey::from_slot(slot), host) }
+        unsafe { Lazy::new(StorageKey::from_slot(slot), offset, host) }
     }
 }
 
@@ -777,8 +950,13 @@ impl<K, V> Mapping<K, V> {
 
 impl<K, V> StorageComponent for Mapping<K, V> {
     const SLOTS: u64 = 1;
+    /// Mappings always claim a full slot for their root header — they never
+    /// pack with neighbours. Matches solc's storage layout for mappings.
+    const PACKED_BYTES: usize = 32;
 
-    fn new_at(slot: u64, host: Host) -> Self {
+    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
+        debug_assert_eq!(offset, 0, "Mapping<K, V> always full-slot; offset must be 0");
+        let _ = offset;
         // SAFETY: same justification as `Lazy::new_at` — this is the
         // macro-only safe entry point; bypass via direct `Mapping::new` is
         // what the `unsafe` keyword on `new` exists to mark.
@@ -805,7 +983,7 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
         // mutating access through the surrounding borrow. The returned
         // `Lazy` is a typed handle to the derived slot; producing it via
         // `Lazy::new` here does not introduce a new bypass surface.
-        unsafe { Lazy::new(self.slot_of(key), self.host.clone()) }
+        unsafe { Lazy::new(self.slot_of(key), 0, self.host.clone()) }
     }
 
     /// Read the value at the given key. For multi-slot `V`, reads
@@ -972,7 +1150,7 @@ mod tests {
 
     #[test]
     fn lazy_roundtrip_u256() {
-        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&U256::from(42));
         assert_eq!(lazy.get(), U256::from(42));
     }
@@ -980,14 +1158,14 @@ mod tests {
     #[test]
     fn lazy_roundtrip_address() {
         let addr = Address([0xAA; 20]);
-        let mut lazy = unsafe { Lazy::<Address>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<Address>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&addr);
         assert_eq!(lazy.get(), addr);
     }
 
     #[test]
     fn lazy_roundtrip_bool() {
-        let mut lazy = unsafe { Lazy::<bool>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<bool>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&true);
         assert!(lazy.get());
         lazy.set(&false);
@@ -997,26 +1175,26 @@ mod tests {
 
     #[test]
     fn lazy_default_is_zero() {
-        let lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         assert_eq!(lazy.get(), U256::ZERO);
     }
 
     #[test]
     fn lazy_try_get_uninitialized() {
-        let lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         assert_eq!(lazy.try_get(), None);
     }
 
     #[test]
     fn lazy_try_get_nonzero_value() {
-        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&U256::from(99));
         assert_eq!(lazy.try_get(), Some(U256::from(99)));
     }
 
     #[test]
     fn lazy_set_zero_deletes() {
-        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&U256::from(42));
         assert_eq!(lazy.try_get(), Some(U256::from(42)));
         lazy.set(&U256::ZERO);
@@ -1026,7 +1204,7 @@ mod tests {
 
     #[test]
     fn lazy_clear_then_try_get() {
-        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&U256::from(42));
         lazy.clear();
         assert_eq!(lazy.try_get(), None);
@@ -1034,7 +1212,7 @@ mod tests {
 
     #[test]
     fn lazy_clear() {
-        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&U256::from(42));
         lazy.clear();
         assert_eq!(lazy.get(), U256::ZERO);
@@ -1044,7 +1222,7 @@ mod tests {
 
     #[test]
     fn lazy_roundtrip_tuple_two_u256() {
-        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
         let v = (U256::from(7u64), U256::from(11u64));
         lazy.set(&v);
         assert_eq!(lazy.get(), v);
@@ -1055,7 +1233,7 @@ mod tests {
         // (U256, U256) has ENCODED_SIZE == 64, so set() must touch slots
         // `key` and `key + 1`. Confirm the wire format by reading the slots
         // directly: the first U256 lands at `key`, the second at `key + 1`.
-        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let base = *lazy.key.as_bytes();
 
@@ -1082,13 +1260,13 @@ mod tests {
         inc_slot(&mut next);
         storage_set_32(&host, &next, &second);
 
-        let lazy = unsafe { Lazy::<(U256, U256)>::new(key, host) };
+        let lazy = unsafe { Lazy::<(U256, U256)>::new(key, 0, host) };
         assert_eq!(lazy.try_get(), Some((U256::ZERO, U256::from(0x42u64))));
     }
 
     #[test]
     fn lazy_multi_slot_try_get_none_when_unwritten() {
-        let lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+        let lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
         assert_eq!(lazy.try_get(), None);
     }
 
@@ -1096,7 +1274,7 @@ mod tests {
     fn lazy_multi_slot_clear_removes_all_words() {
         // Set both words non-zero, clear, then verify each underlying slot
         // is truly absent (not just zero in the decoded value).
-        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let base = *lazy.key.as_bytes();
 
@@ -1113,7 +1291,7 @@ mod tests {
     fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
         // After writing (5, 5), writing (5, 0) must auto-delete slot 1 so
         // try_get observes the zero on subsequent reads.
-        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let mut next = *lazy.key.as_bytes();
         inc_slot(&mut next);
@@ -1320,7 +1498,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_string_short() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&String::from("hello"));
         assert_eq!(lazy.get(), "hello");
     }
@@ -1328,7 +1506,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_string_long() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let long = "a".repeat(200);
         lazy.set(&long);
         assert_eq!(lazy.get(), long);
@@ -1337,7 +1515,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_empty_is_default() {
-        let lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         assert_eq!(lazy.get(), "");
         assert_eq!(lazy.try_get(), None);
     }
@@ -1345,7 +1523,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_clear() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&String::from("payload"));
         assert_eq!(lazy.try_get().as_deref(), Some("payload"));
         lazy.clear();
@@ -1356,7 +1534,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_overwrite_smaller() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let long =
@@ -1387,8 +1565,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_set_empty_distinct_from_never_written() {
-        let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
-        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone()) };
+        let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
+        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, written.host.clone()) };
 
         written.set(&String::new());
 
@@ -1405,7 +1583,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_set_empty_writes_non_zero_sentinel_header() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
 
@@ -1430,7 +1608,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_overwrite_empty_clears_sentinel() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
 
@@ -1452,7 +1630,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_short_inline_layout() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         lazy.set(&String::from("hello"));
@@ -1467,7 +1645,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_boundary_31_bytes_inline() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let s = "a".repeat(31);
@@ -1483,7 +1661,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_boundary_32_bytes_spilled() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let s = "b".repeat(32);
@@ -1513,7 +1691,7 @@ mod tests {
         malformed[31] = 0x01; // low bit set ⇒ spilled
         storage_set_32(&host, key.as_bytes(), &malformed);
 
-        let lazy = unsafe { Lazy::<Bytes>::new(key, host) };
+        let lazy = unsafe { Lazy::<Bytes>::new(key, 0, host) };
         assert!(lazy.get().0.is_empty());
     }
 
@@ -1534,7 +1712,7 @@ mod tests {
         malformed[31] = 0xFE;
         storage_set_32(&host, key.as_bytes(), &malformed);
 
-        let lazy = unsafe { Lazy::<Bytes>::new(key, host) };
+        let lazy = unsafe { Lazy::<Bytes>::new(key, 0, host) };
         // Must not panic. Cap is 31 bytes — the original 31 prefix bytes.
         let bytes = lazy.get();
         assert_eq!(bytes.0.len(), 31);
@@ -1546,7 +1724,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_long_spill_layout() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         // 40 bytes spans two 32-byte chunks (8 bytes into the second).
@@ -1575,7 +1753,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_grow_short_to_long() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&String::from("short"));
         assert_eq!(lazy.get(), "short");
 
@@ -1589,7 +1767,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_shrink_long_to_short_clears_chunks() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let long = "y".repeat(100); // 4 chunks of 32B
@@ -1612,7 +1790,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_clear_after_long_deletes_chunks() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         let long = "z".repeat(70); // 3 chunks
@@ -1652,7 +1830,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_roundtrip_bytes() {
-        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&Bytes(alloc::vec![1, 2, 3, 4, 5]));
         assert_eq!(lazy.get(), Bytes(alloc::vec![1, 2, 3, 4, 5]));
     }
@@ -1660,7 +1838,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_large() {
-        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), 0, h()) };
         let data = Bytes((0..=255u8).collect());
         lazy.set(&data);
         assert_eq!(lazy.get(), data);
@@ -1671,7 +1849,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_boundary() {
-        let mut a = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
+        let mut a = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), 0, h()) };
         let host = a.host.clone();
         let key_a = a.key;
 
@@ -1681,7 +1859,7 @@ mod tests {
         assert_eq!(slot_bytes[31], 31 * 2, "31B vec inline, byte31 = 62");
         assert_eq!(a.get(), inline);
 
-        let mut b = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(1), host) };
+        let mut b = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(1), 0, host) };
         let spill = Bytes((0..32).collect());
         b.set(&spill);
         let slot_b = storage_get_32(&b.host, b.key.as_bytes());
@@ -1709,9 +1887,9 @@ mod tests {
     fn dynamic_data_root_independent_per_slot() {
         // Distinct header slots must hash to distinct data roots so two
         // dynamic values on adjacent slots can't trample each other.
-        let mut a = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut a = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = a.host.clone();
-        let mut b = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), host) };
+        let mut b = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, host) };
         a.set(&String::from("first"));
         b.set(&String::from("second"));
         assert_eq!(a.get(), "first");
@@ -1766,74 +1944,161 @@ mod tests {
         assert_eq!(<Mapping<Address, Bytes> as StorageComponent>::SLOTS, 1);
     }
 
-    // --- Packing semantics (vs. Solidity storageLayout) ---
+    // --- Packing semantics (matches solc storageLayout) ---
 
-    /// Adjacent contract storage fields of `Lazy<u128>` do NOT pack into a
-    /// single 32-byte slot, even though `u128` is only 16 bytes wide.
+    /// Adjacent contract storage fields of `Lazy<u128>` pack into a single
+    /// 32-byte slot via the macro's `layout_step` walker — byte-identical to
+    /// solc's layout for `contract C { uint128 a; uint128 b; }` (a at
+    /// offset 16, b at offset 0).
     ///
-    /// Solidity:
-    ///   contract C { uint128 a; uint128 b; }
-    /// would lay both at slot 0 (a at offset 16, b at offset 0).
-    ///
-    /// This SDK: `Lazy<u128>::SLOTS == 1` and the contract macro's slot chain
-    /// is `next = prev_const + <PrevTy>::SLOTS`, so `b` lands at slot 1. The
-    /// `storageLayout` JSON therefore diverges from solc whenever a contract
-    /// declares adjacent sub-32-byte primitives as separate `Lazy<T>` fields.
-    ///
-    /// Workaround (proved by the next test): group packable fields into a
-    /// `#[derive(SolType)]` struct and store the struct under one `Lazy<S>`.
+    /// Verifies the `StorageComponent::PACKED_BYTES` propagation and the
+    /// const-folded walker's placement directly.
     #[test]
-    fn adjacent_lazy_u128_does_not_pack_at_contract_field_level() {
+    fn adjacent_lazy_u128_packs_at_contract_field_level() {
         assert_eq!(<u128 as StorageEncode>::PACKED_BYTES, 16);
         assert_eq!(<u128 as StorageEncode>::STORAGE_SLOTS, 1);
         assert_eq!(<Lazy<u128> as StorageComponent>::SLOTS, 1);
+        assert_eq!(<Lazy<u128> as StorageComponent>::PACKED_BYTES, 16);
 
-        let slot_a: u64 = 0;
-        let slot_b: u64 = slot_a + <Lazy<u128> as StorageComponent>::SLOTS;
-        assert_eq!(
-            slot_b, 1,
-            "adjacent Lazy<u128> fields land at distinct slots — no sub-word packing across Lazy boundaries"
-        );
+        // Two-step walker walk: first u128 at (slot=0, offset=16);
+        // second u128 at (slot=0, offset=0).
+        let step_a = crate::layout_step(crate::LayoutStep::FIRST, 16, 1);
+        let step_b = crate::layout_step(step_a, 16, 1);
+        assert_eq!(step_a.slot, 0);
+        assert_eq!(step_a.offset, 16);
+        assert_eq!(step_b.slot, 0);
+        assert_eq!(step_b.offset, 0);
+        assert_eq!(step_b.next_slot, 0);
+        assert_eq!(step_b.next_space, 0);
     }
 
-    /// Same point at the wire level: writing two `Lazy<u128>` cells at slots
-    /// 0 and 1 does not overlap. Solidity's solc would put them in the same
-    /// slot at different offsets; we cannot.
+    /// Wire-level packing: two `Lazy<u128>` fields placed by the layout
+    /// walker share slot 0 — `a` at offset 16, `b` at offset 0 — matching
+    /// solc's `uint128 a; uint128 b;` storage layout exactly.
     #[test]
-    fn two_lazy_u128_cells_use_two_distinct_slots() {
+    fn two_lazy_u128_cells_pack_into_one_slot() {
         let host = h();
-        let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), host.clone()) };
-        let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(1), host.clone()) };
+        // Walker placement: first u128 at (0, 16), second at (0, 0).
+        let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 16, host.clone()) };
+        let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 0, host.clone()) };
 
         a.set(&0x1111_1111_1111_1111u128);
         b.set(&0x2222_2222_2222_2222u128);
 
         let slot_0 = storage_get_32(&host, &StorageKey::from_slot(0).as_bytes().clone());
         let slot_1 = storage_get_32(&host, &StorageKey::from_slot(1).as_bytes().clone());
-        assert_ne!(
-            slot_0, [0u8; 32],
-            "slot 0 holds `a` only — `b` did not pack into the high half"
+
+        // a lives at bytes 16..32 (right-aligned u128); b at bytes 0..16.
+        assert_eq!(
+            &slot_0[16..32],
+            &0x1111_1111_1111_1111u128.to_be_bytes(),
+            "slot 0 bytes 16..31 hold `a`",
         );
-        assert_ne!(
-            slot_1, [0u8; 32],
-            "slot 1 holds `b` separately, not at slot 0 + offset 0"
+        assert_eq!(
+            &slot_0[0..16],
+            &0x2222_2222_2222_2222u128.to_be_bytes(),
+            "slot 0 bytes 0..15 hold `b` — packing matches solc",
         );
-        // u128's `CANONICAL_OFFSET = 16` puts the value in bytes 16..31 of its
-        // slot (right-aligned big-endian, matching solc). solc would then fit
-        // `b` into bytes 0..15 of the same slot — but we don't, so those bytes
-        // stay zero and `b` consumes a whole new slot at index 1.
-        assert!(
-            slot_0[..16].iter().all(|&x| x == 0),
-            "slot 0 bytes 0..15 are empty — solc would pack `b` here, we don't"
-        );
-        assert!(
-            slot_0[16..].iter().any(|&x| x != 0),
-            "slot 0 bytes 16..31 hold `a` (right-aligned u128)"
-        );
-        assert!(
-            slot_1[16..].iter().any(|&x| x != 0),
-            "slot 1 bytes 16..31 hold `b` (its own slot, not packed with `a`)"
-        );
+        // Slot 1 stays empty: only one storage slot consumed for both fields.
+        assert_eq!(slot_1, [0u8; 32], "slot 1 untouched — packing saved a slot");
+
+        // Round-trip reads through both handles.
+        assert_eq!(a.get(), 0x1111_1111_1111_1111u128);
+        assert_eq!(b.get(), 0x2222_2222_2222_2222u128);
+    }
+
+    /// Classic solc packing example:
+    /// `contract C { bool a; uint32 b; address c; uint256 d; }` lays out as
+    /// slot 0: a (offset 31, 1 byte), b (offset 27, 4 bytes), c (offset 7, 20 bytes)
+    /// slot 1: d (offset 0, 32 bytes).
+    /// The const-folded walker should reproduce these placements byte-for-byte.
+    #[test]
+    fn classic_solc_layout_packs_bool_u32_address_into_one_slot() {
+        let step_a = crate::layout_step(crate::LayoutStep::FIRST, 1, 1);
+        let step_b = crate::layout_step(step_a, 4, 1);
+        let step_c = crate::layout_step(step_b, 20, 1);
+        let step_d = crate::layout_step(step_c, 32, 1);
+
+        assert_eq!((step_a.slot, step_a.offset), (0, 31), "bool at slot 0 offset 31");
+        assert_eq!((step_b.slot, step_b.offset), (0, 27), "u32 at slot 0 offset 27");
+        assert_eq!((step_c.slot, step_c.offset), (0, 7), "address at slot 0 offset 7");
+        assert_eq!((step_d.slot, step_d.offset), (1, 0), "U256 at slot 1 offset 0");
+    }
+
+    /// RMW correctness: writing one packed field does not clobber the other
+    /// occupying the same slot. Repeat with reversed write order to confirm
+    /// neither direction loses data.
+    #[test]
+    fn packed_u128_rmw_preserves_neighbour_both_directions() {
+        for (write_a_first, label) in [(true, "a then b"), (false, "b then a")] {
+            let host = h();
+            let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 16, host.clone()) };
+            let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 0, host.clone()) };
+
+            let av = 0xAAAA_AAAA_AAAA_AAAAu128;
+            let bv = 0xBBBB_BBBB_BBBB_BBBBu128;
+            if write_a_first {
+                a.set(&av);
+                b.set(&bv);
+            } else {
+                b.set(&bv);
+                a.set(&av);
+            }
+            assert_eq!(a.get(), av, "{label}: a survived");
+            assert_eq!(b.get(), bv, "{label}: b survived");
+        }
+    }
+
+    /// Clear-preserves-neighbours: clearing one packed field zeroes only its
+    /// byte window. The slot stays non-zero because the other field is still
+    /// written, so `set_storage_or_clear` does not auto-delete the slot.
+    #[test]
+    fn packed_u128_clear_preserves_neighbour() {
+        let host = h();
+        let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 16, host.clone()) };
+        let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 0, host.clone()) };
+
+        a.set(&0xAAAA_AAAA_AAAA_AAAAu128);
+        b.set(&0xBBBB_BBBB_BBBB_BBBBu128);
+        b.clear();
+
+        assert_eq!(a.get(), 0xAAAA_AAAA_AAAA_AAAAu128, "a untouched after b.clear()");
+        assert_eq!(b.get(), 0, "b is zero after clear");
+        // Slot stays non-zero overall (a's bytes are still there).
+        let slot = storage_get_32(&host, &StorageKey::from_slot(0).as_bytes().clone());
+        assert_ne!(slot, [0u8; 32], "slot retained — a kept it alive");
+    }
+
+    /// Multi-slot composite (`(U256, U256)`) starts a fresh slot and consumes
+    /// it to the end, so the next field starts at a new slot.
+    #[test]
+    fn multi_slot_composite_forces_fresh_slot_for_next_field() {
+        // bool + (U256, U256) + u32 layout.
+        let step_bool = crate::layout_step(crate::LayoutStep::FIRST, 1, 1);
+        let step_tuple = crate::layout_step(step_bool, 32, 2);
+        let step_u32 = crate::layout_step(step_tuple, 4, 1);
+
+        assert_eq!((step_bool.slot, step_bool.offset), (0, 31));
+        assert_eq!((step_tuple.slot, step_tuple.offset), (1, 0), "tuple starts fresh");
+        assert_eq!(step_tuple.next_slot, 2, "tuple consumes slots 1 and 2");
+        assert_eq!(step_tuple.next_space, 0, "tuple consumed slot 2 to its end");
+        assert_eq!((step_u32.slot, step_u32.offset), (3, 28), "u32 lands at slot 3");
+    }
+
+    /// Walker sanity check: `Mapping` reports `PACKED_BYTES = 32` so it
+    /// always advances to a fresh slot and never packs with neighbours.
+    #[test]
+    fn mapping_packed_bytes_is_full_slot() {
+        assert_eq!(<Mapping<Address, U256> as StorageComponent>::PACKED_BYTES, 32);
+        // bool + mapping + bool: mapping forces fresh slot; second bool can
+        // pack at offset 31 of its own fresh slot (post-mapping).
+        let step_a = crate::layout_step(crate::LayoutStep::FIRST, 1, 1);
+        let step_map = crate::layout_step(step_a, 32, 1);
+        let step_b = crate::layout_step(step_map, 1, 1);
+
+        assert_eq!((step_a.slot, step_a.offset), (0, 31));
+        assert_eq!((step_map.slot, step_map.offset), (1, 0));
+        assert_eq!((step_b.slot, step_b.offset), (2, 31));
     }
 
     // --- Solidity `string` decode is lossy ---
@@ -1864,7 +2129,7 @@ mod tests {
         raw[31] = 4 * 2;
         storage_set_32(&host, key.as_bytes(), &raw);
 
-        let lazy = unsafe { Lazy::<String>::new(key, host.clone()) };
+        let lazy = unsafe { Lazy::<String>::new(key, 0, host.clone()) };
         let read = lazy.get();
         // Each invalid byte becomes one U+FFFD. The roundtrip is *not* the
         // bytes we wrote — this is the lossy substitution the docstring on
@@ -1877,7 +2142,7 @@ mod tests {
 
         // Counter-check: the same wire bytes through `Lazy<Bytes>` preserve
         // the exact content, no substitution.
-        let lazy_bytes = unsafe { Lazy::<Bytes>::new(key, host) };
+        let lazy_bytes = unsafe { Lazy::<Bytes>::new(key, 0, host) };
         let preserved = lazy_bytes.get();
         assert_eq!(preserved.0, alloc::vec![0xff, 0xfe, 0xfd, 0xfc]);
     }
@@ -1885,8 +2150,8 @@ mod tests {
     #[test]
     fn storage_component_new_at_matches_new() {
         let host = h();
-        let mut a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(7), host.clone()) };
-        let mut b = <Lazy<U256> as StorageComponent>::new_at(7, host);
+        let mut a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(7), 0, host.clone()) };
+        let mut b = <Lazy<U256> as StorageComponent>::new_at(7, 0, host);
         a.set(&U256::from(99));
         // `b` shares the host, so should see the same write.
         assert_eq!(b.get(), U256::from(99));
@@ -1936,7 +2201,7 @@ mod tests {
     #[test]
     fn multi_field_storage() {
         let host = h();
-        let mut counter = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let mut counter = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, host.clone()) };
         let mut balances = unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host) };
 
         counter.set(&U256::from(42));
@@ -1952,7 +2217,7 @@ mod tests {
     #[test]
     fn erc20_storage_example() {
         let host = h();
-        let mut total_supply = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
+        let mut total_supply = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, host.clone()) };
         let mut balances =
             unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) };
         let mut allowances = unsafe {
@@ -1996,8 +2261,8 @@ mod tests {
     #[test]
     fn different_slots_dont_interfere() {
         let host = h();
-        let mut value_a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(5), host.clone()) };
-        let mut value_b = unsafe { Lazy::<U256>::new(StorageKey::from_slot(10), host) };
+        let mut value_a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(5), 0, host.clone()) };
+        let mut value_b = unsafe { Lazy::<U256>::new(StorageKey::from_slot(10), 0, host) };
 
         value_a.set(&U256::from(111));
         value_b.set(&U256::from(222));
@@ -2203,7 +2468,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_short_round_trip() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         lazy.set(&String::from("hello"));
         assert_eq!(lazy.get(), "hello");
     }
@@ -2211,7 +2476,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_long_round_trip() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let long: String = "x".repeat(80); // spills across multiple body chunks
         lazy.set(&long);
         assert_eq!(lazy.get(), long);
@@ -2220,8 +2485,8 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_try_get_distinguishes_set_empty_from_unset() {
-        let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
-        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), written.host.clone()) };
+        let mut written = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
+        let never = unsafe { Lazy::<String>::new(StorageKey::from_slot(1), 0, written.host.clone()) };
 
         written.set(&String::new());
         let got = written.try_get();
@@ -2232,7 +2497,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_clear_removes_header_and_body() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
 
@@ -2270,7 +2535,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_bytes_native_round_trip() {
-        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<Bytes>::new(StorageKey::from_slot(0), 0, h()) };
         let payload = Bytes((0..50).collect());
         lazy.set(&payload);
         assert_eq!(lazy.get(), payload);
@@ -2279,7 +2544,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[test]
     fn lazy_string_native_layout_matches_solc_short() {
-        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), h()) };
+        let mut lazy = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
         let host = lazy.host.clone();
         let key = lazy.key;
         lazy.set(&String::from("hello"));

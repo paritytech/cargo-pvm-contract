@@ -10,5 +10,5 @@ use std::rc::Rc;
 
 fn main() {
     let host = Host::from_dyn(Rc::new(MockHostBuilder::new().build()));
-    let _bad = unsafe { Lazy::<[U256; 3]>::new(StorageKey::from_slot(0), host) };
+    let _bad = unsafe { Lazy::<[U256; 3]>::new(StorageKey::from_slot(0), 0, host) };
 }

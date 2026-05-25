@@ -152,7 +152,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             let const_ident = format_ident!("__pvm_storage_offset_{}", name);
             quote! {
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
-                    base + #const_ident,
+                    base + #const_ident.slot,
+                    #const_ident.offset,
                     host.clone(),
                 )
             }
@@ -166,8 +167,15 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .zip(field_types.iter())
         .map(|(name, ty)| {
             let const_ident = format_ident!("__pvm_storage_offset_{}", name);
-            let slot_expr = quote! { base + #const_ident };
-            generate_layout_emit(&name.to_string(), ty, slot_expr, quote! { name_prefix })
+            let slot_expr = quote! { base + #const_ident.slot };
+            let offset_expr = quote! { #const_ident.offset };
+            generate_layout_emit(
+                &name.to_string(),
+                ty,
+                slot_expr,
+                offset_expr,
+                quote! { name_prefix },
+            )
         })
         .collect();
 
@@ -188,7 +196,16 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         {
             const SLOTS: u64 = #slots_expr;
 
-            fn new_at(base: u64, host: ::pvm_contract_sdk::Host) -> Self {
+            // Embedded `#[storage]` sub-structs always start a fresh slot and
+            // never pack with neighbouring contract fields. Matches Stylus
+            // (and solc) — packing applies inside the sub-struct, never
+            // across its outer boundary.
+            const PACKED_BYTES: usize = 32;
+
+            fn new_at(base: u64, offset: u8, host: ::pvm_contract_sdk::Host) -> Self {
+                debug_assert_eq!(offset, 0,
+                    "#[storage] sub-struct always full-slot; offset must be 0");
+                let _ = offset;
                 #(#offset_consts)*
                 #struct_name {
                     #(#field_inits),*
@@ -249,16 +266,18 @@ mod tests {
             "SLOTS const should sum field SLOTS. Got: {output}"
         );
 
-        // First field's offset is 0.
+        // First field seeds from LayoutStep::FIRST via layout_step.
         assert!(
-            output.contains("const __pvm_storage_offset_total_supply : u64 = 0 ;"),
-            "first offset should be 0: {output}"
+            output.contains(
+                "const __pvm_storage_offset_total_supply : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+            ),
+            "first offset should seed from LayoutStep::FIRST: {output}"
         );
 
-        // Each field's slot const is base + offset.
+        // Each field's slot const is base + step.slot, offset is step.offset.
         assert!(
-            output.contains("base + __pvm_storage_offset_total_supply"),
-            "field init should reference its offset const: {output}"
+            output.contains("base + __pvm_storage_offset_total_supply . slot"),
+            "field init should derive its slot from base + step.slot: {output}"
         );
     }
 

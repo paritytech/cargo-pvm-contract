@@ -1175,6 +1175,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     // `#[slot(N)]` fields use `N` directly; auto-numbered fields read their slot
     // from the `__pvm_storage_slot_*` const chain built by `auto_slot_consts`.
     let auto_slot_consts = auto_slot_consts(&slot_fields);
+    let explicit_overlap_checks = explicit_slot_overlap_checks(&slot_fields);
 
     let slot_field_inits: Vec<TokenStream> = slot_fields
         .iter()
@@ -1182,17 +1183,18 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let name = &sf.name;
             let ty = &sf.ty;
             let cfgs = &sf.cfg_attrs;
-            let slot_expr: TokenStream = match sf.slot {
-                Slot::Explicit(n) => quote! { #n },
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
                 Slot::Auto => {
                     let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                    quote! { #const_ident }
+                    (quote! { #const_ident.slot }, quote! { #const_ident.offset })
                 }
             };
             quote! {
                 #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
                     #slot_expr,
+                    #offset_expr,
                     host.clone(),
                 )
             }
@@ -1441,6 +1443,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
+            // Module-level overlap checks: each emits a `const _: () = ...;`
+            // item that const-evaluates a span-overlap assertion for a pair
+            // of explicit-slot fields. cargo check evaluates module-level
+            // const items, so misconfigurations surface at check time, not
+            // only at build/link.
+            #(#explicit_overlap_checks)*
+
             #mod_content
 
             #payable_helpers_fn
@@ -1766,15 +1775,19 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
         });
     }
 
-    // Reject duplicate explicit slot numbers. (Auto-numbered slots cannot
-    // collide with each other by construction; they can only collide with
-    // explicit slots when both modes are mixed, which we already rejected
-    // above.)
+    // Fast-path proc-macro check: reject duplicate explicit slot literals
+    // with a clear error at the struct span. Catches the simple case
+    // `#[slot(0)] a; #[slot(0)] b;` immediately, before any code is emitted.
     //
-    // When both fields are #[cfg]-gated AND share the same name, we allow it.
-    // The compiler enforces that only one field with a given name exists, so
-    // exactly one cfg branch will be active. Different names with the same
-    // slot are always rejected because the compiler can't catch the aliasing.
+    // The harder case — overlap of multi-slot composites, e.g.
+    // `#[slot(0)] foo: Lazy<(U256, U256)>; #[slot(1)] bar: Lazy<U256>;` —
+    // requires reading `<Ty as StorageComponent>::SLOTS` at const-eval time
+    // and is handled by [`explicit_slot_overlap_checks`] emitting
+    // `const _: () = ...;` items alongside the other slot-chain consts.
+    //
+    // When both fields are #[cfg]-gated AND share the same name, the
+    // compiler enforces single-field-per-name, so at most one cfg branch
+    // is active — duplicate literal slots are allowed in that case.
     for (i, a) in fields.iter().enumerate() {
         let Some(a_slot) = a.explicit_slot() else {
             continue;
@@ -1802,6 +1815,68 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     }
 
     Ok(fields)
+}
+
+/// Emit `const _: () = { … };` items that compile-fail when any two
+/// explicit-slot fields have overlapping slot ranges. Catches the
+/// pre-existing bug where today's validator only checks duplicate literal
+/// slot numbers, missing cases like
+/// `#[slot(0)] foo: Lazy<(U256, U256)>; #[slot(1)] bar: Lazy<U256>;`
+/// (foo occupies slots 0..2, bar occupies slot 1; they collide).
+///
+/// Each check is gated by the union of both fields' `#[cfg]` attributes
+/// so that conditional fields only enforce overlap when both are active.
+/// When both fields are `#[cfg]`-gated AND share the same name, the check
+/// is skipped: the compiler enforces single-field-per-name, so at most
+/// one branch is active and overlap is impossible.
+pub(super) fn explicit_slot_overlap_checks(slot_fields: &[SlotField]) -> Vec<TokenStream> {
+    let mut checks = Vec::new();
+    for (i, a) in slot_fields.iter().enumerate() {
+        let Some(a_slot) = a.explicit_slot() else {
+            continue;
+        };
+        let a_name = &a.name;
+        let a_ty = &a.ty;
+        for b in &slot_fields[i + 1..] {
+            let Some(b_slot) = b.explicit_slot() else {
+                continue;
+            };
+
+            let both_cfg = !a.cfg_attrs.is_empty() && !b.cfg_attrs.is_empty();
+            let same_name = a.name == b.name;
+            if both_cfg && same_name {
+                continue;
+            }
+
+            let b_name = &b.name;
+            let b_ty = &b.ty;
+            let check_ident =
+                quote::format_ident!("__pvm_storage_overlap_{}_vs_{}", a_name, b_name);
+            let msg = format!(
+                "storage layout collision: explicit slots `{}` (starting at slot {}) and `{}` (starting at slot {}) \
+                 have overlapping slot ranges. Multi-slot composites (e.g. `Lazy<(U256, U256)>`) consume \
+                 multiple consecutive slots; verify each `#[slot(N)]` field's range does not intersect any other.",
+                a_name, a_slot, b_name, b_slot,
+            );
+            let merged_cfgs: Vec<&syn::Attribute> =
+                a.cfg_attrs.iter().chain(b.cfg_attrs.iter()).collect();
+            checks.push(quote! {
+                #(#merged_cfgs)*
+                #[allow(non_upper_case_globals)]
+                const #check_ident: () = {
+                    let a_end: u64 =
+                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                    let b_end: u64 =
+                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                    ::core::assert!(
+                        !((#a_slot) < b_end && (#b_slot) < a_end),
+                        #msg,
+                    );
+                };
+            });
+        }
+    }
+    checks
 }
 
 #[cfg(test)]
@@ -2961,32 +3036,33 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // The first auto-numbered field gets slot const = 0.
-        assert!(
-            output.contains("const __pvm_storage_slot_counter : u64 = 0 ;"),
-            "First auto-numbered field should declare its slot const = 0.\n\
-             Expanded output:\n{output}"
-        );
-        // Each subsequent field's slot is the previous field's slot plus its
-        // StorageComponent::SLOTS, evaluated at compile time.
+        // The first auto-numbered field seeds from LayoutStep::FIRST.
         assert!(
             output.contains(
-                "const __pvm_storage_slot_balances : u64 = __pvm_storage_slot_counter + < Lazy < U256 > as :: pvm_contract_sdk :: StorageComponent > :: SLOTS"
+                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
             ),
-            "Second field should chain off the first via StorageComponent::SLOTS.\n\
+            "First auto-numbered field should seed from LayoutStep::FIRST.\n\
+             Expanded output:\n{output}"
+        );
+        // Each subsequent field chains off the previous step via `layout_step`.
+        assert!(
+            output.contains(
+                "const __pvm_storage_slot_balances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (__pvm_storage_slot_counter ,"
+            ),
+            "Second field should chain off the first via layout_step.\n\
              Expanded output:\n{output}"
         );
         assert!(
             output.contains(
-                "const __pvm_storage_slot_allowances : u64 = __pvm_storage_slot_balances + < Mapping < Address , U256 > as :: pvm_contract_sdk :: StorageComponent > :: SLOTS"
+                "const __pvm_storage_slot_allowances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (__pvm_storage_slot_balances ,"
             ),
             "Third field should chain off the second.\n\
              Expanded output:\n{output}"
         );
         // Field construction references the slot consts (rather than literals).
         assert!(
-            output.contains("StorageComponent > :: new_at (__pvm_storage_slot_counter ,"),
-            "Auto-numbered fields should pass their slot const to new_at.\n\
+            output.contains("StorageComponent > :: new_at (__pvm_storage_slot_counter . slot , __pvm_storage_slot_counter . offset ,"),
+            "Auto-numbered fields should pass slot + offset from the LayoutStep const.\n\
              Expanded output:\n{output}"
         );
     }
@@ -3136,8 +3212,10 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(
-            output.contains("const __pvm_storage_slot_counter : u64 = 0 ;"),
-            "Single unannotated field should auto-number to slot 0.\n\
+            output.contains(
+                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+            ),
+            "Single unannotated field should auto-number to slot 0 via layout_step seed.\n\
              Expanded output:\n{output}"
         );
     }

@@ -692,7 +692,7 @@ fn generate_storage_impls(
                 {
                     let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
                     if s == slot_idx {
-                        <#field_ty as ::pvm_contract_sdk::StoragePackable>::pack_into(
+                        <#field_ty as ::pvm_contract_sdk::StorageEncode>::pack_into(
                             &#field_access, buf, o,
                         );
                     }
@@ -723,7 +723,7 @@ fn generate_storage_impls(
             StorageFieldKind::Packable => quote! {
                 {
                     let (s, o) = Self::__STORAGE_LAYOUT.0[#idx];
-                    <#field_ty as ::pvm_contract_sdk::StoragePackable>::unpack_from(
+                    <#field_ty as ::pvm_contract_sdk::StorageDecode>::unpack_from(
                         &slots[s], o,
                     )
                 }
@@ -917,7 +917,7 @@ fn generate_storage_impls(
                 StorageFieldKind::Packable => quote! {
                     {
                         let (s, o) = Self::__STORAGE_LAYOUT.0[#i];
-                        <#field_ty as ::pvm_contract_sdk::StoragePackable>::unpack_from(
+                        <#field_ty as ::pvm_contract_sdk::StorageDecode>::unpack_from(
                             &__slots[s], o,
                         )
                     }

@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: storage layout collision: explicit slots `foo` (starting at slot 0) and `bar` (starting at slot 1) have overlapping slot ranges. Multi-slot composites (e.g. `Lazy<(U256, U256)>`) consume multiple consecutive slots; verify each `#[slot(N)]` field's range does not intersect any other.
+ --> tests/ui/explicit_slot_overlap_multi_word.rs:9:1
+  |
+9 | #[pvm_contract_macros::contract]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `c::__pvm_storage_overlap_foo_vs_bar` failed here

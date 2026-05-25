@@ -13,14 +13,21 @@ pub(super) struct ChainField<'a> {
     pub cfg_attrs: &'a [syn::Attribute],
 }
 
-/// Build a chain of `const <prefix><name>: u64 = …;` items for the supplied
-/// fields. First entry is `0`; each subsequent entry is `prev_const +
-/// <PrevTy as StorageComponent>::SLOTS`. Per-field `#[cfg]` attributes are
-/// propagated so cfg-disabled fields disappear from the chain at use sites.
+/// Build a chain of `const <prefix><name>: ::pvm_contract_sdk::LayoutStep
+/// = ::pvm_contract_sdk::layout_step(prev, PACKED_BYTES, SLOTS);` items for
+/// the supplied fields. First entry seeds from
+/// [`LayoutStep::FIRST`](pvm_contract_sdk::LayoutStep::FIRST); each
+/// subsequent entry chains off the previous step. Per-field `#[cfg]`
+/// attributes are propagated so cfg-disabled fields disappear from the
+/// chain at use sites.
 ///
-/// Shared by `#[contract]` (which uses `__pvm_storage_slot_` as the prefix
-/// for contract-struct fields) and `#[storage]` (`__pvm_storage_offset_` for
-/// sub-storage struct fields, where each const is relative to `base`).
+/// Each `LayoutStep` carries the field's placement (`.slot`, `.offset`)
+/// and the next field's chain seed (`.next_slot`, `.next_space`). Callers
+/// read `.slot` + `.offset` to construct the field, and pass the entire
+/// step as the previous step for the next field.
+///
+/// Shared by `#[contract]` (top-level struct fields) and `#[storage]`
+/// (sub-storage struct fields, with the chain re-rooted at `base`).
 pub(super) fn slot_chain_consts(prefix: &str, fields: &[ChainField]) -> Vec<TokenStream> {
     fields
         .iter()
@@ -28,22 +35,23 @@ pub(super) fn slot_chain_consts(prefix: &str, fields: &[ChainField]) -> Vec<Toke
         .map(|(i, sf)| {
             let const_ident = format_ident!("{}{}", prefix, sf.name);
             let cfgs = sf.cfg_attrs;
-            if i == 0 {
-                quote! {
-                    #(#cfgs)*
-                    #[allow(non_upper_case_globals)]
-                    const #const_ident: u64 = 0;
-                }
+            let ty = sf.ty;
+            let prev_expr = if i == 0 {
+                quote! { ::pvm_contract_sdk::LayoutStep::FIRST }
             } else {
                 let prev = &fields[i - 1];
                 let prev_const = format_ident!("{}{}", prefix, prev.name);
-                let prev_ty = prev.ty;
-                quote! {
-                    #(#cfgs)*
-                    #[allow(non_upper_case_globals)]
-                    const #const_ident: u64 = #prev_const
-                        + <#prev_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
-                }
+                quote! { #prev_const }
+            };
+            quote! {
+                #(#cfgs)*
+                #[allow(non_upper_case_globals)]
+                const #const_ident: ::pvm_contract_sdk::LayoutStep =
+                    ::pvm_contract_sdk::layout_step(
+                        #prev_expr,
+                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES,
+                        <#ty as ::pvm_contract_sdk::StorageComponent>::SLOTS,
+                    );
             }
         })
         .collect()
@@ -71,6 +79,7 @@ pub(super) fn generate_layout_emit(
     field_name_str: &str,
     ty: &syn::Type,
     slot_expr: TokenStream,
+    offset_expr: TokenStream,
     prefix_expr: TokenStream,
 ) -> TokenStream {
     if is_layout_leaf(ty) {
@@ -82,6 +91,7 @@ pub(super) fn generate_layout_emit(
                     let slot_value: u64 = #slot_expr;
                     ::std::format!("{}", slot_value)
                 },
+                offset: #offset_expr,
                 ty: #ty_name_expr,
             });
         }

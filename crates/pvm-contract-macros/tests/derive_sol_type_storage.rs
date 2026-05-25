@@ -262,7 +262,7 @@ fn packed_struct_single_slot_via_mapping_round_trip() {
 #[test]
 fn packed_struct_single_slot_via_lazy_round_trip() {
     let host = fresh_host();
-    let mut lazy = unsafe { Lazy::<RunningAverage>::new(StorageKey::from_slot(0), host) };
+    let mut lazy = unsafe { Lazy::<RunningAverage>::new(StorageKey::from_slot(0), 0, host) };
     let v = RunningAverage { sum: 7, total: 11 };
     lazy.set(&v);
     assert_eq!(lazy.get(), v);

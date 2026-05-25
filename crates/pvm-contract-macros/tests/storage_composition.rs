@@ -58,7 +58,7 @@ fn fresh_host() -> Host {
 #[test]
 fn erc20_state_new_at_assigns_contiguous_slots() {
     let host = fresh_host();
-    let state = <Erc20State as StorageComponent>::new_at(5, host.clone());
+    let state = <Erc20State as StorageComponent>::new_at(5, 0, host.clone());
 
     // Mint to alice via balance map insert; that should write at the slot
     // derived from `keccak256(pad32(alice) ++ pad32(6))` because balances is
@@ -135,9 +135,12 @@ mod composed_contract {
 #[test]
 fn composed_contract_layout_matches_hand_constructed() {
     let host = fresh_host();
-    let mut erc20 = <Erc20State as StorageComponent>::new_at(0, host.clone());
-    let mut metadata = <MetadataState as StorageComponent>::new_at(3, host.clone());
-    let mut paused = <Lazy<bool> as StorageComponent>::new_at(5, host.clone());
+    let mut erc20 = <Erc20State as StorageComponent>::new_at(0, 0, host.clone());
+    let mut metadata = <MetadataState as StorageComponent>::new_at(3, 0, host.clone());
+    // Phase 3 walker: a standalone `Lazy<bool>` field at the start of a
+    // fresh slot lands at canonical offset 31 (right-aligned, 1 byte wide).
+    // The macro would have called `new_at(5, 31, host)` for this field.
+    let mut paused = <Lazy<bool> as StorageComponent>::new_at(5, 31, host.clone());
 
     // Write through each sub-component.
     let alice = Address([0xAA; 20]);
@@ -149,7 +152,7 @@ fn composed_contract_layout_matches_hand_constructed() {
 
     // Read back via slot-pinned standalone helpers and confirm the slot
     // arithmetic from `#[storage]` matches our manual `new_at` calls above.
-    let supply_slot = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), host.clone()) };
+    let supply_slot = unsafe { Lazy::<U256>::new(StorageKey::from_slot(0), 0, host.clone()) };
     assert_eq!(supply_slot.get(), U256::from(1_000));
 
     let balances_slot =
@@ -167,14 +170,16 @@ fn composed_contract_layout_matches_hand_constructed() {
     assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
 
     let name_slot =
-        unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), host.clone()) };
+        unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), 0, host.clone()) };
     assert_eq!(name_slot.get(), "Composed");
 
     let symbol_slot =
-        unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), host.clone()) };
+        unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(4), 0, host.clone()) };
     assert_eq!(symbol_slot.get(), "CMP");
 
-    let paused_slot = unsafe { Lazy::<bool>::new(StorageKey::from_slot(5), host) };
+    // `paused` was written via the macro-built `Lazy<bool>` which gets
+    // canonical offset 31; mirror that here.
+    let paused_slot = unsafe { Lazy::<bool>::new(StorageKey::from_slot(5), 31, host) };
     assert!(paused_slot.get());
 }
 
@@ -194,17 +199,22 @@ fn nested_storage_struct_slot_sum() {
 #[test]
 fn nested_storage_struct_uses_offset() {
     let host = fresh_host();
-    let mut outer = <OuterState as StorageComponent>::new_at(10, host.clone());
+    let mut outer = <OuterState as StorageComponent>::new_at(10, 0, host.clone());
 
     // OuterState at base 10 places `flag` at slot 10 and `erc20` starting at
     // slot 11 (because flag claims 1 slot).
     outer.flag.set(&true);
     outer.erc20.total_supply.set(&U256::from(999));
 
-    let flag_check = unsafe { Lazy::<bool>::new(StorageKey::from_slot(10), host.clone()) };
+    // Phase 3: the walker emits canonical offsets for sub-32-byte primitives
+    // (right-aligned, matching solc). `bool` has PACKED_BYTES = 1 so its
+    // canonical offset is 31. Manual `Lazy::new` constructions must mirror
+    // that — otherwise we'd read byte 0 instead of byte 31.
+    let flag_check = unsafe { Lazy::<bool>::new(StorageKey::from_slot(10), 31, host.clone()) };
     assert!(flag_check.get());
 
-    let supply_check = unsafe { Lazy::<U256>::new(StorageKey::from_slot(11), host) };
+    // `U256` is full-slot, canonical offset = 0.
+    let supply_check = unsafe { Lazy::<U256>::new(StorageKey::from_slot(11), 0, host) };
     assert_eq!(supply_check.get(), U256::from(999));
 }
 

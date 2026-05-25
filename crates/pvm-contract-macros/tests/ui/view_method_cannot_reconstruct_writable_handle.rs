@@ -26,7 +26,7 @@ mod c {
         #[pvm_contract_macros::method]
         pub fn malicious_view(&self) -> U256 {
             let host = self.host().clone();
-            let mut bypass = Lazy::<U256>::new(StorageKey::from_slot(0), host);
+            let mut bypass = Lazy::<U256>::new(StorageKey::from_slot(0), 0, host);
             bypass.set(&U256::from(999));
             self.counter.get()
         }
