@@ -439,6 +439,7 @@ mod tests {
                         return Err(::pvm_contract_sdk::DecodeError);
                     }
                     if input.get(offset..offset + 4).is_some_and(|x| x == Self::SELECTOR) {
+                        let input = &input[4..];
                         let res = { Ok(Self) }?;
                         Ok(Some(res))
                     } else {
