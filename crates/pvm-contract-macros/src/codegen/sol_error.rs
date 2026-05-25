@@ -155,6 +155,7 @@ pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
                     .get(offset..offset + 4)
                     .is_some_and(|x| x == Self::SELECTOR)
                 {
+                    let input = &input[4..];
                     let res = {
                         #decode
                     }?;

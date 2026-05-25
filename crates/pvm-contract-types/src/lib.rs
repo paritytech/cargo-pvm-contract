@@ -78,7 +78,7 @@ impl SolError for DecodeError {
     }
 
     fn encode_to(&self, buf: &mut [u8]) -> usize {
-        buf.copy_from_slice(&Self::SELECTOR);
+        buf[0..4].copy_from_slice(&Self::SELECTOR);
         4
     }
     fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {

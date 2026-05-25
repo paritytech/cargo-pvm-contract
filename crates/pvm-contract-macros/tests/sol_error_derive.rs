@@ -287,3 +287,25 @@ fn sol_default_error_question_mark_propagation() {
         Ok(_) => panic!("expected error"),
     }
 }
+
+#[test]
+fn decode_at_roundtrips_struct_with_fields() {
+    #[derive(SolError, Debug, PartialEq, Eq)]
+    struct RoundtripError {
+        account: Address,
+        required: U256,
+    }
+    let original = RoundtripError {
+        account: Address([0x42; 20]),
+        required: U256::from(1000u64),
+    };
+    let mut buf = [0u8; 512];
+    let len = original.encode_to(&mut buf);
+    assert_eq!(len, 68);
+
+    let decoded = RoundtripError::decode_at(&buf[..len], 0)
+        .expect("decode_at returned DecodeError")
+        .expect("selector did not match");
+
+    assert_eq!(decoded, original);
+}

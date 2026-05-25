@@ -100,7 +100,7 @@ impl SolError for CallError {
         buf[0..4].copy_from_slice(&Self::SELECTOR);
         let res = U256::from(self.discriminant());
         res.encode_to(&mut buf[4..]);
-        res.encode_len()
+        res.encode_len() + 4
     }
 
     fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {
@@ -114,7 +114,7 @@ impl SolError for CallError {
             let data = u8::decode_at(input, offset + 4)?;
             match data {
                 0 => Ok(Some(Self::CalleeTrapped)),
-                1 => Ok(Some(Self::CalleeReverted)),
+                1 => Ok(Some(Self::TransferFailed)),
                 2 => Ok(Some(Self::OutOfResources)),
                 3 => Ok(Some(Self::DuplicateContractAddress)),
                 4 => Ok(Some(Self::InputBufTooSmall)),
