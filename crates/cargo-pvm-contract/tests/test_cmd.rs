@@ -101,17 +101,40 @@ fn build_streams_json_message_format_and_writes_artifacts() {
         .collect();
 
     assert!(!json_lines.is_empty(), "stdout should include Cargo JSON");
-    assert!(
-        json_lines.iter().all(
-            |line| line.get("reason").and_then(serde_json::Value::as_str) != Some("build-plan")
-        ),
-        "stdout should only include Cargo JSON lines, got:\n{stdout}"
+    let plan = json_lines
+        .iter()
+        .find(|line| {
+            line.get("reason").and_then(serde_json::Value::as_str)
+                == Some("cargo-pvm-contract-build-plan")
+        })
+        .expect("stdout should include a cargo-pvm-contract-build-plan line");
+    assert_eq!(
+        plan.get("schema_version")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
     );
-    assert!(
-        json_lines.iter().any(|line| {
+    assert_eq!(
+        plan.get("unit").and_then(serde_json::Value::as_str),
+        Some("compiler-artifact")
+    );
+
+    let planned_total = plan
+        .get("total")
+        .and_then(serde_json::Value::as_u64)
+        .expect("build plan should include a numeric total");
+    let compiler_artifacts = json_lines
+        .iter()
+        .filter(|line| {
             line.get("reason").and_then(serde_json::Value::as_str) == Some("compiler-artifact")
-        }),
+        })
+        .count() as u64;
+    assert!(
+        compiler_artifacts > 0,
         "stdout should include cargo compiler-artifact JSON lines, got:\n{stdout}"
+    );
+    assert_eq!(
+        planned_total, compiler_artifacts,
+        "build plan total should match streamed compiler-artifact count"
     );
 
     verify_build_artifacts(&project_dir, "json-build-output", "release");
