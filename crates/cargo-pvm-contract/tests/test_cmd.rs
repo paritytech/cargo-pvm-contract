@@ -72,6 +72,52 @@ fn build_project(project_dir: &Path, profile: &str) {
     );
 }
 
+#[test]
+fn build_streams_json_message_format() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let project_dir = scaffold_new_contract(&temp_dir, "json-build-output", "macro", None);
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"))
+        .current_dir(&project_dir)
+        .arg("pvm-contract")
+        .arg("build")
+        .arg("--message-format")
+        .arg("json")
+        .output()
+        .expect("run cargo pvm-contract build --message-format json");
+
+    assert!(
+        output.status.success(),
+        "cargo pvm-contract build --message-format json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is utf-8");
+    let json_lines: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("stdout line is JSON"))
+        .collect();
+
+    assert!(
+        json_lines.iter().any(|line| {
+            line.get("reason").and_then(serde_json::Value::as_str) == Some("build-plan")
+                && line
+                    .get("total")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+        }),
+        "stdout should include a build-plan JSON line, got:\n{stdout}"
+    );
+    assert!(
+        json_lines.iter().any(|line| {
+            line.get("reason").and_then(serde_json::Value::as_str) == Some("compiler-artifact")
+        }),
+        "stdout should include cargo compiler-artifact JSON lines, got:\n{stdout}"
+    );
+}
+
 fn run_cli_test(project_dir: &Path) {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
     cmd.current_dir(project_dir)

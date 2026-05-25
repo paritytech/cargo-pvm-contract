@@ -75,6 +75,18 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
         )
     })?;
 
+    if args
+        .message_format
+        .as_deref()
+        .is_some_and(|format| format.contains("json"))
+        && let Ok(total) = get_crate_count(&manifest_path)
+    {
+        println!(
+            "{}",
+            serde_json::json!({ "reason": "build-plan", "total": total })
+        );
+    }
+
     builder::build_contract(
         &manifest_path,
         &output_dir,
@@ -86,6 +98,31 @@ pub fn build_contracts(args: BuildArgs) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+fn get_crate_count(manifest_path: &Path) -> Result<usize> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let output = Command::new(cargo)
+        .arg("metadata")
+        .arg("--format-version")
+        .arg("1")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .output()
+        .context("Failed to run `cargo metadata`")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("`cargo metadata` failed:\n{stderr}");
+    }
+
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("Failed to parse `cargo metadata` output")?;
+    Ok(metadata
+        .get("packages")
+        .and_then(|packages| packages.as_array())
+        .map(|packages| packages.len())
+        .unwrap_or(0))
 }
 
 fn find_target_dir(manifest_path: &Path, workspace_root: Option<&Path>) -> PathBuf {
