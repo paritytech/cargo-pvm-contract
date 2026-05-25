@@ -1213,6 +1213,7 @@ dependencies = [
  "clap",
  "convert_case 0.6.0",
  "env_logger",
+ "expect-test",
  "hex",
  "include_dir",
  "inquire",

@@ -108,14 +108,21 @@ fn build_streams_json_message_format_and_writes_artifacts() {
                 == Some("cargo-pvm-contract-build-plan")
         })
         .expect("stdout should include a cargo-pvm-contract-build-plan line");
-    assert_eq!(
-        plan.get("schema_version")
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
-    );
-    assert_eq!(
-        plan.get("unit").and_then(serde_json::Value::as_str),
-        Some("compiler-artifact")
+    let plan_snapshot = serde_json::json!({
+        "reason": plan.get("reason").cloned(),
+        "schema_version": plan.get("schema_version").cloned(),
+        "total": "<matches streamed compiler-artifact count>",
+        "unit": plan.get("unit").cloned(),
+    });
+    expect_test::expect![[r#"
+        {
+          "reason": "cargo-pvm-contract-build-plan",
+          "schema_version": 1,
+          "total": "<matches streamed compiler-artifact count>",
+          "unit": "compiler-artifact"
+        }"#]]
+    .assert_eq(
+        &serde_json::to_string_pretty(&plan_snapshot).expect("serialize normalized build plan"),
     );
 
     let planned_total = plan
