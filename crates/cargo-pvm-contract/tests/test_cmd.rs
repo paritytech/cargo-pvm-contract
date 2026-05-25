@@ -73,7 +73,7 @@ fn build_project(project_dir: &Path, profile: &str) {
 }
 
 #[test]
-fn build_streams_json_message_format() {
+fn build_streams_json_message_format_and_writes_artifacts() {
     let temp_dir = TempDir::new().expect("temp dir");
     let project_dir = scaffold_new_contract(&temp_dir, "json-build-output", "macro", None);
 
@@ -82,7 +82,7 @@ fn build_streams_json_message_format() {
         .arg("pvm-contract")
         .arg("build")
         .arg("--message-format")
-        .arg("json")
+        .arg("json,json-diagnostic-rendered-ansi")
         .output()
         .expect("run cargo pvm-contract build --message-format json");
 
@@ -100,15 +100,12 @@ fn build_streams_json_message_format() {
         .map(|line| serde_json::from_str(line).expect("stdout line is JSON"))
         .collect();
 
+    assert!(!json_lines.is_empty(), "stdout should include Cargo JSON");
     assert!(
-        json_lines.iter().any(|line| {
-            line.get("reason").and_then(serde_json::Value::as_str) == Some("build-plan")
-                && line
-                    .get("total")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some()
-        }),
-        "stdout should include a build-plan JSON line, got:\n{stdout}"
+        json_lines.iter().all(
+            |line| line.get("reason").and_then(serde_json::Value::as_str) != Some("build-plan")
+        ),
+        "stdout should only include Cargo JSON lines, got:\n{stdout}"
     );
     assert!(
         json_lines.iter().any(|line| {
@@ -116,6 +113,8 @@ fn build_streams_json_message_format() {
         }),
         "stdout should include cargo compiler-artifact JSON lines, got:\n{stdout}"
     );
+
+    verify_build_artifacts(&project_dir, "json-build-output", "release");
 }
 
 fn run_cli_test(project_dir: &Path) {
