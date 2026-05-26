@@ -165,28 +165,15 @@ pub fn expand_sol_event(input: DeriveInput) -> syn::Result<TokenStream> {
                 use ::pvm_contract_sdk::HostApi as _;
                 let __topics = self.topics();
                 let __len = self.data_len();
-                let mut __data = ::alloc::vec![0u8; __len];
+                let mut __data = alloc::vec![0u8; __len];
                 self.data_to(&mut __data);
                 host.deposit_event(&__topics, &__data);
             }
         }
     } else {
-        // Dynamic event without `#[alloc]`: emit a deprecated stub so callers
-        // get a clear diagnostic instead of a confusing "method not found".
-        quote! {
-            #[deprecated(
-                note = "this event has dynamic non-indexed fields; \
-                        add `#[alloc]` to enable emit(), or use \
-                        SolEvent::data_len()/data_to() manually"
-            )]
-            #[allow(unused_variables)]
-            pub fn emit(&self, host: &::pvm_contract_sdk::Host) {
-                panic!(
-                    "emit() requires #[alloc] on this event \
-                     (or call data_len()/data_to() manually)"
-                );
-            }
-        }
+        // Dynamic event without `#[alloc]`: no `emit()` is generated. Callers
+        // use `data_len()` + `data_to()` manually, or add `#[alloc]`.
+        quote! {}
     };
 
     Ok(quote! {
@@ -254,13 +241,16 @@ fn build_abi_item_body(
         }
     }
 
-    // `::std` is fine here: `abi_item()` is gated on `feature = "abi-gen"`,
-    // which always implies a std-host build for ABI JSON generation.
+    // Use `alloc` (not `std`) for consistency with the emit() path. `abi_item()`
+    // is gated on `feature = "abi-gen"`, where `alloc` is always available.
     quote! {
-        ::pvm_contract_sdk::AbiItem::Event {
-            name: ::std::string::String::from(#event_name),
-            inputs: ::std::vec![#(#input_exprs),*],
-            anonymous: #is_anonymous,
+        {
+            extern crate alloc;
+            ::pvm_contract_sdk::AbiItem::Event {
+                name: alloc::string::String::from(#event_name),
+                inputs: alloc::vec![#(#input_exprs),*],
+                anonymous: #is_anonymous,
+            }
         }
     }
 }
@@ -748,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn emit_is_deprecated_stub_for_dynamic_non_indexed_fields_without_alloc() {
+    fn emit_not_generated_for_dynamic_non_indexed_fields() {
         let input: DeriveInput = syn::parse_str(
             r#"struct Log {
                 #[indexed] who: Address,
@@ -758,12 +748,8 @@ mod tests {
         .unwrap();
         let output = expand_sol_event(input).unwrap().to_string();
         assert!(
-            output.contains("fn emit"),
-            "emit() stub should be generated so callers see a diagnostic"
-        );
-        assert!(
-            output.contains("deprecated"),
-            "stub should carry a #[deprecated] note guiding the user to add #[alloc]"
+            !output.contains("fn emit"),
+            "emit() should not be generated for events with dynamic non-indexed fields without #[alloc]"
         );
     }
 

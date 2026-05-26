@@ -437,7 +437,7 @@ fn indexed_custom_struct_topic_is_keccak_of_abi_encoded_value() {
 
     let mut encoded = [0u8; <UserId as SolEncode>::HEAD_SIZE];
     <UserId as SolEncode>::encode_to(&user, &mut encoded);
-    let expected = alloy_core::primitives::keccak256(&encoded).0;
+    let expected = alloy_core::primitives::keccak256(encoded).0;
     assert_eq!(
         topics[1], expected,
         "Indexed custom struct must hash keccak256(abi.encode(value))"
