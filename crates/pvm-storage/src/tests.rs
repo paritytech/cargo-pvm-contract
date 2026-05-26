@@ -1333,7 +1333,7 @@ where
     );
 
     // --- Invariant 3: solc canonical placement ---
-    let off = (32 - V::PACKED_BYTES) as usize;
+    let off = 32 - V::PACKED_BYTES;
     assert_eq!(
         &s_map_insert[off..32],
         tail,
