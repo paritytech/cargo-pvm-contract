@@ -495,7 +495,7 @@ impl HostApi for MockHost {
     }
 
     fn hash_keccak_256(&self, input: &[u8], output: &mut [u8; 32]) {
-        *output = tiny_keccak(input);
+        *output = crate::keccak256(input);
     }
 
     fn call_data_copy(&self, output: &mut [u8], offset: u32) {
@@ -667,108 +667,13 @@ impl MockHost {
 // Keccak-256 (minimal implementation for mock use)
 // ---------------------------------------------------------------------------
 
-/// Minimal keccak-256 for test use. Not optimized.
-fn tiny_keccak(input: &[u8]) -> [u8; 32] {
-    const ROUND_CONSTANTS: [u64; 24] = [
-        0x0000000000000001,
-        0x0000000000008082,
-        0x800000000000808a,
-        0x8000000080008000,
-        0x000000000000808b,
-        0x0000000080000001,
-        0x8000000080008081,
-        0x8000000000008009,
-        0x000000000000008a,
-        0x0000000000000088,
-        0x0000000080008009,
-        0x000000008000000a,
-        0x000000008000808b,
-        0x800000000000008b,
-        0x8000000000008089,
-        0x8000000000008003,
-        0x8000000000008002,
-        0x8000000000000080,
-        0x000000000000800a,
-        0x800000008000000a,
-        0x8000000080008081,
-        0x8000000000008080,
-        0x0000000080000001,
-        0x8000000080008008,
-    ];
-
-    const ROTATION_OFFSETS: [u32; 25] = [
-        0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 45, 15, 21, 8, 18, 2, 61, 56,
-        14,
-    ];
-
-    const PI: [usize; 25] = [
-        0, 10, 20, 5, 15, 16, 1, 11, 21, 6, 7, 17, 2, 12, 22, 23, 8, 18, 3, 13, 14, 24, 9, 19, 4,
-    ];
-
-    let rate = 136;
-    let mut state = [0u64; 25];
-
-    let mut padded = input.to_vec();
-    padded.push(0x01);
-    while !padded.len().is_multiple_of(rate) {
-        padded.push(0x00);
-    }
-    let last = padded.len() - 1;
-    padded[last] ^= 0x80;
-
-    for block in padded.chunks(rate) {
-        for (i, chunk) in block.chunks(8).enumerate() {
-            if i < 25 {
-                let mut bytes = [0u8; 8];
-                bytes[..chunk.len()].copy_from_slice(chunk);
-                state[i] ^= u64::from_le_bytes(bytes);
-            }
-        }
-
-        for round_constant in &ROUND_CONSTANTS {
-            let mut c = [0u64; 5];
-            for x in 0..5 {
-                c[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
-            }
-            let mut d = [0u64; 5];
-            for x in 0..5 {
-                d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
-            }
-            for i in 0..25 {
-                state[i] ^= d[i % 5];
-            }
-
-            let mut b = [0u64; 25];
-            for i in 0..25 {
-                b[PI[i]] = state[i].rotate_left(ROTATION_OFFSETS[i]);
-            }
-
-            for y in 0..5 {
-                for x in 0..5 {
-                    state[y * 5 + x] =
-                        b[y * 5 + x] ^ (!b[y * 5 + (x + 1) % 5] & b[y * 5 + (x + 2) % 5]);
-                }
-            }
-
-            state[0] ^= round_constant;
-        }
-    }
-
-    let mut output = [0u8; 32];
-    for (i, chunk) in output.chunks_mut(8).enumerate() {
-        let bytes = state[i].to_le_bytes();
-        chunk.copy_from_slice(&bytes[..chunk.len()]);
-    }
-    output
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn keccak256_empty() {
-        let hash = tiny_keccak(b"");
+        let hash = crate::keccak256(b"");
         assert_eq!(
             hash,
             [

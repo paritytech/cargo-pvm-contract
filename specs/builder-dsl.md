@@ -202,7 +202,29 @@ state-mutating cross-contract calls, use the `#[contract]` macro path.
 
 ## Events
 
-Also manual — construct topic arrays and call the host:
+Prefer `#[derive(SolEvent)]` even on the DSL path. The derive is independent
+of how methods are dispatched: it computes the topic hash at compile time and
+packs indexed/non-indexed fields for you, so it composes with `ContractBuilder`
+exactly as it does with the `#[contract]` macro (see
+`examples/example-mytoken/src/example-mytoken-dsl-no-alloc.rs`):
+
+```rust,ignore
+#[derive(pvm_contract_sdk::SolEvent)]
+struct Incremented {
+    value: U256,
+}
+
+fn emit_incremented(host: &Host, new_value: U256) {
+    Incremented { value: new_value }.emit(host);
+}
+```
+
+### Manual escape hatch
+
+For advanced cases (e.g. anonymous events, or topics the derive doesn't cover),
+construct the topic array and call the host directly. This is the error-prone
+path `#[derive(SolEvent)]` exists to replace — the 32-byte signature constant
+and field packing must be written by hand:
 
 ```rust,ignore
 // keccak256("Incremented(uint256)")

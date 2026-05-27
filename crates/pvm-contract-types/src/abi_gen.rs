@@ -41,12 +41,33 @@ pub enum AbiItem {
         name: String,
         inputs: Vec<AbiParam>,
     },
+    Event {
+        name: String,
+        inputs: Vec<AbiEventParam>,
+        anonymous: bool,
+    },
     Receive {
         #[serde(rename = "stateMutability")]
         #[serde(skip_serializing_if = "Option::is_none")]
         #[serde(default)]
         state_mutability: Option<String>,
     },
+}
+
+/// A parameter in a Solidity ABI event signature.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AbiEventParam {
+    /// Parameter name.
+    pub name: String,
+    /// Solidity type name (e.g. "uint256", "address", "tuple").
+    #[serde(rename = "type")]
+    pub param_type: String,
+    /// For tuple types, the list of sub-parameters. Empty for primitives.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<AbiParam>,
+    /// Whether this parameter is indexed (becomes a log topic).
+    pub indexed: bool,
 }
 
 /// Wrapper for a complete ABI JSON array.

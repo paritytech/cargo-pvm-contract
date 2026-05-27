@@ -17,8 +17,8 @@ pub use alloc_types::Bytes;
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
 pub use abi_gen::{
-    AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json, parse_type_str,
-    storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
+    parse_type_str, storage_layout_to_json,
 };
 
 use framework_errors::INVALID_CALLDATA;
@@ -197,12 +197,20 @@ impl AsRef<[u8]> for Address {
 /// types like `Address` or `#[derive(SolType)]` structs for other semantics.
 pub trait SolArrayElement: SolEncode {}
 
+/// Computes keccak256 of arbitrary bytes at compile time.
+pub const fn const_keccak256(data: &[u8]) -> [u8; 32] {
+    keccak_const::Keccak256::new().update(data).finalize()
+}
+
 /// Computes the 4-byte Solidity function selector at compile time.
 pub const fn const_selector(sig: &str) -> [u8; 4] {
-    let hash = keccak_const::Keccak256::new()
-        .update(sig.as_bytes())
-        .finalize();
+    let hash = const_keccak256(sig.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
+}
+
+/// Computes keccak256 of arbitrary bytes at runtime.
+pub fn keccak256(data: &[u8]) -> [u8; 32] {
+    const_keccak256(data)
 }
 
 /// ABI-compatible parameterless custom errors for framework-level reverts.
@@ -376,6 +384,17 @@ pub trait SolEncode {
             buf[24..32].copy_from_slice(&32u64.to_be_bytes());
             self.encode_body_to(&mut buf[32..]);
         }
+    }
+
+    /// 32-byte topic slot for this value when used as an indexed event
+    /// parameter. Default: right-align the value into one 32-byte word via
+    /// `encode_body_to`, suitable for static primitives (`address`, `bool`,
+    /// `uintN`, `intN`, `bytesN`). Dynamic primitives (`string`, `bytes`)
+    /// override this to `keccak256(raw_bytes)` per the Solidity event spec.
+    fn indexed_topic(&self) -> [u8; 32] {
+        let mut slot = [0u8; 32];
+        self.encode_body_to(&mut slot);
+        slot
     }
 }
 
@@ -763,6 +782,94 @@ macro_rules! sol_revert_enum {
             }
         }
     };
+}
+
+// ---------------------------------------------------------------------------
+// Event trait for Solidity-compatible log emission
+// ---------------------------------------------------------------------------
+
+/// Trait for Solidity-compatible event emission. No allocator required.
+///
+/// Each implementor represents a single Solidity event type. The derive macro
+/// `#[derive(SolEvent)]` generates this impl automatically, computing the topic
+/// hash at compile time, packing indexed fields into stack-allocated
+/// [`EventTopics`], and ABI-encoding non-indexed fields into a caller-provided
+/// buffer via [`data_to`](SolEvent::data_to).
+///
+/// # Topic layout
+///
+/// - `topics()[0]` is `keccak256(SIGNATURE)` (skipped for anonymous events).
+/// - `topics()[1..=3]` are the indexed fields, packed into 32-byte slots:
+///   - Static types (address, uintN, bool, bytesN): ABI-encoded directly.
+///   - Dynamic primitives (string, bytes): `keccak256(raw_bytes)`.
+///   - Arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
+/// - Maximum 3 indexed fields (4 topics including the selector), or 4 for
+///   anonymous events (no selector topic).
+///
+/// # Data layout
+///
+/// Non-indexed fields are ABI-encoded in declaration order, identical to
+/// a Solidity `abi.encode(field1, field2, ...)` call.
+/// Stack-allocated topic array for event emission. Maximum 4 topics
+/// (signature hash + up to 3 indexed fields, or 4 indexed for anonymous).
+#[derive(Default)]
+pub struct EventTopics {
+    buf: [[u8; 32]; 4],
+    len: usize,
+}
+
+impl EventTopics {
+    /// Create an empty topic list.
+    pub fn new() -> Self {
+        EventTopics {
+            buf: [[0u8; 32]; 4],
+            len: 0,
+        }
+    }
+
+    /// Append a topic. Panics if more than 4 topics are pushed.
+    pub fn push(&mut self, topic: [u8; 32]) {
+        assert!(self.len < 4, "EventTopics: maximum 4 topics (EVM limit)");
+        self.buf[self.len] = topic;
+        self.len += 1;
+    }
+
+    /// View the topics as a slice for `deposit_event`.
+    pub fn as_slice(&self) -> &[[u8; 32]] {
+        &self.buf[..self.len]
+    }
+}
+
+/// Allows `&topics` to coerce to `&[[u8; 32]]` for `deposit_event`.
+impl core::ops::Deref for EventTopics {
+    type Target = [[u8; 32]];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+pub trait SolEvent {
+    /// Full 32-byte keccak256 hash of the canonical event signature.
+    const TOPIC: [u8; 32];
+
+    /// Event name, e.g. `"Transfer"`.
+    const NAME: &'static str;
+
+    /// Canonical Solidity event signature, e.g. `"Transfer(address,address,uint256)"`.
+    const SIGNATURE: &'static str;
+
+    /// Number of indexed fields (excluding topic0). Range: 0..=3, or 0..=4
+    /// for anonymous events (no topic0).
+    const INDEXED_COUNT: usize;
+
+    /// Build the topics array on the stack.
+    fn topics(&self) -> EventTopics;
+
+    /// Size in bytes of the ABI-encoded non-indexed fields.
+    fn data_len(&self) -> usize;
+
+    /// Write ABI-encoded non-indexed fields into `buf`.
+    fn data_to(&self, buf: &mut [u8]);
 }
 
 // ---------------------------------------------------------------------------

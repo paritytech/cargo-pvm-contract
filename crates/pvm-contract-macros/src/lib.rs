@@ -1222,3 +1222,52 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
 
     abi_import::expand_to_module(&file, alloc).into()
 }
+
+/// Derive the [`SolEvent`] trait for a struct, enabling Solidity-compatible
+/// event emission with automatic topic hashing and indexed field packing.
+/// No allocator required.
+///
+/// Fields marked with `#[indexed]` become log topics (max 3, or 4 for anonymous
+/// events). Remaining fields are ABI-encoded as the log data blob. The event
+/// signature hash is computed at compile time as topic0 (skipped for `#[anonymous]`).
+///
+/// Indexed static arrays, fixed arrays, and tuples use `keccak256(abi.encode(value))`.
+/// Indexed dynamic composites and dynamic arrays (`Vec<T>`) are rejected at
+/// compile time. Custom and alias types are not supported as indexed fields.
+///
+/// For events where all non-indexed fields are known-static primitive types,
+/// the derive generates an `emit(host)` convenience method with a stack buffer.
+/// For events with dynamic fields (e.g. `String`), add `#[alloc]` to generate
+/// an alloc-backed `emit()`, or use `data_len()` + `data_to()` manually.
+///
+/// # Example
+///
+/// ```ignore
+/// // Static event: emit() generated automatically.
+/// #[derive(SolEvent)]
+/// struct Transfer {
+///     #[indexed]
+///     from: Address,
+///     #[indexed]
+///     to: Address,
+///     value: U256,
+/// }
+/// Transfer { from, to, value }.emit(self.host());
+///
+/// // Dynamic event with #[alloc]: emit() uses heap allocation.
+/// #[derive(SolEvent)]
+/// #[alloc]
+/// struct Log {
+///     message: String,
+/// }
+/// Log { message }.emit(self.host());
+/// ```
+#[proc_macro_derive(SolEvent, attributes(indexed, anonymous, alloc))]
+pub fn sol_event(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_event(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}

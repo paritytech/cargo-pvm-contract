@@ -43,8 +43,8 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolType, abi_import, constructor, contract, fallback, method, payable, receive,
-    storage,
+    SolError, SolEvent, SolType, abi_import, constructor, contract, fallback, method, payable,
+    receive, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,6 +75,7 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    EventTopics,
     Host,
     HostApi,
     HostResult,
@@ -92,6 +93,7 @@ pub use pvm_contract_types::{
     SolDefaultError,
     SolEncode,
     SolError,
+    SolEvent,
     SolRevert,
     StaticDecode,
     StaticEncodedLen,
@@ -100,9 +102,11 @@ pub use pvm_contract_types::{
     StorageFlags,
     StoragePackable,
     U256,
+    const_keccak256,
     const_selector,
     // Framework errors
     framework_errors,
+    keccak256,
     sol_revert_enum,
     value_transferred_is_nonzero,
 };
@@ -137,8 +141,8 @@ pub use pvm_contract_types::Bytes;
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_contract_types::{
-    AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json, parse_type_str,
-    storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
+    parse_type_str, storage_layout_to_json,
 };
 
 #[cfg(feature = "std")]

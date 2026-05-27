@@ -160,6 +160,9 @@ pub(super) struct ParsedContract {
     pub(super) receive_returns_result: bool,
     /// Error types from `Result<T, E>` return types, for ABI generation.
     pub(super) error_types: Vec<syn::Type>,
+    /// Idents of structs in the module body carrying `#[derive(SolEvent)]`.
+    /// Used by the abi-gen codepath to emit event entries for no-sol contracts.
+    pub(super) event_idents: Vec<Ident>,
 }
 
 /// A storage field on the contract struct.
@@ -847,8 +850,16 @@ fn parse_contract(
     let mut implemented_sol_methods = Vec::new();
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
+    let mut event_idents: Vec<Ident> = Vec::new();
 
     for item in &content.1 {
+        // Collect event structs with #[derive(SolEvent)]
+        if let syn::Item::Struct(item_struct) = item
+            && has_sol_event_derive(&item_struct.attrs)
+        {
+            event_idents.push(item_struct.ident.clone());
+        }
+
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
@@ -1082,6 +1093,34 @@ fn parse_contract(
                 ),
             ));
         }
+
+        // Validate every Rust `#[derive(SolEvent)]` struct has a matching
+        // `event Name(...)` declaration in the `.sol` interface. Without this
+        // check, a Rust event declared without a corresponding `.sol` entry
+        // would be silently absent from the generated ABI JSON (the builder
+        // reads events from `.sol` when a sol_path is set).
+        let sol_event_names: Vec<String> = sol_iface
+            .body
+            .iter()
+            .filter_map(|item| match item {
+                syn_solidity::Item::Event(item_event) => Some(item_event.name.to_string()),
+                _ => None,
+            })
+            .collect();
+        let missing_events: Vec<String> = event_idents
+            .iter()
+            .map(|ident| ident.to_string())
+            .filter(|name| !sol_event_names.contains(name))
+            .collect();
+        if !missing_events.is_empty() {
+            return Err(syn::Error::new_spanned(
+                input,
+                format!(
+                    "Rust events missing matching `event` declarations in the .sol interface: {}",
+                    missing_events.join(", ")
+                ),
+            ));
+        }
     }
 
     Ok(ParsedContract {
@@ -1101,7 +1140,31 @@ fn parse_contract(
         receive_name,
         receive_returns_result,
         error_types,
+        event_idents,
     })
+}
+
+/// match both `SolEvent` and paths ending in `SolEvent` (e.g.
+/// `pvm_contract_macros::SolEvent`).
+fn has_sol_event_derive(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(last) = meta.path.segments.last()
+                && last.ident == "SolEvent"
+            {
+                found = true;
+            }
+            Ok(())
+        });
+        if found {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenStream> {
@@ -2743,6 +2806,41 @@ mod tests {
     }
 
     #[test]
+    fn event_structs_inside_module_are_wired_into_abi_gen() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(pvm_contract_macros::SolEvent)]
+                struct Transfer {
+                    #[indexed] from: Address,
+                    #[indexed] to: Address,
+                    value: U256,
+                }
+
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            output.contains("Transfer :: abi_item") || output.contains("Transfer::abi_item"),
+            "abi-gen output should reference Transfer::abi_item(), got: {output}"
+        );
+    }
+
+    #[test]
     fn call_body_omits_value_code_when_all_payable() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
@@ -2962,6 +3060,36 @@ mod tests {
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
             "mixed contract should guard non-payable arms"
+        );
+    }
+
+    #[test]
+    fn struct_without_sol_event_derive_is_ignored() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(Debug, Clone)]
+                struct Plain {
+                    x: u64,
+                }
+
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("Plain :: abi_item") && !output.contains("Plain::abi_item"),
+            "Non-event structs should not leak into abi-gen output"
         );
     }
 

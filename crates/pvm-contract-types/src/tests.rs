@@ -1772,6 +1772,80 @@ fn i256_display_matches_signed_decimal() {
     assert_eq!(format!("{}", I256::from(i64::MIN)), "-9223372036854775808");
 }
 
+// ---------------------------------------------------------------------------
+// SolEvent trait tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn const_keccak256_matches_keccak256() {
+    use alloy_core::primitives::keccak256;
+
+    let sig = "Transfer(address,address,uint256)";
+    let expected = keccak256(sig.as_bytes());
+    let got = const_keccak256(sig.as_bytes());
+    assert_eq!(
+        got, expected.0,
+        "const_keccak256 should match alloy keccak256"
+    );
+}
+
+#[test]
+fn sol_event_transfer_topics_pack_addresses_correctly() {
+    struct Transfer {
+        from: Address,
+        to: Address,
+        _value: U256,
+    }
+
+    impl SolEvent for Transfer {
+        const TOPIC: [u8; 32] = const_keccak256(b"Transfer(address,address,uint256)");
+        const NAME: &'static str = "Transfer";
+        const SIGNATURE: &'static str = "Transfer(address,address,uint256)";
+        const INDEXED_COUNT: usize = 2;
+
+        fn topics(&self) -> EventTopics {
+            let mut from_topic = [0u8; 32];
+            from_topic[12..32].copy_from_slice(&self.from.0);
+
+            let mut to_topic = [0u8; 32];
+            to_topic[12..32].copy_from_slice(&self.to.0);
+
+            let mut t = EventTopics::new();
+            t.push(Self::TOPIC);
+            t.push(from_topic);
+            t.push(to_topic);
+            t
+        }
+
+        fn data_len(&self) -> usize {
+            32
+        }
+        fn data_to(&self, buf: &mut [u8]) {
+            self._value.encode_to(buf);
+        }
+    }
+
+    let from = Address([0xAA; 20]);
+    let to = Address([0xBB; 20]);
+    let event = Transfer {
+        from,
+        to,
+        _value: U256::ZERO,
+    };
+
+    let topics = event.topics();
+    assert_eq!(topics.len(), 3, "topic0 + 2 indexed");
+
+    // topic0 is signature hash
+    assert_eq!(topics[0], Transfer::TOPIC);
+
+    // indexed address is right-aligned: 12 zero bytes + 20 address bytes
+    assert_eq!(&topics[1][..12], &[0u8; 12]);
+    assert_eq!(&topics[1][12..], &[0xAA; 20]);
+    assert_eq!(&topics[2][..12], &[0u8; 12]);
+    assert_eq!(&topics[2][12..], &[0xBB; 20]);
+}
+
 #[test]
 fn i256_from_str_display_round_trip() {
     use alloc::format;
