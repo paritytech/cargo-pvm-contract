@@ -30,7 +30,7 @@ impl SolError for RevertString<'_> {
             if buf.len() < 64 {
                 let n = buf.len().min(32);
                 buf[..n].fill(0);
-                return n;
+                return 4 + n;
             }
 
             // Truncate string to fit buffer, aligned down to 32-byte boundary
