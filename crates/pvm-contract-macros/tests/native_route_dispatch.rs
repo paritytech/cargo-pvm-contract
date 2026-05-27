@@ -10,8 +10,7 @@
 //! after `route()` returns to inspect the contract's response.
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
-    StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 

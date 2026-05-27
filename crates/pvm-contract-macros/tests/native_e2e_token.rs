@@ -20,8 +20,7 @@
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
-    StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
