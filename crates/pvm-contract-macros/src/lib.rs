@@ -177,12 +177,17 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// ```ignore
 /// let mock = MockHostBuilder::new().build();
-/// let mut contract = my_token::Contract {
-///     host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
-/// };
+/// let mut contract = my_token::Contract::with_host(mock.clone());
 /// let bal = contract.balance_of(account);
 /// assert_eq!(bal, U256::from(42));
 /// ```
+///
+/// The macro generates `Contract::with_host(backend)` — wraps any
+/// `HostApi` implementor in `Rc<dyn HostApi>` and initialises `#[slot(N)]`
+/// fields. Mirrors the std-lib `Vec::with_capacity` idiom for
+/// "constructor with a non-default dependency." The user's
+/// `#[constructor]` is NOT run — seed storage on the mock directly if
+/// you need initial state.
 ///
 /// **Dispatch-level** (selector routing, ABI revert encoding) — drive
 /// `route()` with raw calldata and read the captured `ReturnValue`:

@@ -1202,6 +1202,39 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         };
     };
 
+    // Generate an ergonomic test-only constructor:
+    //
+    //     let contract = Counter::with_host(mock);
+    //
+    // Wraps any `HostApi` implementor in `Rc<dyn HostApi>` and initialises
+    // `#[slot(N)]` fields the same way `deploy()` / `call()` do. The
+    // contract's own `#[constructor]` is NOT invoked — tests that need
+    // initial state should seed storage on the `MockHost` directly.
+    //
+    // Named after the std-lib idiom for "constructor with non-default
+    // config" (e.g. `Vec::with_capacity`, `HashMap::with_capacity`,
+    // `RefCell::with_borrow`). Only emitted off riscv64 (host target)
+    // where `Host::from_dyn` exists. On riscv64 `Host` is a ZST and tests
+    // don't run there, so the helper would be unused.
+    let with_host_impl = quote! {
+        #[cfg(all(not(target_arch = "riscv64"), not(feature = "abi-gen")))]
+        impl #struct_name {
+            /// Construct the contract for testing with a custom [`HostApi`]
+            /// backend (typically a `MockHost`). The user's `#[constructor]`
+            /// is not run — seed storage on the backend if you need initial
+            /// state.
+            pub fn with_host<H: ::pvm_contract_sdk::HostApi + 'static>(backend: H) -> Self {
+                let host = ::pvm_contract_sdk::Host::from_dyn(
+                    ::std::rc::Rc::new(backend),
+                );
+                Self {
+                    #(#slot_field_inits,)*
+                    host,
+                }
+            }
+        }
+    };
+
     let deploy_fn = if parsed.has_constructor {
         let constructor_name = parsed.constructor_name.as_ref().unwrap();
 
@@ -1448,6 +1481,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
             #[cfg(not(feature = "abi-gen"))]
             #deploy_fn
+
+            #with_host_impl
 
             #abi_gen_helper
         }
