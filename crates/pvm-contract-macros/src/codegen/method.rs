@@ -69,3 +69,15 @@ pub fn expand_fallback(input: ItemFn) -> syn::Result<TokenStream> {
         #fn_vis fn #fn_name(#fn_inputs) #fn_output #fn_block
     })
 }
+
+pub fn expand_receive(input: ItemFn) -> syn::Result<TokenStream> {
+    let fn_name = &input.sig.ident;
+    let fn_vis = &input.vis;
+    let fn_block = &input.block;
+    let fn_inputs = &input.sig.inputs;
+    let fn_output = &input.sig.output;
+
+    Ok(quote! {
+        #fn_vis fn #fn_name(#fn_inputs) #fn_output #fn_block
+    })
+}

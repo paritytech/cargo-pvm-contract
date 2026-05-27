@@ -5,16 +5,17 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Events.sol", allocator = "pico")]
 mod events {
     use super::*;
-    use pvm_contract_sdk::{StorageFlags};
+    use pvm_contract_sdk::StorageFlags;
+
+    #[derive(pvm_contract_sdk::SolEvent)]
+    pub struct ValueChanged {
+        #[indexed]
+        pub who: pvm_contract_sdk::Address,
+        pub old_value: U256,
+        pub new_value: U256,
+    }
 
     const VALUE_KEY: [u8; 32] = [0u8; 32];
-
-    // keccak256("ValueChanged(address,uint256,uint256)")
-    const VALUE_CHANGED_SIG: [u8; 32] = [
-        0x68, 0x27, 0x0d, 0x6a, 0x12, 0x84, 0x00, 0x2b, 0x2e, 0x5e, 0x73, 0x08, 0x39, 0x58, 0x41,
-        0xf1, 0x54, 0xfe, 0x1d, 0xca, 0xa3, 0x2a, 0x17, 0x08, 0x0a, 0x7c, 0x67, 0x9d, 0x7c, 0xf8,
-        0x95, 0x52,
-    ];
 
     pub struct Events;
 
@@ -34,16 +35,12 @@ mod events {
             let mut caller = [0u8; 20];
             self.host().caller(&mut caller);
 
-            let mut who_topic = [0u8; 32];
-            who_topic[12..32].copy_from_slice(&caller);
-
-            let topics = [VALUE_CHANGED_SIG, who_topic];
-
-            let mut data = [0u8; 64];
-            data[0..32].copy_from_slice(&old.to_be_bytes::<32>());
-            data[32..64].copy_from_slice(&val.to_be_bytes::<32>());
-
-            self.host().deposit_event(&topics, &data);
+            let event = ValueChanged {
+                who: pvm_contract_sdk::Address(caller),
+                old_value: old,
+                new_value: val,
+            };
+            event.emit(self.host());
         }
 
         #[pvm_contract_sdk::method]

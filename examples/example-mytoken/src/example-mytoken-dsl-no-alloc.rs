@@ -22,10 +22,19 @@ const BALANCE_OF_SELECTOR: [u8; 4] = solidity_selector("balanceOf(address)");
 const TRANSFER_SELECTOR: [u8; 4] = solidity_selector("transfer(address,uint256)");
 const MINT_SELECTOR: [u8; 4] = solidity_selector("mint(address,uint256)");
 
-const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
-    0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d, 0xaa,
-    0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23, 0xb3, 0xef,
-];
+// Events use `#[derive(SolEvent)]` even in the DSL (manual-dispatch) path:
+// the derive is independent of how methods are routed and computes the topic
+// hash at compile time, replacing the hand-pasted keccak constant and manual
+// topic packing. Raw `host.deposit_event(...)` is still available (see
+// specs/builder-dsl.md) for advanced cases.
+#[derive(pvm_contract_sdk::SolEvent)]
+struct Transfer {
+    #[indexed]
+    from: Address,
+    #[indexed]
+    to: Address,
+    value: U256,
+}
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
@@ -198,13 +207,10 @@ fn get_caller(host: &Host) -> [u8; 20] {
 }
 
 fn emit_transfer(host: &Host, from: &[u8; 20], to: &[u8; 20], value: U256) {
-    let mut from_topic = [0u8; 32];
-    from_topic[12..32].copy_from_slice(from);
-
-    let mut to_topic = [0u8; 32];
-    to_topic[12..32].copy_from_slice(to);
-
-    let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
-    let data = value.to_be_bytes::<32>();
-    host.deposit_event(&topics, &data);
+    Transfer {
+        from: Address(*from),
+        to: Address(*to),
+        value,
+    }
+    .emit(host);
 }

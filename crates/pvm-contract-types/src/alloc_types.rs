@@ -29,6 +29,10 @@ impl SolEncode for Bytes {
         buf[32..32 + data_len].copy_from_slice(&self.0);
         buf[32 + data_len..32 + data_len + padding].fill(0);
     }
+
+    fn indexed_topic(&self) -> [u8; 32] {
+        crate::keccak256(&self.0)
+    }
 }
 
 impl crate::SolArrayElement for Bytes {}
@@ -88,6 +92,10 @@ impl SolEncode for alloc::string::String {
 
         buf[32..32 + data_len].copy_from_slice(bytes);
         buf[32 + data_len..32 + data_len + padding].fill(0);
+    }
+
+    fn indexed_topic(&self) -> [u8; 32] {
+        crate::keccak256(self.as_bytes())
     }
 }
 

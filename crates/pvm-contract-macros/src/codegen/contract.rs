@@ -142,8 +142,14 @@ pub(super) struct ParsedContract {
     pub(super) fallback_returns_result: bool,
     /// True iff the fallback is marked `#[payable]`.
     pub(super) fallback_is_payable: bool,
+    pub(super) has_receive: bool,
+    pub(super) receive_name: Option<Ident>,
+    pub(super) receive_returns_result: bool,
     /// Error types from `Result<T, E>` return types, for ABI generation.
     pub(super) error_types: Vec<syn::Type>,
+    /// Idents of structs in the module body carrying `#[derive(SolEvent)]`.
+    /// Used by the abi-gen codepath to emit event entries for no-sol contracts.
+    pub(super) event_idents: Vec<Ident>,
 }
 
 /// A storage field annotated with `#[slot(N)]` on the contract struct.
@@ -264,6 +270,17 @@ fn is_result_return_type(output: &syn::ReturnType) -> bool {
             }
             false
         }
+    }
+}
+
+/// True iff `output` is `()`, an explicit unit tuple, or omitted entirely.
+fn is_unit_return_type(output: &syn::ReturnType) -> bool {
+    match output {
+        syn::ReturnType::Default => true,
+        syn::ReturnType::Type(_, ty) => matches!(
+            ty.as_ref(),
+            syn::Type::Tuple(t) if t.elems.is_empty()
+        ),
     }
 }
 
@@ -620,6 +637,7 @@ fn parse_contract(
                 has_pvm_attr(&f.attrs, "method")
                     || has_pvm_attr(&f.attrs, "constructor")
                     || has_pvm_attr(&f.attrs, "fallback")
+                    || has_pvm_attr(&f.attrs, "receive")
             } else {
                 false
             }
@@ -720,7 +738,8 @@ fn parse_contract(
                 };
                 if !(has_pvm_attr(&func.attrs, "method")
                     || has_pvm_attr(&func.attrs, "constructor")
-                    || has_pvm_attr(&func.attrs, "fallback"))
+                    || has_pvm_attr(&func.attrs, "fallback")
+                    || has_pvm_attr(&func.attrs, "receive"))
                 {
                     continue;
                 }
@@ -745,11 +764,22 @@ fn parse_contract(
     let mut fallback_name = None;
     let mut fallback_returns_result = false;
     let mut fallback_is_payable = false;
+    let mut has_receive = false;
+    let mut receive_name = None;
+    let mut receive_returns_result = false;
     let mut implemented_sol_methods = Vec::new();
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
+    let mut event_idents: Vec<Ident> = Vec::new();
 
     for item in &content.1 {
+        // Collect event structs with #[derive(SolEvent)]
+        if let syn::Item::Struct(item_struct) = item
+            && has_sol_event_derive(&item_struct.attrs)
+        {
+            event_idents.push(item_struct.ident.clone());
+        }
+
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
@@ -796,6 +826,41 @@ fn parse_contract(
                 }
                 // Reuses the payable+receiver consistency check.
                 let _ = infer_method_mutability(func, fallback_is_payable)?;
+                collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
+            } else if has_pvm_attr(&func.attrs, "receive") {
+                if has_receive {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "duplicate `#[receive]` handler; a contract may declare at most one",
+                    ));
+                }
+                if has_pvm_attr(&func.attrs, "payable") {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "`#[receive]` is implicitly payable; remove the redundant `#[payable]` attribute",
+                    ));
+                }
+                if !receiver_is_mut(&func.sig.inputs) {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "`#[receive]` must take `&mut self`",
+                    ));
+                }
+                if func.sig.inputs.len() != 1 {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "`#[receive]` must take no arguments other than `&mut self`",
+                    ));
+                }
+                receive_returns_result = is_result_return_type(&func.sig.output);
+                if !receive_returns_result && !is_unit_return_type(&func.sig.output) {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig.output,
+                        "`#[receive]` must return `()` or `Result<(), E>`; Solidity's receive cannot return a value",
+                    ));
+                }
+                has_receive = true;
+                receive_name = Some(func.sig.ident.clone());
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "method") {
                 let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
@@ -928,7 +993,11 @@ fn parse_contract(
             .body
             .iter()
             .filter_map(|f| match f {
-                syn_solidity::Item::Function(item_function) => Some(item_function),
+                syn_solidity::Item::Function(item_function)
+                    if matches!(item_function.kind, syn_solidity::FunctionKind::Function(_)) =>
+                {
+                    Some(item_function)
+                }
                 _ => None,
             })
             .filter(|f| !implemented_sol_methods.contains(&f.name))
@@ -941,6 +1010,34 @@ fn parse_contract(
                 format!(
                     "Missing implementations for Solidity functions: {}",
                     missing.join(", ")
+                ),
+            ));
+        }
+
+        // Validate every Rust `#[derive(SolEvent)]` struct has a matching
+        // `event Name(...)` declaration in the `.sol` interface. Without this
+        // check, a Rust event declared without a corresponding `.sol` entry
+        // would be silently absent from the generated ABI JSON (the builder
+        // reads events from `.sol` when a sol_path is set).
+        let sol_event_names: Vec<String> = sol_iface
+            .body
+            .iter()
+            .filter_map(|item| match item {
+                syn_solidity::Item::Event(item_event) => Some(item_event.name.to_string()),
+                _ => None,
+            })
+            .collect();
+        let missing_events: Vec<String> = event_idents
+            .iter()
+            .map(|ident| ident.to_string())
+            .filter(|name| !sol_event_names.contains(name))
+            .collect();
+        if !missing_events.is_empty() {
+            return Err(syn::Error::new_spanned(
+                input,
+                format!(
+                    "Rust events missing matching `event` declarations in the .sol interface: {}",
+                    missing_events.join(", ")
                 ),
             ));
         }
@@ -959,8 +1056,35 @@ fn parse_contract(
         fallback_name,
         fallback_returns_result,
         fallback_is_payable,
+        has_receive,
+        receive_name,
+        receive_returns_result,
         error_types,
+        event_idents,
     })
+}
+
+/// match both `SolEvent` and paths ending in `SolEvent` (e.g.
+/// `pvm_contract_macros::SolEvent`).
+fn has_sol_event_derive(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        let mut found = false;
+        let _ = attr.parse_nested_meta(|meta| {
+            if let Some(last) = meta.path.segments.last()
+                && last.ident == "SolEvent"
+            {
+                found = true;
+            }
+            Ok(())
+        });
+        if found {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenStream> {
@@ -1177,6 +1301,33 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let RouteItems { route_fn } = route_items;
     let router_impl = router_impl.tokens;
 
+    // When `#[receive]` is present, the empty-calldata case dispatches to it
+    // before falling through to the no-selector path. Receive is implicitly
+    // payable, so no value guard is emitted.
+    let receive_dispatch = if parsed.has_receive {
+        let receive_name = parsed.receive_name.as_ref().unwrap();
+        if parsed.receive_returns_result {
+            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            quote! {
+                if call_data_len == 0 {
+                    match this.#receive_name() {
+                        Ok(()) => return,
+                        Err(e) => { #revert_err }
+                    }
+                }
+            }
+        } else {
+            quote! {
+                if call_data_len == 0 {
+                    this.#receive_name();
+                    return;
+                }
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let (no_selector_handler, unknown_selector_handler) = if parsed.has_fallback {
         let fallback_name = parsed.fallback_name.as_ref().unwrap();
 
@@ -1233,6 +1384,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data, 0);
 
                 if call_data_len < 4 {
+                    #receive_dispatch
                     #no_selector_handler
                 }
 
@@ -1261,6 +1413,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 
                 if call_data_len < 4 {
+                    #receive_dispatch
                     #no_selector_handler
                 }
 
@@ -1336,7 +1489,8 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                                 && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
                                 && (segments[1].ident == "method"
                                     || segments[1].ident == "constructor"
-                                    || segments[1].ident == "fallback"))
+                                    || segments[1].ident == "fallback"
+                                    || segments[1].ident == "receive"))
                         });
                     }
                 }
@@ -1557,6 +1711,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
 mod tests {
     use super::super::dispatch::StateMutability;
     use super::{ContractArgs, expand_contract, parse_contract};
+    use proc_macro2::TokenStream;
     use syn::ItemMod;
 
     fn parse_sol(src: &str) -> syn_solidity::File {
@@ -2336,6 +2491,41 @@ mod tests {
     }
 
     #[test]
+    fn event_structs_inside_module_are_wired_into_abi_gen() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(pvm_contract_macros::SolEvent)]
+                struct Transfer {
+                    #[indexed] from: Address,
+                    #[indexed] to: Address,
+                    value: U256,
+                }
+
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn transfer(&mut self, to: Address, amount: U256) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            output.contains("Transfer :: abi_item") || output.contains("Transfer::abi_item"),
+            "abi-gen output should reference Transfer::abi_item(), got: {output}"
+        );
+    }
+
+    #[test]
     fn call_body_omits_value_code_when_all_payable() {
         let input: syn::ItemMod = syn::parse_quote! {
             mod c {
@@ -2555,6 +2745,36 @@ mod tests {
         assert!(
             s.contains("NON_PAYABLE_VALUE_RECEIVED"),
             "mixed contract should guard non-payable arms"
+        );
+    }
+
+    #[test]
+    fn struct_without_sol_event_derive_is_ignored() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                #[derive(Debug, Clone)]
+                struct Plain {
+                    x: u64,
+                }
+
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        assert!(
+            !output.contains("Plain :: abi_item") && !output.contains("Plain::abi_item"),
+            "Non-event structs should not leak into abi-gen output"
         );
     }
 
@@ -2916,6 +3136,302 @@ mod tests {
         assert!(
             err.contains("contract methods must not be generic"),
             "Expected method-generic rejection. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_contract_with_receive() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) {}
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(parsed.has_receive);
+        assert_eq!(parsed.receive_name.unwrap(), "receive");
+        assert!(!parsed.receive_returns_result);
+    }
+
+    #[test]
+    fn parse_contract_with_fallible_receive() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) -> Result<(), MyError> { Ok(()) }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(parsed.has_receive);
+        assert!(parsed.receive_returns_result);
+    }
+
+    #[test]
+    fn parse_contract_rejects_payable_on_receive() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    #[pvm_contract_macros::payable]
+                    pub fn receive(&mut self) {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("implicitly payable"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_contract_rejects_receive_with_ref_self() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&self) {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("&mut self"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_contract_rejects_receive_with_args() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self, _x: u64) {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("no arguments"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_contract_rejects_receive_returning_value() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) -> u64 { 0 }
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("cannot return a value"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_contract_rejects_duplicate_receive() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn r1(&mut self) {}
+                    #[pvm_contract_macros::receive]
+                    pub fn r2(&mut self) {}
+                }
+            }
+        };
+        let err = match parse_contract(&input, None) {
+            Ok(_) => panic!("expected error"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("duplicate"), "got: {err}");
+    }
+
+    /// Pretty-print the `pub extern "C" fn call() { ... }` function from an
+    /// expanded contract token stream. Used for snapshot-based dispatch tests.
+    fn pretty_call_fn(tokens: TokenStream) -> String {
+        let file: syn::File = syn::parse2(tokens).expect("expansion parses as syn::File");
+        for item in &file.items {
+            let syn::Item::Mod(m) = item else { continue };
+            let Some((_, items)) = &m.content else {
+                continue;
+            };
+            for inner in items {
+                if let syn::Item::Fn(f) = inner
+                    && f.sig.ident == "call"
+                {
+                    let wrapper: syn::File = syn::parse_quote! { #f };
+                    return prettyplease::unparse(&wrapper);
+                }
+            }
+        }
+        panic!("`fn call` not found in expansion")
+    }
+
+    #[test]
+    fn receive_emits_empty_calldata_dispatch() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let expected = expect_test::expect![[r##"
+            #[cfg(not(feature = "abi-gen"))]
+            #[cfg(target_arch = "riscv64")]
+            #[polkavm_derive::polkavm_export]
+            pub extern "C" fn call() {
+                use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
+                let host = ::pvm_contract_sdk::Host::new();
+                let mut this = C { host };
+                let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size()
+                    as usize;
+                let mut call_data = [0u8; 256usize];
+                if call_data_len > 256usize {
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE,
+                    );
+                }
+                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(
+                    &mut call_data[..call_data_len],
+                    0,
+                );
+                if call_data_len < 4 {
+                    if call_data_len == 0 {
+                        this.receive();
+                        return;
+                    }
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::NO_SELECTOR,
+                    );
+                }
+                let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
+                let input = &call_data[4..call_data_len];
+                if route(&mut this, selector, input).is_none() {
+                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
+                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                        &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
+                    );
+                }
+            }
+        "##]];
+        expected.assert_eq(&pretty_call_fn(tokens));
+    }
+
+    #[test]
+    fn contract_without_receive_omits_empty_calldata_check() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn get(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = pretty_call_fn(tokens);
+        assert!(
+            !s.contains("call_data_len == 0"),
+            "contract without #[receive] must not emit empty-calldata branch (size cost); got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn receive_and_fallback_both_emitted_in_dispatch_order() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) {}
+
+                    #[pvm_contract_macros::fallback]
+                    pub fn fallback(&mut self) -> Result<(), MyError> { Ok(()) }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None).unwrap();
+        assert!(parsed.has_receive);
+        assert!(parsed.has_fallback);
+
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = pretty_call_fn(tokens);
+        let empty_check_idx = s
+            .find("call_data_len == 0")
+            .expect("receive arm must check empty calldata");
+        let fallback_call_idx = s
+            .find("this.fallback")
+            .expect("fallback must be invoked too");
+        assert!(
+            empty_check_idx < fallback_call_idx,
+            "receive empty-calldata check must dispatch before fallback path:\n{s}"
+        );
+    }
+
+    #[test]
+    fn receive_with_result_return_emits_revert_path() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) -> Result<(), MyError> { Ok(()) }
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = pretty_call_fn(tokens);
+        assert!(
+            s.contains("match this.receive()"),
+            "Result-returning receive must use match in dispatch; got:\n{s}"
+        );
+        assert!(
+            s.contains("Ok(())"),
+            "Result-returning receive arm must handle Ok branch; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn receive_dispatch_skips_payable_guard() {
+        let input: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::receive]
+                    pub fn receive(&mut self) {}
+                }
+            }
+        };
+        let tokens = expand_contract(ContractArgs::default(), input).unwrap();
+        let s = pretty_call_fn(tokens);
+        assert!(
+            !s.contains("__pvm_assert_non_payable"),
+            "receive is implicitly payable: call() must not invoke the non-payable guard; got:\n{s}"
         );
     }
 }

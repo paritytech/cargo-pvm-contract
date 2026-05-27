@@ -13,6 +13,20 @@ pub use abi::AbiJson;
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
+const BUILD_PLAN_REASON: &str = "cargo-pvm-contract-build-plan";
+
+struct CargoBuildCommand<'a> {
+    manifest_path: &'a Path,
+    target_dir: &'a Path,
+    profile: &'a Profile,
+    bins: &'a [String],
+    work_dir: &'a Path,
+    target_json: &'a Path,
+    has_toolchain_file: bool,
+    use_json_target_spec: bool,
+    features: Option<&'a str>,
+    no_default_features: bool,
+}
 
 /// The builder for building a PolkaVM binary (build.rs API).
 pub struct PvmBuilder {
@@ -177,11 +191,21 @@ pub fn build_contract(
     profile: &Profile,
     bins: &[String],
     message_format: Option<&str>,
+    features: Option<&str>,
+    no_default_features: bool,
 ) -> Result<()> {
     let manifest_dir = manifest_path.parent().context("Invalid manifest path")?;
     let build_dir = output_dir.join("pvmbuild");
 
-    build_elf(manifest_path, &build_dir, profile, bins, message_format)?;
+    build_elf(
+        manifest_path,
+        &build_dir,
+        profile,
+        bins,
+        message_format,
+        features,
+        no_default_features,
+    )?;
 
     let elf_dir = build_dir
         .join("riscv64emac-unknown-none-polkavm")
@@ -195,6 +219,7 @@ pub fn build_contract(
         manifest_dir,
         Some(output_dir),
         true,
+        features,
     )
 }
 
@@ -226,6 +251,8 @@ fn build_project(
         &profile,
         &bins_to_build,
         None,
+        None,
+        false,
     )?;
 
     let elf_dir = build_dir
@@ -240,6 +267,7 @@ fn build_project(
         manifest_dir,
         None,
         !skip_abi,
+        None,
     )
 }
 
@@ -252,6 +280,7 @@ fn process_elf_binaries(
     manifest_dir: &Path,
     abi_target_root: Option<&Path>,
     generate_abi: bool,
+    features: Option<&str>,
 ) -> Result<()> {
     fs::create_dir_all(profile_dir).with_context(|| {
         format!(
@@ -271,7 +300,7 @@ fn process_elf_binaries(
 
         if generate_abi {
             let abi_path = profile_dir.join(format!("{bin}.abi.json"));
-            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root)?;
+            generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root, features)?;
         }
     }
 
@@ -285,9 +314,9 @@ fn build_elf(
     profile: &Profile,
     bins: &[String],
     message_format: Option<&str>,
+    features: Option<&str>,
+    no_default_features: bool,
 ) -> Result<()> {
-    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
-
     let work_dir = manifest_path.parent().context("Invalid manifest path")?;
 
     // Remove RUSTUP_TOOLCHAIN only when the project has a rust-toolchain.toml that
@@ -302,8 +331,54 @@ fn build_elf(
     let target_json = polkavm_linker::target_json_path(target_args)
         .map_err(|e| anyhow::anyhow!("Failed to get target JSON: {e}"))?;
 
+    let use_json_target_spec =
+        cargo_supports_z_flag("json-target-spec", work_dir, has_toolchain_file);
+    let cargo_build = CargoBuildCommand {
+        manifest_path,
+        target_dir,
+        profile,
+        bins,
+        work_dir,
+        target_json: &target_json,
+        has_toolchain_file,
+        use_json_target_spec,
+        features,
+        no_default_features,
+    };
+
+    let mut cmd = cargo_build_command(&cargo_build);
+    if let Some(fmt) = message_format {
+        cmd.arg("--message-format").arg(fmt);
+    }
+
+    eprintln!("Building PolkaVM binary with profile: {profile}");
+
+    if message_format.is_some() {
+        if message_format.is_some_and(cargo_message_format_is_json) {
+            emit_build_plan_if_available(&cargo_build);
+        }
+
+        let status = cmd.status().context("Failed to execute cargo build")?;
+        if !status.success() {
+            anyhow::bail!("Cargo build failed");
+        }
+        return Ok(());
+    }
+
+    let output = cmd.output().context("Failed to execute cargo build")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Cargo build failed:\n{stderr}");
+    }
+
+    Ok(())
+}
+
+fn cargo_build_command(config: &CargoBuildCommand<'_>) -> Command {
+    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
     let mut cmd = Command::new("cargo");
-    cmd.current_dir(work_dir)
+    cmd.current_dir(config.work_dir)
         // Avoid leaking parent-cargo state into the polkavm child build:
         // - CARGO_ENCODED_RUSTFLAGS would override the RUSTFLAGS we set
         // - RUSTC / RUSTC_WRAPPER / RUSTC_WORKSPACE_WRAPPER would force a
@@ -320,47 +395,87 @@ fn build_elf(
         // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
         // Stripping is done later by polkavm_linker after processing relocations.
         .env("RUSTFLAGS", rustflags)
-        .env("CARGO_TARGET_DIR", target_dir)
+        .env("CARGO_TARGET_DIR", config.target_dir)
         .env("CARGO_PROFILE_RELEASE_STRIP", "false")
         .env("RUSTC_BOOTSTRAP", "1")
         .env(INTERNAL_BUILD_ENV, "1")
         .arg("build")
         .arg("--manifest-path")
-        .arg(manifest_path)
+        .arg(config.manifest_path)
         .arg("--profile")
-        .arg(profile.cargo_arg())
+        .arg(config.profile.cargo_arg())
         .arg("--target")
-        .arg(&target_json)
+        .arg(config.target_json)
         .arg("-Zbuild-std=core,alloc");
 
-    if has_toolchain_file {
+    if config.has_toolchain_file {
         cmd.env_remove("RUSTUP_TOOLCHAIN");
     }
 
-    // `-Zjson-target-spec` was stabilized in newer toolchains. Pass it only when the
-    // cargo that will execute the build still recognises it as an unstable flag.
-    if cargo_supports_z_flag("json-target-spec", work_dir, has_toolchain_file) {
+    if config.use_json_target_spec {
         cmd.arg("-Zjson-target-spec");
     }
 
-    for bin in bins {
+    for bin in config.bins {
         cmd.arg("--bin").arg(bin);
     }
 
-    if let Some(fmt) = message_format {
-        cmd.arg("--message-format").arg(fmt);
+    if let Some(list) = config.features {
+        cmd.arg("--features").arg(list);
     }
 
-    eprintln!("Building PolkaVM binary with profile: {profile}");
+    if config.no_default_features {
+        cmd.arg("--no-default-features");
+    }
 
-    let output = cmd.output().context("Failed to execute cargo build")?;
+    cmd
+}
+
+fn emit_build_plan_if_available(config: &CargoBuildCommand<'_>) {
+    if let Ok(total) = planned_compiler_artifact_count(config) {
+        println!(
+            "{}",
+            serde_json::json!({
+                "reason": BUILD_PLAN_REASON,
+                "schema_version": 1,
+                "unit": "compiler-artifact",
+                "total": total,
+            })
+        );
+    }
+}
+
+fn cargo_message_format_is_json(format: &str) -> bool {
+    format.split(',').any(|part| part.trim().contains("json"))
+}
+
+fn planned_compiler_artifact_count(config: &CargoBuildCommand<'_>) -> Result<usize> {
+    let mut cmd = cargo_build_command(config);
+    cmd.arg("--unit-graph").arg("-Zunstable-options");
+
+    let output = cmd
+        .output()
+        .context("Failed to execute cargo build --unit-graph")?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Cargo build failed:\n{stderr}");
+        anyhow::bail!("cargo build --unit-graph failed");
     }
 
-    Ok(())
+    compiler_artifact_count_from_unit_graph(&output.stdout)
+}
+
+fn compiler_artifact_count_from_unit_graph(unit_graph: &[u8]) -> Result<usize> {
+    let unit_graph: serde_json::Value =
+        serde_json::from_slice(unit_graph).context("Failed to parse cargo unit graph")?;
+    let units = unit_graph
+        .get("units")
+        .and_then(serde_json::Value::as_array)
+        .context("cargo unit graph missing `units`")?;
+
+    Ok(units
+        .iter()
+        .filter(|unit| unit.get("mode").and_then(serde_json::Value::as_str) == Some("build"))
+        .count())
 }
 
 /// Detect the rustc version that the build subprocess will use.
@@ -474,8 +589,9 @@ fn generate_abi_file(
     bin_name: &str,
     output_path: &Path,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<()> {
-    let abi = match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root) {
+    let abi = match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root, features) {
         Ok(Some(abi)) => abi,
         Ok(None) => {
             eprintln!("No pvm_contract found, skipping ABI generation");
@@ -486,7 +602,8 @@ fn generate_abi_file(
         }
     };
 
-    let storage_layout = abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root)?;
+    let storage_layout =
+        abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root, features)?;
 
     let json = if let Some(layout) = storage_layout {
         let abi_value = serde_json::to_value(&abi).context("Failed to serialize ABI")?;

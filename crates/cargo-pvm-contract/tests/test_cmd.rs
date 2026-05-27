@@ -2,6 +2,109 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "reason")]
+enum BuildJsonLine {
+    #[serde(rename = "cargo-pvm-contract-build-plan")]
+    BuildPlan {
+        schema_version: u64,
+        total: u64,
+        unit: String,
+    },
+    #[serde(rename = "compiler-artifact")]
+    CompilerArtifact,
+    #[serde(rename = "build-finished")]
+    BuildFinished,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Default)]
+struct BuildJsonSummary {
+    plan: Option<BuildPlanSummary>,
+    compiler_artifacts: u64,
+    build_finished: u64,
+    json_lines: u64,
+}
+
+struct BuildPlanSummary {
+    schema_version: u64,
+    total: u64,
+    unit: String,
+}
+
+impl BuildJsonSummary {
+    fn record_line(mut self, line: &str) -> Self {
+        let line: BuildJsonLine = serde_json::from_str(line).expect("stdout line is JSON");
+        self.json_lines += 1;
+        match line {
+            BuildJsonLine::BuildPlan {
+                schema_version,
+                total,
+                unit,
+            } => {
+                self.plan = Some(BuildPlanSummary {
+                    schema_version,
+                    total,
+                    unit,
+                });
+            }
+            BuildJsonLine::CompilerArtifact => self.compiler_artifacts += 1,
+            BuildJsonLine::BuildFinished => self.build_finished += 1,
+            BuildJsonLine::Other => {}
+        }
+        self
+    }
+
+    fn plan(&self) -> &BuildPlanSummary {
+        self.plan
+            .as_ref()
+            .expect("stdout should include a cargo-pvm-contract-build-plan line")
+    }
+
+    fn assert_consistent(&self) {
+        assert!(self.json_lines > 0, "stdout should include Cargo JSON");
+        assert!(
+            self.compiler_artifacts > 0,
+            "stdout should include cargo compiler-artifact JSON lines"
+        );
+        assert_eq!(
+            self.plan().total,
+            self.compiler_artifacts,
+            "build plan total should match streamed compiler-artifact count"
+        );
+    }
+
+    fn snapshot(&self, project_dir: &Path, binary_name: &str) -> serde_json::Value {
+        let plan = self.plan();
+        let polkavm_path = project_dir
+            .join("target")
+            .join("release")
+            .join(format!("{binary_name}.polkavm"));
+        let abi_path = project_dir
+            .join("target")
+            .join("release")
+            .join(format!("{binary_name}.abi.json"));
+
+        serde_json::json!({
+            "build_plan": {
+                "reason": "cargo-pvm-contract-build-plan",
+                "schema_version": plan.schema_version,
+                "total": "<matches streamed compiler-artifact count>",
+                "unit": &plan.unit,
+            },
+            "cargo_stream": {
+                "compiler_artifacts": "<matches build_plan.total>",
+                "build_finished": self.build_finished,
+            },
+            "artifacts": {
+                "polkavm": polkavm_path.exists(),
+                "abi_json": abi_path.exists(),
+            },
+        })
+    }
+}
+
 fn workspace_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -70,6 +173,59 @@ fn build_project(project_dir: &Path, profile: &str) {
         status.success(),
         "cargo pvm-contract build ({profile}) failed"
     );
+}
+
+#[test]
+fn build_streams_json_message_format_and_writes_artifacts() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let project_dir = scaffold_new_contract(&temp_dir, "json-build-output", "macro", None);
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"))
+        .current_dir(&project_dir)
+        .arg("pvm-contract")
+        .arg("build")
+        .arg("--message-format")
+        .arg("json,json-diagnostic-rendered-ansi")
+        .output()
+        .expect("run cargo pvm-contract build --message-format json");
+
+    assert!(
+        output.status.success(),
+        "cargo pvm-contract build --message-format json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary = String::from_utf8(output.stdout)
+        .expect("stdout is utf-8")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .fold(BuildJsonSummary::default(), BuildJsonSummary::record_line);
+    summary.assert_consistent();
+
+    expect_test::expect![[r#"
+        {
+          "artifacts": {
+            "abi_json": true,
+            "polkavm": true
+          },
+          "build_plan": {
+            "reason": "cargo-pvm-contract-build-plan",
+            "schema_version": 1,
+            "total": "<matches streamed compiler-artifact count>",
+            "unit": "compiler-artifact"
+          },
+          "cargo_stream": {
+            "build_finished": 1,
+            "compiler_artifacts": "<matches build_plan.total>"
+          }
+        }"#]]
+    .assert_eq(
+        &serde_json::to_string_pretty(&summary.snapshot(&project_dir, "json-build-output"))
+            .expect("serialize normalized build summary"),
+    );
+
+    verify_build_artifacts(&project_dir, "json-build-output", "release");
 }
 
 fn run_cli_test(project_dir: &Path) {
@@ -373,4 +529,126 @@ fn cli_test_supports_manifest_path_from_outside_project_dir() {
     let manifest_path = project_dir.join("Cargo.toml");
 
     run_cli_test_with_manifest(&manifest_path, temp_dir.path());
+}
+
+/// Remove the standalone `[workspace]` table that the scaffold template adds
+/// to each member's `Cargo.toml`, so the crate can be included in a parent
+/// workspace. Parsing with `toml_edit` keeps this robust against template
+/// whitespace/ordering changes.
+fn strip_workspace_table(manifest: &Path) {
+    let content = std::fs::read_to_string(manifest).expect("read member Cargo.toml");
+    let mut doc: toml_edit::DocumentMut = content.parse().expect("parse member Cargo.toml");
+    doc.remove("workspace");
+    std::fs::write(manifest, doc.to_string()).expect("write member Cargo.toml");
+}
+
+#[test]
+fn build_selects_workspace_member_via_package_flag() {
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    let pkg_a = scaffold_new_contract(&temp_dir, "ws-pkg-a", "macro", None);
+    let pkg_b = scaffold_new_contract(&temp_dir, "ws-pkg-b", "macro", None);
+
+    strip_workspace_table(&pkg_a.join("Cargo.toml"));
+    strip_workspace_table(&pkg_b.join("Cargo.toml"));
+
+    let workspace_manifest = temp_dir.path().join("Cargo.toml");
+    std::fs::write(
+        &workspace_manifest,
+        "[workspace]\nresolver = \"2\"\nmembers = [\"ws-pkg-a\", \"ws-pkg-b\"]\n",
+    )
+    .expect("write workspace Cargo.toml");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .arg("pvm-contract")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&workspace_manifest)
+        .arg("-p")
+        .arg("ws-pkg-a");
+
+    let status = cmd.status().expect("run cargo pvm-contract build -p");
+    assert!(status.success(), "build -p ws-pkg-a failed");
+
+    let target_release = temp_dir.path().join("target").join("release");
+    assert!(
+        target_release.join("ws-pkg-a.polkavm").exists(),
+        "ws-pkg-a.polkavm should exist at workspace target/release"
+    );
+    assert!(
+        target_release.join("ws-pkg-a.abi.json").exists(),
+        "ws-pkg-a.abi.json should exist at workspace target/release"
+    );
+    assert!(
+        !target_release.join("ws-pkg-b.polkavm").exists(),
+        "ws-pkg-b.polkavm should NOT exist — only ws-pkg-a was selected"
+    );
+}
+
+#[test]
+fn build_forwards_features_with_package_flag() {
+    let temp_dir = TempDir::new().expect("temp dir");
+
+    let pkg = scaffold_new_contract(&temp_dir, "ws-feat-pkg", "macro", None);
+    strip_workspace_table(&pkg.join("Cargo.toml"));
+
+    // Add a `gated-build` feature to the member.
+    let member_manifest = pkg.join("Cargo.toml");
+    let content = std::fs::read_to_string(&member_manifest).expect("read member Cargo.toml");
+    let mut doc: toml_edit::DocumentMut = content.parse().expect("parse member Cargo.toml");
+    let features = doc
+        .entry("features")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()))
+        .as_table_mut()
+        .expect("[features] table");
+    features.insert("gated-build", toml_edit::value(toml_edit::Array::new()));
+    std::fs::write(&member_manifest, doc.to_string()).expect("write member Cargo.toml");
+
+    // Make the contract refuse to compile unless `gated-build` is on. This
+    // proves the feature was actually forwarded — without it, the build
+    // would hit `compile_error!`. Appended after the scaffold's inner
+    // attributes so it doesn't push them past an item.
+    let src = pkg.join("src/ws-feat-pkg.rs");
+    let mut source = std::fs::read_to_string(&src).expect("read contract source");
+    source.push_str(
+        "\n#[cfg(not(feature = \"gated-build\"))]\ncompile_error!(\"gated-build feature is required\");\n",
+    );
+    std::fs::write(&src, source).expect("write contract source");
+
+    let workspace_manifest = temp_dir.path().join("Cargo.toml");
+    std::fs::write(
+        &workspace_manifest,
+        "[workspace]\nresolver = \"2\"\nmembers = [\"ws-feat-pkg\"]\n",
+    )
+    .expect("write workspace Cargo.toml");
+
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .arg("pvm-contract")
+        .arg("build")
+        .arg("--manifest-path")
+        .arg(&workspace_manifest)
+        .arg("-p")
+        .arg("ws-feat-pkg")
+        .arg("--features")
+        .arg("gated-build");
+
+    let status = cmd
+        .status()
+        .expect("run cargo pvm-contract build -p ... --features ...");
+    assert!(
+        status.success(),
+        "build -p ws-feat-pkg --features gated-build failed"
+    );
+
+    let target_release = temp_dir.path().join("target").join("release");
+    assert!(
+        target_release.join("ws-feat-pkg.polkavm").exists(),
+        "ws-feat-pkg.polkavm should exist at workspace target/release"
+    );
+    assert!(
+        target_release.join("ws-feat-pkg.abi.json").exists(),
+        "ws-feat-pkg.abi.json should exist — proves --features reached the abi-gen invocation too"
+    );
 }

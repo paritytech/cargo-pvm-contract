@@ -112,6 +112,17 @@ fn generate_abi_gen_impl(
         .map(generate_method_entry)
         .collect::<syn::Result<Vec<_>>>()?;
 
+    let receive_entry = if parsed.has_receive {
+        let mutability = StateMutability::Payable.as_abi_str();
+        quote! {
+            __items.push(::pvm_contract_sdk::AbiItem::Receive {
+                state_mutability: Some(#mutability.into()),
+            });
+        }
+    } else {
+        quote! {}
+    };
+
     // Emit error ABI entries by calling error_signatures() on each error type.
     // Deduplication uses exact-match on the full signature ("Name(type1,type2)")
     // so that overloaded errors with different params are all emitted.
@@ -174,6 +185,17 @@ fn generate_abi_gen_impl(
         quote! {}
     };
 
+    // Event ABI entries from #[derive(SolEvent)] types in the module.
+    let event_entries: Vec<TokenStream> = parsed
+        .event_idents
+        .iter()
+        .map(|ident| {
+            quote! {
+                __items.push(#ident::abi_item());
+            }
+        })
+        .collect();
+
     // Framework errors are parameterless (`Name()`). Only suppress when a
     // user-defined error has the exact same signature. A user-defined
     // `error InvalidCalldata(uint256)` has a different selector and must
@@ -207,7 +229,11 @@ fn generate_abi_gen_impl(
 
             #(#method_entries)*
 
+            #receive_entry
+
             #(#error_entries)*
+
+            #(#event_entries)*
 
             #(#framework_error_entries)*
 
@@ -307,7 +333,11 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[]);
@@ -413,7 +443,11 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
+            event_idents: vec![],
         }
     }
 
@@ -502,7 +536,11 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -548,7 +586,11 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[]);
@@ -587,7 +629,11 @@ mod tests {
             fallback_name: None,
             fallback_returns_result: false,
             fallback_is_payable: false,
+            has_receive: false,
+            receive_name: None,
+            receive_returns_result: false,
             error_types: vec![],
+            event_idents: vec![],
         };
 
         let slot_fields = vec![SlotField {
