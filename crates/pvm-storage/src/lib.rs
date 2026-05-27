@@ -967,8 +967,8 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     const PACKED_BYTES: usize = 32;
 
     fn new_at(slot: u64, offset: u8, host: Host) -> Self {
-        debug_assert_eq!(
-            offset, 0,
+        debug_assert!(
+            offset == 0,
             "Mapping<K, V> always full-slot; offset must be 0"
         );
         let _ = offset;

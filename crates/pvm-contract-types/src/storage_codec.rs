@@ -259,7 +259,7 @@ macro_rules! impl_uint {
 
             #[inline]
             fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-                debug_assert_eq!(_slot_idx, 0);
+                debug_assert!(_slot_idx == 0);
                 *buf = [0u8; 32];
                 <Self as StoragePackable>::pack_into(self, buf, 32 - $bytes);
             }
@@ -320,7 +320,7 @@ impl StorageEncode for U256 {
 
     #[inline]
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         *buf = self.to_be_bytes::<32>();
     }
 
@@ -347,13 +347,13 @@ impl StoragePackable for U256 {
 
     #[inline]
     fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        debug_assert_eq!(offset, 0, "U256 takes a full slot");
+        debug_assert!(offset == 0, "U256 takes a full slot");
         *buf = self.to_be_bytes::<32>();
     }
 
     #[inline]
     fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
-        debug_assert_eq!(offset, 0, "U256 takes a full slot");
+        debug_assert!(offset == 0, "U256 takes a full slot");
         U256::from_be_bytes(*buf)
     }
 }
@@ -365,7 +365,7 @@ impl StorageEncode for I256 {
 
     #[inline]
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         *buf = self.to_be_bytes();
     }
 
@@ -392,13 +392,13 @@ impl StoragePackable for I256 {
 
     #[inline]
     fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
-        debug_assert_eq!(offset, 0, "I256 takes a full slot");
+        debug_assert!(offset == 0, "I256 takes a full slot");
         *buf = self.to_be_bytes();
     }
 
     #[inline]
     fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
-        debug_assert_eq!(offset, 0, "I256 takes a full slot");
+        debug_assert!(offset == 0, "I256 takes a full slot");
         I256::from_be_slice(buf)
     }
 }
@@ -411,7 +411,7 @@ impl StorageEncode for bool {
 
     #[inline]
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         *buf = [0u8; 32];
         <Self as StoragePackable>::pack_into(self, buf, 31);
     }
@@ -456,7 +456,7 @@ impl StorageEncode for Address {
 
     #[inline]
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         *buf = [0u8; 32];
         <Self as StoragePackable>::pack_into(self, buf, 12);
     }
@@ -513,7 +513,7 @@ impl<const N: usize> StorageEncode for [u8; N] {
                 "bytesN storage only valid for N in 1..=32"
             )
         };
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         *buf = [0u8; 32];
         <Self as StoragePackable>::pack_into(self, buf, 32 - N);
     }
@@ -861,7 +861,7 @@ impl StorageEncode for alloc::string::String {
     const HAS_DYNAMIC_BODY: bool = true;
 
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         let bytes = self.as_bytes();
         *buf = [0u8; 32];
         let len = bytes.len();

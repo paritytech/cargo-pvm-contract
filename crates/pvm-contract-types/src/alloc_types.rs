@@ -82,7 +82,7 @@ impl crate::StorageEncode for Bytes {
     const HAS_DYNAMIC_BODY: bool = true;
 
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert_eq!(_slot_idx, 0);
+        debug_assert!(_slot_idx == 0);
         *buf = [0u8; 32];
         let len = self.0.len();
         if len < 32 {
