@@ -1,6 +1,8 @@
 # Proc Macros for PVM Smart Contracts
 
-Annotate a module with `#[contract]` and functions with `#[method]`. The macro generates entry points, calldata dispatch, and ABI encoding automatically.
+Annotate a module with `#[contract]` and impl methods with `#[method]`, `#[constructor]`, `#[fallback]`, or `#[receive]`. The macro generates entry points, calldata dispatch, ABI encoding, and (under `--features abi-gen`) the ABI JSON and storage layout JSON.
+
+> The user-facing crate is `pvm_contract_sdk`, which re-exports the macros from `pvm_contract_macros` together with the runtime types (`Lazy`, `Mapping`, `Address`, ABI traits, etc.). The two attribute paths (`#[pvm_contract_sdk::contract]` and `#[pvm_contract_macros::contract]`) are equivalent; the SDK path is preferred in user code.
 
 ## Basic Usage
 
@@ -8,100 +10,73 @@ Annotate a module with `#[contract]` and functions with `#[method]`. The macro g
 #![no_main]
 #![no_std]
 
-use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+use pvm_contract_sdk::{Address, Lazy, Mapping};
 use ruint::aliases::U256;
 
-#[pvm_contract_macros::contract("Counter.sol")]
-mod counter {
+#[pvm_contract_sdk::contract("MyToken.sol", allocator = "bump")]
+mod my_token {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum Error {}
-
-    impl AsRef<[u8]> for Error {
-        fn as_ref(&self) -> &[u8] { match *self {} }
+    pub struct MyToken {
+        total_supply: Lazy<U256>,
+        balances: Mapping<Address, U256>,
     }
 
-    #[pvm_contract_macros::constructor]
-    pub fn new() -> Result<(), Error> { Ok(()) }
+    impl MyToken {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self, initial: U256) {
+            self.total_supply.set(&initial);
+            let caller = self.caller();
+            self.balances.insert(&caller, &initial);
+        }
 
-    #[pvm_contract_macros::fallback]
-    pub fn fallback() -> Result<(), Error> { Ok(()) }
+        #[pvm_contract_sdk::method]
+        pub fn total_supply(&self) -> U256 {
+            self.total_supply.get()
+        }
 
-    #[pvm_contract_macros::method]
-    pub fn get_value() -> U256 {
-        let key = [0u8; 32];
-        let mut buf = [0u8; 32];
-        let mut slice = &mut buf[..];
-        match api::get_storage(StorageFlags::empty(), &key, &mut slice) {
-            Ok(_) => U256::from_be_bytes::<32>(buf),
-            Err(_) => U256::ZERO,
+        #[pvm_contract_sdk::method]
+        pub fn balance_of(&self, account: Address) -> U256 {
+            self.balances.get(&account)
         }
     }
-
-    #[pvm_contract_macros::method]
-    pub fn increment() {
-        let value = get_value() + U256::from(1);
-        let key = [0u8; 32];
-        api::set_storage(StorageFlags::empty(), &key, &value.to_be_bytes::<32>());
-    }
 }
 ```
 
-The macro reads the `.sol` interface to compute Keccak-256 selectors. The Solidity file is only an interface (no implementation):
+The macro reads the `.sol` interface (if provided) to validate that every declared function is implemented and to compute Keccak-256 selectors. The Solidity file is only an interface — no implementation:
 
 ```solidity
-// Counter.sol
-interface Counter {
-    function getValue() external view returns (uint256);
-    function increment() external;
+// MyToken.sol
+interface MyToken {
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
 }
 ```
 
-**Without a .sol file** — selectors are inferred from Rust function signatures. Rust `snake_case` names are converted to `camelCase` for the Solidity signature:
+**Without a `.sol` file** — selectors are inferred from Rust function signatures. Rust `snake_case` is converted to `camelCase` for the Solidity signature.
 
-```rust,ignore
-#[pvm_contract_macros::contract]
-mod counter {
-    #[pvm_contract_macros::method]
-    pub fn get_value() -> U256 { ... }
-    // → selector for "getValue()" = 0xff2551a1
-}
-```
+## Contract Attribute Arguments
+
+| Argument             | Default | Description                                                                                                                       |
+| -------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `"path.sol"`         | none    | Solidity interface file (validates every function is implemented and that `stateMutability` agrees with the Rust receiver shape) |
+| `buffer = N`         | 256     | Stack calldata buffer size (no-alloc mode)                                                                                        |
+| `allocator = "pico"` | none    | Use picoalloc heap allocator (required to *return* dynamic types like `String` / `Vec`)                                           |
+| `allocator = "bump"` | none    | Use bump allocator (no free, smaller than picoalloc)                                                                              |
+| `allocator_size = N` | 1024    | Heap size in bytes for allocator modes                                                                                            |
+| `no_main`            | off     | Suppress the `fn main()` emission so a `#[contract]` can sit inside an integration test or library crate                          |
 
 ## Allocator Options
 
-Contracts run in `no_std`. If you need heap allocation (`Vec`, `String`), you must choose an allocator.
+Contracts run in `no_std`. If you need heap allocation (`Vec`, `String`), choose an allocator.
 
-### No Allocator (default)
-
-Stack-only. Calldata is read into a fixed-size buffer. Only static return types allowed. Smallest binary size.
-
-```rust,ignore
-#[pvm_contract_macros::contract("Counter.sol", buffer = 256)]
-mod counter { ... }
-```
-
-### Bump Allocator
-
-Simple bump allocator from `pvm-bump-allocator`. Never frees memory (fine for short-lived contract calls). Based on ink!'s allocator design.
+- **No allocator (default).** Stack-only. Calldata is read into a fixed-size buffer. Only static return types allowed. Smallest binary.
+- **Bump.** Simple bump allocator from `pvm-bump-allocator`. Never frees. Fine for short-lived contract calls.
+- **Pico.** Third-party allocator with actual `free` support. Slightly larger binary.
 
 ```rust,ignore
-#[pvm_contract_macros::contract("Counter.sol", allocator = "bump")]
-mod counter { ... }
-
-// Custom heap size (default 1024 bytes):
-#[pvm_contract_macros::contract("Counter.sol", allocator = "bump", allocator_size = 4096)]
-mod counter { ... }
-```
-
-### Picoalloc
-
-Third-party allocator with actual free support. Slightly larger binary.
-
-```rust,ignore
-#[pvm_contract_macros::contract("Counter.sol", allocator = "pico", allocator_size = 2048)]
-mod counter { ... }
+#[pvm_contract_sdk::contract("MyToken.sol", allocator = "pico", allocator_size = 2048)]
+mod my_token { ... }
 ```
 
 ## Contract Anatomy
@@ -113,135 +88,219 @@ deploy()  — called once during contract instantiation (constructor)
 call()    — called on every subsequent interaction
 ```
 
-The `#[contract]` macro generates both. Inside `deploy()`, it:
+`deploy()` reads constructor calldata, decodes via `SolDecode`, calls `#[constructor]`, and returns to the caller.
 
-1. Reads constructor calldata from the host
-2. Decodes parameters using `SolDecode` (if the constructor has parameters)
-3. Calls the `#[constructor]` function
-4. Returns to the caller
+`call()`:
 
-Inside `call()`, it:
+1. Reads calldata via `HostFnImpl::call_data_copy`
+2. If calldata is empty and a `#[receive]` handler is present, dispatches there
+3. Otherwise extracts the 4-byte selector from `calldata[0..4]`, matches a registered method, decodes parameters via `SolDecode`, calls the user function, and encodes the return via `SolEncode`
+4. If the selector matches no method (or calldata is 1..=3 bytes), falls through to `#[fallback]` if present, else reverts
+5. If the user function returns `Err(e)`, the error is encoded via `SolRevert::revert_data` and returned with `REVERT` flags
 
-1. Reads calldata from the host via `HostFnImpl::call_data_copy`
-2. Extracts the 4-byte selector from calldata[0..4]
-3. Matches the selector against registered methods
-4. Decodes parameters using `SolDecode`
-5. Calls your function
-6. Encodes the return value using `SolEncode`
-7. Returns to the caller via `HostFnImpl::return_value`
+## Method, Constructor, Fallback, Receive
 
-If no selector matches, the `#[fallback]` handler runs.
+- `#[method]` — public contract method. Optional `#[method(rename = "name")]` overrides the Solidity name (default: `snake_case` → `camelCase`).
+- `#[constructor]` — runs once at deployment. Must take `&mut self`; pure/view constructors are rejected because they cannot initialize storage.
+- `#[fallback]` — invoked when no method selector matches (or calldata is 1..=3 bytes).
+- `#[receive]` — invoked on plain value transfers (empty calldata). Must take `&mut self` and no other arguments. Implicitly payable; `#[payable]` is rejected as redundant.
+- `#[payable]` — marks a method as payable. Must be combined with `&mut self`. Adding it to a no-receiver or `&self` method is a compile error.
+
+When both `#[receive]` and `#[fallback]` are present, `receive` fires first on empty calldata.
+
+### Mutability Inference
+
+Solidity `stateMutability` is inferred from the Rust receiver shape. There is no explicit `#[view]` or `#[pure]` attribute.
+
+| Receiver              | `#[payable]` | ABI emits           |
+| --------------------- | ------------ | ------------------- |
+| none (`fn foo(args)`) | —            | `pure`              |
+| `&self`               | —            | `view`              |
+| `&mut self`           | —            | `nonpayable`        |
+| `&mut self`           | yes          | `payable`           |
+| `&self`               | yes          | **compile error**   |
+| no receiver           | yes          | **compile error**   |
+
+If a `.sol` interface is provided, the macro rejects any mismatch between the Rust-inferred mutability and the `.sol` declaration.
 
 ## Storage
 
-There is no storage abstraction. You interact with the host directly:
+Storage helpers live in `pvm-storage` (re-exported from `pvm-contract-sdk`). The two primary types are `Lazy<T>` (single value at a fixed slot) and `Mapping<K, V>` (key-value).
+
+Declare fields directly on the contract struct. Two layout modes:
+
+- **Auto-numbered (default).** Omit `#[slot]` and the macro assigns slots in declaration order. Sub-word siblings pack into a shared slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, both in slot 0).
+- **Explicit `#[slot(N)]`.** Pins a field at slot `N`. Restricted to full-slot types (`Mapping`, `Lazy<U256>`, `Lazy<String>`, multi-slot composites, `#[storage]` sub-structs). Sub-word types are rejected because solc would place them at byte `32 - sizeof(T)`, while explicit-slot mode would place them at byte 0. Mixing the two modes within one struct is not supported.
+
+`#[slot(N)]` is mainly useful when fields need `#[cfg(...)]` gating — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
 
 ```rust,ignore
-use pallet_revive_uapi::{HostFnImpl as api, StorageFlags};
+#[pvm_contract_sdk::contract("MyToken.sol")]
+mod my_token {
+    use super::*;
 
-// Write a value
-api::set_storage(StorageFlags::empty(), &key, &value_bytes);
-
-// Read a value
-let mut buf = [0u8; 32];
-let mut slice = &mut buf[..];
-match api::get_storage(StorageFlags::empty(), &key, &mut slice) {
-    Ok(_) => { /* buf contains the value */ }
-    Err(_) => { /* key not found */ }
-}
-```
-
-## Events
-
-Also manual — construct topic arrays and call the host:
-
-```rust,ignore
-// keccak256("Incremented(uint256)")
-const INCREMENTED_EVENT_SIG: [u8; 32] = [
-    0xe4, 0x8d, 0x01, 0x33, 0xf3, 0xb5, 0xf8, 0x87,
-    0x0a, 0x62, 0xab, 0x1a, 0xd7, 0x0b, 0x7e, 0x6c,
-    0x5a, 0x9e, 0x79, 0x43, 0xa8, 0x6c, 0x28, 0xd6,
-    0x21, 0x67, 0xf2, 0x97, 0x59, 0x92, 0xd5, 0x0a,
-];
-
-fn emit_incremented(new_value: U256) {
-    // topics[0] = event signature hash
-    let topics = [INCREMENTED_EVENT_SIG];
-    let data = new_value.to_be_bytes::<32>();
-    api::deposit_event(&topics, &data);
-}
-```
-
-## Error Handling
-
-Methods can return `Result<T, Error>` or plain `T`:
-
-```rust,ignore
-// Fallible — Err reverts the transaction with the error message
-#[pvm_contract_macros::method]
-pub fn decrement() -> Result<(), Error> {
-    let value = get_value();
-    if value == U256::ZERO {
-        return Err(Error::Underflow);
+    pub struct MyToken {
+        total_supply: Lazy<U256>,
+        balances: Mapping<Address, U256>,
+        allowances: Mapping<Address, Mapping<Address, U256>>,
     }
-    let key = [0u8; 32];
-    api::set_storage(StorageFlags::empty(), &key, &(value - U256::from(1)).to_be_bytes::<32>());
-    Ok(())
-}
 
-// Infallible — always succeeds
-#[pvm_contract_macros::method]
-pub fn get_value() -> U256 {
-    // read from storage...
-}
-```
+    impl MyToken {
+        #[pvm_contract_sdk::method]
+        pub fn balance_of(&self, account: Address) -> U256 {
+            self.balances.get(&account)
+        }
 
-The `Error` enum must implement `AsRef<[u8]>` so the macro can serialize it on revert:
-
-```rust,ignore
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Error {
-    Underflow,
-}
-
-impl AsRef<[u8]> for Error {
-    fn as_ref(&self) -> &[u8] {
-        match *self {
-            Error::Underflow => b"Underflow",
+        #[pvm_contract_sdk::method]
+        pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
+            let caller = self.caller();
+            let mut cell = self.balances.entry(&caller);
+            let bal = cell.get();
+            if bal < amount {
+                return Err(InsufficientBalance { required: amount, available: bal }.into());
+            }
+            cell.set(&(bal - amount));
+            self.balances.insert(&to, &(self.balances.get(&to) + amount));
+            Ok(())
         }
     }
 }
 ```
 
-## Custom Types
+Mutability gating comes from the borrow checker: `&self` methods can only call `get` / `try_get` on storage fields; `&mut self` can also call `set`, `insert`, `entry`, and `remove`. To prevent a view method from reconstructing a writable handle from `self.host().clone()` plus a derived `StorageKey`, `Lazy::new` and `Mapping::new` are `unsafe fn` — the macro path (`StorageComponent::new_at`) stays safe, and `#![forbid(unsafe_code)]` at the contract crate root closes the reconstruction bypass entirely.
 
-Use `#[derive(SolType)]` to make structs usable as method parameters or return types:
+### `#[storage]` Sub-Structs
+
+A `#[storage]`-derived struct is itself a storage component and can be embedded in a contract struct. The auto-numbering walker reserves a contiguous slot range for it:
 
 ```rust,ignore
-#[derive(pvm_contract_macros::SolType)]
+#[pvm_contract_sdk::storage]
+pub struct Erc20State {
+    pub total_supply: Lazy<U256>,
+    pub balances: Mapping<Address, U256>,
+    pub allowances: Mapping<Address, Mapping<Address, U256>>,
+}
+
+#[pvm_contract_sdk::contract("MyToken.sol")]
+mod my_token {
+    use super::*;
+
+    pub struct MyToken {
+        erc20: Erc20State,     // 3 slots, auto-numbered starting at slot 0
+        paused: Lazy<bool>,    // slot 3
+    }
+    // ...
+}
+```
+
+Under `--features abi-gen`, embedded `#[storage]` sub-structs flatten into the `storageLayout` JSON with dotted labels (`erc20.total_supply`, `erc20.balances`, …) so `cast storage` and other Solidity tooling can navigate the layout.
+
+`#[storage]` structs may not derive `Clone` (it would let a view method clone the component and obtain a fresh `&mut`), and per-field `#[cfg]` is rejected for the same slot-shifting reason as on the contract struct.
+
+### Dynamic Values
+
+`Lazy<String>`, `Lazy<Bytes>`, and `Mapping<K, V>` with `V = String` / `Bytes` / a `#[derive(SolType)]` struct containing dynamic fields all use solc's inline/spilled `bytes`/`string` storage layout. `Vec<u8>` is rejected as a storage value (its ABI name is `"uint8[]"`, a different on-chain layout) — use `Bytes` for `bytes`-shaped storage; `Vec<u8>` remains valid as an ABI parameter type and as a mapping key.
+
+### Raw Host Calls
+
+For advanced cases, raw uAPI calls remain available through `PolkaVmHost`:
+
+```rust,ignore
+use pvm_contract_sdk::{PolkaVmHost, StorageFlags};
+
+PolkaVmHost::get_storage_or_zero(StorageFlags::empty(), &key, &mut output);
+PolkaVmHost::set_storage_or_clear(StorageFlags::empty(), &key, &data);
+```
+
+These bypass the typed-storage view enforcement; the host's STATICCALL boundary and the runtime payable guard still apply.
+
+## Error Handling
+
+The SDK splits error encoding into two traits:
+
+- `SolError` — implemented per error struct. Carries a 4-byte selector (`keccak256` of the canonical signature) and ABI-encodes its fields.
+- `SolRevert` — the dispatch-boundary trait. Has a blanket impl for any `T: SolError`; for error enums, use `sol_revert_enum!` to generate the enum plus the `SolRevert` impl with auto-injected `RevertString` and `Panic` variants.
+
+```rust,ignore
+use pvm_contract_sdk::{sol_revert_enum, SolError};
+
+#[derive(SolError)]
+#[sol_error(name = "InsufficientBalance")]
+pub struct InsufficientBalance {
+    pub required: U256,
+    pub available: U256,
+}
+
+sol_revert_enum! {
+    pub enum TokenError {
+        InsufficientBalance(InsufficientBalance),
+    }
+}
+
+#[pvm_contract_sdk::method]
+pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
+    // returning `Err(TokenError::InsufficientBalance { ... })` reverts with the
+    // ABI-encoded `InsufficientBalance(uint256,uint256)` payload that solc and
+    // viem decode automatically.
+}
+```
+
+Infallible methods (return type `T`, not `Result<T, E>`) cannot revert by returning an error. They can still trigger a `Panic(uint256)` revert via overflow / division-by-zero, or use a plain `revert("reason")` macro.
+
+## Custom Types
+
+`#[derive(SolType)]` makes a struct usable as method parameter, return type, or storage value:
+
+```rust,ignore
+#[derive(pvm_contract_sdk::SolType)]
 pub struct Point {
     pub x: U256,
     pub y: U256,
 }
 
-#[pvm_contract_macros::method]
-pub fn set_point(point: Point) { ... }
+#[pvm_contract_sdk::method]
+pub fn set_point(&mut self, point: Point) { /* ... */ }
 
-#[pvm_contract_macros::method]
-pub fn get_point() -> Point {
+#[pvm_contract_sdk::method]
+pub fn get_point(&self) -> Point {
     Point { x: U256::from(1), y: U256::from(2) }
 }
 ```
 
-This generates `SolEncode`, `SolDecode`, and `StaticEncodedLen` implementations. The ABI encoding follows Solidity tuple layout. See [specs/abi.md](https://github.com/paritytech/cargo-pvm-contract/blob/main/specs/abi.md) for encoding details.
+The derive emits `SolEncode`, `SolDecode`, `SolArrayElement`, and (under `--features abi-gen`) the storage-layout walker. Static structs (all fields have compile-time-known sizes) implement `StaticEncodedLen`; structs with dynamic fields (`String`, `Vec`, nested dynamic structs) use head + tail offset encoding.
+
+See [specs/abi.md](abi.md) for the full encoding specification.
+
+## Events
+
+`#[derive(SolEvent)]` generates the event signature constant and emit helper:
+
+```rust,ignore
+#[derive(pvm_contract_sdk::SolEvent)]
+pub struct Transfer {
+    #[indexed]
+    pub from: Address,
+    #[indexed]
+    pub to: Address,
+    pub value: U256,
+}
+
+#[pvm_contract_sdk::method]
+pub fn transfer(&mut self, to: Address, value: U256) {
+    // ... state updates ...
+    Transfer { from: self.caller(), to, value }.emit(self.host());
+}
+```
+
+`#[indexed]` fields become topics (max 3 after the signature topic); the rest are ABI-encoded into the data payload.
 
 ## ABI Generation
 
-When using the proc macro style, the build system automatically generates a `.abi.json` file:
+When the contract is built with `cargo pvm-contract build` (or `PvmBuilder::new().build()` in a `build.rs`), the build system runs the contract under `--features abi-gen` and emits:
 
 ```text
-target/release/counter.polkavm      — deployable bytecode
-target/release/counter.abi.json     — Ethereum-compatible ABI JSON
+target/<profile>/<binary-name>.polkavm      — deployable bytecode
+target/<profile>/<binary-name>.abi.json     — Ethereum-compatible ABI JSON (functions, events, errors, storageLayout)
 ```
 
-The ABI JSON follows the standard Ethereum ABI format, so it can be used with viem, ethers.js, or any tool that consumes Solidity ABIs.
+The ABI JSON follows the standard Ethereum ABI format and can be consumed by viem, ethers.js, alloy, `cast`, or any tool that reads Solidity ABIs. The `storageLayout` section follows solc's shape so `cast storage <addr> <name>` resolves slot addresses correctly.

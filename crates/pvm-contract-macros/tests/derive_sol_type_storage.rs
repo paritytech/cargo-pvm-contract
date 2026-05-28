@@ -338,6 +338,69 @@ fn dynamic_field_struct_via_mapping_round_trip_spilled() {
     assert_eq!(m.get(&5u64), v);
 }
 
+// --- Struct mixing packable statics (Address + u8) with a dynamic String --
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct Review {
+    reviewer: Address,
+    rating: u8,
+    comment_uri: alloc::string::String,
+}
+
+#[test]
+fn review_takes_two_slots_and_marks_dynamic_body() {
+    // Slot 0: Address (20B at offset 12..32) + u8 (1B at offset 11) packed.
+    // Slot 1: header for `comment_uri`. Two slots total.
+    assert_eq!(<Review as StorageEncode>::STORAGE_SLOTS, 2);
+    const { assert!(<Review as StorageEncode>::HAS_DYNAMIC_BODY) };
+}
+
+#[test]
+fn review_via_mapping_round_trip_inline() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, Review>::new(StorageKey::from_slot(0), host) };
+    let v = Review {
+        reviewer: Address([0xCD; 20]),
+        rating: 5,
+        comment_uri: alloc::string::String::from("nice"),
+    };
+    m.insert(&42u64, &v);
+    assert_eq!(m.get(&42u64), v);
+}
+
+#[test]
+fn review_via_mapping_round_trip_spilled() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, Review>::new(StorageKey::from_slot(0), host) };
+    let v = Review {
+        reviewer: Address([0xCD; 20]),
+        rating: 5,
+        comment_uri: alloc::string::String::from(
+            "long enough to force solc's spill encoding so the body lives at \
+             keccak256(slot1) and the header carries the length only",
+        ),
+    };
+    m.insert(&42u64, &v);
+    assert_eq!(m.get(&42u64), v);
+}
+
+#[test]
+fn review_via_mapping_remove_clears_storage() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, Review>::new(StorageKey::from_slot(0), host) };
+    let v = Review {
+        reviewer: Address([0xCD; 20]),
+        rating: 9,
+        comment_uri: alloc::string::String::from(
+            "long enough comment to spill into keccak-derived body slots that must be cleared",
+        ),
+    };
+    m.insert(&7u64, &v);
+    assert_eq!(m.try_get(&7u64), Some(v));
+    m.remove(&7u64);
+    assert_eq!(m.try_get(&7u64), None);
+}
+
 // ========================================================================
 // Sub-word packing inside a `#[derive(SolType)]` struct stored under one
 // `Lazy<S>`.

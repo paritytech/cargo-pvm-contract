@@ -504,7 +504,7 @@ fn extract_typed_params_impl(
 /// resolves to `Clone`, ignoring fully-qualified prefixes like
 /// `core::clone::Clone`). Returns the offending derive token for span
 /// reporting, or `None` if no `Clone` is derived.
-fn find_derive_clone(attrs: &[Attribute]) -> Option<&Attribute> {
+pub(super) fn find_derive_clone(attrs: &[Attribute]) -> Option<&Attribute> {
     for attr in attrs {
         if !attr.path().is_ident("derive") {
             continue;

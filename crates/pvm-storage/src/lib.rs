@@ -167,7 +167,10 @@ fn inc_slot(slot: &mut [u8; 32]) {
 /// `feature(generic_const_exprs)` to size the stack buffer by
 /// `T::STORAGE_SLOTS`.
 ///
-/// Increase this if a contract needs larger inline static values.
+/// Increase this if a contract needs larger inline static values, but never
+/// raise it beyond `pallet-revive`'s `STORAGE_BYTES` limit (currently 416 bytes
+/// = 13 slots) — that's the hard cap the runtime enforces per storage value,
+/// so any larger buffer here would fail at host-call time on chain.
 pub const MAX_STATIC_SLOTS: usize = 8;
 
 /// Read `out.len()` consecutive slots starting at `key` into `out`.

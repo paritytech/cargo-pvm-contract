@@ -65,11 +65,26 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Fields, ItemStruct};
 
+use super::contract::find_derive_clone;
 use super::storage_layout::{ChainField, generate_layout_emit, slot_chain_consts};
 
 pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    // Same rationale as `#[contract]` storage structs: `#[storage]` components
+    // are embedded in a contract storage tree where the borrow checker enforces
+    // view-vs-mutating access (`&self` vs `&mut self`). A `Clone` impl would
+    // let a view method clone the sub-component and obtain a fresh `&mut`,
+    // bypassing the gate.
+    if let Some(bad) = find_derive_clone(&input.attrs) {
+        return Err(syn::Error::new_spanned(
+            bad,
+            "#[storage] structs must not derive `Clone`; the mutation gate \
+             (`&self` vs `&mut self`) relies on the storage component being \
+             `!Clone` to prevent view methods from smuggling out a `&mut`",
+        ));
+    }
 
     let named = match &input.fields {
         Fields::Named(named) => named,
@@ -306,6 +321,20 @@ mod tests {
         let input = parse("pub struct E {}");
         let err = expand_storage_struct(input).unwrap_err().to_string();
         assert!(err.contains("at least one storage field"), "Got: {err}");
+    }
+
+    #[test]
+    fn rejects_derive_clone() {
+        let input = parse(
+            r#"
+            #[derive(Clone)]
+            pub struct S {
+                a: Lazy<U256>,
+            }
+        "#,
+        );
+        let err = expand_storage_struct(input).unwrap_err().to_string();
+        assert!(err.contains("must not derive `Clone`"), "Got: {err}");
     }
 
     #[test]
