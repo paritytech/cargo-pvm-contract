@@ -1612,7 +1612,7 @@ mod tests {
         let mut buf = [0; 256];
         (10u32, [5u32, 10]).encode_to(&mut buf);
         assert_eq!(
-            unsafe { <(u32, [u32; 2])>::decode_unchecked(&mut buf, 0) },
+            unsafe { <(u32, [u32; 2])>::decode_unchecked(&buf, 0) },
             (10u32, [5u32, 10])
         );
     }
