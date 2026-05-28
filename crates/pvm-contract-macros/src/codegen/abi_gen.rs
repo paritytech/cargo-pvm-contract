@@ -298,12 +298,6 @@ fn generate_method_entry(method: &MethodInfo) -> syn::Result<TokenStream> {
         .collect();
 
     let mutability = method.mutability.as_abi_str();
-    for param in &output_params {
-        dbg!(&param.to_string());
-    }
-    dbg!(
-        quote! {vec![#(#output_params),*].into_iter().flatten().collect::<Vec<::pvm_contract_sdk::AbiParam>>()}.to_string()
-    );
     let outputs = if output_params.is_empty() {
         quote! {
             let __outputs: Vec<::pvm_contract_sdk::AbiParam> = vec![];
