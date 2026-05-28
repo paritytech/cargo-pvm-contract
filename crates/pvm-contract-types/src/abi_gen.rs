@@ -102,6 +102,40 @@ pub struct StorageLayout {
     pub storage: Vec<StorageLayoutEntry>,
 }
 
+/// Type-name resolver used by the storage-layout JSON emitter.
+///
+/// The `#[contract]` macro builds each leaf entry's `"type"` string by
+/// recursively walking field types (`Lazy<T>` unwraps, `Mapping<K, V>` builds
+/// `"mapping(K_name, V_name)"`). At leaf positions, the macro needs a way to
+/// name the type — for primitives this is [`SolEncode::SOL_NAME`] (already
+/// in this crate), for `#[storage]` sub-structs the macro emits an impl
+/// returning the Rust ident, and for storage handles (`Lazy<T>`,
+/// `Mapping<K, V>`, …) the impls live in `pvm-storage` and build their
+/// names recursively from inner type names.
+///
+/// `name()` returns `String` rather than `&'static str` because the
+/// recursive `Mapping` case has to `format!` together its inner type names,
+/// which generics-using `const` items can't do. The layout-emit path only
+/// runs under `--features abi-gen` (off-chain), so the allocation is free
+/// from the contract's perspective.
+pub trait StorageTypeName {
+    /// Solidity-compat type name used in the `"type"` field of a
+    /// `storageLayout` entry. Primitives return their solc name
+    /// (`"uint256"`, `"address"`); `#[storage]` sub-structs return their
+    /// Rust ident; `Lazy<T>` returns `T`'s name; `Mapping<K, V>` returns
+    /// `"mapping(K_name,V_name)"`.
+    fn name() -> String;
+}
+
+/// Blanket: any `T: SolEncode` forwards to `SOL_NAME`. Covers primitives
+/// (`uint256`, `address`, `bytesN`, …) and `#[derive(SolType)]` value
+/// structs automatically — no per-type wiring required for those.
+impl<T: crate::SolEncode + ?Sized> StorageTypeName for T {
+    fn name() -> String {
+        String::from(<T as crate::SolEncode>::SOL_NAME)
+    }
+}
+
 /// Serialize a [`StorageLayout`] to a JSON string.
 pub fn storage_layout_to_json(layout: &StorageLayout) -> String {
     serde_json::to_string(layout).expect("StorageLayout serialization failed")

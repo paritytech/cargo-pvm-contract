@@ -1281,7 +1281,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {
                 #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
-                    #slot_expr,
+                    ::pvm_contract_sdk::StorageKey::from_slot(#slot_expr),
                     #offset_expr,
                     host.clone(),
                 )
@@ -3155,15 +3155,16 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Each slot field is constructed via StorageComponent::new_at(N, host.clone())
+        // Each slot field is constructed via
+        // StorageComponent::new_at(StorageKey::from_slot(N), ..., host.clone())
         assert!(
-            output.contains("StorageComponent > :: new_at (0u64"),
-            "Slot field 0 should use StorageComponent::new_at(0u64, ...).\n\
+            output.contains(":: StorageKey :: from_slot (0u64)"),
+            "Slot field 0 should pass StorageKey::from_slot(0u64).\n\
              Expanded output:\n{output}"
         );
         assert!(
-            output.contains("StorageComponent > :: new_at (1u64"),
-            "Slot field 1 should use StorageComponent::new_at(1u64, ...).\n\
+            output.contains(":: StorageKey :: from_slot (1u64)"),
+            "Slot field 1 should pass StorageKey::from_slot(1u64).\n\
              Expanded output:\n{output}"
         );
         assert!(
@@ -3207,7 +3208,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let slot_init_count = output.matches("new_at (0u64").count();
+        let slot_init_count = output.matches("StorageKey :: from_slot (0u64)").count();
         assert!(
             slot_init_count >= 2,
             "Slot field should be initialized in both deploy() and call().\n\
@@ -3265,10 +3266,11 @@ mod tests {
             "Third field should chain off the second.\n\
              Expanded output:\n{output}"
         );
-        // Field construction references the slot consts (rather than literals).
+        // Field construction wraps the LayoutStep's u64 slot in StorageKey::from_slot
+        // and passes the offset.
         assert!(
-            output.contains("StorageComponent > :: new_at (__pvm_storage_slot_counter . slot , __pvm_storage_slot_counter . offset ,"),
-            "Auto-numbered fields should pass slot + offset from the LayoutStep const.\n\
+            output.contains("StorageComponent > :: new_at (:: pvm_contract_sdk :: StorageKey :: from_slot (__pvm_storage_slot_counter . slot) , __pvm_storage_slot_counter . offset ,"),
+            "Auto-numbered fields should wrap their slot in StorageKey::from_slot.\n\
              Expanded output:\n{output}"
         );
     }

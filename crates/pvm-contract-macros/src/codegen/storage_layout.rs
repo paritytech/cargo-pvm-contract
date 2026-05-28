@@ -122,7 +122,16 @@ fn is_layout_leaf(ty: &syn::Type) -> bool {
 /// Build a `String`-valued token expression that names the Solidity storage
 /// type for a storage field's Rust type. Unwraps `Lazy<T>` and recurses into
 /// `Mapping<K, V>` syntactically; everything else is named via
-/// `<T as SolEncode>::SOL_NAME`.
+/// `<T as StorageTypeName>::NAME`.
+///
+/// `StorageTypeName` (in `pvm-contract-types`) has a blanket impl for
+/// `T: SolEncode` that forwards to `SOL_NAME`, so primitives and
+/// `#[derive(SolType)]` value-shaped structs work out of the box. The
+/// `#[storage]` derive additionally emits a `StorageTypeName` impl for
+/// its target struct returning the Rust ident — this is what makes
+/// `Mapping<K, MyStorageStruct>` produce `"mapping(K, MyStorageStruct)"`
+/// in the layout JSON. Map keys (`K`) are also resolved through
+/// `StorageTypeName`, so any key type that has a name is acceptable.
 fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
     if let Some((wrapper, args)) = wrapper_and_type_args(ty) {
         match (wrapper.as_str(), args.as_slice()) {
@@ -134,7 +143,7 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
                 return quote! {
                     ::std::format!(
                         "mapping({},{})",
-                        <#k as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
+                        <#k as ::pvm_contract_sdk::StorageTypeName>::name(),
                         #v_expr,
                     )
                 };
@@ -143,7 +152,7 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
         }
     }
     quote! {
-        ::std::string::String::from(<#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME)
+        <#ty as ::pvm_contract_sdk::StorageTypeName>::name()
     }
 }
 

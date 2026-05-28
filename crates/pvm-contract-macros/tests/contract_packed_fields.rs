@@ -113,8 +113,8 @@ fn build_packed_pair(host: &Host) -> packed_pair::PackedPair {
     // Mirror what the macro emits for adjacent `Lazy<u128>` fields:
     //   __pvm_storage_slot_a = layout_step(FIRST,  16, 1) -> (slot=0, offset=16)
     //   __pvm_storage_slot_b = layout_step(prev_a, 16, 1) -> (slot=0, offset=0)
-    let a = <Lazy<u128> as StorageComponent>::new_at(0, 16, host.clone());
-    let b = <Lazy<u128> as StorageComponent>::new_at(0, 0, host.clone());
+    let a = <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, host.clone());
+    let b = <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, host.clone());
     packed_pair::PackedPair {
         a,
         b,
@@ -253,10 +253,10 @@ mod classic_layout {
 #[cfg(not(feature = "abi-gen"))]
 fn build_classic(host: &Host) -> classic_layout::ClassicLayout {
     classic_layout::ClassicLayout {
-        flag: <Lazy<bool> as StorageComponent>::new_at(0, 31, host.clone()),
-        counter: <Lazy<u32> as StorageComponent>::new_at(0, 27, host.clone()),
-        owner: <Lazy<Address> as StorageComponent>::new_at(0, 7, host.clone()),
-        balance: <Lazy<U256> as StorageComponent>::new_at(1, 0, host.clone()),
+        flag: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(0), 31, host.clone()),
+        counter: <Lazy<u32> as StorageComponent>::new_at(StorageKey::from_slot(0), 27, host.clone()),
+        owner: <Lazy<Address> as StorageComponent>::new_at(StorageKey::from_slot(0), 7, host.clone()),
+        balance: <Lazy<U256> as StorageComponent>::new_at(StorageKey::from_slot(1), 0, host.clone()),
         host: host.clone(),
     }
 }
@@ -343,9 +343,9 @@ mod spill {
 fn three_u128_fields_spill_third_to_a_fresh_slot() {
     let (host, mock) = fresh();
     let mut c = spill::Spill {
-        a: <Lazy<u128> as StorageComponent>::new_at(0, 16, host.clone()),
-        b: <Lazy<u128> as StorageComponent>::new_at(0, 0, host.clone()),
-        c: <Lazy<u128> as StorageComponent>::new_at(1, 16, host.clone()),
+        a: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, host.clone()),
+        b: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, host.clone()),
+        c: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(1), 16, host.clone()),
         host: host.clone(),
     };
 
@@ -431,9 +431,9 @@ mod with_mapping {
 fn mapping_forces_fresh_slot_and_following_packable_lands_on_a_new_slot() {
     let (host, mock) = fresh();
     let mut c = with_mapping::WithMapping {
-        before: <Lazy<bool> as StorageComponent>::new_at(0, 31, host.clone()),
+        before: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(0), 31, host.clone()),
         balances: unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) },
-        after: <Lazy<bool> as StorageComponent>::new_at(2, 31, host.clone()),
+        after: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(2), 31, host.clone()),
         host: host.clone(),
     };
 
@@ -527,9 +527,9 @@ mod with_multi_slot {
 fn multi_slot_composite_forces_fresh_slot_for_following_field() {
     let (host, mock) = fresh();
     let mut c = with_multi_slot::WithMultiSlot {
-        flag: <Lazy<bool> as StorageComponent>::new_at(0, 31, host.clone()),
-        pair: <Lazy<(U256, U256)> as StorageComponent>::new_at(1, 0, host.clone()),
-        tail: <Lazy<u32> as StorageComponent>::new_at(3, 28, host.clone()),
+        flag: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(0), 31, host.clone()),
+        pair: <Lazy<(U256, U256)> as StorageComponent>::new_at(StorageKey::from_slot(1), 0, host.clone()),
+        tail: <Lazy<u32> as StorageComponent>::new_at(StorageKey::from_slot(3), 28, host.clone()),
         host: host.clone(),
     };
 
@@ -621,8 +621,8 @@ mod packed_clear {
 fn clear_packed_field_preserves_neighbour_via_method() {
     let (host, mock) = fresh();
     let mut c = packed_clear::PackedClear {
-        a: <Lazy<u128> as StorageComponent>::new_at(0, 16, host.clone()),
-        b: <Lazy<u128> as StorageComponent>::new_at(0, 0, host.clone()),
+        a: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, host.clone()),
+        b: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, host.clone()),
         host: host.clone(),
     };
 

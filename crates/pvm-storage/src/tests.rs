@@ -301,8 +301,10 @@ fn nested_mapping_allowances() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    allowances.entry(&owner).insert(&spender, &U256::from(500));
-    assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
+    allowances
+        .view_mut(&owner)
+        .insert(&spender, &U256::from(500));
+    assert_eq!(allowances.view(&owner).get(&spender), U256::from(500));
 }
 
 // --- Tuple keys ---
@@ -318,7 +320,7 @@ fn tuple_key_matches_chaining() {
     let mut chained = unsafe {
         Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone())
     };
-    chained.entry(&owner).insert(&spender, &amount);
+    chained.view_mut(&owner).insert(&spender, &amount);
 
     // Read via tuple key (same slot, same host state)
     let tuple_map =
@@ -1052,7 +1054,7 @@ fn lazy_string_decode_silently_replaces_invalid_utf8_with_replacement_char() {
 fn storage_component_new_at_matches_new() {
     let host = h();
     let mut a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(7), 0, host.clone()) };
-    let mut b = <Lazy<U256> as StorageComponent>::new_at(7, 0, host);
+    let mut b = <Lazy<U256> as StorageComponent>::new_at(StorageKey::from_slot(7), 0, host);
     a.set(&U256::from(99));
     // `b` shares the host, so should see the same write.
     assert_eq!(b.get(), U256::from(99));
@@ -1240,22 +1242,26 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
     let k2 = Address([0xBB; 20]);
     let v: u128 = 0x1234_5678_90AB_CDEFu128;
 
-    m1.entry(&k1).entry(&k2).set(&v);
-    m2.entry(&k1).insert(&k2, &v);
+    m1.view_mut(&k1).entry(&k2).set(&v);
+    m2.view_mut(&k1).insert(&k2, &v);
 
-    // Outer get → Ref<inner>, inner .get(k2) → V.
+    // Outer view → Ref<inner>, inner .get(k2) → V.
     assert_eq!(
-        m1.get(&k1).get(&k2),
+        m1.view(&k1).get(&k2),
         v,
-        "nested: entry-entry-set then get-get"
+        "nested: view_mut/entry/set then view/get"
     );
-    assert_eq!(m2.get(&k1).get(&k2), v, "nested: entry-insert then get-get");
+    assert_eq!(
+        m2.view(&k1).get(&k2),
+        v,
+        "nested: view_mut/insert then view/get"
+    );
 
     // Inspect the deepest derived slot via the inner mapping's slot_of
     // (which is reachable through Ref<Mapping<K2, V>>::slot_of since
     // slot_of takes `&self`).
-    let inner_slot_1 = m1.get(&k1).slot_of(&k2);
-    let inner_slot_2 = m2.get(&k1).slot_of(&k2);
+    let inner_slot_1 = m1.view(&k1).slot_of(&k2);
+    let inner_slot_2 = m2.view(&k1).slot_of(&k2);
     let slot1 = storage_get_32(&host, inner_slot_1.as_bytes());
     let slot2 = storage_get_32(&host, inner_slot_2.as_bytes());
     assert_eq!(slot1, slot2, "nested: entry vs insert produce same bytes");
@@ -1316,7 +1322,11 @@ where
     let map_entry_slot = m_entry.slot_of(&1u64);
     // 4. StorageComponent::new_at + set
     {
-        let mut lazy = <Lazy<V> as StorageComponent>::new_at(3, canonical, host.clone());
+        let mut lazy = <Lazy<V> as StorageComponent>::new_at(
+            StorageKey::from_slot(3),
+            canonical,
+            host.clone(),
+        );
         lazy.set(&sample);
     }
 
@@ -1351,7 +1361,9 @@ where
     let r_map_insert = m_insert.get(&1u64);
     let r_map_entry_get = m_entry.get(&1u64);
     let r_map_entry_entry_get = m_entry.entry(&1u64).get();
-    let r_component = <Lazy<V> as StorageComponent>::new_at(3, canonical, host.clone()).get();
+    let r_component =
+        <Lazy<V> as StorageComponent>::new_at(StorageKey::from_slot(3), canonical, host.clone())
+            .get();
     assert_eq!(r_lazy, sample, "{name}: Lazy round-trip");
     assert_eq!(r_map_insert, sample, "{name}: Mapping::get round-trip");
     assert_eq!(
@@ -1597,12 +1609,14 @@ fn erc20_storage_example() {
     assert_eq!(balances.get(&bob), U256::from(300));
 
     // Approve: alice approves bob for 500
-    allowances.entry(&alice).insert(&bob, &U256::from(500));
+    allowances
+        .view_mut(&alice)
+        .insert(&bob, &U256::from(500));
 
     // Read allowance via chaining
-    assert_eq!(allowances.get(&alice).get(&bob), U256::from(500));
+    assert_eq!(allowances.view(&alice).get(&bob), U256::from(500));
     // Other direction is zero
-    assert_eq!(allowances.get(&bob).get(&alice), U256::ZERO);
+    assert_eq!(allowances.view(&bob).get(&alice), U256::ZERO);
 }
 
 #[test]
@@ -1647,8 +1661,8 @@ fn nested_mapping_slot_matches_solidity() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    // Derive via chaining: get(&owner) returns inner Mapping, then slot_of(&spender)
-    let inner = allowances.get(&owner);
+    // Derive via chaining: view(&owner) returns Ref<inner>, then slot_of(&spender)
+    let inner = allowances.view(&owner);
     let slot = inner.slot_of(&spender);
 
     let expected = [
