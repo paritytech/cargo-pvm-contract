@@ -75,11 +75,10 @@ pub fn upload_command(args: UploadArgs) -> Result<()> {
 
         if args.dry_run {
             let dry_run = exec.upload_code_rpc().await?;
-            let code_hash = ContractBinary(code).code_hash();
             match dry_run {
-                Ok(_) => {
+                Ok(value) => {
                     println!("Upload dry-run succeeded");
-                    println!("  Code hash: 0x{}", hex::encode(code_hash));
+                    println!("  Code hash: 0x{}", hex::encode(value.code_hash));
                 }
                 Err(ref err) => {
                     print_dry_run_failure("Upload", err, &exec.client().metadata());
@@ -121,14 +120,14 @@ pub fn instantiate_command(args: CliInstantiateArgs) -> Result<()> {
         if args.dry_run {
             let dry_run = exec.instantiate_dry_run().await?;
             let weight = dry_run.weight_required;
+            println!(
+                "  Gas required: ref_time={}, proof_size={}",
+                weight.ref_time(),
+                weight.proof_size()
+            );
             match dry_run.result {
                 Ok(_) => {
                     println!("Instantiate dry-run succeeded");
-                    println!(
-                        "  Gas required: ref_time={}, proof_size={}",
-                        weight.ref_time(),
-                        weight.proof_size()
-                    );
                 }
                 Err(ref err) => {
                     print_dry_run_failure("Instantiate", err, &exec.client().metadata());
@@ -376,6 +375,9 @@ mod tests {
         let decoded = Err(anyhow::anyhow!("metadata mismatch"));
         let out = format_dry_run_failure("Call", &err, &decoded);
         assert!(out.starts_with("Call dry-run failed: BadOrigin"), "{out}");
-        assert!(out.contains("(failed to decode: metadata mismatch)"), "{out}");
+        assert!(
+            out.contains("(failed to decode: metadata mismatch)"),
+            "{out}"
+        );
     }
 }
