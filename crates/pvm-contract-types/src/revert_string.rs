@@ -6,6 +6,12 @@ use crate::{DecodeError, SolError};
 ///
 /// This is what Solidity's `require(condition, "message")` produces.
 /// It's the most common error type in the Ethereum ecosystem.
+///
+/// Warning
+///
+/// Decoding said error is impossible due to ownership constraints rust's type system enforces.
+/// All errors successfully decoded by this type will return `RevertString("")`.
+/// To enable proper decoding, enable `alloc` feature.
 #[allow(unused)]
 #[derive(Debug, PartialEq)]
 pub struct RevertString<'a>(pub &'a str);
