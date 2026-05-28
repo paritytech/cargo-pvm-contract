@@ -85,16 +85,14 @@ impl SolError for DecodeError {
         if input.len() < 4 {
             return Err(DecodeError);
         };
-        Ok(input
+        if input
             .get(offset..offset + 4)
-            .and_then(|x| {
-                if x == Self::SELECTOR {
-                    Some(Self)
-                } else {
-                    None
-                }
-            })
-            .or(None))
+            .is_some_and(|x| x == Self::SELECTOR)
+        {
+            Ok(Some(Self))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -535,6 +533,10 @@ pub trait SolError: Sized {
 /// and 0x32 (out-of-bounds access).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panic {
+    /// 0x00 - Used for generic compiler inserted panics.
+    Generic,
+    /// 0x01 - If you call assert with an argument that evaluates to false.
+    AssertFalse,
     /// 0x11 — arithmetic overflow/underflow
     Overflow,
     /// 0x12 — division or modulo by zero
@@ -556,6 +558,8 @@ pub enum Panic {
 impl Panic {
     fn code(&self) -> u8 {
         match self {
+            Panic::Generic => 0x00,
+            Panic::AssertFalse => 0x01,
             Panic::Overflow => 0x11,
             Panic::DivisionByZero => 0x12,
             Panic::EnumConversionFailure => 0x21,
@@ -594,6 +598,8 @@ impl SolError for Panic {
         {
             let (data,) = <(U256,)>::decode_at(input, offset + 4)?;
             match data {
+                data if data == U256::from(0x00) => Ok(Some(Self::Generic)),
+                data if data == U256::from(0x01) => Ok(Some(Self::AssertFalse)),
                 data if data == U256::from(0x11) => Ok(Some(Self::Overflow)),
                 data if data == U256::from(0x12) => Ok(Some(Self::DivisionByZero)),
                 data if data == U256::from(0x21) => Ok(Some(Self::EnumConversionFailure)),
