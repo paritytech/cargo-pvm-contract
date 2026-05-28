@@ -26,15 +26,12 @@ impl SolError for RevertString {
     }
 
     fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {
-        if input.len() < 4 {
+        let Some(selector) = input.get(offset..offset + 4) else {
             return Err(DecodeError);
-        }
-        if input
-            .get(offset..offset + 4)
-            .is_some_and(|x| x == Self::SELECTOR)
-        {
+        };
+        if selector == Self::SELECTOR {
             let (data,) = <(alloc::string::String,) as SolDecode>::decode(
-                input.get(4..).ok_or(DecodeError)?,
+                input.get(offset + 4..).ok_or(DecodeError)?,
             )?;
             Ok(Some(Self(data)))
         } else {

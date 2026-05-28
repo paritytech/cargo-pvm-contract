@@ -191,3 +191,57 @@ pub mod prelude {
         U256,
     };
 }
+
+#[cfg(test)]
+#[cfg(feature = "alloc")]
+mod test {
+    extern crate alloc;
+    use super::*;
+    fn assert_decode_at_handles_offset<T: SolError + core::fmt::Debug + PartialEq>(value: T) {
+        let needed = value.encoded_size();
+        const PREFIX: usize = 16;
+        let mut buf = alloc::vec![0xAAu8; PREFIX + needed];
+        let written = value.encode_to(&mut buf[PREFIX..]);
+        assert_eq!(
+            written, needed,
+            "encode_to length disagrees with encoded_size"
+        );
+
+        let decoded = T::decode_at(&buf, PREFIX)
+            .expect("decode_at returned DecodeError")
+            .expect("selector did not match at offset");
+        assert_eq!(decoded, value, "decode_at(input, offset) did not roundtrip");
+    }
+
+    #[test]
+    fn panic_offset() {
+        assert_decode_at_handles_offset(Panic::Overflow);
+    }
+    #[test]
+    fn call_error_offset() {
+        assert_decode_at_handles_offset(CallError::TransferFailed);
+    }
+    #[test]
+    fn decode_error_offset() {
+        assert_decode_at_handles_offset(DecodeError);
+    }
+    #[test]
+    fn revert_string_offset() {
+        assert_decode_at_handles_offset(RevertString("msg".into()));
+    }
+    #[test]
+    fn custom_struct_offset() {
+        #[derive(Debug, PartialEq, SolError)]
+        pub struct InsufficientBalance {
+            account: Address,
+            required: U256,
+            available: U256,
+        }
+
+        assert_decode_at_handles_offset(InsufficientBalance {
+            account: Address([0x42; 20]),
+            required: U256::from(1000u64),
+            available: U256::from(500u64),
+        });
+    }
+}

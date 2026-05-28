@@ -511,7 +511,6 @@ pub trait SolError: Sized {
 
     /// Return the Solidity error signatures for all error types that
     /// this type can produce. Used by abi-gen to emit ABI JSON error entries.
-    ///
     /// For single `SolError` types, returns the one signature.
     /// For error enums, returns all inner error signatures.
     #[cfg(feature = "abi-gen")]
@@ -540,6 +539,18 @@ pub enum Panic {
     Overflow,
     /// 0x12 — division or modulo by zero
     DivisionByZero,
+    /// 0x21 - If you convert a value that is too big or negative into an enum type.
+    EnumConversionFailure,
+    /// 0x22 - If you access a storage byte array that is incorrectly encoded.
+    StorageByteArrayEncoding,
+    /// 0x31 - If you call .pop() on an empty array.
+    EmptyArrayPopFailure,
+    /// 0x32 - If you access an array, bytesN or an array slice at an out-of-bounds or negative index
+    OutOfBoundsAccess,
+    /// 0x41 - If you allocate too much memory or create an array that is too large.
+    OOM,
+    /// 0x51 - If you call a zero-initialized variable of internal function type.
+    UninitValueCall,
 }
 
 impl Panic {
@@ -547,6 +558,12 @@ impl Panic {
         match self {
             Panic::Overflow => 0x11,
             Panic::DivisionByZero => 0x12,
+            Panic::EnumConversionFailure => 0x21,
+            Panic::StorageByteArrayEncoding => 0x22,
+            Panic::EmptyArrayPopFailure => 0x31,
+            Panic::OutOfBoundsAccess => 0x32,
+            Panic::OOM => 0x41,
+            Panic::UninitValueCall => 0x51,
         }
     }
 }
@@ -579,6 +596,12 @@ impl SolError for Panic {
             match data {
                 data if data == U256::from(0x11) => Ok(Some(Self::Overflow)),
                 data if data == U256::from(0x12) => Ok(Some(Self::DivisionByZero)),
+                data if data == U256::from(0x21) => Ok(Some(Self::EnumConversionFailure)),
+                data if data == U256::from(0x22) => Ok(Some(Self::StorageByteArrayEncoding)),
+                data if data == U256::from(0x31) => Ok(Some(Self::EmptyArrayPopFailure)),
+                data if data == U256::from(0x32) => Ok(Some(Self::OutOfBoundsAccess)),
+                data if data == U256::from(0x41) => Ok(Some(Self::OOM)),
+                data if data == U256::from(0x51) => Ok(Some(Self::UninitValueCall)),
                 _ => Err(DecodeError),
             }
         } else {
@@ -701,26 +724,22 @@ impl SolError for SolDefaultError {
 /// pub fn new() -> Result<(), Error> { Ok(()) }
 /// pub fn fallback() -> Result<(), Error> { Ok(()) }
 /// ```
-pub struct EmptyError;
+pub enum EmptyError {}
 
 impl SolError for EmptyError {
     const SELECTOR: [u8; 4] = [0; 4];
-
     const SIGNATURE: &'static str = "";
 
-    #[inline(always)]
     fn encoded_size(&self) -> usize {
-        0
+        match *self {}
     }
 
-    #[inline(always)]
     fn encode_to(&self, _buf: &mut [u8]) -> usize {
-        0
+        match *self {}
     }
 
-    #[inline(always)]
     fn decode_at(_input: &[u8], _offset: usize) -> Result<Option<Self>, DecodeError> {
-        Ok(Some(Self {}))
+        Ok(None)
     }
 
     #[cfg(feature = "abi-gen")]
@@ -728,7 +747,7 @@ impl SolError for EmptyError {
     where
         Self: Sized,
     {
-        let arr = [];
+        let arr: [&'static &'static str; 0] = [];
         arr.into_iter()
     }
 }
@@ -1554,6 +1573,3 @@ impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_),
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J));
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J), (10: K));
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J), (10: K), (11: L));
-
-#[cfg(test)]
-mod tests;
