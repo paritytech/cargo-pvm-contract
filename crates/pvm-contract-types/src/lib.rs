@@ -553,6 +553,8 @@ pub enum Panic {
     OOM,
     /// 0x51 - If you call a zero-initialized variable of internal function type.
     UninitValueCall,
+    /// Unknown panic code.
+    Unknown(u8),
 }
 
 impl Panic {
@@ -568,6 +570,7 @@ impl Panic {
             Panic::OutOfBoundsAccess => 0x32,
             Panic::OOM => 0x41,
             Panic::UninitValueCall => 0x51,
+            Panic::Unknown(u8) => *u8,
         }
     }
 }
@@ -608,6 +611,9 @@ impl SolError for Panic {
                 data if data == U256::from(0x32) => Ok(Some(Self::OutOfBoundsAccess)),
                 data if data == U256::from(0x41) => Ok(Some(Self::OOM)),
                 data if data == U256::from(0x51) => Ok(Some(Self::UninitValueCall)),
+                data if data <= U256::from(0xFF) => Ok(Some(Self::Unknown(
+                    data.try_into().expect("guarded in match arm"),
+                ))),
                 _ => Err(DecodeError),
             }
         } else {
