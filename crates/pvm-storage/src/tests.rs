@@ -961,6 +961,127 @@ fn packed_u128_clear_preserves_neighbour() {
     assert_ne!(slot, [0u8; 32], "slot retained — a kept it alive");
 }
 
+/// Fast path: when `Lazy::new_alone` declares the slot has no neighbours,
+/// `set` writes the value directly with the surrounding bytes zeroed —
+/// skipping the SLOAD that the RMW path would do to preserve neighbours.
+///
+/// We can't count SLOADs from the test (`MockHost` doesn't expose a
+/// counter), so we observe the effect: pre-seed the slot with a non-zero
+/// "neighbour" pattern at bytes 0..16, then `set` an alone-flagged
+/// `Lazy<u128>` at offset 16. After the write the neighbour bytes must be
+/// zero — proof that the SLOAD didn't happen (otherwise the RMW path
+/// would have preserved them).
+#[test]
+fn lazy_set_alone_in_slot_skips_rmw_and_clobbers_neighbour_bytes() {
+    let host = h();
+    let key = StorageKey::from_slot(0);
+
+    // Seed the slot with a pattern: bytes 0..16 non-zero (a hypothetical
+    // neighbour), bytes 16..32 zero.
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    storage_set_32(&host, key.as_bytes(), &seed);
+
+    // Alone-in-slot write at offset 16.
+    let mut lazy = unsafe { Lazy::<u128>::new_alone(key, 16, host.clone()) };
+    let v = 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10u128;
+    lazy.set(&v);
+
+    // Bytes 16..32 hold the value; bytes 0..16 are zero (RMW would have
+    // preserved the 0xCC pattern).
+    let slot = storage_get_32(&host, key.as_bytes());
+    assert_eq!(&slot[16..32], &v.to_be_bytes(), "value written at offset 16");
+    assert!(
+        slot[..16].iter().all(|&b| b == 0),
+        "alone fast path clobbered the neighbour bytes (no SLOAD): got {:02x?}",
+        &slot[..16],
+    );
+}
+
+/// Counter-check: with `alone = false` (the default `Lazy::new` path), `set`
+/// must take the RMW branch and preserve neighbour bytes. Pairs with the
+/// fast-path test above so a regression on either branch is caught.
+#[test]
+fn lazy_set_not_alone_rmw_preserves_neighbour_bytes() {
+    let host = h();
+    let key = StorageKey::from_slot(0);
+
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    storage_set_32(&host, key.as_bytes(), &seed);
+
+    let mut lazy = unsafe { Lazy::<u128>::new(key, 16, host.clone()) };
+    let v = 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10u128;
+    lazy.set(&v);
+
+    let slot = storage_get_32(&host, key.as_bytes());
+    assert_eq!(&slot[16..32], &v.to_be_bytes(), "value written at offset 16");
+    assert_eq!(
+        &slot[..16],
+        &[0xCC; 16],
+        "RMW preserved the neighbour bytes",
+    );
+}
+
+/// `Lazy::clear` fast path: alone-in-slot clears emit a single all-zero
+/// SSTORE (auto-deleted by the host), without first SLOADing the slot.
+/// Observable via the same neighbour-clobber test — RMW would have
+/// preserved the 0xCC pattern.
+#[test]
+fn lazy_clear_alone_in_slot_skips_rmw_and_clobbers_neighbour_bytes() {
+    let host = h();
+    let key = StorageKey::from_slot(0);
+
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    seed[16..].copy_from_slice(&[0xAA; 16]);
+    storage_set_32(&host, key.as_bytes(), &seed);
+
+    let mut lazy = unsafe { Lazy::<u128>::new_alone(key, 16, host.clone()) };
+    <Lazy<u128> as StorageComponent>::clear(&mut lazy);
+
+    // Whole slot wiped: the host's `set_storage_or_clear` auto-deletes the
+    // all-zero slot, so `storage_get_32` reads back zeros for every byte.
+    let slot = storage_get_32(&host, key.as_bytes());
+    assert_eq!(
+        slot,
+        [0u8; 32],
+        "alone-in-slot clear wiped the whole slot — no RMW",
+    );
+}
+
+/// `Mapping::entry(&k).set(&v)` must hit the alone fast path because each
+/// derived slot is unique to `k`. Verifies the wiring from `Mapping::entry`
+/// → `Lazy::new_alone`. Same observable signature: seed the derived slot
+/// with non-zero "neighbour" bytes, then write through `entry` and check
+/// they were clobbered.
+#[test]
+fn mapping_entry_set_takes_alone_fast_path_for_subword_v() {
+    let host = h();
+    let mut m = unsafe { Mapping::<Address, u128>::new(StorageKey::from_slot(7), host.clone()) };
+    let addr = Address([0x12; 20]);
+
+    // Seed the derived slot with a pattern at bytes 0..16. This would only
+    // happen in practice if some other contract or raw uAPI wrote there —
+    // not reachable through the typed API. The seed lets us observe whether
+    // `entry().set()` takes the RMW or alone path.
+    let derived = m.slot_of(&addr);
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    storage_set_32(&host, derived.as_bytes(), &seed);
+
+    let v = 0x1122_3344_5566_7788_99AA_BBCC_DDEE_FF00u128;
+    m.entry(&addr).set(&v);
+
+    let slot = storage_get_32(&host, derived.as_bytes());
+    assert_eq!(&slot[16..32], &v.to_be_bytes(), "value at offset 16");
+    assert!(
+        slot[..16].iter().all(|&b| b == 0),
+        "Mapping::entry took the alone fast path — neighbour bytes clobbered: got {:02x?}",
+        &slot[..16],
+    );
+}
+
 /// Multi-slot composite (`(U256, U256)`) starts a fresh slot and consumes
 /// it to the end, so the next field starts at a new slot.
 #[test]
@@ -1054,7 +1175,7 @@ fn lazy_string_decode_silently_replaces_invalid_utf8_with_replacement_char() {
 fn storage_component_new_at_matches_new() {
     let host = h();
     let mut a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(7), 0, host.clone()) };
-    let mut b = <Lazy<U256> as StorageComponent>::new_at(StorageKey::from_slot(7), 0, host);
+    let mut b = <Lazy<U256> as StorageComponent>::new_at(StorageKey::from_slot(7), 0, true, host);
     a.set(&U256::from(99));
     // `b` shares the host, so should see the same write.
     assert_eq!(b.get(), U256::from(99));
@@ -1322,9 +1443,12 @@ where
     let map_entry_slot = m_entry.slot_of(&1u64);
     // 4. StorageComponent::new_at + set
     {
+        // alone=true is the realistic input here — these slots have no
+        // siblings — and exercises the fast write path.
         let mut lazy = <Lazy<V> as StorageComponent>::new_at(
             StorageKey::from_slot(3),
             canonical,
+            true,
             host.clone(),
         );
         lazy.set(&sample);
@@ -1361,9 +1485,13 @@ where
     let r_map_insert = m_insert.get(&1u64);
     let r_map_entry_get = m_entry.get(&1u64);
     let r_map_entry_entry_get = m_entry.entry(&1u64).get();
-    let r_component =
-        <Lazy<V> as StorageComponent>::new_at(StorageKey::from_slot(3), canonical, host.clone())
-            .get();
+    let r_component = <Lazy<V> as StorageComponent>::new_at(
+        StorageKey::from_slot(3),
+        canonical,
+        true,
+        host.clone(),
+    )
+    .get();
     assert_eq!(r_lazy, sample, "{name}: Lazy round-trip");
     assert_eq!(r_map_insert, sample, "{name}: Mapping::get round-trip");
     assert_eq!(

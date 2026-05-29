@@ -66,7 +66,7 @@ use quote::{format_ident, quote};
 use syn::{Fields, ItemStruct};
 
 use super::contract::find_derive_clone;
-use super::storage_layout::{ChainField, generate_layout_emit, slot_chain_consts};
+use super::storage_layout::{ChainField, alone_chain_consts, generate_layout_emit, slot_chain_consts};
 
 pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
@@ -159,6 +159,11 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
     let offset_consts = slot_chain_consts("__pvm_storage_offset_", &chain_fields);
+    let alone_consts = alone_chain_consts(
+        "__pvm_storage_alone_",
+        "__pvm_storage_offset_",
+        &chain_fields,
+    );
 
     let field_inits: Vec<TokenStream> = field_names
         .iter()
@@ -166,10 +171,12 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .map(|(i, name)| {
             let ty = field_types[i];
             let const_ident = format_ident!("__pvm_storage_offset_{}", name);
+            let alone_ident = format_ident!("__pvm_storage_alone_{}", name);
             quote! {
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
                     base.add(#const_ident.slot),
                     #const_ident.offset,
+                    #alone_ident,
                     host.clone(),
                 )
             }
@@ -234,12 +241,18 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             fn new_at(
                 base: ::pvm_contract_sdk::StorageKey,
                 offset: u8,
+                alone: bool,
                 host: ::pvm_contract_sdk::Host,
             ) -> Self {
                 debug_assert_eq!(offset, 0,
                     "#[storage] sub-struct always full-slot; offset must be 0");
-                let _ = offset;
+                // Outer `alone` (from the embedding container) is irrelevant
+                // here: this sub-struct's per-field `alone` is computed
+                // internally from its own layout walker, since packing only
+                // matters inside the sub-struct's own slot range.
+                let _ = (offset, alone);
                 #(#offset_consts)*
+                #(#alone_consts)*
                 #struct_name {
                     #(#field_inits),*
                 }

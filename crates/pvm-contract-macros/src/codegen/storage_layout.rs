@@ -13,6 +13,58 @@ pub(super) struct ChainField<'a> {
     pub cfg_attrs: &'a [syn::Attribute],
 }
 
+/// Build a chain of `const <alone_prefix><name>: bool = ...;` items that
+/// each tell whether the corresponding field is alone in its storage slot
+/// — i.e. no sibling field shares the same slot index.
+///
+/// The const evaluates by comparing the field's `LayoutStep.slot` against
+/// the adjacent neighbours' `.slot`. A field with no left neighbour or no
+/// right neighbour skips that comparison; a single isolated field is
+/// trivially `true`. The result feeds the `alone: bool` argument of
+/// [`StorageComponent::new_at`](pvm_contract_sdk::StorageComponent::new_at)
+/// so sub-word `Lazy<T>` can skip the read-modify-write SLOAD when the slot
+/// has no sub-word neighbour.
+///
+/// `slot_prefix` must match the prefix used by [`slot_chain_consts`] so
+/// the layout-step consts can be referenced by name (`<slot_prefix><name>`).
+/// Per-field `#[cfg]` attributes are propagated.
+pub(super) fn alone_chain_consts(
+    alone_prefix: &str,
+    slot_prefix: &str,
+    fields: &[ChainField],
+) -> Vec<TokenStream> {
+    fields
+        .iter()
+        .enumerate()
+        .map(|(i, sf)| {
+            let alone_ident = format_ident!("{}{}", alone_prefix, sf.name);
+            let cfgs = sf.cfg_attrs;
+            let cur_slot = format_ident!("{}{}", slot_prefix, sf.name);
+            // Comparison against the previous field (if any).
+            let prev_check = if i == 0 {
+                quote! { true }
+            } else {
+                let prev = &fields[i - 1];
+                let prev_slot = format_ident!("{}{}", slot_prefix, prev.name);
+                quote! { #cur_slot.slot != #prev_slot.slot }
+            };
+            // Comparison against the next field (if any).
+            let next_check = if i + 1 == fields.len() {
+                quote! { true }
+            } else {
+                let next = &fields[i + 1];
+                let next_slot = format_ident!("{}{}", slot_prefix, next.name);
+                quote! { #cur_slot.slot != #next_slot.slot }
+            };
+            quote! {
+                #(#cfgs)*
+                #[allow(non_upper_case_globals)]
+                const #alone_ident: bool = #prev_check && #next_check;
+            }
+        })
+        .collect()
+}
+
 /// Build a chain of `const <prefix><name>: ::pvm_contract_sdk::LayoutStep
 /// = ::pvm_contract_sdk::layout_step(prev, PACKED_BYTES, SLOTS);` items for
 /// the supplied fields. First entry seeds from

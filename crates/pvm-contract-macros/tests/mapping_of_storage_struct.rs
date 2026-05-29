@@ -216,6 +216,7 @@ fn outer_storage_struct_holding_mapping_of_storage_struct_runtime() {
     let mut outer = <OuterRegistry as StorageComponent>::new_at(
         StorageKey::from_slot(0),
         0,
+        true,
         host.clone(),
     );
 

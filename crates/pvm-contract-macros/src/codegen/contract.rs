@@ -220,7 +220,29 @@ pub(super) enum Slot {
 /// [`super::storage_layout::slot_chain_consts`] helper so the chain logic
 /// matches `#[storage]`'s offset chain.
 pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
-    let auto: Vec<super::storage_layout::ChainField<'_>> = slot_fields
+    let auto = auto_chain_fields(slot_fields);
+    super::storage_layout::slot_chain_consts("__pvm_storage_slot_", &auto)
+}
+
+/// Build the chain of `__pvm_storage_alone_<name>: bool` const items for
+/// auto-numbered contract-struct fields. Each const tells whether the
+/// field is alone in its storage slot — see
+/// [`super::storage_layout::alone_chain_consts`] for the derivation rule.
+/// Feeds the `alone: bool` arg of `StorageComponent::new_at` so sub-word
+/// `Lazy<T>` fields with no sub-word siblings can skip RMW on writes.
+pub(super) fn auto_alone_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
+    let auto = auto_chain_fields(slot_fields);
+    super::storage_layout::alone_chain_consts(
+        "__pvm_storage_alone_",
+        "__pvm_storage_slot_",
+        &auto,
+    )
+}
+
+/// Shared filter: extract the auto-numbered subset of fields as
+/// [`ChainField`]s for both the layout-step and alone-flag walkers.
+fn auto_chain_fields(slot_fields: &[SlotField]) -> Vec<super::storage_layout::ChainField<'_>> {
+    slot_fields
         .iter()
         .filter(|sf| matches!(sf.slot, Slot::Auto))
         .map(|sf| super::storage_layout::ChainField {
@@ -228,8 +250,7 @@ pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
             ty: &sf.ty,
             cfg_attrs: &sf.cfg_attrs,
         })
-        .collect();
-    super::storage_layout::slot_chain_consts("__pvm_storage_slot_", &auto)
+        .collect()
 }
 
 impl SlotField {
@@ -1262,6 +1283,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     // `#[slot(N)]` fields use `N` directly; auto-numbered fields read their slot
     // from the `__pvm_storage_slot_*` const chain built by `auto_slot_consts`.
     let auto_slot_consts = auto_slot_consts(&slot_fields);
+    let auto_alone_consts = auto_alone_consts(&slot_fields);
     let explicit_overlap_checks = explicit_slot_overlap_checks(&slot_fields);
     let explicit_full_slot_checks = explicit_slot_full_slot_only_checks(&slot_fields);
 
@@ -1271,11 +1293,25 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let name = &sf.name;
             let ty = &sf.ty;
             let cfgs = &sf.cfg_attrs;
-            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
-                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
+            let (slot_expr, offset_expr, alone_expr): (
+                TokenStream,
+                TokenStream,
+                TokenStream,
+            ) = match sf.slot {
+                // Explicit `#[slot(N)]` is restricted to full-slot types
+                // elsewhere in this file (`explicit_slot_full_slot_only_checks`).
+                // Full-slot components ignore `alone`, so the literal `true`
+                // is purely cosmetic — it would behave identically as `false`
+                // for `Mapping`/`Lazy<U256>`/etc.
+                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }, quote! { true }),
                 Slot::Auto => {
                     let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                    (quote! { #const_ident.slot }, quote! { #const_ident.offset })
+                    let alone_ident = quote::format_ident!("__pvm_storage_alone_{}", name);
+                    (
+                        quote! { #const_ident.slot },
+                        quote! { #const_ident.offset },
+                        quote! { #alone_ident },
+                    )
                 }
             };
             quote! {
@@ -1283,6 +1319,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
                     ::pvm_contract_sdk::StorageKey::from_slot(#slot_expr),
                     #offset_expr,
+                    #alone_expr,
                     host.clone(),
                 )
             }
@@ -1291,6 +1328,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let this_construction = quote! {
         let host = ::pvm_contract_sdk::Host::new();
         #(#auto_slot_consts)*
+        #(#auto_alone_consts)*
         let mut this = #struct_name {
             #(#slot_field_inits,)*
             host,
@@ -3269,8 +3307,8 @@ mod tests {
         // Field construction wraps the LayoutStep's u64 slot in StorageKey::from_slot
         // and passes the offset.
         assert!(
-            output.contains("StorageComponent > :: new_at (:: pvm_contract_sdk :: StorageKey :: from_slot (__pvm_storage_slot_counter . slot) , __pvm_storage_slot_counter . offset ,"),
-            "Auto-numbered fields should wrap their slot in StorageKey::from_slot.\n\
+            output.contains("StorageComponent > :: new_at (:: pvm_contract_sdk :: StorageKey :: from_slot (__pvm_storage_slot_counter . slot) , __pvm_storage_slot_counter . offset , __pvm_storage_alone_counter ,"),
+            "Auto-numbered fields should wrap their slot in StorageKey::from_slot and pass the alone flag.\n\
              Expanded output:\n{output}"
         );
     }
