@@ -2,7 +2,6 @@
 #![no_std]
 
 use pvm_contract_sdk::U256;
-
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;

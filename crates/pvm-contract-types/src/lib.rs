@@ -8,6 +8,8 @@ extern crate alloc;
 
 #[cfg(feature = "alloc")]
 mod alloc_types;
+use core::mem::MaybeUninit;
+
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
 
@@ -15,18 +17,28 @@ pub use alloc_types::Bytes;
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
 pub use abi_gen::{
-    AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json, parse_type_str,
-    storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
+    parse_type_str, storage_layout_to_json,
 };
 
+use framework_errors::INVALID_CALLDATA;
 #[cfg(feature = "abi-gen")]
 #[doc(hidden)]
 pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode, ReturnFlags, StorageFlags,
+    CallFlags, Context, ContractContext, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode,
+    ReturnFlags, StorageFlags,
 };
+
+/// Sealing marker for traits that should only be implemented by code in this
+/// workspace (specifically: macro-generated contract structs and [`Context`]).
+/// External users have no reason to import this module.
+#[doc(hidden)]
+pub mod __private {
+    pub trait Sealed {}
+}
 
 /// Re-exported so macro-generated `call()` / `deploy()` wrappers can reach it
 /// without the user's `Cargo.toml` depending on `pallet-revive-uapi` directly.
@@ -44,6 +56,23 @@ pub use i256::{I256, ParseI256Error};
 #[doc(hidden)]
 pub use const_format;
 pub use ruint::aliases::U256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DecodeError;
+
+impl SolError for DecodeError {
+    const SELECTOR: [u8; 4] = INVALID_CALLDATA;
+
+    const SIGNATURE: &'static str = framework_errors::NAMES[0];
+
+    fn encode_params(&self, _buf: &mut [u8]) -> usize {
+        0
+    }
+
+    fn encoded_size(&self) -> usize {
+        4
+    }
+}
 
 /// Fixed-size buffer for compile-time string concatenation.
 ///
@@ -165,12 +194,20 @@ impl AsRef<[u8]> for Address {
 /// types like `Address` or `#[derive(SolType)]` structs for other semantics.
 pub trait SolArrayElement: SolEncode {}
 
+/// Computes keccak256 of arbitrary bytes at compile time.
+pub const fn const_keccak256(data: &[u8]) -> [u8; 32] {
+    keccak_const::Keccak256::new().update(data).finalize()
+}
+
 /// Computes the 4-byte Solidity function selector at compile time.
 pub const fn const_selector(sig: &str) -> [u8; 4] {
-    let hash = keccak_const::Keccak256::new()
-        .update(sig.as_bytes())
-        .finalize();
+    let hash = const_keccak256(sig.as_bytes());
     [hash[0], hash[1], hash[2], hash[3]]
+}
+
+/// Computes keccak256 of arbitrary bytes at runtime.
+pub fn keccak256(data: &[u8]) -> [u8; 32] {
+    const_keccak256(data)
 }
 
 /// ABI-compatible parameterless custom errors for framework-level reverts.
@@ -230,7 +267,7 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
 
 /// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
-/// Each contract module gets a generated `impl Router<Host> for Contract`
+/// Each contract module gets a generated `impl Router for Contract`
 /// that delegates to a free `mod_name::route(this, selector, input)` function.
 /// Dispatch arms call `host.return_value(...)` directly — `-> !` on `riscv64`
 /// (terminates execution), `-> ()` on host targets (captures into
@@ -249,7 +286,7 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
 ///     // fallback or revert
 /// }
 /// ```
-pub trait Router<H: HostApi> {
+pub trait Router {
     /// Dispatch `selector` against `input`. Returns `Some(())` if the selector
     /// was handled (the dispatch arm has already called `host.return_value(...)`,
     /// which on `riscv64` means execution has terminated). Returns `None` if
@@ -335,22 +372,31 @@ pub trait SolEncode {
     /// - **Static non-tuples**: body directly — no offset needed since the
     ///   size is known at compile time.
     fn encode_to(&self, buf: &mut [u8]) {
-        if Self::IS_TUPLE {
+        if Self::IS_TUPLE || !Self::IS_DYNAMIC {
             self.encode_body_to(buf);
-        } else if Self::IS_DYNAMIC {
+        } else {
             // Dynamic non-tuple: prepend a 32-byte offset pointer.
             // The offset value is always 32 (0x20) — "data starts at byte 32".
             buf[..24].fill(0);
             buf[24..32].copy_from_slice(&32u64.to_be_bytes());
             self.encode_body_to(&mut buf[32..]);
-        } else {
-            self.encode_body_to(buf);
         }
+    }
+
+    /// 32-byte topic slot for this value when used as an indexed event
+    /// parameter. Default: right-align the value into one 32-byte word via
+    /// `encode_body_to`, suitable for static primitives (`address`, `bool`,
+    /// `uintN`, `intN`, `bytesN`). Dynamic primitives (`string`, `bytes`)
+    /// override this to `keccak256(raw_bytes)` per the Solidity event spec.
+    fn indexed_topic(&self) -> [u8; 32] {
+        let mut slot = [0u8; 32];
+        self.encode_body_to(&mut slot);
+        slot
     }
 }
 
 /// Marker trait for types with compile-time known encoded size.
-pub trait StaticEncodedLen: SolEncode {
+pub trait StaticEncodedLen: SolEncode + Sized {
     const ENCODED_SIZE: usize;
 }
 
@@ -361,24 +407,37 @@ pub trait SolDecode: SolEncode + Sized {
     /// - Tuples (IS_TUPLE=true): decode body directly
     /// - Dynamic non-tuples: read offset pointer at position 0, decode body at offset
     /// - Static non-tuples: decode body directly
-    fn decode(input: &[u8]) -> Self {
+    fn decode(input: &[u8]) -> Result<Self, DecodeError> {
         if Self::IS_TUPLE || !Self::IS_DYNAMIC {
             Self::decode_at(input, 0)
         } else {
             // Dynamic non-tuple: encode_to wrote [offset=32][body]
             // Read offset, then decode the body at that position
-            let offset = u64::from_be_bytes(input[24..32].try_into().unwrap()) as usize;
+            let offset = input
+                .get(24..32)
+                .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+                .ok_or(DecodeError)
+                .map(u64::from_be_bytes)? as usize;
             Self::decode_tail(input, offset)
         }
     }
 
     /// Offset-based decode helper used by generated code and custom decoders.
-    fn decode_at(input: &[u8], offset: usize) -> Self;
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError>;
 
     /// Tail decode helper used by dynamic container decoding.
-    fn decode_tail(input: &[u8], offset: usize) -> Self {
+    #[inline(always)]
+    fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
         Self::decode_at(input, offset)
     }
+}
+
+pub trait StaticDecode: SolDecode + SolEncode + StaticEncodedLen + Sized {
+    /// # Safety
+    ///
+    /// safety contract: caller guarantees `input.len() >= offset + ENCODED_SIZE`.
+    /// Caller is the dispatch codegen that checks total size once at entry.
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self;
 }
 
 // ---------------------------------------------------------------------------
@@ -723,6 +782,94 @@ macro_rules! sol_revert_enum {
 }
 
 // ---------------------------------------------------------------------------
+// Event trait for Solidity-compatible log emission
+// ---------------------------------------------------------------------------
+
+/// Trait for Solidity-compatible event emission. No allocator required.
+///
+/// Each implementor represents a single Solidity event type. The derive macro
+/// `#[derive(SolEvent)]` generates this impl automatically, computing the topic
+/// hash at compile time, packing indexed fields into stack-allocated
+/// [`EventTopics`], and ABI-encoding non-indexed fields into a caller-provided
+/// buffer via [`data_to`](SolEvent::data_to).
+///
+/// # Topic layout
+///
+/// - `topics()[0]` is `keccak256(SIGNATURE)` (skipped for anonymous events).
+/// - `topics()[1..=3]` are the indexed fields, packed into 32-byte slots:
+///   - Static types (address, uintN, bool, bytesN): ABI-encoded directly.
+///   - Dynamic primitives (string, bytes): `keccak256(raw_bytes)`.
+///   - Arrays, fixed arrays, tuples: `keccak256(abi.encode(value))`.
+/// - Maximum 3 indexed fields (4 topics including the selector), or 4 for
+///   anonymous events (no selector topic).
+///
+/// # Data layout
+///
+/// Non-indexed fields are ABI-encoded in declaration order, identical to
+/// a Solidity `abi.encode(field1, field2, ...)` call.
+/// Stack-allocated topic array for event emission. Maximum 4 topics
+/// (signature hash + up to 3 indexed fields, or 4 indexed for anonymous).
+#[derive(Default)]
+pub struct EventTopics {
+    buf: [[u8; 32]; 4],
+    len: usize,
+}
+
+impl EventTopics {
+    /// Create an empty topic list.
+    pub fn new() -> Self {
+        EventTopics {
+            buf: [[0u8; 32]; 4],
+            len: 0,
+        }
+    }
+
+    /// Append a topic. Panics if more than 4 topics are pushed.
+    pub fn push(&mut self, topic: [u8; 32]) {
+        assert!(self.len < 4, "EventTopics: maximum 4 topics (EVM limit)");
+        self.buf[self.len] = topic;
+        self.len += 1;
+    }
+
+    /// View the topics as a slice for `deposit_event`.
+    pub fn as_slice(&self) -> &[[u8; 32]] {
+        &self.buf[..self.len]
+    }
+}
+
+/// Allows `&topics` to coerce to `&[[u8; 32]]` for `deposit_event`.
+impl core::ops::Deref for EventTopics {
+    type Target = [[u8; 32]];
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+pub trait SolEvent {
+    /// Full 32-byte keccak256 hash of the canonical event signature.
+    const TOPIC: [u8; 32];
+
+    /// Event name, e.g. `"Transfer"`.
+    const NAME: &'static str;
+
+    /// Canonical Solidity event signature, e.g. `"Transfer(address,address,uint256)"`.
+    const SIGNATURE: &'static str;
+
+    /// Number of indexed fields (excluding topic0). Range: 0..=3, or 0..=4
+    /// for anonymous events (no topic0).
+    const INDEXED_COUNT: usize;
+
+    /// Build the topics array on the stack.
+    fn topics(&self) -> EventTopics;
+
+    /// Size in bytes of the ABI-encoded non-indexed fields.
+    fn data_len(&self) -> usize;
+
+    /// Write ABI-encoded non-indexed fields into `buf`.
+    fn data_to(&self, buf: &mut [u8]);
+}
+
+// ---------------------------------------------------------------------------
 // Primitive type impls
 // ---------------------------------------------------------------------------
 
@@ -737,6 +884,7 @@ macro_rules! impl_static_type {
                 32
             }
 
+            #[inline]
             fn encode_body_to(&self, buf: &mut [u8]) {
                 $encode_fn(self, buf)
             }
@@ -747,7 +895,8 @@ macro_rules! impl_static_type {
         }
 
         impl SolDecode for $ty {
-            fn decode_at(input: &[u8], offset: usize) -> Self {
+            #[inline]
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
                 $decode_fn(input, offset)
             }
         }
@@ -763,7 +912,10 @@ impl_static_type!(
     U256,
     "uint256",
     |val: &U256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes::<32>()),
-    |input: &[u8], offset: usize| U256::from_be_slice(&input[offset..offset + 32]),
+    |input: &[u8], offset: usize| input
+        .get(offset..offset + 32)
+        .ok_or(DecodeError)
+        .map(U256::from_be_slice),
     array_element
 );
 
@@ -771,7 +923,10 @@ impl_static_type!(
     I256,
     "int256",
     |val: &I256, buf: &mut [u8]| buf[..32].copy_from_slice(&val.to_be_bytes()),
-    |input: &[u8], offset: usize| I256::from_be_slice(&input[offset..offset + 32]),
+    |input: &[u8], offset: usize| input
+        .get(offset..offset + 32)
+        .ok_or(DecodeError)
+        .map(I256::from_be_slice),
     array_element
 );
 
@@ -783,8 +938,11 @@ impl_static_type!(
         buf[16..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
-        u128::from_be_bytes(bytes)
+        input
+            .get(offset + 16..offset + 32)
+            .and_then(|x| TryInto::<[u8; 16]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u128::from_be_bytes)
     },
     array_element
 );
@@ -797,8 +955,11 @@ impl_static_type!(
         buf[24..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
-        u64::from_be_bytes(bytes)
+        input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u64::from_be_bytes)
     },
     array_element
 );
@@ -811,8 +972,11 @@ impl_static_type!(
         buf[28..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
-        u32::from_be_bytes(bytes)
+        input
+            .get(offset + 28..offset + 32)
+            .and_then(|x| TryInto::<[u8; 4]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(u32::from_be_bytes)
     },
     array_element
 );
@@ -824,7 +988,13 @@ impl_static_type!(
         buf[..30].fill(0);
         buf[30..32].copy_from_slice(&val.to_be_bytes());
     },
-    |input: &[u8], offset: usize| u16::from_be_bytes([input[offset + 30], input[offset + 31]]),
+    |input: &[u8], offset: usize| {
+        input
+            .get(offset + 30)
+            .zip(input.get(offset + 31))
+            .map(|x| u16::from_be_bytes([*x.0, *x.1]))
+            .ok_or(DecodeError)
+    },
     array_element
 );
 
@@ -835,7 +1005,7 @@ impl_static_type!(
         buf[..31].fill(0);
         buf[31] = *val;
     },
-    |input: &[u8], offset: usize| input[offset + 31]
+    |input: &[u8], offset: usize| input.get(offset + 31).ok_or(DecodeError).copied()
 );
 
 impl_static_type!(
@@ -847,8 +1017,11 @@ impl_static_type!(
         buf[16..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 16] = input[offset + 16..offset + 32].try_into().unwrap();
-        i128::from_be_bytes(bytes)
+        input
+            .get(offset + 16..offset + 32)
+            .and_then(|x| TryInto::<[u8; 16]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(i128::from_be_bytes)
     },
     array_element
 );
@@ -862,8 +1035,11 @@ impl_static_type!(
         buf[24..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 8] = input[offset + 24..offset + 32].try_into().unwrap();
-        i64::from_be_bytes(bytes)
+        input
+            .get(offset + 24..offset + 32)
+            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(i64::from_be_bytes)
     },
     array_element
 );
@@ -877,8 +1053,11 @@ impl_static_type!(
         buf[28..32].copy_from_slice(&val.to_be_bytes());
     },
     |input: &[u8], offset: usize| {
-        let bytes: [u8; 4] = input[offset + 28..offset + 32].try_into().unwrap();
-        i32::from_be_bytes(bytes)
+        input
+            .get(offset + 28..offset + 32)
+            .and_then(|x| TryInto::<[u8; 4]>::try_into(x).ok())
+            .ok_or(DecodeError)
+            .map(i32::from_be_bytes)
     },
     array_element
 );
@@ -891,7 +1070,11 @@ impl_static_type!(
         buf[..30].fill(fill);
         buf[30..32].copy_from_slice(&val.to_be_bytes());
     },
-    |input: &[u8], offset: usize| i16::from_be_bytes([input[offset + 30], input[offset + 31]]),
+    |input: &[u8], offset: usize| input
+        .get(offset + 30)
+        .zip(input.get(offset + 31))
+        .map(|x| i16::from_be_bytes([*x.0, *x.1]))
+        .ok_or(DecodeError),
     array_element
 );
 
@@ -903,7 +1086,11 @@ impl_static_type!(
         buf[..31].fill(fill);
         buf[31] = *val as u8;
     },
-    |input: &[u8], offset: usize| input[offset + 31] as i8,
+    |input: &[u8], offset: usize| input
+        .get(offset + 31)
+        .copied()
+        .map(|x| i8::from_be_bytes([x]))
+        .ok_or(DecodeError),
     array_element
 );
 
@@ -914,7 +1101,7 @@ impl_static_type!(
         buf[..31].fill(0);
         buf[31] = if *val { 1 } else { 0 };
     },
-    |input: &[u8], offset: usize| input[offset + 31] != 0,
+    |input: &[u8], offset: usize| input.get(offset + 31).ok_or(DecodeError).map(|x| *x != 0),
     array_element
 );
 
@@ -926,12 +1113,122 @@ impl_static_type!(
         buf[12..32].copy_from_slice(&val.0);
     },
     |input: &[u8], offset: usize| {
-        let mut result = [0u8; 20];
-        result.copy_from_slice(&input[offset + 12..offset + 32]);
-        Address(result)
+        input
+            .get(offset + 12..offset + 32)
+            .map(|x| {
+                let mut result = [0u8; 20];
+                result.copy_from_slice(x);
+                Address(result)
+            })
+            .ok_or(DecodeError)
     },
     array_element
 );
+
+macro_rules! impl_static_type_decode {
+    ($ty:ty,  $decode_fn:expr) => {
+        impl StaticDecode for $ty {
+            #[inline]
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+                $decode_fn(input, offset)
+            }
+        }
+    };
+}
+
+impl_static_type_decode!(U256, |input: &[u8], offset: usize| unsafe {
+    U256::from_be_slice(input.get_unchecked(offset..offset + 32))
+});
+
+impl_static_type_decode!(I256, |input: &[u8], offset: usize| unsafe {
+    I256::from_be_slice(input.get_unchecked(offset..offset + 32))
+});
+
+impl_static_type_decode!(u128, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
+            .map(u128::from_be_bytes)
+            .unwrap()
+    }
+});
+
+impl_static_type_decode!(u64, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
+            .map(u64::from_be_bytes)
+            .unwrap()
+    }
+});
+
+impl_static_type_decode!(u32, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 4]>::try_into(input.get_unchecked(offset + 28..offset + 32))
+            .map(u32::from_be_bytes)
+            .unwrap()
+    }
+});
+
+impl_static_type_decode!(u16, |input: &[u8], offset: usize| {
+    unsafe {
+        u16::from_be_bytes([
+            *input.get_unchecked(offset + 30),
+            *input.get_unchecked(offset + 31),
+        ])
+    }
+});
+
+impl_static_type_decode!(u8, |input: &[u8], offset: usize| unsafe {
+    *input.get_unchecked(offset + 31)
+});
+
+impl_static_type_decode!(i128, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 16]>::try_into(input.get_unchecked(offset + 16..offset + 32))
+            .map(i128::from_be_bytes)
+            .unwrap()
+    }
+});
+
+impl_static_type_decode!(i64, |input: &[u8], offset: usize| {
+    unsafe {
+        TryInto::<[u8; 8]>::try_into(input.get_unchecked(offset + 24..offset + 32))
+            .map(i64::from_be_bytes)
+            .unwrap()
+    }
+});
+
+impl_static_type_decode!(i32, |input: &[u8], offset: usize| {
+    input
+        .get(offset + 28..offset + 32)
+        .and_then(|x| TryInto::<[u8; 4]>::try_into(x).ok())
+        .map(i32::from_be_bytes)
+        .unwrap()
+});
+
+impl_static_type_decode!(i16, |input: &[u8], offset: usize| {
+    unsafe {
+        i16::from_be_bytes([
+            *input.get_unchecked(offset + 30),
+            *input.get_unchecked(offset + 31),
+        ])
+    }
+});
+
+impl_static_type_decode!(i8, |input: &[u8], offset: usize| unsafe {
+    i8::from_be_bytes([*input.get_unchecked(offset + 31)])
+});
+
+impl_static_type_decode!(bool, |input: &[u8], offset: usize| unsafe {
+    *input.get_unchecked(offset + 31) != 0
+});
+
+impl_static_type_decode!(Address, |input: &[u8], offset: usize| {
+    unsafe {
+        let mut result = [0u8; 20];
+        result.copy_from_slice(input.get_unchecked(offset + 12..offset + 32));
+        Address(result)
+    }
+});
 
 impl SolEncode for &str {
     const IS_DYNAMIC: bool = true;
@@ -968,7 +1265,17 @@ impl SolEncode for () {
 }
 
 impl SolDecode for () {
-    fn decode_at(_input: &[u8], _offset: usize) -> Self {}
+    fn decode_at(_input: &[u8], _offset: usize) -> Result<Self, DecodeError> {
+        Ok(())
+    }
+}
+
+impl StaticEncodedLen for () {
+    const ENCODED_SIZE: usize = 0;
+}
+
+impl StaticDecode for () {
+    unsafe fn decode_unchecked(_input: &[u8], _offset: usize) -> Self {}
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,10 +1311,28 @@ impl<const N: usize> StaticEncodedLen for [u8; N] {
 }
 
 impl<const N: usize> SolDecode for [u8; N] {
-    fn decode_at(input: &[u8], offset: usize) -> Self {
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
         const { assert!(N >= 1 && N <= 32, "bytesN only valid for N in 1..=32") };
+
+        input
+            .get(offset..offset + N)
+            .map(|x| {
+                let mut result = [0u8; N];
+                result.copy_from_slice(x);
+                result
+            })
+            .ok_or(DecodeError)
+    }
+}
+
+impl<const N: usize> StaticDecode for [u8; N] {
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+        const { assert!(N >= 1 && N <= 32, "bytesN only valid for N in 1..=32") };
+
         let mut result = [0u8; N];
-        result.copy_from_slice(&input[offset..offset + N]);
+        unsafe {
+            result.copy_from_slice(input.get_unchecked(offset..offset + N));
+        }
         result
     }
 }
@@ -1076,17 +1401,72 @@ impl<T: SolArrayElement + StaticEncodedLen, const N: usize> StaticEncodedLen for
 }
 
 impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
-    fn decode_at(input: &[u8], offset: usize) -> Self {
-        core::array::from_fn(|i| {
-            if T::IS_DYNAMIC {
-                let ho = offset + i * T::SLOT_SIZE;
-                let field_offset =
-                    u64::from_be_bytes(input[ho + 24..ho + 32].try_into().unwrap()) as usize;
-                T::decode_tail(input, offset + field_offset)
-            } else {
-                T::decode_at(input, offset + i * T::SLOT_SIZE)
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
+        let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
+        let mut written = 0usize;
+
+        for (i, item) in array.iter_mut().enumerate() {
+            let res: Result<T, DecodeError> = (|| {
+                if T::IS_DYNAMIC {
+                    let ho = offset + i * T::SLOT_SIZE;
+                    let field_offset = input
+                        .get(ho + 24..ho + 32)
+                        .and_then(|x| x.try_into().ok())
+                        .map(u64::from_be_bytes)
+                        .ok_or(DecodeError)? as usize;
+                    T::decode_tail(input, offset + field_offset)
+                } else {
+                    T::decode_at(input, offset + i * T::SLOT_SIZE)
+                }
+            })();
+
+            match res {
+                Ok(v) => {
+                    item.write(v);
+                    written = i + 1;
+                }
+                Err(e) => {
+                    for slot in &mut array[..written] {
+                        unsafe {
+                            slot.assume_init_drop();
+                        }
+                    }
+                    return Err(e);
+                }
             }
-        })
+        }
+
+        let ptr = &array as *const _ as *const [T; N];
+        Ok(unsafe { ptr.read() })
+    }
+}
+
+impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> StaticDecode for [T; N] {
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
+        let mut array: [MaybeUninit<T>; N] = [const { MaybeUninit::uninit() }; N];
+
+        for (i, item) in array.iter_mut().enumerate() {
+            let res: T = {
+                if T::IS_DYNAMIC {
+                    let ho = offset + i * T::SLOT_SIZE;
+                    let field_offset = input
+                        .get(ho + 24..ho + 32)
+                        .and_then(|x| x.try_into().ok())
+                        .map(u64::from_be_bytes)
+                        .ok_or(DecodeError)
+                        .expect("failed to parse offset")
+                        as usize;
+                    unsafe { T::decode_unchecked(input, offset + field_offset) }
+                } else {
+                    unsafe { T::decode_unchecked(input, i * T::SLOT_SIZE) }
+                }
+            };
+
+            item.write(res);
+        }
+
+        let ptr = &array as *const _ as *const [T; N];
+        unsafe { ptr.read() }
     }
 }
 
@@ -1158,23 +1538,53 @@ macro_rules! impl_tuple_sol {
 
         impl<$($T: SolEncode),+> SolArrayElement for ($($T,)+) {}
 
+        impl<$($T: StaticEncodedLen),+> StaticEncodedLen for ($($T,)+) {
+            const ENCODED_SIZE: usize = 0 $(+ $T::ENCODED_SIZE)+;
+
+        }
+
         impl<$($T: SolDecode),+> SolDecode for ($($T,)+) {
-            fn decode_at(input: &[u8], offset: usize) -> Self {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
+                let mut __ho = offset;
+                fn fo(input: &[u8], offset: usize) -> Result<usize, DecodeError> {
+                    Ok(TryInto::<[u8; 8]>::try_into(
+                        input
+                            .get(offset + 24..offset + 32)
+                            .ok_or(DecodeError)?,
+                    )
+                    .map_err(|_| DecodeError)
+                    .map(u64::from_be_bytes)? as usize)
+                }
+                Ok(($(
+                    {
+                        let __val = if $T::IS_DYNAMIC {
+                            let __fo =  fo(&input, __ho)?;
+
+                            $T::decode_tail(input, offset + __fo)?
+                        } else {
+                            $T::decode_at(input, __ho)?
+                        };
+                        __ho += $T::SLOT_SIZE;
+                        __val
+                    },
+                )+))
+
+            }
+        }
+        impl<$($T: StaticDecode + StaticEncodedLen + SolDecode),+> StaticDecode for ($($T,)+) {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self {
                 let mut __ho = offset;
                 ($(
                     {
-                        let __val = if $T::IS_DYNAMIC {
-                            let __fo = u64::from_be_bytes(
-                                input[__ho + 24..__ho + 32].try_into().unwrap(),
-                            ) as usize;
-                            $T::decode_tail(input, offset + __fo)
-                        } else {
-                            $T::decode_at(input, __ho)
+
+                        let __val = unsafe {
+                            $T::decode_unchecked(input, __ho)
                         };
                         __ho += $T::SLOT_SIZE;
                         __val
                     },
                 )+)
+
             }
         }
     };

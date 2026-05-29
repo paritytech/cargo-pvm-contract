@@ -17,6 +17,15 @@ mod my_token {
     use super::*;
     use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping};
 
+    #[derive(pvm_contract_sdk::SolEvent)]
+    pub struct Transfer {
+        #[indexed]
+        pub from: Address,
+        #[indexed]
+        pub to: Address,
+        pub value: U256,
+    }
+
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
@@ -64,9 +73,7 @@ mod my_token {
             let recipient_balance = recipient_cell.get();
             recipient_cell.set(&(recipient_balance + amount));
 
-            let caller_bytes: [u8; 20] = caller.into();
-            let to_bytes: [u8; 20] = to.into();
-            self.emit_transfer(&caller_bytes, &to_bytes, amount);
+            self.emit_transfer(caller, to, amount);
 
             Ok(())
         }
@@ -80,9 +87,7 @@ mod my_token {
             let new_supply = self.total_supply.get().saturating_add(amount);
             self.total_supply.set(&new_supply);
 
-            let zero_address = [0u8; 20];
-            let to_bytes: [u8; 20] = to.into();
-            self.emit_transfer(&zero_address, &to_bytes, amount);
+            self.emit_transfer(Address([0u8; 20]), to, amount);
             Ok(())
         }
 
@@ -91,28 +96,15 @@ mod my_token {
             Ok(())
         }
 
+        fn emit_transfer(&self, from: Address, to: Address, value: U256) {
+            Transfer { from, to, value }.emit(self.host());
+        }
+
         fn caller(&self) -> Address {
             let mut caller = [0u8; 20];
             self.host().caller(&mut caller);
             Address(caller)
         }
 
-        fn emit_transfer(&self, from: &[u8; 20], to: &[u8; 20], value: U256) {
-            const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
-                0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37,
-                0x8d, 0xaa, 0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d,
-                0xf5, 0x23, 0xb3, 0xef,
-            ];
-
-            let mut from_topic = [0u8; 32];
-            from_topic[12..32].copy_from_slice(from);
-
-            let mut to_topic = [0u8; 32];
-            to_topic[12..32].copy_from_slice(to);
-
-            let topics = [TRANSFER_EVENT_SIGNATURE, from_topic, to_topic];
-            let data = value.to_be_bytes::<32>();
-            self.host().deposit_event(&topics, &data);
-        }
     }
 }

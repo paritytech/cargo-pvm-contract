@@ -1,0 +1,5 @@
+error: contract storage structs must not derive `Clone`; the mutation gate (`&self` vs `&mut self`) relies on `Storage: !Clone` to prevent view methods from smuggling out a `&mut Storage`
+ --> tests/ui/storage_struct_derives_clone.rs:7:5
+  |
+7 |     #[derive(Clone)]
+  |     ^^^^^^^^^^^^^^^^

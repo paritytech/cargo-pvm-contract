@@ -126,12 +126,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///   reads calldata, calls `route()`, falls through to fallback or
 ///   `return_value(REVERT, UNKNOWN_SELECTOR)` when `route()` returns `None`.
 ///
-/// Outside the module, a `Router<Host>` trait impl is generated:
+/// Outside the module, a `Router` trait impl is generated:
 ///
 /// ```ignore
-/// impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
-///     for my_token::Contract
-/// {
+/// impl ::pvm_contract_sdk::Router for my_token::Contract {
 ///     fn route(
 ///         &mut self,
 ///         selector: [u8; 4],
@@ -376,6 +374,14 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
 ///
 ///         if call_data_len < 4 {
+///             // With #[receive]: dispatches receive on empty calldata (returns
+///             // after). The empty-calldata branch is only emitted when a
+///             // #[receive] handler is present — contracts without it pay zero
+///             // bytecode cost here.
+///             if call_data_len == 0 {
+///                 this.receive();
+///                 return;
+///             }
 ///             // With #[fallback]: calls fallback. Without: reverts with NoSelector.
 ///             HostFnImpl::return_value(ReturnFlags::REVERT,
 ///                 &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
@@ -395,9 +401,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// }
 ///
 /// // Generated outside the module:
-/// impl ::pvm_contract_sdk::Router<::pvm_contract_sdk::Host>
-///     for my_token::Contract
-/// {
+/// impl ::pvm_contract_sdk::Router for my_token::Contract {
 ///     fn route(
 ///         &mut self,
 ///         selector: [u8; 4],
@@ -775,6 +779,47 @@ pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// Marks a function as the receive handler — invoked when the contract is
+/// called with empty calldata (plain value transfers).
+///
+/// Mirrors Solidity's `receive() external payable`. The receive function is
+/// implicitly `payable`: there is no such thing as a non-payable receive,
+/// so adding `#[payable]` is a compile error. Must take `&mut self`, take no
+/// other arguments, and return either `()` or `Result<(), Error>`.
+///
+/// Dispatch precedence on empty calldata:
+/// 1. `#[receive]` fires if defined.
+/// 2. Otherwise, the call falls through to `#[fallback]` (which must be
+///    `#[payable]` if value is attached).
+/// 3. Otherwise, the call reverts.
+///
+/// # Example
+///
+/// ```ignore
+/// #[pvm_contract::receive]
+/// pub fn receive(&mut self) {
+///     // value already credited; record receipt, emit event, etc.
+/// }
+/// ```
+///
+/// Fallible form:
+///
+/// ```ignore
+/// #[pvm_contract::receive]
+/// pub fn receive(&mut self) -> Result<(), MyError> {
+///     Ok(())
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn receive(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemFn);
+
+    match codegen::expand_receive(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 /// Marks a contract entry point as payable — it accepts non-zero `msg.value`.
 ///
 /// Applies to `#[method]`, `#[constructor]`, and `#[fallback]`. Without
@@ -1121,4 +1166,53 @@ pub fn abi_import(input: TokenStream) -> TokenStream {
     let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
 
     abi_import::expand_to_module(&file, alloc).into()
+}
+
+/// Derive the [`SolEvent`] trait for a struct, enabling Solidity-compatible
+/// event emission with automatic topic hashing and indexed field packing.
+/// No allocator required.
+///
+/// Fields marked with `#[indexed]` become log topics (max 3, or 4 for anonymous
+/// events). Remaining fields are ABI-encoded as the log data blob. The event
+/// signature hash is computed at compile time as topic0 (skipped for `#[anonymous]`).
+///
+/// Indexed static arrays, fixed arrays, and tuples use `keccak256(abi.encode(value))`.
+/// Indexed dynamic composites and dynamic arrays (`Vec<T>`) are rejected at
+/// compile time. Custom and alias types are not supported as indexed fields.
+///
+/// For events where all non-indexed fields are known-static primitive types,
+/// the derive generates an `emit(host)` convenience method with a stack buffer.
+/// For events with dynamic fields (e.g. `String`), add `#[alloc]` to generate
+/// an alloc-backed `emit()`, or use `data_len()` + `data_to()` manually.
+///
+/// # Example
+///
+/// ```ignore
+/// // Static event: emit() generated automatically.
+/// #[derive(SolEvent)]
+/// struct Transfer {
+///     #[indexed]
+///     from: Address,
+///     #[indexed]
+///     to: Address,
+///     value: U256,
+/// }
+/// Transfer { from, to, value }.emit(self.host());
+///
+/// // Dynamic event with #[alloc]: emit() uses heap allocation.
+/// #[derive(SolEvent)]
+/// #[alloc]
+/// struct Log {
+///     message: String,
+/// }
+/// Log { message }.emit(self.host());
+/// ```
+#[proc_macro_derive(SolEvent, attributes(indexed, anonymous, alloc))]
+pub fn sol_event(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_event(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
 }

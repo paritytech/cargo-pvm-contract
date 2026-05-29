@@ -19,7 +19,7 @@ mod fibonacci {
         }
 
         #[pvm_contract_sdk::method]
-        pub fn fibonacci(&self, n: u32) -> u32 {
+        pub fn fibonacci(n: u32) -> u32 {
             if n <= 1 {
                 n
             } else {

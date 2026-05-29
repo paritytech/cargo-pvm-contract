@@ -1,9 +1,12 @@
+#![cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
 #![no_main]
 #![no_std]
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use pvm_contract_builder_dsl::{
+    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+};
 use pvm_contract_builder_dsl::pvm_contract_types::{
-    Address, HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen, StorageFlags,
+    Address, Host, HostApi, SolEncode, StaticDecode, StaticEncodedLen, StorageFlags,
 };
 use pvm_contract_builder_dsl::ruint::aliases::U256;
 
@@ -27,21 +30,23 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
-pub extern "C" fn deploy() {}
+pub extern "C" fn deploy() {
+    assert_non_payable_deploy(&Host::new());
+}
 
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
-    let host = PolkaVmHost;
-    ContractBuilder::<PolkaVmHost>::new()
-        .method(TOTAL_SUPPLY_SELECTOR, total_supply_handler::<PolkaVmHost>)
-        .method(BALANCE_OF_SELECTOR, balance_of_handler::<PolkaVmHost>)
-        .method(TRANSFER_SELECTOR, transfer_handler::<PolkaVmHost>)
-        .method(MINT_SELECTOR, mint_handler::<PolkaVmHost>)
+    let host = Host::new();
+    ContractBuilder::new()
+        .method(TOTAL_SUPPLY_SELECTOR, total_supply_handler)
+        .method(BALANCE_OF_SELECTOR, balance_of_handler)
+        .method(TRANSFER_SELECTOR, transfer_handler)
+        .method(MINT_SELECTOR, mint_handler)
         .dispatch_impl::<256>(&host);
 }
 
-fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+fn total_supply_handler(host: &Host, _input: &[u8], output: &mut [u8]) -> HandlerResult {
     let key = total_supply_key();
     let mut supply_bytes = [0u8; 32];
     let mut supply_slice = &mut supply_bytes[..];
@@ -55,8 +60,8 @@ fn total_supply_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) 
     HandlerResult::Ok(len)
 }
 
-fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let account = <Address>::decode_at(input, 0);
+fn balance_of_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let account = unsafe { <Address>::decode_unchecked(input, 0) };
     let account: [u8; 20] = account.into();
     let key = balance_key(host, &account);
     let mut balance_bytes = [0u8; 32];
@@ -71,20 +76,24 @@ fn balance_of_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> 
     HandlerResult::Ok(len)
 }
 
-fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let to = <Address>::decode_at(input, 0);
+fn transfer_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount =
+        unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
     let caller = get_caller(host);
     let sender_key = balance_key(host, &caller);
     let mut sender_balance_bytes = [0u8; 32];
     let mut sender_balance_slice = &mut sender_balance_bytes[..];
-    let sender_balance =
-        match host.get_storage(StorageFlags::empty(), &sender_key, &mut sender_balance_slice) {
-            Ok(_) => U256::from_be_bytes::<32>(sender_balance_bytes),
-            Err(_) => U256::ZERO,
-        };
+    let sender_balance = match host.get_storage(
+        StorageFlags::empty(),
+        &sender_key,
+        &mut sender_balance_slice,
+    ) {
+        Ok(_) => U256::from_be_bytes::<32>(sender_balance_bytes),
+        Err(_) => U256::ZERO,
+    };
 
     if sender_balance < amount {
         let msg = b"InsufficientBalance";
@@ -112,10 +121,11 @@ fn transfer_handler<H: HostApi>(host: &H, input: &[u8], output: &mut [u8]) -> Ha
     HandlerResult::Ok(0)
 }
 
-fn mint_handler<H: HostApi>(host: &H, input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let to = <Address>::decode_at(input, 0);
+fn mint_handler(host: &Host, input: &[u8], _output: &mut [u8]) -> HandlerResult {
+    let to = unsafe { <Address>::decode_unchecked(input, 0) };
     let to: [u8; 20] = to.into();
-    let amount = U256::decode_at(input, <Address as StaticEncodedLen>::ENCODED_SIZE);
+    let amount =
+        unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
     let recipient_key = balance_key(host, &to);
     let mut recipient_balance_bytes = [0u8; 32];
@@ -149,7 +159,7 @@ fn total_supply_key() -> [u8; 32] {
     [0u8; 32]
 }
 
-fn balance_key<H: HostApi>(host: &H, addr: &[u8; 20]) -> [u8; 32] {
+fn balance_key(host: &Host, addr: &[u8; 20]) -> [u8; 32] {
     let mut input = [0u8; 64];
     input[12..32].copy_from_slice(addr);
     input[63] = 1;
@@ -159,23 +169,23 @@ fn balance_key<H: HostApi>(host: &H, addr: &[u8; 20]) -> [u8; 32] {
     key
 }
 
-fn set_total_supply<H: HostApi>(host: &H, amount: U256) {
+fn set_total_supply(host: &Host, amount: U256) {
     let key = total_supply_key();
     host.set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
-fn set_balance<H: HostApi>(host: &H, addr: &[u8; 20], amount: U256) {
+fn set_balance(host: &Host, addr: &[u8; 20], amount: U256) {
     let key = balance_key(host, addr);
     host.set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
 }
 
-fn get_caller<H: HostApi>(host: &H) -> [u8; 20] {
+fn get_caller(host: &Host) -> [u8; 20] {
     let mut caller = [0u8; 20];
     host.caller(&mut caller);
     caller
 }
 
-fn emit_transfer<H: HostApi>(host: &H, from: &[u8; 20], to: &[u8; 20], value: U256) {
+fn emit_transfer(host: &Host, from: &[u8; 20], to: &[u8; 20], value: U256) {
     let mut from_topic = [0u8; 32];
     from_topic[12..32].copy_from_slice(from);
 

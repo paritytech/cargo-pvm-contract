@@ -49,8 +49,10 @@ unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
 static ALLOC: BumpAllocator = BumpAllocator;
 {% endif %}
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
-use pvm_contract_builder_dsl::pvm_contract_types::{HostApi, PolkaVmHost, SolDecode, SolEncode, StaticEncodedLen};
+use pvm_contract_builder_dsl::{
+    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+};
+use pvm_contract_builder_dsl::pvm_contract_types::{Host, SolDecode, SolEncode, StaticEncodedLen};
 use pvm_contract_builder_dsl::ruint::aliases::U256;
 
 #[cfg(not(test))]
@@ -71,24 +73,26 @@ const {{ func.selector_const }}: [u8; 4] = solidity_selector("{{ func.solidity_s
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
-pub extern "C" fn deploy() {}
+pub extern "C" fn deploy() {
+    assert_non_payable_deploy(&Host::new());
+}
 
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[polkavm_derive::polkavm_export]
 pub extern "C" fn call() {
-    let host = PolkaVmHost;
+    let host = Host::new();
 {% if functions.is_empty() %}
     // Register your method handlers:
     // const MY_METHOD: [u8; 4] = solidity_selector("myMethod(uint256)");
-    // ContractBuilder::<PolkaVmHost>::new()
-    //     .method(MY_METHOD, my_method_handler::<PolkaVmHost>)
+    // ContractBuilder::new()
+    //     .method(MY_METHOD, my_method_handler)
     //     .dispatch_impl::<256>(&host);
-    ContractBuilder::<PolkaVmHost>::new().dispatch_impl::<256>(&host);
+    ContractBuilder::new().dispatch_impl::<256>(&host);
 {% else %}
-    ContractBuilder::<PolkaVmHost>::new()
+    ContractBuilder::new()
 {% for func in functions %}
-        .method({{ func.selector_const }}, {{ func.name_snake }}_handler::<PolkaVmHost>)
+        .method({{ func.selector_const }}, {{ func.name_snake }}_handler)
 {% endfor %}
         .dispatch_impl::<256>(&host);
 {% endif %}
@@ -96,8 +100,8 @@ pub extern "C" fn call() {
 {% if !functions.is_empty() %}
 {% for func in functions %}
 
-fn {{ func.name_snake }}_handler<H: HostApi>(
-    _host: &H,
+fn {{ func.name_snake }}_handler(
+    _host: &Host,
     {% if func.params.is_empty() %}_input{% else %}input{% endif %}: &[u8],
     output: &mut [u8],
 ) -> HandlerResult {

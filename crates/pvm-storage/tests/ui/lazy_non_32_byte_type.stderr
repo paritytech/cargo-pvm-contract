@@ -1,8 +1,0 @@
-error[E0599]: the function or associated item `new` exists for struct `Lazy<(Uint<256, 4>, Uint<256, 4>)>`, but its trait bounds were not satisfied
- --> tests/ui/lazy_non_32_byte_type.rs:8:71
-  |
-8 |     let _lazy = Lazy::<(ruint::aliases::U256, ruint::aliases::U256)>::new(
-  |                                                                       ^^^ function or associated item cannot be called on `Lazy<(Uint<256, 4>, Uint<256, 4>)>` due to unsatisfied trait bounds
-  |
-  = note: the following trait bounds were not satisfied:
-          `(Uint<256, 4>, Uint<256, 4>): StaticEncodedLen`

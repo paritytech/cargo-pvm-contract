@@ -3,14 +3,15 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
-pub use pvm_contract_types::{AbiItem, AbiJson, AbiParam, parse_type_str};
+pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam, parse_type_str};
 
 pub fn generate_abi_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<AbiJson>> {
-    generate_abi_via_feature(manifest_dir, bin_name, target_root)
+    generate_abi_via_feature(manifest_dir, bin_name, target_root, features)
 }
 
 /// Generate the storage layout JSON for a binary, if the contract declares
@@ -26,6 +27,7 @@ pub fn generate_storage_layout_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists()
@@ -37,7 +39,7 @@ pub fn generate_storage_layout_for_bin(
         return Ok(None);
     }
 
-    let stdout = match run_abi_gen_binary(manifest_dir, bin_name, target_root) {
+    let stdout = match run_abi_gen_binary(manifest_dir, bin_name, target_root, features) {
         Ok(Some(s)) => s,
         Ok(None) => return Ok(None),
         Err(e) => {
@@ -92,6 +94,7 @@ fn generate_abi_via_feature(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<AbiJson>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists() {
@@ -114,7 +117,7 @@ fn generate_abi_via_feature(
     // The abi-gen binary outputs either a bare ABI array (no storage) or
     // {"abi": [...], "storageLayout": {...}} (with storage). Extract
     // just the ABI items either way.
-    let stdout = run_abi_gen_binary(manifest_dir, bin_name, target_root)?
+    let stdout = run_abi_gen_binary(manifest_dir, bin_name, target_root, features)?
         .context("abi-gen binary produced no output")?;
 
     let value: serde_json::Value =
@@ -136,6 +139,7 @@ fn run_abi_gen_binary(
     manifest_dir: &Path,
     bin_name: &str,
     target_root: Option<&Path>,
+    features: Option<&str>,
 ) -> Result<Option<String>> {
     let target_dir = match target_root {
         Some(root) => root.join("abi-gen-target"),
@@ -158,6 +162,13 @@ fn run_abi_gen_binary(
         cmd.env_remove("RUSTUP_TOOLCHAIN");
     }
 
+    // Combine `abi-gen` with any user-supplied features into a single
+    // `--features` argument (cargo accepts comma-separated lists).
+    let combined_features = match features {
+        Some(list) if !list.trim().is_empty() => format!("abi-gen,{list}"),
+        _ => "abi-gen".to_string(),
+    };
+
     let output = cmd
         .env(super::INTERNAL_BUILD_ENV, "1")
         .arg("run")
@@ -168,7 +179,7 @@ fn run_abi_gen_binary(
         .arg("--config")
         .arg(r#"unstable.build-std=["std","core","alloc"]"#)
         .arg("--features")
-        .arg("abi-gen")
+        .arg(&combined_features)
         .arg("--bin")
         .arg(bin_name)
         .output()
@@ -279,6 +290,9 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         } else if line.starts_with("function ")
             || line.starts_with("constructor")
             || line.starts_with("error ")
+            || line.starts_with("event ")
+            || line.starts_with("receive(")
+            || line.starts_with("receive ")
         {
             if has_balanced_parens(line) {
                 try_parse_decl(line, &mut items);
@@ -323,7 +337,26 @@ fn try_parse_decl(line: &str, items: &mut Vec<AbiItem>) {
         && let Some(err) = parse_sol_error_line(line)
     {
         items.push(err);
+    } else if line.starts_with("event ")
+        && let Some(evt) = parse_sol_event_line(line)
+    {
+        items.push(evt);
+    } else if (line.starts_with("receive(") || line.starts_with("receive "))
+        && let Some(recv) = parse_sol_receive_line(line)
+    {
+        items.push(recv);
     }
+}
+
+fn parse_sol_receive_line(line: &str) -> Option<AbiItem> {
+    let rest = line.strip_prefix("receive")?;
+    let after = rest.trim_start();
+    if !after.starts_with('(') {
+        return None;
+    }
+    Some(AbiItem::Receive {
+        state_mutability: Some("payable".to_string()),
+    })
 }
 
 /// Check whether all parentheses in `s` are balanced.
@@ -464,6 +497,56 @@ fn parse_sol_error_line(line: &str) -> Option<AbiItem> {
     let inputs = parse_sol_params(params_str);
 
     Some(AbiItem::Error { name, inputs })
+}
+
+fn parse_sol_event_line(line: &str) -> Option<AbiItem> {
+    let line = line.strip_prefix("event ")?.trim();
+
+    let paren_start = line.find('(')?;
+    let name = line[..paren_start].trim().to_string();
+
+    let paren_end = find_matching_paren(line, paren_start)?;
+    let params_str = &line[paren_start + 1..paren_end];
+    let inputs = parse_sol_event_params(params_str);
+
+    let anonymous = line[paren_end..].contains("anonymous");
+
+    Some(AbiItem::Event {
+        name,
+        inputs,
+        anonymous,
+    })
+}
+
+fn parse_sol_event_params(params_str: &str) -> Vec<AbiEventParam> {
+    if params_str.trim().is_empty() {
+        return vec![];
+    }
+
+    split_top_level(params_str)
+        .into_iter()
+        .filter_map(|p| {
+            let p = p.trim().to_string();
+            let parts: Vec<&str> = p.split_whitespace().collect();
+            if parts.is_empty() {
+                return None;
+            }
+            let raw_type = parts[0];
+            let indexed = parts.contains(&"indexed");
+            let name = parts[1..]
+                .iter()
+                .find(|s| !matches!(**s, "indexed" | "memory" | "calldata" | "storage"))
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let expanded = parse_type_str(&name, raw_type);
+            Some(AbiEventParam {
+                name: expanded.name,
+                param_type: expanded.param_type,
+                components: expanded.components,
+                indexed,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
@@ -1218,5 +1301,165 @@ interface Token {{
     #[test]
     fn no_slot_attr_returns_false() {
         assert!(!has_slot_fields("pub struct MyToken;"));
+    }
+
+    // --- Event parsing ---
+
+    #[test]
+    fn parse_event_with_indexed_params() {
+        assert_eq!(
+            parse_sol_event_line(
+                "event Transfer(address indexed from, address indexed to, uint256 value);"
+            )
+            .unwrap(),
+            AbiItem::Event {
+                name: "Transfer".to_string(),
+                inputs: vec![
+                    AbiEventParam {
+                        name: "from".to_string(),
+                        param_type: "address".to_string(),
+                        components: vec![],
+                        indexed: true,
+                    },
+                    AbiEventParam {
+                        name: "to".to_string(),
+                        param_type: "address".to_string(),
+                        components: vec![],
+                        indexed: true,
+                    },
+                    AbiEventParam {
+                        name: "value".to_string(),
+                        param_type: "uint256".to_string(),
+                        components: vec![],
+                        indexed: false,
+                    },
+                ],
+                anonymous: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_event_no_params() {
+        assert_eq!(
+            parse_sol_event_line("event Paused();").unwrap(),
+            AbiItem::Event {
+                name: "Paused".to_string(),
+                inputs: vec![],
+                anonymous: false,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_event_anonymous() {
+        let item = parse_sol_event_line("event Debug(uint256 value) anonymous;").unwrap();
+        if let AbiItem::Event { anonymous, .. } = &item {
+            assert!(anonymous);
+        } else {
+            panic!("expected Event");
+        }
+    }
+
+    #[test]
+    fn parse_event_not_an_event() {
+        assert!(parse_sol_event_line("function transfer(address,uint256)").is_none());
+    }
+
+    #[test]
+    fn parse_event_with_indexed_tuple_param() {
+        assert_eq!(
+            parse_sol_event_line("event PointMoved((uint64,uint64) indexed point);").unwrap(),
+            AbiItem::Event {
+                name: "PointMoved".to_string(),
+                inputs: vec![AbiEventParam {
+                    name: "point".to_string(),
+                    param_type: "tuple".to_string(),
+                    components: vec![
+                        AbiParam {
+                            name: "".to_string(),
+                            param_type: "uint64".to_string(),
+                            components: vec![],
+                        },
+                        AbiParam {
+                            name: "".to_string(),
+                            param_type: "uint64".to_string(),
+                            components: vec![],
+                        },
+                    ],
+                    indexed: true,
+                }],
+                anonymous: false,
+            }
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_includes_events() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Events.sol");
+        let mut f = std::fs::File::create(&sol_path).unwrap();
+        writeln!(
+            f,
+            r#"interface IEvents {{
+    function setValue(uint256 val) external;
+    event ValueChanged(address indexed who, uint256 oldValue, uint256 newValue);
+}}"#
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let json = serde_json::to_value(&abi).unwrap();
+        let arr = json.as_array().unwrap();
+
+        let event = arr.iter().find(|item| item["type"] == "event").unwrap();
+        assert_eq!(event["name"], "ValueChanged");
+        assert_eq!(event["anonymous"], false);
+
+        let inputs = event["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0]["name"], "who");
+        assert_eq!(inputs[0]["type"], "address");
+        assert_eq!(inputs[0]["indexed"], true);
+        assert_eq!(inputs[1]["name"], "oldValue");
+        assert_eq!(inputs[1]["type"], "uint256");
+        assert_eq!(inputs[1]["indexed"], false);
+        assert_eq!(inputs[2]["name"], "newValue");
+        assert_eq!(inputs[2]["type"], "uint256");
+        assert_eq!(inputs[2]["indexed"], false);
+    }
+
+    #[test]
+    fn generate_abi_from_sol_parses_multiline_events() {
+        let dir = TempDir::new().unwrap();
+        let sol_path = dir.path().join("Events.sol");
+        let mut f = std::fs::File::create(&sol_path).unwrap();
+        writeln!(
+            f,
+            r#"interface IEvents {{
+    event Transfer(
+        address indexed from,
+        address indexed to,
+        uint256 value
+    );
+}}"#
+        )
+        .unwrap();
+
+        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
+        let json = serde_json::to_value(&abi).unwrap();
+        let arr = json.as_array().unwrap();
+
+        let event = arr.iter().find(|item| item["type"] == "event").unwrap();
+        assert_eq!(event["name"], "Transfer");
+
+        let inputs = event["inputs"].as_array().unwrap();
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0]["name"], "from");
+        assert_eq!(inputs[0]["indexed"], true);
+        assert_eq!(inputs[1]["name"], "to");
+        assert_eq!(inputs[1]["indexed"], true);
+        assert_eq!(inputs[2]["name"], "value");
+        assert_eq!(inputs[2]["indexed"], false);
     }
 }

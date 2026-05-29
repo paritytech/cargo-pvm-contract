@@ -5,31 +5,35 @@
 //! `MockHost::take_return_value()`. Mirrors the `#[contract]` macro's test
 //! pattern — same shape across both dispatch paths.
 
-use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
+use std::rc::Rc;
+
+use pvm_contract_builder_dsl::{
+    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+};
 use pvm_contract_types::{
-    HostApi, MockHost, MockHostBuilder, ReturnFlags, ReturnValue, SolDecode, SolEncode,
+    Host, MockHost, MockHostBuilder, ReturnFlags, ReturnValue, SolDecode, SolEncode,
     StaticEncodedLen,
 };
 
 const DOUBLE_SELECTOR: [u8; 4] = solidity_selector("double(uint32)");
 const PING_SELECTOR: [u8; 4] = solidity_selector("ping()");
 
-fn double_handler<H: HostApi>(_host: &H, input: &[u8], output: &mut [u8]) -> HandlerResult {
-    let n = u32::decode_at(input, 0);
+fn double_handler(_host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let n = u32::decode_at(input, 0).unwrap();
     let result = n.wrapping_mul(2);
     let len = <u32 as StaticEncodedLen>::ENCODED_SIZE;
     result.encode_to(&mut output[..len]);
     HandlerResult::Ok(len)
 }
 
-fn ping_handler<H: HostApi>(_host: &H, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
+fn ping_handler(_host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
     HandlerResult::Ok(0)
 }
 
-fn builder() -> ContractBuilder<MockHost> {
-    ContractBuilder::<MockHost>::new()
-        .method(DOUBLE_SELECTOR, double_handler::<MockHost>)
-        .method(PING_SELECTOR, ping_handler::<MockHost>)
+fn builder() -> ContractBuilder {
+    ContractBuilder::new()
+        .method(DOUBLE_SELECTOR, double_handler)
+        .method(PING_SELECTOR, ping_handler)
 }
 
 fn encode_call_double(n: u32) -> Vec<u8> {
@@ -40,38 +44,48 @@ fn encode_call_double(n: u32) -> Vec<u8> {
     calldata
 }
 
-fn drive(host: &MockHost) -> ReturnValue {
-    builder().dispatch_impl::<256>(host);
-    host.take_return_value()
+fn wrap(mock: &Rc<MockHost>) -> Host {
+    Host::from_dyn(mock.clone())
+}
+
+fn drive(mock: &Rc<MockHost>) -> ReturnValue {
+    builder().dispatch_impl::<256>(&wrap(mock));
+    mock.take_return_value()
         .expect("dispatch should call return_value")
 }
 
 #[test]
 fn double_returns_doubled_value() {
-    let host = MockHostBuilder::new()
-        .calldata(encode_call_double(21))
-        .build();
-    let rv = drive(&host);
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .calldata(encode_call_double(21))
+            .build(),
+    );
+    let rv = drive(&mock);
     assert_eq!(rv.flags, ReturnFlags::empty());
-    assert_eq!(u32::decode_at(&rv.data, 0), 42);
+    assert_eq!(u32::decode_at(&rv.data, 0).unwrap(), 42);
 }
 
 #[test]
 fn ping_returns_empty_success() {
-    let host = MockHostBuilder::new()
-        .calldata(PING_SELECTOR.to_vec())
-        .build();
-    let rv = drive(&host);
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .calldata(PING_SELECTOR.to_vec())
+            .build(),
+    );
+    let rv = drive(&mock);
     assert_eq!(rv.flags, ReturnFlags::empty());
     assert_eq!(rv.data.len(), 0);
 }
 
 #[test]
 fn unknown_selector_reverts() {
-    let host = MockHostBuilder::new()
-        .calldata(vec![0xde, 0xad, 0xbe, 0xef])
-        .build();
-    let rv = drive(&host);
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .calldata(vec![0xde, 0xad, 0xbe, 0xef])
+            .build(),
+    );
+    let rv = drive(&mock);
     assert_eq!(rv.flags, ReturnFlags::REVERT);
     assert_eq!(
         rv.data,
@@ -81,8 +95,8 @@ fn unknown_selector_reverts() {
 
 #[test]
 fn short_calldata_reverts() {
-    let host = MockHostBuilder::new().calldata(vec![0x00]).build();
-    let rv = drive(&host);
+    let mock = Rc::new(MockHostBuilder::new().calldata(vec![0x00]).build());
+    let rv = drive(&mock);
     assert_eq!(rv.flags, ReturnFlags::REVERT);
     assert_eq!(
         rv.data,
@@ -96,21 +110,23 @@ fn handler_revert_is_reflected_in_outcome() {
     // `flags == REVERT` with the handler-written payload intact.
     const FAIL_SELECTOR: [u8; 4] = solidity_selector("fail()");
 
-    fn always_fails<H: HostApi>(_host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+    fn always_fails(_host: &Host, _input: &[u8], output: &mut [u8]) -> HandlerResult {
         let msg = b"not allowed";
         output[..msg.len()].copy_from_slice(msg);
         HandlerResult::Revert(msg.len())
     }
 
-    let host = MockHostBuilder::new()
-        .calldata(FAIL_SELECTOR.to_vec())
-        .build();
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .calldata(FAIL_SELECTOR.to_vec())
+            .build(),
+    );
 
-    ContractBuilder::<MockHost>::new()
-        .method(FAIL_SELECTOR, always_fails::<MockHost>)
-        .dispatch_impl::<256>(&host);
+    ContractBuilder::new()
+        .method(FAIL_SELECTOR, always_fails)
+        .dispatch_impl::<256>(&wrap(&mock));
 
-    let rv = host
+    let rv = mock
         .take_return_value()
         .expect("dispatch called return_value");
     assert_eq!(rv.flags, ReturnFlags::REVERT);
@@ -123,21 +139,23 @@ fn handler_returning_oversize_len_is_clamped() {
     // be clamped by the dispatcher rather than panicking on slice access.
     const BAD_SELECTOR: [u8; 4] = solidity_selector("bad()");
 
-    fn bogus_len<H: HostApi>(_host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+    fn bogus_len(_host: &Host, _input: &[u8], output: &mut [u8]) -> HandlerResult {
         // Only wrote 4 bytes but claims 9999.
         output[..4].copy_from_slice(&[1, 2, 3, 4]);
         HandlerResult::Ok(9999)
     }
 
-    let host = MockHostBuilder::new()
-        .calldata(BAD_SELECTOR.to_vec())
-        .build();
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .calldata(BAD_SELECTOR.to_vec())
+            .build(),
+    );
 
-    ContractBuilder::<MockHost>::new()
-        .method(BAD_SELECTOR, bogus_len::<MockHost>)
-        .dispatch_impl::<256>(&host);
+    ContractBuilder::new()
+        .method(BAD_SELECTOR, bogus_len)
+        .dispatch_impl::<256>(&wrap(&mock));
 
-    let rv = host
+    let rv = mock
         .take_return_value()
         .expect("dispatch called return_value");
     assert_eq!(rv.flags, ReturnFlags::empty());
@@ -147,10 +165,40 @@ fn handler_returning_oversize_len_is_clamped() {
 }
 
 #[test]
+fn deploy_guard_reverts_when_value_attached() {
+    let mut value = [0u8; 32];
+    value[31] = 1;
+    let mock = Rc::new(MockHostBuilder::new().value_transferred(value).build());
+
+    assert_non_payable_deploy(&wrap(&mock));
+
+    let rv = mock
+        .take_return_value()
+        .expect("deploy guard must call return_value on non-zero value");
+    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    assert_eq!(
+        rv.data,
+        pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED.as_slice()
+    );
+}
+
+#[test]
+fn deploy_guard_passes_with_zero_value() {
+    let mock = Rc::new(MockHostBuilder::new().build());
+
+    assert_non_payable_deploy(&wrap(&mock));
+
+    assert!(
+        mock.take_return_value().is_none(),
+        "deploy guard must not call return_value when value is zero"
+    );
+}
+
+#[test]
 fn storage_is_observable_from_handler() {
     // Register a handler that reads from storage and returns the value.
-    fn read_slot<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
-        use pvm_contract_types::StorageFlags;
+    fn read_slot(host: &Host, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+        use pvm_contract_types::{HostApi, StorageFlags};
         let mut buf = [0u8; 32];
         let mut out = &mut buf[..];
         let _ = host.get_storage(StorageFlags::empty(), &[0u8; 32], &mut out);
@@ -161,16 +209,18 @@ fn storage_is_observable_from_handler() {
 
     let mut preset = [0u8; 32];
     preset[31] = 0x42;
-    let host = MockHostBuilder::new()
-        .calldata(READ_SELECTOR.to_vec())
-        .storage(vec![(vec![0u8; 32], preset.to_vec())])
-        .build();
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .calldata(READ_SELECTOR.to_vec())
+            .storage(vec![(vec![0u8; 32], preset.to_vec())])
+            .build(),
+    );
 
-    ContractBuilder::<MockHost>::new()
-        .method(READ_SELECTOR, read_slot::<MockHost>)
-        .dispatch_impl::<256>(&host);
+    ContractBuilder::new()
+        .method(READ_SELECTOR, read_slot)
+        .dispatch_impl::<256>(&wrap(&mock));
 
-    let rv = host
+    let rv = mock
         .take_return_value()
         .expect("dispatch called return_value");
     assert_eq!(rv.flags, ReturnFlags::empty());

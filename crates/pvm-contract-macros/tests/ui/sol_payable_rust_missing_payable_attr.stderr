@@ -1,4 +1,4 @@
-error: method 'deposit' is declared payable in the Solidity interface but the Rust signature is not marked `#[payable]`
+error: method `deposit` mutability mismatch: `.sol` declares `payable`, Rust signature is `nonpayable`. add `#[payable]`.
  --> tests/ui/sol_payable_rust_missing_payable_attr.rs:6:9
   |
 6 | /         #[pvm_contract_macros::method]

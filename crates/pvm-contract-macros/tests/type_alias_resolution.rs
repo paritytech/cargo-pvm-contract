@@ -156,7 +156,7 @@ fn simple_alias_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = SimpleAlias::decode(&buf);
+    let decoded = SimpleAlias::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -169,7 +169,7 @@ fn multi_alias_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = MultiAlias::decode(&buf);
+    let decoded = MultiAlias::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -182,7 +182,7 @@ fn nested_custom_type_roundtrip() {
     let len = l.encode_len();
     let mut buf = vec![0u8; len];
     l.encode_to(&mut buf);
-    let decoded = Line::decode(&buf);
+    let decoded = Line::decode(&buf).unwrap();
     assert_eq!(decoded, l, "fields a and b must decode to distinct values");
 }
 
@@ -192,7 +192,7 @@ fn aliased_point_roundtrip() {
     let len = p.encode_len();
     let mut buf = vec![0u8; len];
     p.encode_to(&mut buf);
-    let decoded = AliasedPoint::decode(&buf);
+    let decoded = AliasedPoint::decode(&buf).unwrap();
     assert_eq!(decoded, p);
 }
 
@@ -206,7 +206,7 @@ fn triangle_roundtrip() {
     let len = t.encode_len();
     let mut buf = vec![0u8; len];
     t.encode_to(&mut buf);
-    let decoded = Triangle::decode(&buf);
+    let decoded = Triangle::decode(&buf).unwrap();
     assert_eq!(decoded, t, "all three vertices must decode distinctly");
 }
 
@@ -220,7 +220,7 @@ fn mixed_struct_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = MixedStruct::decode(&buf);
+    let decoded = MixedStruct::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -233,7 +233,7 @@ fn named_point_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = NamedPoint::decode(&buf);
+    let decoded = NamedPoint::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -246,7 +246,7 @@ fn dynamic_and_custom_array_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = ArrayAndDynamicCustom::decode(&buf);
+    let decoded = ArrayAndDynamicCustom::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -255,10 +255,11 @@ fn dynamic_tuple_with_custom_roundtrip() {
     let s = TupleCustomDynamic {
         pair: (Point { x: 9, y: 10 }, "origin".to_string()),
     };
-    let len = s.encode_len();
-    let mut buf = vec![0u8; len];
+
+    let mut buf = vec![0u8; 512];
     s.encode_to(&mut buf);
-    let decoded = TupleCustomDynamic::decode(&buf);
+    let decoded = TupleCustomDynamic::decode(&buf).unwrap();
+
     assert_eq!(decoded, s);
 }
 
@@ -331,7 +332,7 @@ fn fixed_array_of_custom_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = FixedPointArray::decode(&buf);
+    let decoded = FixedPointArray::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 
@@ -353,7 +354,7 @@ fn tuple_with_alias_roundtrip() {
     let len = s.encode_len();
     let mut buf = vec![0u8; len];
     s.encode_to(&mut buf);
-    let decoded = TupleWithAlias::decode(&buf);
+    let decoded = TupleWithAlias::decode(&buf).unwrap();
     assert_eq!(decoded, s);
 }
 

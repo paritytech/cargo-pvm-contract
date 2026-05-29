@@ -2,7 +2,7 @@
 
 A non-macro alternative to `#[contract]`. You wire up dispatch manually using `ContractBuilder`, with no proc macros and full explicit control over entry points and method routing.
 
-> **Host handle:** The DSL path keeps the explicit `<H: HostApi>` generic on handler signatures (`fn handler<H: HostApi>(host: &H, input, output)`). In production you instantiate it with `PolkaVmHost`; in native unit tests you instantiate it with `MockHost` directly. The macro path hides this behind a concrete `Host` field injected onto the contract struct — the DSL deliberately keeps it explicit so authors control the monomorphization boundary themselves.
+> **Host handle:** DSL handlers take a concrete `&Host`. On `riscv64` `Host` is a zero-sized wrapper around `PolkaVmHost`, with `#[inline(always)]` delegations on every `HostApi` method, so production builds pay no indirection. In native unit tests `Host` wraps `Rc<dyn HostApi>` (via `Host::from_dyn`) so a `MockHost` can back the same handler signature without changing it. This matches the `#[contract]` macro path, which also threads a concrete `Host` through the storage struct.
 
 ## Basic Usage
 
@@ -114,13 +114,13 @@ buffer via `SolRevert::revert_data`, then return `HandlerResult::Revert(n)`:
 
 ```rust,ignore
 use pvm_contract_builder_dsl::HandlerResult;
-use pvm_contract_sdk::{HostApi, SolRevert};
+use pvm_contract_sdk::{Host, SolRevert};
 
 #[derive(pvm_contract_sdk::SolError)]
 struct InsufficientBalance;
 
-fn transfer_handler<H: HostApi>(
-    host: &H,
+fn transfer_handler(
+    host: &Host,
     input: &[u8],
     output: &mut [u8],
 ) -> HandlerResult {
@@ -173,9 +173,58 @@ match api::get_storage(StorageFlags::empty(), &key, &mut slice) {
 }
 ```
 
+## Typed Cross-Contract Calls (`Context`)
+
+The typed `abi_import!`-generated call wrappers expect `&impl ContractContext`
+(view callees) or `&mut impl ContractContext` (mutating callees). DSL handlers
+receive a `&Host` from the dispatcher, not a contract struct, so they wrap a
+cloned host in [`Context`](https://docs.rs/pvm-contract-types):
+
+```rust,ignore
+use pvm_contract_builder_dsl::HandlerResult;
+use pvm_contract_sdk::{Context, Host};
+
+fn transfer_handler(host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
+    let mut cx = Context::new(host.clone());
+    // Mutating call — `&mut cx` satisfies `&mut impl ContractContext`.
+    Erc20::from_address(addr).transfer(to, amount).call(&mut cx)?;
+    HandlerResult::Ok(0)
+}
+```
+
+`Host::clone()` is `Copy` on `riscv64` (ZST) and a single `Rc::clone` on host
+targets, so the wrapper costs nothing in production. `Context` carries only
+the host handle, so the borrow checker cannot enforce view-vs-mutating at
+compile time in the DSL — a handler can freely construct `&cx` and `&mut cx`
+from the same locally-owned wrapper. The DSL is the manual-control path; if
+you need the static guarantee that view methods cannot initiate
+state-mutating cross-contract calls, use the `#[contract]` macro path.
+
 ## Events
 
-Also manual — construct topic arrays and call the host:
+Prefer `#[derive(SolEvent)]` even on the DSL path. The derive is independent
+of how methods are dispatched: it computes the topic hash at compile time and
+packs indexed/non-indexed fields for you, so it composes with `ContractBuilder`
+exactly as it does with the `#[contract]` macro (see
+`examples/example-mytoken/src/example-mytoken-dsl-no-alloc.rs`):
+
+```rust,ignore
+#[derive(pvm_contract_sdk::SolEvent)]
+struct Incremented {
+    value: U256,
+}
+
+fn emit_incremented(host: &Host, new_value: U256) {
+    Incremented { value: new_value }.emit(host);
+}
+```
+
+### Manual escape hatch
+
+For advanced cases (e.g. anonymous events, or topics the derive doesn't cover),
+construct the topic array and call the host directly. This is the error-prone
+path `#[derive(SolEvent)]` exists to replace — the 32-byte signature constant
+and field packing must be written by hand:
 
 ```rust,ignore
 // keccak256("Incremented(uint256)")

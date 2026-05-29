@@ -16,6 +16,10 @@ name = "constructor-no-params"
 path = "src/constructor_no_params.rs"
 
 [[bin]]
+name = "constructor-payable"
+path = "src/constructor_payable.rs"
+
+[[bin]]
 name = "custom-type-method"
 path = "src/custom_type_method.rs"
 

@@ -1,8 +1,8 @@
 use core::{fmt::Debug, marker::PhantomData};
 
 use pvm_contract_types::{
-    Address, CallFlags, Host, HostApi, ReturnErrorCode, SolDecode, SolEncode, SolError,
-    const_selector,
+    Address, CallFlags, ContractContext, DecodeError, Host, HostApi, ReturnErrorCode, SolDecode,
+    SolEncode, SolError, const_selector,
 };
 use ruint::aliases::U256;
 
@@ -27,8 +27,16 @@ pub enum CallError {
     /// The called function ran to completion but decided to revert its state.
     /// Can only be returned from call and instantiate.
     CalleeReverted,
+    /// Payload decoding error
+    DecodingError,
     /// Unknown error occured
     Unknown,
+}
+
+impl From<DecodeError> for CallError {
+    fn from(_: DecodeError) -> Self {
+        Self::DecodingError
+    }
 }
 
 impl SolError for CallError {
@@ -142,12 +150,30 @@ impl Default for CallLimits {
 
 /// Call builder to construct and configure calls.
 /// depending on the [StateMutability] param can have additional methods.
+///
+/// ## Reentrancy
+///
+/// By default, pallet-revive rejects reentrant calls. If contract A calls
+/// contract B, B (and its callees) cannot call back into A. To opt in to
+/// reentrancy, use [`allow_reentry()`](CallBuilder::allow_reentry):
+///
+/// ```ignore
+/// let result = foo.bar()
+///     .allow_reentry()
+///     .call(self.host())?;
+/// ```
+///
+/// Only enable this when your contract is designed to handle callbacks
+/// (e.g., flash loans, ERC-777 hooks). The runtime protection exists to
+/// prevent the classic reentrancy attack where a callee re-enters the
+/// caller before state updates are complete.
 #[derive(Clone, Copy)]
 pub struct CallBuilder<Mutability: StateMutability, Inputs: SolEncode, Outputs: SolDecode> {
     pub selector: [u8; 4],
     pub payload: Inputs,
     pub witness: Mutability,
     pub call_limits: CallLimits,
+    pub allow_reentry: bool,
     pub _ret: PhantomData<Outputs>,
 }
 
@@ -158,6 +184,7 @@ impl Default for CallBuilder<Pure, (), ()> {
             payload: (),
             witness: Pure,
             call_limits: Default::default(),
+            allow_reentry: false,
             _ret: PhantomData,
         }
     }
@@ -172,14 +199,96 @@ impl<I: SolEncode, R: SolDecode> CallBuilder<Payable, I, R> {
 }
 
 impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutability, I, R> {
-    /// Set call limits for the given call
+    /// Set call limits for the given call.
     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
         self.call_limits = limits;
         self
     }
 
-    /// Execute code in the context (storage, caller, value) of the current contract.
-    pub fn delegate_call_raw(
+    /// Allow the callee to re-enter this contract.
+    ///
+    /// Without this, pallet-revive rejects any call from the callee (or its
+    /// callees) back into the current contract. Enable only when the contract
+    /// is designed to handle callbacks safely.
+    ///
+    /// Applies to `call` and `call_raw` only. Delegate calls ignore this
+    /// flag because pallet-revive requires `ALLOW_REENTRY` to be unset for
+    /// delegate calls and returns `InvalidCallFlags` otherwise.
+    pub fn allow_reentry(mut self) -> Self {
+        self.allow_reentry = true;
+        self
+    }
+
+    /// Decode the most recent call's return data into `R`.
+    ///
+    /// Read-only — does not mutate state, so it is intentionally not gated by
+    /// [`ContractContext`]. Internal helper used by `call` / `delegate_call` /
+    /// `instantiate`; safe to call from `&self` methods directly when reading
+    /// return data after a manual `*_raw` call.
+    pub fn extract_output(&self, host: &Host, mut output_buf: &mut [u8]) -> Result<R, CallError> {
+        if self.output_size(host) > output_buf.len() {
+            return Err(CallError::OutputBufTooSmall);
+        }
+        host.return_data_copy(&mut output_buf, 0);
+        R::decode(output_buf).map_err(Into::into)
+    }
+
+    pub fn output_size(&self, host: &Host) -> usize {
+        // safe as we always run on 64bit arches
+        host.return_data_size() as usize
+    }
+
+    /// Internal — actually invoke the cross-contract call. Mutability gating
+    /// happens at the public surface (`call_raw` / `call` per typestate).
+    fn call_raw_inner(
+        &self,
+        host: &Host,
+        address: Address,
+        input_buf: &mut [u8],
+    ) -> Result<(), CallError> {
+        if input_buf.len() < 4 + self.payload.encode_len() {
+            return Err(CallError::InputBufTooSmall);
+        }
+        let call_flags = if self.allow_reentry {
+            self.witness.call_flags() | CallFlags::ALLOW_REENTRY
+        } else {
+            self.witness.call_flags()
+        };
+        let value = self.witness.value();
+        input_buf[..4].copy_from_slice(&self.selector[..]);
+        self.payload.encode_to(&mut input_buf[4..]);
+        match self.call_limits {
+            CallLimits::GasLimit(limit) => host.call_evm(
+                call_flags,
+                &address.0,
+                limit,
+                &U256::from(value).to_be_bytes(),
+                input_buf,
+                None,
+            ),
+            CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
+                ref_time_limit,
+                proof_size_limit,
+                deposit_limit,
+            }) => host.call(
+                call_flags,
+                &address.0,
+                ref_time_limit,
+                proof_size_limit,
+                &deposit_limit,
+                &U256::from(value).to_be_bytes(),
+                input_buf,
+                None,
+            ),
+        }
+        .map_err(convert_error)
+    }
+
+    /// Internal — actually invoke the delegate call. Always mutating from the
+    /// caller's perspective: callee runs in caller's storage context, so any
+    /// callee write hits caller's storage. Gated `&mut impl ContractContext` at
+    /// the public surface regardless of the callee's declared mutability.
+    fn delegate_call_raw_inner(
         &self,
         host: &Host,
         address: Address,
@@ -212,34 +321,10 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         .map_err(convert_error)
     }
 
-    pub fn extract_output(&self, host: &Host, mut output_buf: &mut [u8]) -> Result<R, CallError> {
-        if self.output_size(host) > output_buf.len() {
-            return Err(CallError::OutputBufTooSmall);
-        }
-        host.return_data_copy(&mut output_buf, 0);
-        Ok(R::decode(output_buf))
-    }
-
-    pub fn output_size(&self, host: &Host) -> usize {
-        // safe as we always run on 64bit arches
-        host.return_data_size() as usize
-    }
-
-    /// Execute code in the context (storage, caller, value) of the current contract.
-    pub fn delegate_call(
-        &self,
-        host: &Host,
-        address: Address,
-        input_buf: &mut [u8],
-        output_buf: &mut [u8],
-    ) -> Result<R, CallError> {
-        self.delegate_call_raw(host, address, input_buf)
-            .and_then(|_| self.extract_output(host, output_buf))
-    }
-
-    /// Call a given contract
+    /// Internal — actually invoke instantiate. Always mutating: transfers
+    /// value, emits a deploy event, bumps the caller's nonce.
     #[allow(clippy::too_many_arguments)]
-    pub fn instantiate_raw(
+    fn instantiate_raw_inner(
         &self,
         host: &Host,
         limits: RefTimeAndProofSizeLimits,
@@ -267,11 +352,68 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         .map_err(convert_error)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// Execute code in the context (storage, caller, value) of the current contract.
-    pub fn instantiate(
+    /// Delegate-call another contract.
+    ///
+    /// Always requires `&mut impl ContractContext`: the callee runs in caller's
+    /// storage context, so even a `View`-typestate delegate call could mutate
+    /// caller's state. Borrow gate is on `Self`, not the callee mutability.
+    pub fn delegate_call_raw<R0: ContractContext>(
         &self,
-        host: &Host,
+        root: &mut R0,
+        address: Address,
+        input_buf: &mut [u8],
+    ) -> Result<(), CallError> {
+        self.delegate_call_raw_inner(root.host(), address, input_buf)
+    }
+
+    /// Delegate-call another contract and decode the output.
+    pub fn delegate_call<R0: ContractContext>(
+        &self,
+        root: &mut R0,
+        address: Address,
+        input_buf: &mut [u8],
+        output_buf: &mut [u8],
+    ) -> Result<R, CallError> {
+        // Clone the host handle before the mutable borrow of `root`: on
+        // `riscv64` `Host` is a ZST (free `Copy`), on host-target builds it's
+        // a refcount bump on `Rc<dyn HostApi>`. Avoids re-borrowing `root`
+        // after the mutable call to read return data.
+        let host = root.host().clone();
+        self.delegate_call_raw(root, address, input_buf)?;
+        self.extract_output(&host, output_buf)
+    }
+
+    /// Instantiate a new contract.
+    ///
+    /// Always requires `&mut impl ContractContext`: instantiation transfers
+    /// value, emits a deploy event, and bumps the caller's nonce.
+    #[allow(clippy::too_many_arguments)]
+    pub fn instantiate_raw<R0: ContractContext>(
+        &self,
+        root: &mut R0,
+        limits: RefTimeAndProofSizeLimits,
+        value: u128,
+        code_hash: &[u8; 32],
+        salt: Option<&[u8; 32]>,
+        address_buf: &mut [u8; 20],
+        input_buf: &mut [u8],
+    ) -> Result<(), CallError> {
+        self.instantiate_raw_inner(
+            root.host(),
+            limits,
+            value,
+            code_hash,
+            salt,
+            address_buf,
+            input_buf,
+        )
+    }
+
+    /// Instantiate a new contract and decode the constructor's output.
+    #[allow(clippy::too_many_arguments)]
+    pub fn instantiate<R0: ContractContext>(
+        &self,
+        root: &mut R0,
         limits: RefTimeAndProofSizeLimits,
         value: u128,
         code_hash: &[u8; 32],
@@ -280,62 +422,89 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
         input_buf: &mut [u8],
         output_buf: &mut [u8],
     ) -> Result<R, CallError> {
-        self.instantiate_raw(host, limits, value, code_hash, salt, address_buf, input_buf)
-            .and_then(|_| self.extract_output(host, output_buf))
-    }
-    /// Call a given contract
-    pub fn call_raw(
-        &self,
-        host: &Host,
-        address: Address,
-        input_buf: &mut [u8],
-    ) -> Result<(), CallError> {
-        if input_buf.len() < 4 + self.payload.encode_len() {
-            return Err(CallError::InputBufTooSmall);
-        }
-        let call_flags = self.witness.call_flags();
-        let value = self.witness.value();
-        input_buf[..4].copy_from_slice(&self.selector[..]);
-        self.payload.encode_to(&mut input_buf[4..]);
-        match self.call_limits {
-            CallLimits::GasLimit(limit) => host.call_evm(
-                call_flags,
-                &address.0,
-                limit,
-                &U256::from(value).to_be_bytes(),
-                input_buf,
-                None,
-            ),
-            CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
-                ref_time_limit,
-                proof_size_limit,
-                deposit_limit,
-            }) => host.call(
-                call_flags,
-                &address.0,
-                ref_time_limit,
-                proof_size_limit,
-                &deposit_limit,
-                &U256::from(value).to_be_bytes(),
-                input_buf,
-                None,
-            ),
-        }
-        .map_err(convert_error)
-    }
-
-    /// Execute code in the context (storage, caller, value) of the current contract.
-    pub fn call(
-        &self,
-        host: &Host,
-        address: Address,
-        input_buf: &mut [u8],
-        output_buf: &mut [u8],
-    ) -> Result<R, CallError> {
-        self.call_raw(host, address, input_buf)
-            .and_then(|_| self.extract_output(host, output_buf))
+        // Clone first — see `delegate_call` for rationale.
+        let host = root.host().clone();
+        self.instantiate_raw(root, limits, value, code_hash, salt, address_buf, input_buf)?;
+        self.extract_output(&host, output_buf)
     }
 }
+
+// ---------------------------------------------------------------------------
+// View / Pure callees: read-only, callable from `&self` methods.
+// ---------------------------------------------------------------------------
+
+macro_rules! impl_readonly_call {
+    ($mutability:ident) => {
+        impl<I: SolEncode, R: SolDecode> CallBuilder<$mutability, I, R> {
+            /// Call a `view`/`pure` callee. Borrows the contract root
+            /// immutably, so this is callable from `&self` methods.
+            pub fn call_raw<R0: ContractContext>(
+                &self,
+                root: &R0,
+                address: Address,
+                input_buf: &mut [u8],
+            ) -> Result<(), CallError> {
+                self.call_raw_inner(root.host(), address, input_buf)
+            }
+
+            /// Call a `view`/`pure` callee and decode its output.
+            pub fn call<R0: ContractContext>(
+                &self,
+                root: &R0,
+                address: Address,
+                input_buf: &mut [u8],
+                output_buf: &mut [u8],
+            ) -> Result<R, CallError> {
+                let host = root.host();
+                self.call_raw_inner(host, address, input_buf)?;
+                self.extract_output(host, output_buf)
+            }
+        }
+    };
+}
+impl_readonly_call!(View);
+impl_readonly_call!(Pure);
+
+// ---------------------------------------------------------------------------
+// NonPayable / Payable callees: state-mutating, require `&mut self`.
+// ---------------------------------------------------------------------------
+
+macro_rules! impl_mutating_call {
+    ($mutability:ident) => {
+        impl<I: SolEncode, R: SolDecode> CallBuilder<$mutability, I, R> {
+            /// Call a `nonpayable`/`payable` callee. Borrows the contract
+            /// root mutably, so this is only callable from `&mut self`
+            /// methods. A `&self` (view) method cannot construct the
+            /// `&mut impl ContractContext` required here, so the borrow checker
+            /// rejects view methods that try to initiate a state-mutating
+            /// cross-contract call.
+            pub fn call_raw<R0: ContractContext>(
+                &self,
+                root: &mut R0,
+                address: Address,
+                input_buf: &mut [u8],
+            ) -> Result<(), CallError> {
+                self.call_raw_inner(root.host(), address, input_buf)
+            }
+
+            /// Call a `nonpayable`/`payable` callee and decode its output.
+            pub fn call<R0: ContractContext>(
+                &self,
+                root: &mut R0,
+                address: Address,
+                input_buf: &mut [u8],
+                output_buf: &mut [u8],
+            ) -> Result<R, CallError> {
+                // Clone first — see `delegate_call` for rationale.
+                let host = root.host().clone();
+                self.call_raw(root, address, input_buf)?;
+                self.extract_output(&host, output_buf)
+            }
+        }
+    };
+}
+impl_mutating_call!(NonPayable);
+impl_mutating_call!(Payable);
 
 #[cfg(test)]
 mod test {
@@ -350,6 +519,7 @@ mod test {
             payload: (),
             witness: super::Payable { value: None },
             call_limits: Default::default(),
+            allow_reentry: false,
             _ret: PhantomData::<()>,
         };
 

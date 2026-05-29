@@ -6,24 +6,24 @@
 //! These tests exercise the host-as-parameter path:
 //!
 //! ```ignore
-//! Iface::from_address(addr).method().call(&host)?
-//!     -> CallBuilder::call(host, ...)
-//!     -> host.call_evm(...)             // dispatches to MockHost
+//! Iface::from_address(addr).method().call(&cx)?
+//!     -> CallBuilder::call(cx, ...)
+//!     -> cx.host().call_evm(...)      // dispatches to MockHost
 //!     -> MockHost::resolve_call         // returns mocked data
 //!     -> CallBuilder::extract_output(host, ...)
 //!     -> host.return_data_copy(...)     // reads from MockHost.return_data
 //! ```
 //!
-//! Without the host plumbing, `CallBuilder` would call `PolkaVmHost.*`
-//! directly, bypassing the mock and panicking with `unimplemented!()` on
-//! host-target builds.
+//! `Context` wraps the `Host` and impls `ContractContext`, so it satisfies
+//! the borrow gate (`&impl ContractContext` for view callees,
+//! `&mut impl ContractContext` for mutating ones).
 
 extern crate alloc;
 
 use std::rc::Rc;
 
 use pvm_contract_sdk::{
-    Address, CallError, Host, HostApi, MockHostBuilder, RefTimeAndProofSizeLimits,
+    Address, CallError, Context, Host, HostApi, MockHostBuilder, RefTimeAndProofSizeLimits,
 };
 
 pvm_contract_sdk::abi_import! {
@@ -35,6 +35,29 @@ pvm_contract_sdk::abi_import! {
         constructor();
         function flip() external;
         function get() external view returns (bool);
+    }
+}
+
+// Regression fixtures for abi_import! parameter naming (see tests below).
+pvm_contract_sdk::abi_import! {
+    #![abi_import(alloc = true)]
+    pragma solidity ^0.8.0;
+
+    interface CamelCaseParams {
+        function publishLatest(
+            string memory contractName,
+            address contractAddress,
+            string memory metadataUri
+        ) external;
+    }
+}
+
+pvm_contract_sdk::abi_import! {
+    #![abi_import(alloc = true)]
+    pragma solidity ^0.8.0;
+
+    interface UnnamedParams {
+        function compute(uint256, uint256, address) external returns (uint256);
     }
 }
 
@@ -51,11 +74,11 @@ fn view_call_returns_mocked_data() {
     let target = Address::from([0xBB; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(encoded_bool(true)));
-    let host = Host::from_dyn(Rc::new(mock));
+    let cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
-        .call(&host)
+        .call(&cx)
         .unwrap();
 
     assert!(res);
@@ -66,11 +89,11 @@ fn view_call_returns_mocked_false() {
     let target = Address::from([0xBC; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(encoded_bool(false)));
-    let host = Host::from_dyn(Rc::new(mock));
+    let cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
-        .call(&host)
+        .call(&cx)
         .unwrap();
 
     assert!(!res);
@@ -82,15 +105,16 @@ fn write_call_invokes_mock_and_propagates_return_data() {
     let marker = vec![0xAA, 0xBB, 0xCC, 0xDD];
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(marker.clone()));
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     flipper::Flipper::from_address(target)
         .flip()
-        .call(&host)
+        .call(&mut cx)
         .expect("flip should succeed");
 
     // Stronger evidence than a successful return: the mock actually wrote
     // its configured payload into the host's return-data buffer.
+    let host = &cx.host;
     assert_eq!(host.return_data_size(), marker.len() as u64);
     let mut buf = vec![0u8; marker.len()];
     let mut out = &mut buf[..];
@@ -105,14 +129,14 @@ fn unmocked_call_leaves_return_data_empty() {
     // clears return_data and returns Ok(()) — proving the previous test's
     // marker bytes came from the mock table, not from a default fallback.
     let target = Address::from([0xBE; 20]);
-    let host = Host::from_dyn(Rc::new(MockHostBuilder::new().build()));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(MockHostBuilder::new().build())));
 
     flipper::Flipper::from_address(target)
         .flip()
-        .call(&host)
+        .call(&mut cx)
         .expect("unmocked flip still succeeds");
 
-    assert_eq!(host.return_data_size(), 0);
+    assert_eq!(cx.host.return_data_size(), 0);
 }
 
 #[test]
@@ -120,9 +144,9 @@ fn revert_from_callee_propagates_as_call_error() {
     let target = Address::from([0xCC; 20]);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Err(()));
-    let host = Host::from_dyn(Rc::new(mock));
+    let cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
-    let res = flipper::Flipper::from_address(target).get().call(&host);
+    let res = flipper::Flipper::from_address(target).get().call(&cx);
 
     assert_eq!(res, Err(CallError::CalleeReverted));
 }
@@ -139,14 +163,15 @@ fn delegate_call_uses_same_mock_table() {
     let payload = encoded_bool(true);
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target.0, Ok(payload.clone()));
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     let res = flipper::Flipper::from_address(target)
         .get()
-        .delegate_call(&host)
+        .delegate_call(&mut cx)
         .unwrap();
 
     assert!(res);
+    let host = &cx.host;
     assert_eq!(host.return_data_size(), payload.len() as u64);
     let mut buf = vec![0u8; payload.len()];
     let mut out = &mut buf[..];
@@ -157,7 +182,7 @@ fn delegate_call_uses_same_mock_table() {
 #[test]
 fn chained_calls_each_extract_their_own_return_data() {
     // Two callees mocked with different payloads; the contract calls both
-    // in sequence. Each `.call(&host)` must decode the value belonging to
+    // in sequence. Each `.call(&cx)` must decode the value belonging to
     // *its* callee — proving that `extract_output` runs immediately after
     // `call_raw` and before the next call clobbers `return_data`. This
     // mirrors on-chain semantics (RETURNDATA reflects only the most recent
@@ -169,25 +194,26 @@ fn chained_calls_each_extract_their_own_return_data() {
     let mock = MockHostBuilder::new().build();
     mock.mock_call(target_a.0, Ok(encoded_bool(true)));
     mock.mock_call(target_b.0, Ok(encoded_bool(false)));
-    let host = Host::from_dyn(Rc::new(mock));
+    let cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     // First call — get the answer for target A.
     let res_a = flipper::Flipper::from_address(target_a)
         .get()
-        .call(&host)
+        .call(&cx)
         .unwrap();
     assert!(res_a, "first call should decode target_a's payload");
 
     // Second call — get the answer for target B.
     let res_b = flipper::Flipper::from_address(target_b)
         .get()
-        .call(&host)
+        .call(&cx)
         .unwrap();
     assert!(!res_b, "second call should decode target_b's payload");
 
     // Pin the overwrite semantics: the host's RETURNDATA now holds only
     // target B's payload (target A's is gone). On chain this is exactly
     // how `RETURNDATASIZE` / `RETURNDATACOPY` behave.
+    let host = &cx.host;
     assert_eq!(host.return_data_size(), 32);
     let mut buf = [0u8; 32];
     let mut out = &mut buf[..];
@@ -200,7 +226,7 @@ fn instantiate_returns_mocked_address() {
     let deployed = [0xDD; 20];
     let mock = MockHostBuilder::new().build();
     mock.mock_instantiate(deployed, Vec::new());
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     let limits = RefTimeAndProofSizeLimits {
         ref_time_limit: u64::MAX,
@@ -208,23 +234,91 @@ fn instantiate_returns_mocked_address() {
         deposit_limit: [0u8; 32],
     };
     let (addr, ()) = flipper::new_flipper()
-        .instantiate(&host, &[0u8; 32], 0, limits, None)
+        .instantiate(&mut cx, &[0u8; 32], 0, limits, None)
         .expect("instantiate should succeed");
 
     assert_eq!(addr, Address::from(deployed));
 }
 
 #[test]
+fn mut_caller_calling_view_callee_compiles_via_coercion() {
+    // Pins the borrow-checker coercion path: a caller that holds
+    // `&mut Context` can invoke a `View` callee whose `call` takes
+    // `&impl ContractContext`. Rust's `&mut T -> &T` reborrow makes this
+    // work without an explicit `&*cx`. Regression guard: if someone
+    // tightens the View bound to require `&Self`-only (no coercion from
+    // `&mut`), this test will fail to compile.
+    let target = Address::from([0xBF; 20]);
+    let mock = MockHostBuilder::new().build();
+    mock.mock_call(target.0, Ok(encoded_bool(true)));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
+
+    // `&mut cx` exists; Flipper::get is a View callee whose .call
+    // takes `&impl ContractContext`. The reborrow `&*&mut cx -> &cx` is
+    // implicit here — we just pass `&cx` after taking the mut borrow.
+    let res = flipper::Flipper::from_address(target)
+        .get()
+        .call(&cx)
+        .unwrap();
+    assert!(res);
+
+    // Confirm `cx` is still owned mutably afterwards (no borrow stuck).
+    let _: &mut Context = &mut cx;
+}
+
+#[test]
 fn instantiate_without_mock_returns_out_of_resources() {
     let mock = MockHostBuilder::new().build();
-    let host = Host::from_dyn(Rc::new(mock));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
 
     let limits = RefTimeAndProofSizeLimits {
         ref_time_limit: u64::MAX,
         proof_size_limit: u64::MAX,
         deposit_limit: [0u8; 32],
     };
-    let res = flipper::new_flipper().instantiate(&host, &[0u8; 32], 0, limits, None);
+    let res = flipper::new_flipper().instantiate(&mut cx, &[0u8; 32], 0, limits, None);
 
     assert_eq!(res, Err(CallError::OutOfResources));
+}
+
+// Regression: camelCase params must be snake_cased on both signature and body
+// sides of the abi_import!-generated proxy.
+#[test]
+fn camelcase_params_call_through_mock() {
+    let target = Address::from([0xCE; 20]);
+    let mock = MockHostBuilder::new().build();
+    mock.mock_call(target.0, Ok(vec![]));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
+
+    camel_case_params::CamelCaseParams::from_address(target)
+        .publish_latest(
+            "MyContract".to_string(),
+            Address::from([0xDE; 20]),
+            "ipfs://qm".to_string(),
+        )
+        .call(&mut cx)
+        .expect("publish_latest should succeed");
+}
+
+// Regression: unnamed params must use `s{index}` on both sides to avoid
+// identifier collisions across multiple unnamed parameters.
+#[test]
+fn unnamed_params_call_through_mock() {
+    let target = Address::from([0xCF; 20]);
+    let mut payload = vec![0u8; 32];
+    payload[31] = 42;
+    let mock = MockHostBuilder::new().build();
+    mock.mock_call(target.0, Ok(payload));
+    let mut cx = Context::new(Host::from_dyn(Rc::new(mock)));
+
+    let result = unnamed_params::UnnamedParams::from_address(target)
+        .compute(
+            pvm_contract_sdk::U256::from(1u64),
+            pvm_contract_sdk::U256::from(2u64),
+            Address::from([0xAB; 20]),
+        )
+        .call(&mut cx)
+        .expect("compute should succeed");
+
+    assert_eq!(result, pvm_contract_sdk::U256::from(42u64));
 }
