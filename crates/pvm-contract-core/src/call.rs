@@ -62,6 +62,11 @@ impl CallError {
     /// Try and decode error.
     /// Note: this will try to decode an error only if the `CallError::CalleeReverted` variant is reached,
     /// otherwise `Ok(None)` will be returned.
+    ///
+    /// # Safety:
+    /// - buffer for error returns is unlimited: check beforehand with `host.return_data_size()`
+    /// - decoding only works if error is decoded immediately after making the cross-contract call,
+    ///   otherwise the buffer containing the error is overwritten by the runtime
     pub fn try_decode_error<T: SolError>(&self, host: &Host) -> Result<Option<T>, DecodeError> {
         match self {
             Self::CalleeReverted => {
