@@ -708,5 +708,8 @@ fn rebuild_with_macro_keeps_abi_byte_stable() {
     verify_abi_json(&project_dir, name, "release");
 
     let abi_v2 = std::fs::read(&abi_path).expect("read v2 abi");
-    assert_eq!(abi_v1, abi_v2);
+    assert_eq!(
+        abi_v1, abi_v2,
+        "ABI bytes should be stable across a no-op rebuild"
+    );
 }
