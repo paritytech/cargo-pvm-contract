@@ -306,7 +306,14 @@ fn process_elf_binaries(
         // when `generate_abi == false` (`PvmBuilder::skip_abi(true)`) or
         // the source has no `#[contract]` macro, so without this cleanup
         // a stale ABI would survive a `.polkavm` overwrite.
-        let _ = fs::remove_file(&abi_path);
+        // `NotFound` is the expected first-build case; everything else
+        // (permissions, IO) is a real error worth surfacing.
+        if let Err(e) = fs::remove_file(&abi_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e)
+                .with_context(|| format!("Failed to remove stale ABI: {}", abi_path.display()));
+        }
 
         if generate_abi {
             generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root, features)?;
