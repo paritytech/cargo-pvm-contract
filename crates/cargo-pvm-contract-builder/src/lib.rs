@@ -298,10 +298,23 @@ fn process_elf_binaries(
         }
 
         let output_path = profile_dir.join(format!("{bin}.polkavm"));
+        let abi_path = profile_dir.join(format!("{bin}.abi.json"));
+
         link_to_polkavm(&elf_path, &output_path)?;
 
+        // Best-effort cleanup so a stale `.abi.json` never survives a
+        // `.polkavm` overwrite. Three cases this addresses:
+        //  - `generate_abi == false` (`PvmBuilder::skip_abi(true)`): the
+        //    re-emit branch below never runs, so cleanup must happen here.
+        //  - `generate_abi == true` but the source no longer has a
+        //    `#[contract]` macro: `generate_abi_file` returns `Ok(None)`
+        //    and never writes, so the old file would otherwise survive.
+        //  - `generate_abi == true` with `#[contract]`: cleanup is
+        //    immediately followed by `generate_abi_file` writing the fresh
+        //    content; net effect is a normal overwrite.
+        let _ = fs::remove_file(&abi_path);
+
         if generate_abi {
-            let abi_path = profile_dir.join(format!("{bin}.abi.json"));
             generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root, features)?;
         }
     }
