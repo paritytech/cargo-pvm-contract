@@ -4,13 +4,15 @@
 //! storage, both using Solidity-compatible key derivation so tools like `cast storage`
 //! and `cast index` work out of the box.
 //!
-//! Static values use [`Lazy<T>`] and [`Mapping<K, V>`] with `T`/`V` bound to
-//! `SolEncode + StaticDecode + StaticEncodedLen`. The value must have a
-//! compile-time-known size that's a positive multiple of 32 and at most
-//! [`MAX_STATIC_BYTES`]. Single-word values (`U256`, `Address`, `bool`,
-//! `[u8; 32]`, …) occupy one slot; multi-word values like `(U256, U256)` or
-//! `#[derive(SolType)]` structs are striped across `T::ENCODED_SIZE / 32`
-//! consecutive slots, mirroring Solidity's struct-in-storage layout.
+//! [`Lazy<T>`] and [`Mapping<K, V>`] bind `T`/`V` to
+//! [`StorageEncode`](pvm_contract_types::StorageEncode) +
+//! [`StorageDecode`](pvm_contract_types::StorageDecode). The value's
+//! [`STORAGE_SLOTS`](pvm_contract_types::StorageEncode::STORAGE_SLOTS) is
+//! checked at compile time and must be in `1..=MAX_STATIC_SLOTS`. Single-slot
+//! values (`U256`, `Address`, `bool`, `[u8; 32]`, …) occupy one slot;
+//! multi-slot values like `(U256, U256)` or static `#[derive(SolType)]`
+//! structs are striped across `T::STORAGE_SLOTS` consecutive slots, mirroring
+//! Solidity's struct-in-storage layout.
 //!
 //! Dynamic `bytes` / `string` values ride the same `Lazy<T>` / `Mapping<K, V>`
 //! accessors as static types — `Lazy<String>`, `Lazy<Bytes>`,
@@ -570,12 +572,11 @@ pub fn join_label(prefix: &str, name: &str) -> String {
 /// "Lazy" because there is no caching: every [`get`](Lazy::get) reads from
 /// host storage, every [`set`](Lazy::set) writes immediately.
 ///
-/// Static `T` must have a compile-time-known size that's a positive multiple
-/// of 32 and at most [`MAX_STATIC_BYTES`]. Single-word `T` (`U256`, `Address`,
-/// `bool`, `[u8; 32]`, …) occupies one slot; an `N`-word `T` (e.g.
-/// `(U256, U256)`, or a `#[derive(SolType)]` struct of static fields) is
-/// striped across `N` consecutive slots starting at `self.key`, matching
-/// Solidity's struct-in-storage layout.
+/// Static `T` must report `STORAGE_SLOTS` in `1..=`[`MAX_STATIC_SLOTS`].
+/// Single-slot `T` (`U256`, `Address`, `bool`, `[u8; 32]`, …) occupies one
+/// slot; an `N`-slot `T` (e.g. `(U256, U256)`, or a `#[derive(SolType)]`
+/// struct of static fields) is striped across `N` consecutive slots starting
+/// at `self.key`, matching Solidity's struct-in-storage layout.
 ///
 /// Dynamic `T` (`String`, [`Bytes`](pvm_contract_types::Bytes), or
 /// `#[derive(SolType)]` structs with dynamic fields) uses the same `Lazy<T>`
@@ -675,8 +676,8 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             let buf = storage_get_32(&self.host, self.key.as_bytes());
             T::__unpack_from_dispatched(&buf, self.offset as usize)
         } else if T::HAS_DYNAMIC_BODY {
-            // Dispatch to the type's host-aware reader (e.g. LazySlot<String>
-            // reads its body from `keccak256(key) + i`).
+            // Dispatch to the type's host-aware reader (e.g. `String` / `Bytes`
+            // read their body from `keccak256(key) + i`).
             T::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, self.key.as_bytes())
         } else if T::STORAGE_SLOTS == 1 {
             // Fast path: skip the loop + multi-slot buffer for single-slot V.
@@ -745,10 +746,10 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         }
         if T::HAS_DYNAMIC_BODY {
             // Multi-slot dynamic V: "set" iff any header slot is non-zero.
-            // For a single-slot LazySlot<T>, the header itself is the marker.
-            // For a struct with a LazyDynamic field, the dynamic field's
-            // header may be the only non-zero slot — checking just slot 0
-            // would miss it.
+            // For a single-slot dynamic type (`String` / `Bytes`), the header
+            // itself is the marker. For a struct with a dynamic field, that
+            // field's header may be the only non-zero slot — checking just
+            // slot 0 would miss it.
             let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
             try_read_slots(
                 &self.host,

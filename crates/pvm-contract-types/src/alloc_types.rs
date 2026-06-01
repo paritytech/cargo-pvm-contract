@@ -78,22 +78,14 @@ impl From<Bytes> for alloc::vec::Vec<u8> {
 impl crate::StorageEncode for Bytes {
     const STORAGE_SLOTS: usize = 1;
     const PACKED_BYTES: usize = 32;
-    const STARTS_NEW_SLOT: bool = true;
     const HAS_DYNAMIC_BODY: bool = true;
 
-    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert!(_slot_idx == 0);
-        *buf = [0u8; 32];
-        let len = self.0.len();
-        if len < 32 {
-            buf[..len].copy_from_slice(&self.0);
-            buf[31] = (len as u8) << 1;
-            if len == 0 {
-                buf[30] = crate::storage_codec::EMPTY_INLINE_SENTINEL;
-            }
-        } else {
-            *buf = crate::storage_codec::encode_long_header(len);
-        }
+    // Dynamic-body type: live path goes through `write_to_storage` (header +
+    // body in one operation). `encode_slot` exists only to satisfy the
+    // trait's required-method contract that compile-checks static impls
+    // never forget a real slot codec.
+    fn encode_slot(&self, _slot_idx: usize, _buf: &mut [u8; 32]) {
+        unreachable!("Bytes::encode_slot: dispatch through write_to_storage")
     }
 
     fn write_to_storage(&self, host: &crate::Host, base_key: &[u8; 32]) {
@@ -106,12 +98,10 @@ impl crate::StorageEncode for Bytes {
 }
 
 impl crate::StorageDecode for Bytes {
-    /// Placeholder. The canonical read path goes through
-    /// [`read_from_storage`](Self::read_from_storage) which has host access
-    /// to materialise the body. `from_slots` returns an empty `Bytes` because
-    /// the spilled body lives outside the slot buffer.
+    // Dynamic-body type: see `encode_slot` above. Reads dispatch through
+    // `read_from_storage`.
     fn from_slots(_slots: &[[u8; 32]]) -> Self {
-        Bytes(alloc::vec::Vec::new())
+        unreachable!("Bytes::from_slots: dispatch through read_from_storage")
     }
 
     fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
