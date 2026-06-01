@@ -13,3 +13,4 @@ pvm-contract-types = { path = "../pvm-contract-types", default-features = false 
 
 [features]
 default = []
+alloc = ["pvm-contract-types/alloc"]

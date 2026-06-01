@@ -13,6 +13,14 @@ use core::mem::MaybeUninit;
 #[cfg(feature = "alloc")]
 pub use alloc_types::Bytes;
 
+mod revert_string;
+#[cfg(feature = "alloc")]
+mod revert_string_alloc;
+
+#[cfg(not(feature = "alloc"))]
+pub use revert_string::RevertString;
+#[cfg(feature = "alloc")]
+pub use revert_string_alloc::RevertString;
 #[cfg(feature = "abi-gen")]
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
@@ -68,12 +76,26 @@ impl SolError for DecodeError {
 
     const SIGNATURE: &'static str = framework_errors::NAMES[0];
 
-    fn encode_params(&self, _buf: &mut [u8]) -> usize {
-        0
-    }
-
     fn encoded_size(&self) -> usize {
         4
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        buf[0..4].copy_from_slice(&Self::SELECTOR);
+        4
+    }
+    fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {
+        if input.len() < 4 {
+            return Err(DecodeError);
+        };
+        if input
+            .get(offset..offset + 4)
+            .is_some_and(|x| x == Self::SELECTOR)
+        {
+            Ok(Some(Self))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -452,8 +474,6 @@ pub trait StaticDecode: SolDecode + SolEncode + StaticEncodedLen + Sized {
 /// Each implementor represents a single Solidity error type with its own
 /// 4-byte selector. Implementors produce error data that all Ethereum tools can decode.
 ///
-/// For error enums (multiple error types), see [`SolRevert`].
-///
 /// The wire format is: selector (4 bytes) + ABI-encoded parameters.
 /// This matches what the Solidity compiler produces for custom errors.
 ///
@@ -465,117 +485,42 @@ pub trait StaticDecode: SolDecode + SolEncode + StaticEncodedLen + Sized {
 /// or the encoding may panic. [`RevertString`] handles this with truncation.
 ///
 /// In **alloc mode** (`allocator = "pico"` / `"bump"`), the dispatch uses
-/// [`SolRevert::revert_data_len`] to allocate an exact-size `Vec<u8>`,
+/// [`SolError::encoded_size`] to allocate an exact-size `Vec<u8>`,
 /// so errors with dynamic fields work regardless of payload size.
-pub trait SolError {
+pub trait SolError: Sized {
     /// The 4-byte error selector: `keccak256(SIGNATURE)[0:4]`.
     /// Computed at compile time.
-    const SELECTOR: [u8; 4];
+    /// Zeroed out for enums.
+    const SELECTOR: [u8; 4] = [0; 4];
 
     /// The canonical Solidity error signature.
     /// Example: `"InsufficientBalance(address,uint256,uint256)"`
     /// Used for ABI JSON generation.
+    /// Empty string for enum.
     const SIGNATURE: &'static str;
-
-    /// Encode the error parameters (without selector) into `buf`.
-    /// Returns the number of bytes written.
-    /// The caller prepends the 4-byte selector.
-    fn encode_params(&self, buf: &mut [u8]) -> usize;
 
     /// Total encoded size: 4 (selector) + parameter bytes.
     fn encoded_size(&self) -> usize;
-}
 
-/// Trait for anything that can produce ABI-encoded revert data.
-///
-/// [`SolError`] types get this automatically via a blanket impl.
-/// Error enums need a manual impl or can use [`sol_revert_enum!`].
-pub trait SolRevert {
-    /// Write the full revert data (selector + params) into `buf`.
+    /// Encode the error parameters (with selector) into `buf`.
     /// Returns the number of bytes written.
-    fn revert_data(&self, buf: &mut [u8]) -> usize;
+    fn encode_to(&self, buf: &mut [u8]) -> usize;
 
-    /// Total byte length of the revert data (selector + params).
-    /// Used by alloc-mode dispatch to allocate an exact-size buffer.
-    /// Defaults to 256 (the stack buffer size) if not overridden.
-    fn revert_data_len(&self) -> usize {
-        256
-    }
+    /// Decode from ABI encoding produced by [`SolError`].
+    /// Symmetric with `encode_to`:
+    fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError>;
 
     /// Return the Solidity error signatures for all error types that
     /// this type can produce. Used by abi-gen to emit ABI JSON error entries.
-    ///
     /// For single `SolError` types, returns the one signature.
-    /// For error enums (`sol_revert_enum!`), returns all inner error signatures.
+    /// For error enums, returns all inner error signatures.
+    #[cfg(feature = "abi-gen")]
     fn error_signatures() -> impl Iterator<Item = &'static &'static str>
     where
         Self: Sized,
     {
-        let arr: &'static [&'static str] = &[];
+        let arr = &[Self::SIGNATURE];
         arr.iter()
-    }
-}
-
-/// Blanket impl: any `SolError` is automatically `SolRevert`.
-impl<E: SolError> SolRevert for E {
-    fn revert_data(&self, buf: &mut [u8]) -> usize {
-        if buf.len() < 4 {
-            return 0;
-        }
-        buf[0..4].copy_from_slice(&E::SELECTOR);
-        4 + self.encode_params(&mut buf[4..])
-    }
-
-    fn revert_data_len(&self) -> usize {
-        self.encoded_size()
-    }
-
-    fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
-        let arr = &[E::SIGNATURE];
-        arr.iter()
-    }
-}
-
-/// Standard Solidity `Error(string)` revert.
-///
-/// Selector: `0x08c379a0` = `keccak256("Error(string)")[0:4]`
-///
-/// This is what Solidity's `require(condition, "message")` produces.
-/// It's the most common error type in the Ethereum ecosystem.
-pub struct RevertString<'a>(pub &'a str);
-
-impl SolError for RevertString<'_> {
-    const SELECTOR: [u8; 4] = [0x08, 0xc3, 0x79, 0xa0];
-    const SIGNATURE: &'static str = "Error(string)";
-
-    fn encode_params(&self, buf: &mut [u8]) -> usize {
-        let str_bytes = self.0.as_bytes();
-
-        // ABI string encoding: [offset: 32 bytes][length: 32 bytes][data: padded to 32]
-        // Need at least 64 bytes for the offset + length words
-        if buf.len() < 64 {
-            let n = buf.len().min(32);
-            buf[..n].fill(0);
-            return n;
-        }
-
-        // Truncate string to fit buffer, aligned down to 32-byte boundary
-        let max_data = (buf.len() - 64) & !31;
-        let actual_len = str_bytes.len().min(max_data);
-        let padding = (32 - (actual_len % 32)) % 32;
-        let total = 64 + actual_len + padding;
-
-        buf[..total].fill(0);
-        buf[24..32].copy_from_slice(&32u64.to_be_bytes()); // offset
-        buf[56..64].copy_from_slice(&(actual_len as u64).to_be_bytes()); // length
-        buf[64..64 + actual_len].copy_from_slice(&str_bytes[..actual_len]); // data
-
-        total
-    }
-
-    fn encoded_size(&self) -> usize {
-        // 68 = 4 (selector) + 32 (offset word) + 32 (length word)
-        68 + ((self.0.len() + 31) & !31)
     }
 }
 
@@ -591,17 +536,44 @@ impl SolError for RevertString<'_> {
 /// and 0x32 (out-of-bounds access).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panic {
+    /// 0x00 - Used for generic compiler inserted panics.
+    Generic,
+    /// 0x01 - If you call assert with an argument that evaluates to false.
+    AssertFalse,
     /// 0x11 — arithmetic overflow/underflow
     Overflow,
     /// 0x12 — division or modulo by zero
     DivisionByZero,
+    /// 0x21 - If you convert a value that is too big or negative into an enum type.
+    EnumConversionFailure,
+    /// 0x22 - If you access a storage byte array that is incorrectly encoded.
+    StorageByteArrayEncoding,
+    /// 0x31 - If you call .pop() on an empty array.
+    EmptyArrayPopFailure,
+    /// 0x32 - If you access an array, bytesN or an array slice at an out-of-bounds or negative index
+    OutOfBoundsAccess,
+    /// 0x41 - If you allocate too much memory or create an array that is too large.
+    OOM,
+    /// 0x51 - If you call a zero-initialized variable of internal function type.
+    UninitValueCall,
+    /// Unknown panic code.
+    Unknown(u8),
 }
 
 impl Panic {
     fn code(&self) -> u8 {
         match self {
+            Panic::Generic => 0x00,
+            Panic::AssertFalse => 0x01,
             Panic::Overflow => 0x11,
             Panic::DivisionByZero => 0x12,
+            Panic::EnumConversionFailure => 0x21,
+            Panic::StorageByteArrayEncoding => 0x22,
+            Panic::EmptyArrayPopFailure => 0x31,
+            Panic::OutOfBoundsAccess => 0x32,
+            Panic::OOM => 0x41,
+            Panic::UninitValueCall => 0x51,
+            Panic::Unknown(u8) => *u8,
         }
     }
 }
@@ -610,14 +582,46 @@ impl SolError for Panic {
     const SELECTOR: [u8; 4] = [0x4e, 0x48, 0x7b, 0x71];
     const SIGNATURE: &'static str = "Panic(uint256)";
 
-    fn encode_params(&self, buf: &mut [u8]) -> usize {
-        buf[..32].fill(0);
-        buf[31] = self.code();
-        32
-    }
-
     fn encoded_size(&self) -> usize {
         36
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        buf[0..4].copy_from_slice(&Self::SELECTOR);
+        let buf = &mut buf[4..];
+        buf[..32].fill(0);
+        buf[31] = self.code();
+        36
+    }
+
+    fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {
+        if input.len() < 4 {
+            return Err(DecodeError);
+        };
+        if input
+            .get(offset..offset + 4)
+            .is_some_and(|x| x == Self::SELECTOR)
+        {
+            let (data,) = <(U256,)>::decode_at(input, offset + 4)?;
+            match data {
+                data if data == U256::from(0x00) => Ok(Some(Self::Generic)),
+                data if data == U256::from(0x01) => Ok(Some(Self::AssertFalse)),
+                data if data == U256::from(0x11) => Ok(Some(Self::Overflow)),
+                data if data == U256::from(0x12) => Ok(Some(Self::DivisionByZero)),
+                data if data == U256::from(0x21) => Ok(Some(Self::EnumConversionFailure)),
+                data if data == U256::from(0x22) => Ok(Some(Self::StorageByteArrayEncoding)),
+                data if data == U256::from(0x31) => Ok(Some(Self::EmptyArrayPopFailure)),
+                data if data == U256::from(0x32) => Ok(Some(Self::OutOfBoundsAccess)),
+                data if data == U256::from(0x41) => Ok(Some(Self::OOM)),
+                data if data == U256::from(0x51) => Ok(Some(Self::UninitValueCall)),
+                data if data <= U256::from(0xFF) => Ok(Some(Self::Unknown(
+                    data.try_into().expect("guarded in match arm"),
+                ))),
+                _ => Err(DecodeError),
+            }
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -632,41 +636,88 @@ impl SolError for Panic {
 ///     Ok(())
 /// }
 /// ```
+#[cfg(feature = "alloc")]
+#[derive(Debug, PartialEq)]
+pub enum SolDefaultError {
+    Panic(Panic),
+    Revert(RevertString),
+}
+
+/// Pre-built error enum for methods that only use standard Solidity errors.
+///
+/// Wraps [`Panic`] (overflow, div-by-zero) and [`RevertString`] (require-style messages).
+/// Use this when your method doesn't define custom errors:
+///
+/// ```ignore
+/// fn transfer(&mut self, to: Address, amount: U256) -> Result<(), SolDefaultError> {
+///     let new_balance = balance.checked_sub(amount).ok_or(Panic::Overflow)?;
+///     Ok(())
+/// }
+/// ```
+#[cfg(not(feature = "alloc"))]
+#[derive(Debug, PartialEq)]
 pub enum SolDefaultError {
     Panic(Panic),
     Revert(RevertString<'static>),
 }
-
-impl SolRevert for SolDefaultError {
-    fn revert_data(&self, buf: &mut [u8]) -> usize {
-        match self {
-            Self::Panic(e) => e.revert_data(buf),
-            Self::Revert(e) => e.revert_data(buf),
-        }
-    }
-
-    fn revert_data_len(&self) -> usize {
-        match self {
-            Self::Panic(e) => e.revert_data_len(),
-            Self::Revert(e) => e.revert_data_len(),
-        }
-    }
-
-    fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
-        let arr = &[Panic::SIGNATURE, RevertString::SIGNATURE];
-        arr.iter()
-    }
-}
-
 impl From<Panic> for SolDefaultError {
-    fn from(e: Panic) -> Self {
-        Self::Panic(e)
+    fn from(value: Panic) -> Self {
+        Self::Panic(value)
     }
 }
 
+#[cfg(feature = "alloc")]
+impl From<RevertString> for SolDefaultError {
+    fn from(value: RevertString) -> Self {
+        Self::Revert(value)
+    }
+}
+#[cfg(not(feature = "alloc"))]
 impl From<RevertString<'static>> for SolDefaultError {
-    fn from(e: RevertString<'static>) -> Self {
-        Self::Revert(e)
+    fn from(value: RevertString<'static>) -> Self {
+        Self::Revert(value)
+    }
+}
+
+impl SolError for SolDefaultError {
+    const SIGNATURE: &'static str = "";
+
+    fn encoded_size(&self) -> usize {
+        match self {
+            SolDefaultError::Panic(panic) => panic.encoded_size(),
+            SolDefaultError::Revert(revert_string) => revert_string.encoded_size(),
+        }
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        match self {
+            SolDefaultError::Panic(panic) => panic.encode_to(buf),
+            SolDefaultError::Revert(revert_string) => revert_string.encode_to(buf),
+        }
+    }
+
+    fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {
+        if let Some(res) = Panic::decode_at(input, offset)? {
+            return Ok(Some(Self::Panic(res)));
+        }
+        if let Some(res) = RevertString::decode_at(input, offset)? {
+            return Ok(Some(Self::Revert(res)));
+        }
+
+        Ok(None)
+    }
+
+    #[cfg(feature = "abi-gen")]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str>
+    where
+        Self: Sized,
+    {
+        let arr = [];
+        let arr = arr.into_iter();
+        let arr = arr
+            .chain(Panic::error_signatures())
+            .chain(RevertString::error_signatures());
+        arr.into_iter()
     }
 }
 
@@ -679,7 +730,7 @@ impl From<RevertString<'static>> for SolDefaultError {
 ///
 /// **When to use which:**
 /// - No error paths → `EmptyError`
-/// - Custom errors → [`sol_revert_enum!`] (auto-injects `Panic` + `RevertString`)
+/// - Custom errors → enum of aggregated errors
 /// - Standard errors only → [`SolDefaultError`]
 ///
 /// ```ignore
@@ -690,98 +741,30 @@ impl From<RevertString<'static>> for SolDefaultError {
 /// ```
 pub enum EmptyError {}
 
-impl SolRevert for EmptyError {
-    fn revert_data(&self, _buf: &mut [u8]) -> usize {
+impl SolError for EmptyError {
+    const SELECTOR: [u8; 4] = [0; 4];
+    const SIGNATURE: &'static str = "";
+
+    fn encoded_size(&self) -> usize {
         match *self {}
     }
 
-    fn revert_data_len(&self) -> usize {
+    fn encode_to(&self, _buf: &mut [u8]) -> usize {
         match *self {}
     }
-}
 
-/// Generate an error enum with [`SolRevert`] impl and [`From`] conversions
-/// for `?` propagation.
-///
-/// The standard error variants [`Panic`] and [`RevertString`] are
-/// auto-injected — you only list your custom error types.
-///
-/// We recommend one contract-wide error enum rather than per-method enums,
-/// to avoid duplicating match arms and optimize bytecode size.
-///
-/// # Example
-///
-/// ```ignore
-/// sol_revert_enum! {
-///     pub enum TokenError {
-///         InsufficientBalance(InsufficientBalance),
-///         Unauthorized(Unauthorized),
-///     }
-/// }
-/// ```
-#[macro_export]
-macro_rules! sol_revert_enum {
-    (
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident {
-            $($variant:ident($inner:ty)),+ $(,)?
-        }
-    ) => {
-        $(#[$meta])*
-        $vis enum $name {
-            $($variant($inner),)+
-            Panic($crate::Panic),
-            Revert($crate::RevertString<'static>),
-        }
+    fn decode_at(_input: &[u8], _offset: usize) -> Result<Option<Self>, DecodeError> {
+        Ok(None)
+    }
 
-        impl $crate::SolRevert for $name {
-            fn revert_data(&self, buf: &mut [u8]) -> usize {
-                match self {
-                    $(Self::$variant(e) => <$inner as $crate::SolRevert>::revert_data(e, buf),)+
-                    Self::Panic(e) => $crate::SolRevert::revert_data(e, buf),
-                    Self::Revert(e) => $crate::SolRevert::revert_data(e, buf),
-                }
-            }
-
-            fn revert_data_len(&self) -> usize {
-                match self {
-                    $(Self::$variant(e) => <$inner as $crate::SolRevert>::revert_data_len(e),)+
-                    Self::Panic(e) => $crate::SolRevert::revert_data_len(e),
-                    Self::Revert(e) => $crate::SolRevert::revert_data_len(e),
-                }
-            }
-
-            fn error_signatures() -> impl Iterator<Item = &'static &'static str> {
-               let arr =  &[
-                    <$crate::Panic as $crate::SolError>::SIGNATURE,
-                    <$crate::RevertString<'static> as $crate::SolError>::SIGNATURE,
-                ];
-                let arr = arr.into_iter();
-                let arr = arr$(.chain(<$inner as $crate::SolRevert>::error_signatures()))+;
-                arr.into_iter()
-            }
-        }
-
-        $(
-            impl From<$inner> for $name {
-                fn from(e: $inner) -> Self {
-                    Self::$variant(e)
-                }
-            }
-        )+
-
-        impl From<$crate::Panic> for $name {
-            fn from(e: $crate::Panic) -> Self {
-                Self::Panic(e)
-            }
-        }
-
-        impl From<$crate::RevertString<'static>> for $name {
-            fn from(e: $crate::RevertString<'static>) -> Self {
-                Self::Revert(e)
-            }
-        }
-    };
+    #[cfg(feature = "abi-gen")]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str>
+    where
+        Self: Sized,
+    {
+        let arr: [&'static &'static str; 0] = [];
+        arr.into_iter()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1605,6 +1588,3 @@ impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_),
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J));
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J), (10: K));
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J), (10: K), (11: L));
-
-#[cfg(test)]
-mod tests;

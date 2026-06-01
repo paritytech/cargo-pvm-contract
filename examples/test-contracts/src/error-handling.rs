@@ -5,7 +5,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("ErrorHandling.sol", allocator = "pico")]
 mod error_handling {
     use super::*;
-    use pvm_contract_sdk::{StorageFlags};
+    use pvm_contract_sdk::StorageFlags;
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct AlwaysReverts;
@@ -13,11 +13,10 @@ mod error_handling {
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct ZeroNotAllowed;
 
-    pvm_contract_sdk::sol_revert_enum! {
-        pub enum ContractError {
-            AlwaysReverts(AlwaysReverts),
-            ZeroNotAllowed(ZeroNotAllowed),
-        }
+    #[derive(pvm_contract_sdk::SolError, Debug)]
+    pub enum ContractError {
+        AlwaysReverts(AlwaysReverts),
+        ZeroNotAllowed(ZeroNotAllowed),
     }
 
     const GUARDED_KEY: [u8; 32] = [0u8; 32];
@@ -45,8 +44,11 @@ mod error_handling {
             if val == U256::ZERO {
                 return Err(ZeroNotAllowed.into());
             }
-            self.host()
-                .set_storage(StorageFlags::empty(), &GUARDED_KEY, &val.to_be_bytes::<32>());
+            self.host().set_storage(
+                StorageFlags::empty(),
+                &GUARDED_KEY,
+                &val.to_be_bytes::<32>(),
+            );
             Ok(())
         }
 
@@ -54,7 +56,10 @@ mod error_handling {
         pub fn get_guarded(&self) -> U256 {
             let mut buf = [0u8; 32];
             let mut out = &mut buf[..];
-            match self.host().get_storage(StorageFlags::empty(), &GUARDED_KEY, &mut out) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &GUARDED_KEY, &mut out)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(buf),
                 Err(_) => U256::ZERO,
             }

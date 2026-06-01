@@ -7,7 +7,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Multi.sol", allocator = "bump")]
 mod multi {
     use super::*;
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     pub struct Multi;
 

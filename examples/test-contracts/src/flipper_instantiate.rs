@@ -20,10 +20,9 @@ mod flipper_instantiate {
     use super::*;
     use flipper::{self, Flipper};
 
-    sol_revert_enum! {
-        pub enum Error {
-            CallError(CallError)
-        }
+    #[derive(SolError, Debug)]
+    pub enum Error {
+        CallError(CallError),
     }
 
     pub struct FlipperInstantiate;

@@ -6,12 +6,15 @@ use pvm_contract_types::{
 };
 use ruint::aliases::U256;
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
 /// Errors returned by `HostApi::call()` / `HostApi::instantiate()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum CallError {
     /// The called function trapped and has its state changes reverted.
-    CalleeTrapped,
+    CalleeTrapped = 0,
     /// Transfer failed for other not further specified reason.
     /// Most probably reserved or locked balance of the sender that was preventing the transfer.
     TransferFailed,
@@ -30,7 +33,51 @@ pub enum CallError {
     /// Payload decoding error
     DecodingError,
     /// Unknown error occured
-    Unknown,
+    Unknown = 8,
+}
+
+impl CallError {
+    /// Try and decode error using a provided `buf` buffer for the error data
+    /// Note: this will try to decode an error only if the `CallError::CalleeReverted` variant is reached,
+    /// otherwise `Ok(None)` will be returned.
+    pub fn try_decode_error_raw<T: SolError>(
+        &self,
+        host: &Host,
+        mut buf: &mut [u8],
+    ) -> Result<Option<T>, DecodeError> {
+        match self {
+            Self::CalleeReverted => {
+                let size = host.return_data_size();
+                if buf.len() < size as usize {
+                    return Err(DecodeError);
+                }
+                host.return_data_copy(&mut buf, 0);
+                T::decode_at(buf, 0)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    #[cfg(feature = "alloc")]
+    /// Try and decode error.
+    /// Note: this will try to decode an error only if the `CallError::CalleeReverted` variant is reached,
+    /// otherwise `Ok(None)` will be returned.
+    ///
+    /// # Safety:
+    /// - buffer for error returns is unlimited: check beforehand with `host.return_data_size()`
+    /// - decoding only works if error is decoded immediately after making the cross-contract call,
+    ///   otherwise the buffer containing the error is overwritten by the runtime
+    pub fn try_decode_error<T: SolError>(&self, host: &Host) -> Result<Option<T>, DecodeError> {
+        match self {
+            Self::CalleeReverted => {
+                let size = host.return_data_size();
+                let mut buf = alloc::vec![0; size as usize];
+                host.return_data_copy(&mut buf.as_mut_slice(), 0);
+                T::decode_at(&buf, 0)
+            }
+            _ => Ok(None),
+        }
+    }
 }
 
 impl From<DecodeError> for CallError {
@@ -39,19 +86,52 @@ impl From<DecodeError> for CallError {
     }
 }
 
+impl CallError {
+    fn discriminant(&self) -> u8 {
+        *self as u8
+    }
+}
+
 impl SolError for CallError {
     const SELECTOR: [u8; 4] = const_selector("CallError(uint256)");
 
     const SIGNATURE: &'static str = "CallError(uint256)";
 
-    fn encode_params(&self, buf: &mut [u8]) -> usize {
-        let res = U256::from(*self as u8);
-        res.encode_to(buf);
-        res.encode_len()
-    }
-
     fn encoded_size(&self) -> usize {
         36
+    }
+
+    fn encode_to(&self, buf: &mut [u8]) -> usize {
+        buf[0..4].copy_from_slice(&Self::SELECTOR);
+        let res = U256::from(self.discriminant());
+        res.encode_to(&mut buf[4..]);
+        res.encode_len() + 4
+    }
+
+    fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError> {
+        if input.len() < 4 {
+            return Err(DecodeError);
+        }
+        if input
+            .get(offset..offset + 4)
+            .is_some_and(|x| x == Self::SELECTOR)
+        {
+            let data = u8::decode_at(input, offset + 4)?;
+            match data {
+                0 => Ok(Some(Self::CalleeTrapped)),
+                1 => Ok(Some(Self::TransferFailed)),
+                2 => Ok(Some(Self::OutOfResources)),
+                3 => Ok(Some(Self::DuplicateContractAddress)),
+                4 => Ok(Some(Self::InputBufTooSmall)),
+                5 => Ok(Some(Self::OutputBufTooSmall)),
+                6 => Ok(Some(Self::CalleeReverted)),
+                7 => Ok(Some(Self::DecodingError)),
+                8 => Ok(Some(Self::Unknown)),
+                _ => Err(DecodeError),
+            }
+        } else {
+            Ok(None)
+        }
     }
 }
 

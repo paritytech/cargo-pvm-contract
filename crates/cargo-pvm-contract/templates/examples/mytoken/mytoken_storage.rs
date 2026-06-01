@@ -5,15 +5,15 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;
-    use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping};
+    use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping, SolDefaultError, SolError};
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
-    pvm_contract_sdk::sol_revert_enum! {
-        pub enum TokenError {
-            InsufficientBalance(InsufficientBalance),
-        }
+    #[derive(Debug, pvm_contract_sdk::SolError)]
+    pub enum TokenError {
+        InsufficientBalance(InsufficientBalance),
+        SolDefaultError(SolDefaultError),
     }
 
     pub struct MyToken {
