@@ -2,6 +2,109 @@ use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(tag = "reason")]
+enum BuildJsonLine {
+    #[serde(rename = "cargo-pvm-contract-build-plan")]
+    BuildPlan {
+        schema_version: u64,
+        total: u64,
+        unit: String,
+    },
+    #[serde(rename = "compiler-artifact")]
+    CompilerArtifact,
+    #[serde(rename = "build-finished")]
+    BuildFinished,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Default)]
+struct BuildJsonSummary {
+    plan: Option<BuildPlanSummary>,
+    compiler_artifacts: u64,
+    build_finished: u64,
+    json_lines: u64,
+}
+
+struct BuildPlanSummary {
+    schema_version: u64,
+    total: u64,
+    unit: String,
+}
+
+impl BuildJsonSummary {
+    fn record_line(mut self, line: &str) -> Self {
+        let line: BuildJsonLine = serde_json::from_str(line).expect("stdout line is JSON");
+        self.json_lines += 1;
+        match line {
+            BuildJsonLine::BuildPlan {
+                schema_version,
+                total,
+                unit,
+            } => {
+                self.plan = Some(BuildPlanSummary {
+                    schema_version,
+                    total,
+                    unit,
+                });
+            }
+            BuildJsonLine::CompilerArtifact => self.compiler_artifacts += 1,
+            BuildJsonLine::BuildFinished => self.build_finished += 1,
+            BuildJsonLine::Other => {}
+        }
+        self
+    }
+
+    fn plan(&self) -> &BuildPlanSummary {
+        self.plan
+            .as_ref()
+            .expect("stdout should include a cargo-pvm-contract-build-plan line")
+    }
+
+    fn assert_consistent(&self) {
+        assert!(self.json_lines > 0, "stdout should include Cargo JSON");
+        assert!(
+            self.compiler_artifacts > 0,
+            "stdout should include cargo compiler-artifact JSON lines"
+        );
+        assert_eq!(
+            self.plan().total,
+            self.compiler_artifacts,
+            "build plan total should match streamed compiler-artifact count"
+        );
+    }
+
+    fn snapshot(&self, project_dir: &Path, binary_name: &str) -> serde_json::Value {
+        let plan = self.plan();
+        let polkavm_path = project_dir
+            .join("target")
+            .join("release")
+            .join(format!("{binary_name}.polkavm"));
+        let abi_path = project_dir
+            .join("target")
+            .join("release")
+            .join(format!("{binary_name}.abi.json"));
+
+        serde_json::json!({
+            "build_plan": {
+                "reason": "cargo-pvm-contract-build-plan",
+                "schema_version": plan.schema_version,
+                "total": "<matches streamed compiler-artifact count>",
+                "unit": &plan.unit,
+            },
+            "cargo_stream": {
+                "compiler_artifacts": "<matches build_plan.total>",
+                "build_finished": self.build_finished,
+            },
+            "artifacts": {
+                "polkavm": polkavm_path.exists(),
+                "abi_json": abi_path.exists(),
+            },
+        })
+    }
+}
+
 fn workspace_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -70,6 +173,59 @@ fn build_project(project_dir: &Path, profile: &str) {
         status.success(),
         "cargo pvm-contract build ({profile}) failed"
     );
+}
+
+#[test]
+fn build_streams_json_message_format_and_writes_artifacts() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let project_dir = scaffold_new_contract(&temp_dir, "json-build-output", "macro", None);
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"))
+        .current_dir(&project_dir)
+        .arg("pvm-contract")
+        .arg("build")
+        .arg("--message-format")
+        .arg("json,json-diagnostic-rendered-ansi")
+        .output()
+        .expect("run cargo pvm-contract build --message-format json");
+
+    assert!(
+        output.status.success(),
+        "cargo pvm-contract build --message-format json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let summary = String::from_utf8(output.stdout)
+        .expect("stdout is utf-8")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .fold(BuildJsonSummary::default(), BuildJsonSummary::record_line);
+    summary.assert_consistent();
+
+    expect_test::expect![[r#"
+        {
+          "artifacts": {
+            "abi_json": true,
+            "polkavm": true
+          },
+          "build_plan": {
+            "reason": "cargo-pvm-contract-build-plan",
+            "schema_version": 1,
+            "total": "<matches streamed compiler-artifact count>",
+            "unit": "compiler-artifact"
+          },
+          "cargo_stream": {
+            "build_finished": 1,
+            "compiler_artifacts": "<matches build_plan.total>"
+          }
+        }"#]]
+    .assert_eq(
+        &serde_json::to_string_pretty(&summary.snapshot(&project_dir, "json-build-output"))
+            .expect("serialize normalized build summary"),
+    );
+
+    verify_build_artifacts(&project_dir, "json-build-output", "release");
 }
 
 fn run_cli_test(project_dir: &Path) {

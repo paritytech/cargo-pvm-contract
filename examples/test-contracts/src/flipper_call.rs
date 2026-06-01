@@ -19,10 +19,11 @@ mod flipper_call_alloy {
     use super::*;
     use flipper::{self, Flipper};
 
-    sol_revert_enum! {
-        pub enum Error {
-            CallError(CallError)
-        }
+    #[derive(SolError, Debug)]
+    pub enum Error {
+        CallError(CallError),
+        Panic(Panic),
+        Revert(RevertString),
     }
 
     pub struct FlipperCallAlloy;

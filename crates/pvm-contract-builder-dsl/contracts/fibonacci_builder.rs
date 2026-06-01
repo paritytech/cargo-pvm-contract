@@ -3,7 +3,7 @@
 #![no_std]
 
 use pvm_contract_builder_dsl::pvm_contract_types::{
-    Host, SolEncode, StaticDecode, StaticEncodedLen,
+    Host, SolEncode, SolError, StaticDecode, StaticEncodedLen,
 };
 use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
 

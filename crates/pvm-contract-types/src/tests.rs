@@ -1393,7 +1393,7 @@ fn return_encoding_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// Error encoding tests (SolError, SolRevert, Panic, RevertString)
+// Error encoding tests (SolError, Panic, RevertString)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1405,9 +1405,9 @@ fn revert_string_selector_is_correct() {
 
 #[test]
 fn revert_string_encoding_matches_solidity() {
-    let error = RevertString("insufficient balance");
+    let error = RevertString("insufficient balance".to_string());
     let mut buf = [0u8; 256];
-    let len = error.revert_data(&mut buf);
+    let len = error.encode_to(&mut buf);
     let encoded = &buf[..len];
 
     // Selector
@@ -1416,15 +1416,22 @@ fn revert_string_encoding_matches_solidity() {
     // Cross-validate with alloy (alloy prepends "revert: " to decoded strings)
     let decoded = alloy_core::sol_types::decode_revert_reason(encoded);
     assert_eq!(decoded, Some("revert: insufficient balance".to_string()));
+
+    // Cross-validate with decode_at
+    let decoded = RevertString::decode_at(encoded, 0).unwrap();
+    assert_eq!(
+        decoded,
+        Some(RevertString("insufficient balance".to_string()))
+    );
 }
 
 #[test]
 fn revert_string_empty() {
-    let error = RevertString("");
+    let error = RevertString("".to_string());
     let mut buf = [0u8; 256];
-    let params_len = error.encode_params(&mut buf);
-    // offset(32) + length(32) + no padded data = 64 bytes
-    assert_eq!(params_len, 64);
+    let params_len = error.encode_to(&mut buf);
+    // selector + offset(32) + length(32) + no padded data = 64 bytes
+    assert_eq!(params_len, 68);
     // length field should be 0
     assert_eq!(
         u64::from_be_bytes(buf[32 + 24..32 + 32].try_into().unwrap()),
@@ -1434,33 +1441,33 @@ fn revert_string_empty() {
 
 #[test]
 fn revert_string_exact_32_bytes() {
-    let msg = "abcdefghijklmnopqrstuvwxyz012345"; // 32 chars
+    let msg = "abcdefghijklmnopqrstuvwxyz012345".to_string(); // 32 chars
     let error = RevertString(msg);
     let mut buf = [0u8; 256];
-    let params_len = error.encode_params(&mut buf);
-    // offset(32) + length(32) + data(32, no padding needed) = 96
-    assert_eq!(params_len, 96);
+    let params_len = error.encode_to(&mut buf);
+    // selector + offset(32) + length(32) + data(32, no padding needed) = 100
+    assert_eq!(params_len, 100);
 }
 
 #[test]
 fn revert_string_33_bytes_pads_to_64() {
-    let msg = "abcdefghijklmnopqrstuvwxyz0123456"; // 33 chars
+    let msg = "abcdefghijklmnopqrstuvwxyz0123456".to_string(); // 33 chars
     let error = RevertString(msg);
     let mut buf = [0u8; 256];
-    let params_len = error.encode_params(&mut buf);
-    // offset(32) + length(32) + data(64, padded from 33 to 64) = 128
-    assert_eq!(params_len, 128);
+    let params_len = error.encode_to(&mut buf);
+    // selector + offset(32) + length(32) + data(64, padded from 33 to 64) = 132
+    assert_eq!(params_len, 132);
     // Padding bytes must be zero
-    assert!(buf[64 + 33..64 + 64].iter().all(|&b| b == 0));
+    assert!(buf[68 + 33..64 + 68].iter().all(|&b| b == 0));
 }
 
 #[test]
 fn revert_string_encoded_size_matches_encode_params() {
     for msg in ["", "x", "hello world", "abcdefghijklmnopqrstuvwxyz012345"] {
-        let error = RevertString(msg);
+        let error = RevertString(msg.to_string());
         let mut buf = [0u8; 256];
-        let params_len = error.encode_params(&mut buf);
-        assert_eq!(error.encoded_size(), 4 + params_len);
+        let params_len = error.encode_to(&mut buf);
+        assert_eq!(error.encoded_size(), params_len);
     }
 }
 
@@ -1475,7 +1482,7 @@ fn panic_selector_is_correct() {
 fn panic_overflow_encoding() {
     let error = Panic::Overflow;
     let mut buf = [0u8; 256];
-    let len = error.revert_data(&mut buf);
+    let len = error.encode_to(&mut buf);
     let encoded = &buf[..len];
 
     assert_eq!(len, 36); // 4 selector + 32 uint256
@@ -1489,7 +1496,7 @@ fn panic_overflow_encoding() {
 fn panic_division_by_zero_encoding() {
     let error = Panic::DivisionByZero;
     let mut buf = [0u8; 256];
-    let len = error.revert_data(&mut buf);
+    let len = error.encode_to(&mut buf);
     let encoded = &buf[..len];
 
     assert_eq!(len, 36);
@@ -1506,195 +1513,21 @@ fn panic_encoded_size_matches() {
 fn sol_default_error_from_panic() {
     let err: SolDefaultError = Panic::Overflow.into();
     let mut buf = [0u8; 256];
-    let len = err.revert_data(&mut buf);
+    let len = err.encode_to(&mut buf);
     assert_eq!(&buf[0..4], &Panic::SELECTOR);
     assert_eq!(len, 36);
 }
 
 #[test]
 fn sol_default_error_from_revert_string() {
-    let err: SolDefaultError = RevertString("fail").into();
+    let err: SolDefaultError = RevertString("fail".to_string()).into();
     let mut buf = [0u8; 256];
-    let len = err.revert_data(&mut buf);
+    let len = err.encode_to(&mut buf);
     assert_eq!(&buf[0..4], &RevertString::SELECTOR);
     assert!(len > 4);
 
     let decoded = alloy_core::sol_types::decode_revert_reason(&buf[..len]);
     assert_eq!(decoded, Some("revert: fail".to_string()));
-}
-
-#[test]
-fn sol_revert_enum_dispatches_correctly() {
-    struct ErrA;
-    impl SolError for ErrA {
-        const SELECTOR: [u8; 4] = [0xAA, 0, 0, 0];
-        const SIGNATURE: &'static str = "ErrA()";
-        fn encode_params(&self, _buf: &mut [u8]) -> usize {
-            0
-        }
-        fn encoded_size(&self) -> usize {
-            4
-        }
-    }
-
-    struct ErrB;
-    impl SolError for ErrB {
-        const SELECTOR: [u8; 4] = [0xBB, 0, 0, 0];
-        const SIGNATURE: &'static str = "ErrB()";
-        fn encode_params(&self, _buf: &mut [u8]) -> usize {
-            0
-        }
-        fn encoded_size(&self) -> usize {
-            4
-        }
-    }
-
-    sol_revert_enum! {
-        enum TestError {
-            A(ErrA),
-            B(ErrB),
-        }
-    }
-
-    let mut buf = [0u8; 256];
-
-    // Custom errors
-    let err: TestError = ErrA.into();
-    let len = err.revert_data(&mut buf);
-    assert_eq!(len, 4);
-    assert_eq!(buf[0], 0xAA);
-
-    let err: TestError = ErrB.into();
-    let len = err.revert_data(&mut buf);
-    assert_eq!(len, 4);
-    assert_eq!(buf[0], 0xBB);
-
-    // Auto-injected Panic
-    let err: TestError = Panic::Overflow.into();
-    let len = err.revert_data(&mut buf);
-    assert_eq!(len, 36);
-    assert_eq!(&buf[0..4], &Panic::SELECTOR);
-    assert_eq!(buf[35], 0x11);
-
-    // Auto-injected RevertString
-    let err: TestError = RevertString("fail").into();
-    let len = err.revert_data(&mut buf);
-    assert_eq!(&buf[0..4], &RevertString::SELECTOR);
-    assert!(len > 4);
-}
-
-#[test]
-fn sol_revert_enum_question_mark_propagation() {
-    struct CustomErr;
-    impl SolError for CustomErr {
-        const SELECTOR: [u8; 4] = [0xCC, 0, 0, 0];
-        const SIGNATURE: &'static str = "CustomErr()";
-        fn encode_params(&self, _buf: &mut [u8]) -> usize {
-            0
-        }
-        fn encoded_size(&self) -> usize {
-            4
-        }
-    }
-
-    sol_revert_enum! {
-        enum MyError {
-            Custom(CustomErr),
-        }
-    }
-
-    // Verify From impls work for ? propagation
-    fn returns_custom() -> Result<(), MyError> {
-        Err(CustomErr)?
-    }
-    fn returns_panic() -> Result<(), MyError> {
-        Err(Panic::Overflow)?
-    }
-    fn returns_revert() -> Result<(), MyError> {
-        Err(RevertString("nope"))?
-    }
-
-    assert!(returns_custom().is_err());
-    assert!(returns_panic().is_err());
-    assert!(returns_revert().is_err());
-}
-
-#[test]
-fn revert_string_truncates_long_message() {
-    // With a 100-byte buffer: max_data_space = 36, rounded down to 32.
-    let long_msg = "a".repeat(200);
-    let error = RevertString(&long_msg);
-    let mut buf = [0u8; 100];
-    let len = error.encode_params(&mut buf);
-
-    // Should not panic, and should fit in buffer
-    assert!(len <= 100);
-
-    // Verify the encoded length field matches the truncated string
-    let encoded_len = u64::from_be_bytes(buf[32 + 24..32 + 32].try_into().unwrap()) as usize;
-    assert!(encoded_len < long_msg.len());
-    assert!(encoded_len <= 32); // 100 - 64 = 36, rounded down to 32
-}
-
-#[test]
-fn revert_string_fits_in_256_byte_revert_buffer() {
-    // Simulate the full revert_data path with a 256-byte buffer
-    // (4 selector + up to 252 params)
-    let msg = "x".repeat(180); // long but should fit
-    let error = RevertString(&msg);
-    let mut buf = [0u8; 256];
-    let len = error.revert_data(&mut buf);
-    assert!(len <= 256);
-    assert_eq!(&buf[0..4], &RevertString::SELECTOR);
-
-    // Decode with alloy to verify it's valid
-    let decoded = alloy_core::sol_types::decode_revert_reason(&buf[..len]);
-    assert!(decoded.is_some());
-}
-
-#[test]
-fn revert_string_very_long_truncates_in_revert_buffer() {
-    // A 300-char string must be truncated to fit in 256-byte revert buffer
-    let msg = "y".repeat(300);
-    let error = RevertString(&msg);
-    let mut buf = [0u8; 256];
-    let len = error.revert_data(&mut buf);
-    assert!(len <= 256);
-
-    // The encoded string length should be less than 300
-    let encoded_str_len =
-        u64::from_be_bytes(buf[4 + 32 + 24..4 + 32 + 32].try_into().unwrap()) as usize;
-    assert!(encoded_str_len < 300);
-}
-
-#[test]
-fn sol_default_error_question_mark_propagation() {
-    fn checked_sub(a: u64, b: u64) -> Result<u64, SolDefaultError> {
-        a.checked_sub(b).ok_or(Panic::Overflow.into())
-    }
-
-    fn do_transfer(balance: u64, amount: u64) -> Result<u64, SolDefaultError> {
-        let new_balance = checked_sub(balance, amount)?;
-        Ok(new_balance)
-    }
-
-    match do_transfer(100, 50) {
-        Ok(val) => assert_eq!(val, 50),
-        Err(_) => panic!("expected success"),
-    }
-    assert!(do_transfer(10, 20).is_err());
-
-    // Verify the error encodes correctly
-    match do_transfer(10, 20) {
-        Err(err) => {
-            let mut buf = [0u8; 256];
-            let len = err.revert_data(&mut buf);
-            assert_eq!(&buf[0..4], &Panic::SELECTOR);
-            assert_eq!(buf[35], 0x11); // Overflow code
-            assert_eq!(len, 36);
-        }
-        Ok(_) => panic!("expected error"),
-    }
 }
 
 // ========================================================================

@@ -80,6 +80,19 @@ target/release/my_contract.abi.json   — Ethereum-compatible ABI (macro style o
 | `--no-default-features` | Disable the package's default features for the PolkaVM build. Default features remain enabled for ABI generation so the host-side abi-gen build retains the broadest feature set; if the ABI generator needs to see the same minimized feature set, generate the ABI separately. |
 | `--message-format <FMT>` | Forward a `cargo --message-format` value (e.g. `json`) for tool integration. |
 
+When `--message-format` requests JSON output, the CLI first attempts to emit a
+single cargo-pvm-contract JSON extension before Cargo's own stream:
+
+```json
+{"reason":"cargo-pvm-contract-build-plan","schema_version":1,"unit":"compiler-artifact","total":91}
+```
+
+The `total` is computed from Cargo's planned build units for the exact inner
+PolkaVM build command and uses the documented `compiler-artifact` unit. Tools
+can count streamed Cargo `compiler-artifact` messages against that total. If the
+plan cannot be computed, the extension is omitted and the build proceeds
+normally.
+
 ### Option 2: build.rs
 
 Projects can also use `cargo-pvm-contract-builder` as a build dependency with a `build.rs` file:

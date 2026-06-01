@@ -1,12 +1,109 @@
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, Fields};
+use syn::{DataEnum, DeriveInput, Fields, FieldsUnnamed, Type};
 
 use super::sol_type::{
     build_dynamic_head_size_expr, extract_field_info, generate_dynamic_encode_body,
     generate_dynamic_encode_len, sol_type_name_parts,
 };
-use crate::signature::SolType;
+use crate::{codegen::sol_type::generate_dynamic_decode_body, signature::SolType};
+
+pub fn expand_sol_error_enum(input: &DeriveInput, data: &DataEnum) -> syn::Result<TokenStream> {
+    if !data.variants.iter().all(|x| {
+        matches!(&x.fields, Fields::Unnamed(FieldsUnnamed { unnamed, .. }) if unnamed.len() == 1)
+    }) || data.variants.is_empty() {
+        return Err(syn::Error::new_spanned(
+            input,
+            "SolError can only be derived for enums that contain unnamed fields with path to a struct that implements SolError",
+        ));
+    }
+    struct Arm {
+        size: TokenStream,
+        encode: TokenStream,
+        decode: TokenStream,
+        from: TokenStream,
+        ty: Type,
+    }
+    let name = &input.ident;
+
+    let res: Vec<Arm> = data
+        .variants
+        .iter()
+        .filter_map(|x| match &x.fields {
+            Fields::Unnamed(FieldsUnnamed { unnamed, .. }) if unnamed.len() == 1 => {
+                Some((x.ident.clone(), unnamed.first().unwrap()))
+            }
+            _ => None,
+        })
+        .map(|(variant_name, field)| {
+            let ty = &field.ty;
+            Arm {
+                ty: ty.clone(),
+                size: quote! {
+                    Self::#variant_name(i) => i.encoded_size()
+                },
+                encode: quote! {
+                    Self::#variant_name(i) => i.encode_to(buf)
+                },
+                decode: quote! {
+                    if let Some(res) = #ty::decode_at(input, offset)? {
+                        return Ok(Some(Self::#variant_name(res)));
+                    }
+                },
+                from: quote! {
+                    impl From<#ty> for #name {
+                        fn from(value: #ty) -> #name {
+                            #name::#variant_name(value)
+                        }
+                    }
+                },
+            }
+        })
+        .collect();
+    let decoders = res.iter().map(|x| &x.decode);
+    let encoders = res.iter().map(|x| &x.encode);
+    let size = res.iter().map(|x| &x.size);
+    let from = res.iter().map(|x| &x.from);
+    let tys = res.iter().map(|x| &x.ty);
+
+    Ok(quote! {
+
+        #(#from)*
+
+        impl ::pvm_contract_sdk::SolError for #name {
+            const SIGNATURE: &'static str = "";
+
+            fn encoded_size(&self) -> usize {
+                match self {
+                   #(#size),*
+                }
+            }
+
+            fn encode_to(&self, buf: &mut [u8]) -> usize {
+                match self {
+                    #(#encoders),*
+                }
+            }
+
+            fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, ::pvm_contract_sdk::DecodeError> {
+                #(#decoders)*
+
+                Ok(None)
+            }
+
+            #[cfg(feature = "abi-gen")]
+            fn error_signatures() -> impl Iterator<Item = &'static &'static str>
+            where
+                Self: Sized,
+            {
+                let mut arr = [];
+                let arr = arr.into_iter();
+                let arr = arr #(.chain(<#tys as ::pvm_contract_sdk::SolError>::error_signatures()))*;
+                arr.into_iter()
+            }
+        }
+    })
+}
 
 pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
     let name = &input.ident;
@@ -14,12 +111,7 @@ pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let fields = match &input.data {
         syn::Data::Struct(data) => &data.fields,
-        syn::Data::Enum(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "SolError can only be derived for structs. Use sol_revert_enum! for error enums.",
-            ));
-        }
+        syn::Data::Enum(data) => return expand_sol_error_enum(&input, data),
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
@@ -35,18 +127,42 @@ pub fn expand_sol_error(input: DeriveInput) -> syn::Result<TokenStream> {
     let selector_expr = build_selector_expr(&name_str, &field_info);
 
     let (encode_body, encoded_size_body) = generate_error_encode(fields, &field_info);
+    let decode = generate_dynamic_decode_body(fields, &field_info);
 
     Ok(quote! {
         impl ::pvm_contract_sdk::SolError for #name {
             const SELECTOR: [u8; 4] = #selector_expr;
             const SIGNATURE: &'static str = #sig_expr;
 
-            fn encode_params(&self, buf: &mut [u8]) -> usize {
-                #encode_body
-            }
-
             fn encoded_size(&self) -> usize {
                 #encoded_size_body
+            }
+
+            fn encode_to(&self, buf: &mut [u8]) -> usize {
+                buf[0..4].copy_from_slice(&Self::SELECTOR);
+                let mut buf = &mut buf[4..];
+                let size = {
+                    #encode_body
+                };
+                4 + size
+            }
+
+            fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, ::pvm_contract_sdk::DecodeError> {
+                if input.len() < 4 {
+                    return Err(::pvm_contract_sdk::DecodeError);
+                };
+                if input
+                    .get(offset..offset + 4)
+                    .is_some_and(|x| x == Self::SELECTOR)
+                {
+                    let input = &input[4..];
+                    let res = {
+                        #decode
+                    }?;
+                    Ok(Some(res))
+                } else {
+                    Ok(None)
+                }
             }
         }
     })
@@ -219,5 +335,119 @@ mod tests {
         let input: DeriveInput = syn::parse_str("struct DynError { msg: String }").unwrap();
         let result = expand_sol_error(input);
         assert!(result.is_ok(), "Dynamic fields should be accepted now");
+    }
+
+    #[test]
+    fn enum_accept() {
+        use syn::parse::{Parse, Parser};
+
+        let input: DeriveInput = syn::parse_str(
+            "
+        enum Err {
+            Err1(Err1),
+            Err2(Err2)
+        }
+        ",
+        )
+        .unwrap();
+        let result = expand_sol_error(input).unwrap();
+        let file = prettyplease::unparse(&syn::File::parse.parse2(result).unwrap());
+        expect_test::expect![[r#"
+            impl From<Err1> for Err {
+                fn from(value: Err1) -> Err {
+                    Err::Err1(value)
+                }
+            }
+            impl From<Err2> for Err {
+                fn from(value: Err2) -> Err {
+                    Err::Err2(value)
+                }
+            }
+            impl ::pvm_contract_sdk::SolError for Err {
+                const SIGNATURE: &'static str = "";
+                fn encoded_size(&self) -> usize {
+                    match self {
+                        Self::Err1(i) => i.encoded_size(),
+                        Self::Err2(i) => i.encoded_size(),
+                    }
+                }
+                fn encode_to(&self, buf: &mut [u8]) -> usize {
+                    match self {
+                        Self::Err1(i) => i.encode_to(buf),
+                        Self::Err2(i) => i.encode_to(buf),
+                    }
+                }
+                fn decode_at(
+                    input: &[u8],
+                    offset: usize,
+                ) -> Result<Option<Self>, ::pvm_contract_sdk::DecodeError> {
+                    if let Some(res) = Err1::decode_at(input, offset)? {
+                        return Ok(Some(Self::Err1(res)));
+                    }
+                    if let Some(res) = Err2::decode_at(input, offset)? {
+                        return Ok(Some(Self::Err2(res)));
+                    }
+                    Ok(None)
+                }
+                #[cfg(feature = "abi-gen")]
+                fn error_signatures() -> impl Iterator<Item = &'static &'static str>
+                where
+                    Self: Sized,
+                {
+                    let mut arr = [];
+                    let arr = arr.into_iter();
+                    let arr = arr
+                        .chain(<Err1 as ::pvm_contract_sdk::SolError>::error_signatures())
+                        .chain(<Err2 as ::pvm_contract_sdk::SolError>::error_signatures());
+                    arr.into_iter()
+                }
+            }
+        "#]]
+        .assert_eq(&file);
+    }
+
+    #[test]
+    fn no_op_struct() {
+        use syn::parse::{Parse, Parser};
+
+        let input: DeriveInput = syn::parse_str(
+            "
+        struct Err;
+        ",
+        )
+        .unwrap();
+        let result = expand_sol_error(input).unwrap();
+        let file = prettyplease::unparse(&syn::File::parse.parse2(result).unwrap());
+        expect_test::expect![[r#"
+            impl ::pvm_contract_sdk::SolError for Err {
+                const SELECTOR: [u8; 4] = [198u8, 79u8, 195u8, 114u8];
+                const SIGNATURE: &'static str = "Err()";
+                fn encoded_size(&self) -> usize {
+                    4
+                }
+                fn encode_to(&self, buf: &mut [u8]) -> usize {
+                    buf[0..4].copy_from_slice(&Self::SELECTOR);
+                    let mut buf = &mut buf[4..];
+                    let size = { 0 };
+                    4 + size
+                }
+                fn decode_at(
+                    input: &[u8],
+                    offset: usize,
+                ) -> Result<Option<Self>, ::pvm_contract_sdk::DecodeError> {
+                    if input.len() < 4 {
+                        return Err(::pvm_contract_sdk::DecodeError);
+                    }
+                    if input.get(offset..offset + 4).is_some_and(|x| x == Self::SELECTOR) {
+                        let input = &input[4..];
+                        let res = { Ok(Self) }?;
+                        Ok(Some(res))
+                    } else {
+                        Ok(None)
+                    }
+                }
+            }
+        "#]]
+        .assert_eq(&file);
     }
 }

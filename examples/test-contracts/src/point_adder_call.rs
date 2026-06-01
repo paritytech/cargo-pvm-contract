@@ -15,8 +15,6 @@ struct Point {
     uint b;
 }
 
-type Ass is uint256;
-
 interface PointAdder {
     function add(Point a, Point b) external returns (Point);
 }
@@ -30,11 +28,11 @@ mod point_adder_call {
     use point_adder::*;
 
     pub struct PointAdderCall;
-    sol_revert_enum! {
-        pub enum Error {
-            CallError(CallError)
-        }
+    #[derive(SolError, Debug)]
+    pub enum Error {
+        CallError(CallError),
     }
+
     impl PointAdderCall {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) -> Result<(), Error> {

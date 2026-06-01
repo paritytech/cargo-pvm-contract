@@ -5,7 +5,7 @@ extern crate alloc;
 
 use alloc::vec;
 use alloy_core::primitives::U256;
-use alloy_core::sol_types::{SolType, sol_data};
+use alloy_core::sol_types::{sol_data, SolType};
 use pvm_contract_sdk::pallet_revive_uapi::{HostFn as _, HostFnImpl as api};
 use pvm_contract_sdk::{ReturnFlags, StorageFlags};
 
@@ -26,9 +26,8 @@ const TRANSFER_SELECTOR: [u8; 4] = [0xa9, 0x05, 0x9c, 0xbb];
 const MINT_SELECTOR: [u8; 4] = [0x40, 0xc1, 0x0f, 0x19];
 
 const TRANSFER_EVENT_SIGNATURE: [u8; 32] = [
-    0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d,
-    0xaa, 0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23,
-    0xb3, 0xef,
+    0xdd, 0xf2, 0x52, 0xad, 0x1b, 0xe2, 0xc8, 0x9b, 0x69, 0xc2, 0xb0, 0x68, 0xfc, 0x37, 0x8d, 0xaa,
+    0x95, 0x2b, 0xa7, 0xf1, 0x63, 0xc4, 0xa1, 0x16, 0x28, 0xf5, 0x5a, 0x4d, 0xf5, 0x23, 0xb3, 0xef,
 ];
 
 fn total_supply_key() -> [u8; 32] {
@@ -124,20 +123,19 @@ extern "C" fn call() {
             let sender_key = balance_key(&caller);
             let mut sender_balance_bytes = vec![0u8; 32];
             let mut sender_balance_output = sender_balance_bytes.as_mut_slice();
-            let sender_balance =
-                match api::get_storage(StorageFlags::empty(), &sender_key, &mut sender_balance_output)
-                {
-                    Ok(_) => {
-                        U256::from_be_bytes::<32>(sender_balance_output[0..32].try_into().unwrap())
-                    }
-                    Err(_) => U256::ZERO,
-                };
+            let sender_balance = match api::get_storage(
+                StorageFlags::empty(),
+                &sender_key,
+                &mut sender_balance_output,
+            ) {
+                Ok(_) => {
+                    U256::from_be_bytes::<32>(sender_balance_output[0..32].try_into().unwrap())
+                }
+                Err(_) => U256::ZERO,
+            };
 
             if sender_balance < amount {
-                api::return_value(
-                    ReturnFlags::REVERT,
-                    b"InsufficientBalance",
-                );
+                api::return_value(ReturnFlags::REVERT, b"InsufficientBalance");
             }
 
             let new_sender_balance = sender_balance - amount;
@@ -149,7 +147,9 @@ extern "C" fn call() {
                 &recipient_key,
                 &mut recipient_balance_output,
             ) {
-                Ok(_) => U256::from_be_bytes::<32>(recipient_balance_output[0..32].try_into().unwrap()),
+                Ok(_) => {
+                    U256::from_be_bytes::<32>(recipient_balance_output[0..32].try_into().unwrap())
+                }
                 Err(_) => U256::ZERO,
             };
             let new_recipient_balance = recipient_balance + amount;
@@ -171,7 +171,9 @@ extern "C" fn call() {
                 &recipient_key,
                 &mut recipient_balance_output,
             ) {
-                Ok(_) => U256::from_be_bytes::<32>(recipient_balance_output[0..32].try_into().unwrap()),
+                Ok(_) => {
+                    U256::from_be_bytes::<32>(recipient_balance_output[0..32].try_into().unwrap())
+                }
                 Err(_) => U256::ZERO,
             };
             let new_recipient_balance = recipient_balance.saturating_add(amount);
@@ -180,11 +182,11 @@ extern "C" fn call() {
             let supply_key = total_supply_key();
             let mut supply_bytes = vec![0u8; 32];
             let mut supply_output = supply_bytes.as_mut_slice();
-            let supply = match api::get_storage(StorageFlags::empty(), &supply_key, &mut supply_output)
-            {
-                Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
-                Err(_) => U256::ZERO,
-            };
+            let supply =
+                match api::get_storage(StorageFlags::empty(), &supply_key, &mut supply_output) {
+                    Ok(_) => U256::from_be_bytes::<32>(supply_output[0..32].try_into().unwrap()),
+                    Err(_) => U256::ZERO,
+                };
             let new_supply = supply.saturating_add(amount);
             set_total_supply(new_supply);
 

@@ -1228,7 +1228,7 @@ pub(crate) fn generate_dynamic_encode_body(
     }
 }
 
-fn generate_dynamic_decode_body(
+pub fn generate_dynamic_decode_body(
     fields: &Fields,
     field_info: &[(Option<syn::Ident>, SolType)],
 ) -> TokenStream {
@@ -1274,7 +1274,7 @@ fn generate_dynamic_decode_body(
                 Ok(Self(#(#field_decodes),*))
             }
         }
-        Fields::Unit => quote! { Self },
+        Fields::Unit => quote! { Ok(Self) },
     }
 }
 
