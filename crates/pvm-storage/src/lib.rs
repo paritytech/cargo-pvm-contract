@@ -232,7 +232,6 @@ fn storage_derive_body_base(host: &Host, slot_key: &[u8; 32]) -> [u8; 32] {
     output
 }
 
-
 /// Add `n` to a 32-byte big-endian integer in-place, propagating carries
 /// up through all 32 bytes. Used by `StorageVec` to address element `i`
 /// at `body_base + i` without iterating `inc_slot` `i` times.
@@ -272,7 +271,6 @@ fn write_len_u64(host: &Host, slot_key: &[u8; 32], n: u64) {
     buf[24..32].copy_from_slice(&n.to_be_bytes());
     storage_set_32(host, slot_key, &buf);
 }
-
 
 // ---------------------------------------------------------------------------
 // StorageKey
@@ -1821,8 +1819,6 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<StorageVe
         unsafe { StorageVec::new_nested(StorageKey::from_slot(slot), host) }
     }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Tests
