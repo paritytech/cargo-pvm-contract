@@ -652,3 +652,64 @@ fn build_forwards_features_with_package_flag() {
         "ws-feat-pkg.abi.json should exist — proves --features reached the abi-gen invocation too"
     );
 }
+
+/// Regression test for paritytech/bugbounty_reports#78: stripping the
+/// `#[contract]` macro from a previously-built project must not leave the
+/// old `.abi.json` next to the freshly-linked `.polkavm`.
+#[test]
+fn rebuild_without_contract_macro_clears_stale_abi_json() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let name = "stale-abi-test";
+
+    let project_dir = scaffold_new_contract(&temp_dir, name, "macro", None);
+    build_project(&project_dir, "release");
+    verify_abi_json(&project_dir, name, "release");
+
+    let src_path = project_dir.join("src").join(format!("{name}.rs"));
+    let stripped = include_str!("fixtures/no_contract_macro.rs");
+    std::fs::write(&src_path, stripped).expect("rewrite source");
+
+    build_project(&project_dir, "release");
+
+    let abi_path = project_dir
+        .join("target")
+        .join("release")
+        .join(format!("{name}.abi.json"));
+    assert!(
+        !abi_path.exists(),
+        "stale .abi.json at {}",
+        abi_path.display()
+    );
+    verify_polkavm_binary(&project_dir, name, "release");
+}
+
+/// A no-op source edit must produce a byte-identical `.abi.json`.
+/// Guards against a regression where cleanup runs but re-emission doesn't.
+#[test]
+fn rebuild_with_macro_keeps_abi_byte_stable() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let name = "fresh-abi-test";
+
+    let project_dir = scaffold_new_contract(&temp_dir, name, "macro", None);
+    build_project(&project_dir, "release");
+    verify_abi_json(&project_dir, name, "release");
+
+    let abi_path = project_dir
+        .join("target")
+        .join("release")
+        .join(format!("{name}.abi.json"));
+    let abi_v1 = std::fs::read(&abi_path).expect("read v1 abi");
+
+    let src_path = project_dir.join("src").join(format!("{name}.rs"));
+    let original = std::fs::read_to_string(&src_path).expect("read source");
+    std::fs::write(&src_path, format!("{original}\n// rebuild trigger\n")).expect("write source");
+
+    build_project(&project_dir, "release");
+    verify_abi_json(&project_dir, name, "release");
+
+    let abi_v2 = std::fs::read(&abi_path).expect("read v2 abi");
+    assert_eq!(
+        abi_v1, abi_v2,
+        "ABI bytes should be stable across a no-op rebuild"
+    );
+}

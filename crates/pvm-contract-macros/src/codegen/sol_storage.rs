@@ -29,7 +29,11 @@
 //!         + <Mapping<Address, U256> as StorageComponent>::SLOTS
 //!         + <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS;
 //!
+<<<<<<< HEAD
 //!     fn new_at(base: StorageKey, offset: u8, host: ::pvm_contract_sdk::Host) -> Self {
+=======
+//!     fn new_at(base: u64, host: ::pvm_contract_sdk::Host) -> Self {
+>>>>>>> origin/main
 //!         const __OFF_total_supply: u64 = 0;
 //!         const __OFF_balances: u64 =
 //!             __OFF_total_supply + <Lazy<U256> as StorageComponent>::SLOTS;
@@ -37,11 +41,19 @@
 //!             __OFF_balances + <Mapping<Address, U256> as StorageComponent>::SLOTS;
 //!         Erc20 {
 //!             total_supply: <Lazy<U256> as StorageComponent>::new_at(
+<<<<<<< HEAD
 //!                 base.add(__OFF_total_supply), 0, host.clone()),
 //!             balances: <_ as StorageComponent>::new_at(
 //!                 base.add(__OFF_balances), 0, host.clone()),
 //!             allowances: <_ as StorageComponent>::new_at(
 //!                 base.add(__OFF_allowances), 0, host.clone()),
+=======
+//!                 base + __OFF_total_supply, host.clone()),
+//!             balances: <_ as StorageComponent>::new_at(
+//!                 base + __OFF_balances, host.clone()),
+//!             allowances: <_ as StorageComponent>::new_at(
+//!                 base + __OFF_allowances, host.clone()),
+>>>>>>> origin/main
 //!         }
 //!         // Every field — including the last — receives `host.clone()`.
 //!         // `Host` is a ZST on riscv64 and a cheap `Rc` clone on host
@@ -66,11 +78,18 @@ use quote::{format_ident, quote};
 use syn::{Fields, ItemStruct};
 
 use super::contract::find_derive_clone;
+<<<<<<< HEAD
 use super::storage_layout::{ChainField, alone_chain_consts, generate_layout_emit, slot_chain_consts};
 
 pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let struct_name_str = struct_name.to_string();
+=======
+use super::storage_layout::{ChainField, generate_layout_emit, slot_chain_consts};
+
+pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
+    let struct_name = &input.ident;
+>>>>>>> origin/main
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     // Same rationale as `#[contract]` storage structs: `#[storage]` components
@@ -159,11 +178,14 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
     let offset_consts = slot_chain_consts("__pvm_storage_offset_", &chain_fields);
+<<<<<<< HEAD
     let alone_consts = alone_chain_consts(
         "__pvm_storage_alone_",
         "__pvm_storage_offset_",
         &chain_fields,
     );
+=======
+>>>>>>> origin/main
 
     let field_inits: Vec<TokenStream> = field_names
         .iter()
@@ -171,18 +193,26 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .map(|(i, name)| {
             let ty = field_types[i];
             let const_ident = format_ident!("__pvm_storage_offset_{}", name);
+<<<<<<< HEAD
             let alone_ident = format_ident!("__pvm_storage_alone_{}", name);
             quote! {
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
                     base.add(#const_ident.slot),
                     #const_ident.offset,
                     #alone_ident,
+=======
+            quote! {
+                #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
+                    base + #const_ident.slot,
+                    #const_ident.offset,
+>>>>>>> origin/main
                     host.clone(),
                 )
             }
         })
         .collect();
 
+<<<<<<< HEAD
     // Per-field clear delegations: each field's own `clear` decides the
     // right thing (Lazy zeros its slot, Mapping is a no-op, nested
     // #[storage] recurses).
@@ -196,6 +226,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
 
+=======
+>>>>>>> origin/main
     // Per-field layout-emit code: leaves push directly, embedded `#[storage]`
     // sub-structs recurse via `StorageLayoutEmit::emit_entries`.
     let layout_emits: Vec<TokenStream> = field_names
@@ -238,6 +270,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             // across its outer boundary.
             const PACKED_BYTES: usize = 32;
 
+<<<<<<< HEAD
             fn new_at(
                 base: ::pvm_contract_sdk::StorageKey,
                 offset: u8,
@@ -253,10 +286,18 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 let _ = (offset, alone);
                 #(#offset_consts)*
                 #(#alone_consts)*
+=======
+            fn new_at(base: u64, offset: u8, host: ::pvm_contract_sdk::Host) -> Self {
+                debug_assert_eq!(offset, 0,
+                    "#[storage] sub-struct always full-slot; offset must be 0");
+                let _ = offset;
+                #(#offset_consts)*
+>>>>>>> origin/main
                 #struct_name {
                     #(#field_inits),*
                 }
             }
+<<<<<<< HEAD
 
             /// Recursively clear every field. Matches solc's `delete
             /// struct_field` semantics — value-shaped fields (`Lazy<T>`)
@@ -266,6 +307,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             fn clear(&mut self) {
                 #(#field_clears)*
             }
+=======
+>>>>>>> origin/main
         }
 
         #[cfg(feature = "abi-gen")]
@@ -286,6 +329,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 #(#layout_emits)*
             }
         }
+<<<<<<< HEAD
 
         // Name resolver for the layout-emit code path: when this struct is
         // used as the value type of a `Mapping<K, Self>`, the parent layout
@@ -303,6 +347,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 ::std::string::String::from(#struct_name_str)
             }
         }
+=======
+>>>>>>> origin/main
     })
 }
 
@@ -346,10 +392,17 @@ mod tests {
             "first offset should seed from LayoutStep::FIRST: {output}"
         );
 
+<<<<<<< HEAD
         // Each field's slot is base.add(step.slot), offset is step.offset.
         assert!(
             output.contains("base . add (__pvm_storage_offset_total_supply . slot)"),
             "field init should derive its key from base.add(step.slot): {output}"
+=======
+        // Each field's slot const is base + step.slot, offset is step.offset.
+        assert!(
+            output.contains("base + __pvm_storage_offset_total_supply . slot"),
+            "field init should derive its slot from base + step.slot: {output}"
+>>>>>>> origin/main
         );
     }
 

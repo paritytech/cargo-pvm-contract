@@ -298,10 +298,24 @@ fn process_elf_binaries(
         }
 
         let output_path = profile_dir.join(format!("{bin}.polkavm"));
+        let abi_path = profile_dir.join(format!("{bin}.abi.json"));
+
         link_to_polkavm(&elf_path, &output_path)?;
 
+        // Clear any previous `.abi.json`. The re-emit below skips writing
+        // when `generate_abi == false` (`PvmBuilder::skip_abi(true)`) or
+        // the source has no `#[contract]` macro, so without this cleanup
+        // a stale ABI would survive a `.polkavm` overwrite.
+        // `NotFound` is the expected first-build case; everything else
+        // (permissions, IO) is a real error worth surfacing.
+        if let Err(e) = fs::remove_file(&abi_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e)
+                .with_context(|| format!("Failed to remove stale ABI: {}", abi_path.display()));
+        }
+
         if generate_abi {
-            let abi_path = profile_dir.join(format!("{bin}.abi.json"));
             generate_abi_file(manifest_dir, bin, &abi_path, abi_target_root, features)?;
         }
     }
