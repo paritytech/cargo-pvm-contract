@@ -1604,16 +1604,4 @@ impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_),
 impl_tuple_sol!((0: A), (1: B), (2: C), (3: D), (4: E), (5: F), (6: G), (7: H_), (8: I), (9: J), (10: K), (11: L));
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decode_unchecked_failure() {
-        let mut buf = [0; 256];
-        (10u32, [5u32, 10]).encode_to(&mut buf);
-        assert_eq!(
-            unsafe { <(u32, [u32; 2])>::decode_unchecked(&buf, 0) },
-            (10u32, [5u32, 10])
-        );
-    }
-}
+mod tests;

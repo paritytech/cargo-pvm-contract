@@ -11,6 +11,18 @@ use alloy_core::sol_types::SolValue;
 use proptest::prelude::*;
 
 #[test]
+// failure to decode dynamic tuple types reported in an issue.
+// added as a regression test.
+fn decode_unchecked_failure_repro() {
+    let mut buf = [0; 256];
+    (10u32, [5u32, 10]).encode_to(&mut buf);
+    assert_eq!(
+        unsafe { <(u32, [u32; 2])>::decode_unchecked(&buf, 0) },
+        (10u32, [5u32, 10])
+    );
+}
+
+#[test]
 fn encode_decode_uint256_proptest() {
     proptest!(|(v: [u64; 4])| {
         let val = U256::from_limbs(v);
