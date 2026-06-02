@@ -39,23 +39,15 @@ impl crate::SolArrayElement for Bytes {}
 
 impl SolDecode for Bytes {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
+        let data_offset = crate::read_word_offset(input, offset)?;
         Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let len = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
-        let data = &input
-            .get(offset + 32..offset + 32 + len)
-            .ok_or(DecodeError)?;
+        let len = crate::read_word_offset(input, offset)?;
+        let data_start = crate::checked_sum([offset, 32])?;
+        let data_end = crate::checked_sum([data_start, len])?;
+        let data = &input.get(data_start..data_end).ok_or(DecodeError)?;
         Ok(Bytes(data.to_vec()))
     }
 }
@@ -143,23 +135,15 @@ impl crate::SolArrayElement for alloc::string::String {}
 
 impl SolDecode for alloc::string::String {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
+        let data_offset = crate::read_word_offset(input, offset)?;
         Self::decode_tail(input, data_offset)
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let len = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
-        let data = &input
-            .get(offset + 32..offset + 32 + len)
-            .ok_or(DecodeError)?;
+        let len = crate::read_word_offset(input, offset)?;
+        let data_start = crate::checked_sum([offset, 32])?;
+        let data_end = crate::checked_sum([data_start, len])?;
+        let data = &input.get(data_start..data_end).ok_or(DecodeError)?;
         alloc::string::String::from_utf8(data.to_vec()).map_err(|_| DecodeError)
     }
 }
@@ -236,32 +220,26 @@ impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     }
 
     fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let len = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
+        let len = crate::read_word_offset(input, offset)?;
         if len > input.len() / 32 {
             return Err(DecodeError);
         }
         let mut result = alloc::vec::Vec::with_capacity(len);
-        let array_data_start = offset + 32;
+        let array_data_start = crate::checked_sum([offset, 32])?;
 
         if T::IS_DYNAMIC {
             for i in 0..len {
-                let elem_offset = input
-                    .get(array_data_start + i * 32 + 24..array_data_start + i * 32 + 32)
-                    .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-                    .ok_or(DecodeError)
-                    .map(u64::from_be_bytes)? as usize;
+                let head_pos = crate::checked_sum([array_data_start, i * 32])?;
+                let elem_offset = crate::read_word_offset(input, head_pos)?;
 
-                result.push(T::decode_tail(input, array_data_start + elem_offset)?);
+                let elem_start = crate::checked_sum([array_data_start, elem_offset])?;
+                result.push(T::decode_tail(input, elem_start)?);
             }
         } else {
             let mut elem_offset = array_data_start;
             for _ in 0..len {
                 let elem = T::decode_at(input, elem_offset)?;
-                elem_offset += T::HEAD_SIZE;
+                elem_offset = crate::checked_sum([elem_offset, T::HEAD_SIZE])?;
                 result.push(elem);
             }
         }
