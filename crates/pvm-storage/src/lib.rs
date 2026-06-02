@@ -58,7 +58,6 @@
 //! // The `#[contract]` macro emits calls like the lines below. Direct user
 //! // code shouldn't need to construct handles by hand — use macro-managed
 //! // storage fields and access them via `self.balances.get(&caller)` etc.
-<<<<<<< HEAD
 //! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(
 //!     StorageKey::from_slot(0), 0, host.clone(),
 //! );
@@ -68,13 +67,6 @@
 //! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(
 //!     StorageKey::from_slot(1), 0, host,
 //! );
-=======
-//! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(0, 0, host.clone());
-//! total_supply.set(&U256::from(1000));
-//! assert_eq!(total_supply.get(), U256::from(1000));
-//!
-//! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(1, 0, host);
->>>>>>> origin/main
 //! balances.insert(&caller, &U256::from(500));
 //! assert_eq!(balances.get(&caller), U256::from(500));
 //! ```
@@ -553,7 +545,6 @@ pub trait StorageComponent: Sized {
     /// a slot with adjacent fields.
     const PACKED_BYTES: usize;
 
-<<<<<<< HEAD
     /// Construct the component at `(key, offset)`, bound to `host`. `key` is
     /// the 32-byte storage key (a contract-field slot via
     /// [`StorageKey::from_slot`], or a derived key produced by a parent
@@ -590,13 +581,6 @@ pub trait StorageComponent: Sized {
     /// Used by the storage-typed `Mapping<K, V: StorageComponent>::delete`
     /// to clear an entry of arbitrary inner shape.
     fn clear(&mut self);
-=======
-    /// Construct the component at `(slot, offset)`, bound to `host`. The
-    /// `offset` is the byte position within `slot` where the component begins;
-    /// it's only meaningful when `PACKED_BYTES < 32` (i.e. the component packs
-    /// with siblings). Full-slot components expect `offset == 0`.
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self;
->>>>>>> origin/main
 }
 
 // ---------------------------------------------------------------------------
@@ -670,7 +654,6 @@ pub struct Lazy<T> {
     /// `0` for full-slot types (`T::PACKED_BYTES == 32`); non-zero only when
     /// the contract macro places the field after a sub-word neighbour.
     offset: u8,
-<<<<<<< HEAD
     /// True when nothing else in storage shares this slot — set by the
     /// macro's neighbour analysis for fields with no sub-word siblings, and
     /// by `Mapping` for its derived entry slots (every key has a unique
@@ -679,8 +662,6 @@ pub struct Lazy<T> {
     /// in [`Lazy::new`] — the safe (RMW) choice when the caller can't prove
     /// exclusivity.
     alone: bool,
-=======
->>>>>>> origin/main
     host: Host,
     _marker: PhantomData<T>,
 }
@@ -722,7 +703,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// belt-and-braces enforcement should add `#![forbid(unsafe_code)]` at
     /// the crate root.
     pub unsafe fn new(key: StorageKey, offset: u8, host: Host) -> Self {
-<<<<<<< HEAD
         // Default to `alone = false`: the safe choice when the caller can't
         // statically prove the slot has no neighbours. Forces sub-word writes
         // through the RMW path so any neighbour bytes survive. Callers that
@@ -757,8 +737,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// Same contract as [`Lazy::new`]; additionally, callers passing
     /// `alone = true` must also satisfy [`Lazy::new_alone`]'s contract.
     unsafe fn new_inner(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
-=======
->>>>>>> origin/main
         let () = Self::_SIZE_CHECK;
         debug_assert!(
             (offset as usize) + T::PACKED_BYTES <= 32,
@@ -771,10 +749,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         Lazy {
             key,
             offset,
-<<<<<<< HEAD
             alone,
-=======
->>>>>>> origin/main
             host,
             _marker: PhantomData,
         }
@@ -922,7 +897,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// shared slot, zeros only the field's byte window, writes the new
     /// bytes back, and stores. This matches solc and Stylus's gas profile
     /// for packed `SSTORE`s — neighbours sharing the slot are preserved.
-<<<<<<< HEAD
     ///
     /// **Fast path when alone in slot** (`self.alone == true`): when the
     /// caller has proven the slot has no neighbours — every contract field
@@ -940,11 +914,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             value.__pack_into_dispatched(&mut buf, self.offset as usize);
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
         } else if T::PACKED_BYTES < 32 {
-=======
-    pub fn set(&mut self, value: &T) {
-        let () = Self::_SIZE_CHECK;
-        if T::PACKED_BYTES < 32 {
->>>>>>> origin/main
             // Packed sub-slot RMW: load slot, zero our window, write our
             // bytes back via the polymorphic dispatch hook, store. One extra
             // SLOAD on each write vs. the full-slot path — same gas profile
@@ -968,7 +937,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         }
     }
 
-<<<<<<< HEAD
 }
 
 impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
@@ -1022,12 +990,6 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
             // all-zero directly. `set_storage_or_clear` auto-deletes the slot.
             storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
         } else if T::PACKED_BYTES < 32 {
-=======
-    /// Clear every slot occupied by this value.
-    pub fn clear(&mut self) {
-        let () = Self::_SIZE_CHECK;
-        if T::PACKED_BYTES < 32 {
->>>>>>> origin/main
             // Packed sub-slot clear: RMW that zeros only our window. Calling
             // `set_storage_or_clear` with an all-zero buffer would auto-delete
             // the slot and clobber any neighbour bytes — so we load, zero
@@ -1047,7 +1009,6 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
     }
 }
 
-<<<<<<< HEAD
 /// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by
 /// `T` (the same way the macro's syntactic `Lazy<T>` detection unwraps).
 ///
@@ -1080,28 +1041,6 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
             offset: 0,
             ty: <T as pvm_contract_types::StorageTypeName>::name(),
         });
-=======
-impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
-    /// One root slot per slot of `T::STORAGE_SLOTS`. A multi-slot `T` (e.g.
-    /// `(U256, U256)`) reserves multiple consecutive slots, mirroring
-    /// Solidity's struct-in-storage layout.
-    const SLOTS: u64 = T::STORAGE_SLOTS as u64;
-
-    /// Propagates `T::PACKED_BYTES`. A `Lazy<u128>` has `PACKED_BYTES = 16`
-    /// (packable); a `Lazy<U256>` or `Lazy<(U256, U256)>` has
-    /// `PACKED_BYTES = 32` (full-slot).
-    const PACKED_BYTES: usize = T::PACKED_BYTES;
-
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
-        // SAFETY: `new_at` is the safe public entry point for macro-generated
-        // storage construction. The macro emits this call inside a contract
-        // struct's field initializer, where Rust's borrow check on the
-        // surrounding struct then gates `&self` / `&mut self` access to the
-        // resulting handle. `Lazy::new` is `unsafe` only because direct
-        // user-code calls would let `&self` methods reconstruct a writable
-        // handle — that bypass cannot happen through this trait method.
-        unsafe { Lazy::new(StorageKey::from_slot(slot), offset, host) }
->>>>>>> origin/main
     }
 }
 
@@ -1213,16 +1152,11 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     /// pack with neighbours. Matches solc's storage layout for mappings.
     const PACKED_BYTES: usize = 32;
 
-<<<<<<< HEAD
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
-=======
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
->>>>>>> origin/main
         debug_assert!(
             offset == 0,
             "Mapping<K, V> always full-slot; offset must be 0"
         );
-<<<<<<< HEAD
         // `alone` is meaningless for a full-slot component — the root header
         // always owns its slot byte-for-byte (`PACKED_BYTES == 32`). Accept
         // the argument from the trait signature but discard it.
@@ -1294,17 +1228,6 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
 /// V-agnostic accessors: only need the key derivation, independent of
 /// whether the value path is value-typed or storage-typed.
 impl<K: AsStorageKey, V> Mapping<K, V> {
-=======
-        let _ = offset;
-        // SAFETY: same justification as `Lazy::new_at` — this is the
-        // macro-only safe entry point; bypass via direct `Mapping::new` is
-        // what the `unsafe` keyword on `new` exists to mark.
-        unsafe { Mapping::new(StorageKey::from_slot(slot), host) }
-    }
-}
-
-impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
->>>>>>> origin/main
     /// Compute the raw storage key for a given map key.
     ///
     /// Useful for debugging and cross-checking with `cast index`.
@@ -1329,30 +1252,21 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// returned `Lazy` must use the same offset so `entry().set()` / `.get()`
     /// agree byte-for-byte with `insert` / `get`. For full-slot `V`
     /// (`PACKED_BYTES == 32`) this is `0` — identical to the previous behavior.
-<<<<<<< HEAD
     ///
     /// **Alone-in-slot:** the derived slot
     /// `keccak256(pad32(key) ++ pad32(root_slot))` is unique to this `key`
     /// — no other entry, contract field, or external write can collide with
     /// it. The returned `Lazy` is constructed via `Lazy::new_alone` so
     /// sub-word `V::set`/`clear` skip the RMW SLOAD.
-=======
->>>>>>> origin/main
     pub fn entry(&mut self, key: &K) -> Lazy<V> {
         // SAFETY: `entry` takes `&mut self`, so the caller already has
         // mutating access through the surrounding borrow. The returned
         // `Lazy` is a typed handle to the derived slot; producing it via
-<<<<<<< HEAD
         // `Lazy::new_alone` here does not introduce a new bypass surface.
         // The derived slot is unique to `key`, so `alone = true` is sound
         // — there is no other handle that could write neighbouring bytes.
         let offset = (32 - V::PACKED_BYTES) as u8;
         unsafe { Lazy::new_alone(self.slot_of(key), offset, self.host.clone()) }
-=======
-        // `Lazy::new` here does not introduce a new bypass surface.
-        let offset = (32 - V::PACKED_BYTES) as u8;
-        unsafe { Lazy::new(self.slot_of(key), offset, self.host.clone()) }
->>>>>>> origin/main
     }
 
     /// Read the value at the given key. For multi-slot `V`, reads
@@ -1464,7 +1378,6 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
 // `new_at` further walks its fields at `derived_key.add(N)` per field.
 // ---------------------------------------------------------------------------
 
-<<<<<<< HEAD
 impl<K, V: StorageComponent> Mapping<K, V> {
     /// Read-only view into the sub-component at `key`. The returned `Ref`
     /// inherits this mapping's `&self` borrow, so only `&self` methods on
@@ -1538,40 +1451,6 @@ impl<K, V: StorageComponent> Mapping<K, V> {
         // the RMW SLOAD when V's `clear` operates on sub-word storage.
         let mut handle = V::new_at(self.slot_of(key), offset, true, self.host.clone());
         <V as StorageComponent>::clear(&mut handle);
-=======
-/// Nested mappings can also be accessed with tuple keys:
-/// `Mapping<(Address, Address), U256>` produces the same slots as
-/// `Mapping<Address, Mapping<Address, U256>>`. Tuple key support is
-/// implemented via `AsStorageKey` for tuples up to arity 5.
-impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
-    Mapping<K1, Mapping<K2, V>>
-{
-    /// Read path for nested mappings: derives the inner mapping root and
-    /// returns a [`Ref`] so the inner mapping inherits the caller's `&self`
-    /// borrow. Only `&self` methods on `Mapping<K2, V>` (e.g. `get`,
-    /// `try_get`, `slot_of`) are reachable through it; `insert` / `entry`
-    /// / `remove` would require `&mut self` and are blocked at compile time.
-    pub fn get(&self, key: &K1) -> Ref<'_, Mapping<K2, V>> {
-        // SAFETY: the returned inner `Mapping` is immediately wrapped in
-        // `Ref<'_, _>`, which only forwards `&self` methods of `Mapping`.
-        // No bypass is exposed: `insert`/`entry` are unreachable from a
-        // `Ref`-guarded handle, so producing the inner `Mapping` via the
-        // `unsafe` constructor here doesn't widen the surface available
-        // to the `&self` caller.
-        Ref::new(unsafe { Mapping::new(self.root.derive(&self.host, key), self.host.clone()) })
-    }
-
-    /// Write path for nested mappings: derives the inner mapping root and
-    /// returns a [`RefMut`] tied to the caller's `&mut self` borrow. The
-    /// full mutating API on `Mapping<K2, V>` is reachable through the
-    /// returned guard.
-    pub fn entry(&mut self, key: &K1) -> RefMut<'_, Mapping<K2, V>> {
-        // SAFETY: `entry` requires `&mut self`. The caller has already
-        // proved mutating access through the parent borrow; producing the
-        // inner `Mapping` via `unsafe { Mapping::new }` only forwards
-        // that capability, it doesn't manufacture one.
-        RefMut::new(unsafe { Mapping::new(self.root.derive(&self.host, key), self.host.clone()) })
->>>>>>> origin/main
     }
 }
 

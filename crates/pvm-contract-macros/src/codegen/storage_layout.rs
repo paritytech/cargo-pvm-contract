@@ -13,7 +13,6 @@ pub(super) struct ChainField<'a> {
     pub cfg_attrs: &'a [syn::Attribute],
 }
 
-<<<<<<< HEAD
 /// Build a chain of `const <alone_prefix><name>: bool = ...;` items that
 /// each tell whether the corresponding field is alone in its storage slot
 /// — i.e. no sibling field shares the same slot index.
@@ -66,8 +65,6 @@ pub(super) fn alone_chain_consts(
         .collect()
 }
 
-=======
->>>>>>> origin/main
 /// Build a chain of `const <prefix><name>: ::pvm_contract_sdk::LayoutStep
 /// = ::pvm_contract_sdk::layout_step(prev, PACKED_BYTES, SLOTS);` items for
 /// the supplied fields. First entry seeds from
@@ -177,7 +174,6 @@ fn is_layout_leaf(ty: &syn::Type) -> bool {
 /// Build a `String`-valued token expression that names the Solidity storage
 /// type for a storage field's Rust type. Unwraps `Lazy<T>` and recurses into
 /// `Mapping<K, V>` syntactically; everything else is named via
-<<<<<<< HEAD
 /// `<T as StorageTypeName>::NAME`.
 ///
 /// `StorageTypeName` (in `pvm-contract-types`) has a blanket impl for
@@ -188,9 +184,6 @@ fn is_layout_leaf(ty: &syn::Type) -> bool {
 /// `Mapping<K, MyStorageStruct>` produce `"mapping(K, MyStorageStruct)"`
 /// in the layout JSON. Map keys (`K`) are also resolved through
 /// `StorageTypeName`, so any key type that has a name is acceptable.
-=======
-/// `<T as SolEncode>::SOL_NAME`.
->>>>>>> origin/main
 fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
     if let Some((wrapper, args)) = wrapper_and_type_args(ty) {
         match (wrapper.as_str(), args.as_slice()) {
@@ -202,11 +195,7 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
                 return quote! {
                     ::std::format!(
                         "mapping({},{})",
-<<<<<<< HEAD
                         <#k as ::pvm_contract_sdk::StorageTypeName>::name(),
-=======
-                        <#k as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
->>>>>>> origin/main
                         #v_expr,
                     )
                 };
@@ -215,11 +204,7 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
         }
     }
     quote! {
-<<<<<<< HEAD
         <#ty as ::pvm_contract_sdk::StorageTypeName>::name()
-=======
-        ::std::string::String::from(<#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME)
->>>>>>> origin/main
     }
 }
 

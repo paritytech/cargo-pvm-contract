@@ -1,13 +1,7 @@
 warning: variable does not need to be mutable
-<<<<<<< HEAD
   --> tests/ui/nested_mapping_view_blocks_insert.rs:21:13
    |
 21 |         let mut inner = self.allowances.view(&owner);
-=======
-  --> tests/ui/nested_mapping_view_blocks_insert.rs:22:13
-   |
-22 |         let mut inner = self.allowances.get(&owner);
->>>>>>> origin/main
    |             ----^^^^^
    |             |
    |             help: remove this `mut`
@@ -15,15 +9,9 @@ warning: variable does not need to be mutable
    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
 
 error[E0596]: cannot borrow data in dereference of `pvm_storage::Ref<'_, Mapping<Address, Uint<256, 4>>>` as mutable
-<<<<<<< HEAD
   --> tests/ui/nested_mapping_view_blocks_insert.rs:22:9
    |
 22 |         inner.insert(&spender, &U256::from(9999));
-=======
-  --> tests/ui/nested_mapping_view_blocks_insert.rs:23:9
-   |
-23 |         inner.insert(&spender, &U256::from(9999));
->>>>>>> origin/main
    |         ^^^^^ cannot borrow as mutable
    |
    = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `pvm_storage::Ref<'_, Mapping<Address, Uint<256, 4>>>`
