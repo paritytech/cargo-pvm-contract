@@ -1899,3 +1899,993 @@ fn lazy_string_native_layout_matches_solc_short() {
     assert!(header[5..31].iter().all(|&b| b == 0));
     assert_eq!(header[31], 5 * 2);
 }
+
+// --- StorageVec ---
+
+#[test]
+fn storage_vec_empty_defaults() {
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    assert_eq!(v.len(), 0);
+    assert!(v.is_empty());
+    assert_eq!(v.try_get(0), None);
+}
+
+#[test]
+fn storage_vec_push_pop_u256() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    v.push(&U256::from(10u64));
+    v.push(&U256::from(20u64));
+    v.push(&U256::from(30u64));
+    assert_eq!(v.len(), 3);
+    assert_eq!(v.get(0), U256::from(10u64));
+    assert_eq!(v.get(1), U256::from(20u64));
+    assert_eq!(v.get(2), U256::from(30u64));
+
+    assert_eq!(v.pop(), Some(U256::from(30u64)));
+    assert_eq!(v.pop(), Some(U256::from(20u64)));
+    assert_eq!(v.len(), 1);
+    assert_eq!(v.pop(), Some(U256::from(10u64)));
+    assert_eq!(v.len(), 0);
+    assert_eq!(v.pop(), None);
+}
+
+#[test]
+fn storage_vec_push_pop_address() {
+    let mut v = unsafe { StorageVec::<Address>::new(StorageKey::from_slot(7), h()) };
+    let a = Address([0xAA; 20]);
+    let b = Address([0xBB; 20]);
+    v.push(&a);
+    v.push(&b);
+    assert_eq!(v.get(0), a);
+    assert_eq!(v.get(1), b);
+    assert_eq!(v.pop(), Some(b));
+    assert_eq!(v.pop(), Some(a));
+    assert_eq!(v.pop(), None);
+}
+
+#[test]
+fn storage_vec_set_overwrites() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    v.push(&U256::from(1u64));
+    v.push(&U256::from(2u64));
+    v.set(0, &U256::from(100u64));
+    assert_eq!(v.get(0), U256::from(100u64));
+    assert_eq!(v.get(1), U256::from(2u64));
+}
+
+#[test]
+fn storage_vec_try_get_oob_returns_none() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    v.push(&U256::from(42u64));
+    assert_eq!(v.try_get(0), Some(U256::from(42u64)));
+    assert_eq!(v.try_get(1), None);
+    assert_eq!(v.try_get(u64::MAX), None);
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn storage_vec_get_oob_panics() {
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    let _ = v.get(0);
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn storage_vec_set_oob_panics() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    v.set(0, &U256::from(1u64));
+}
+
+#[test]
+fn storage_vec_clear_resets_everything() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    let host = v.host.clone();
+    let root = v.root;
+    v.push(&U256::from(1u64));
+    v.push(&U256::from(2u64));
+    v.push(&U256::from(3u64));
+
+    // Capture the body base via the keccak path the same way the impl does.
+    let mut body = [0u8; 32];
+    host.hash_keccak_256(root.as_bytes(), &mut body);
+
+    v.clear();
+    assert_eq!(v.len(), 0);
+    assert!(v.is_empty());
+
+    // Length slot is fully zeroed.
+    assert_eq!(storage_get_32(&host, root.as_bytes()), [0u8; 32]);
+
+    // Each former element slot is also zeroed (no stale data left behind).
+    let mut k = body;
+    for _ in 0..3 {
+        assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
+        inc_slot(&mut k);
+    }
+}
+
+#[test]
+fn storage_vec_pop_zeros_freed_slot() {
+    // Pop must clear the freed slot so a later push doesn't see stale
+    // bytes — and so the SSTORE-to-zero refund applies (matches solc).
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    let host = v.host.clone();
+    v.push(&U256::from(0xABCDu64));
+
+    // The element lives at keccak256(slot_0) + 0 = keccak256(slot_0).
+    let mut body = [0u8; 32];
+    host.hash_keccak_256(v.root.as_bytes(), &mut body);
+    assert_ne!(storage_get_32(&host, &body), [0u8; 32]);
+
+    let _ = v.pop();
+    assert_eq!(
+        storage_get_32(&host, &body),
+        [0u8; 32],
+        "pop must zero the freed slot",
+    );
+}
+
+#[test]
+fn storage_vec_layout_matches_solidity_uint256_array() {
+    // Solidity layout for `uint256[] a;` at slot 5:
+    //   slot[5] = length
+    //   element i = slot[ keccak256(pad32(5)) + i ]
+    //
+    // Cross-check by writing through StorageVec and reading raw slots.
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(5), h()) };
+    let host = v.host.clone();
+    v.push(&U256::from(0xAAu64));
+    v.push(&U256::from(0xBBu64));
+    v.push(&U256::from(0xCCu64));
+
+    // Length lives at the root slot, big-endian uint256.
+    let len_slot = storage_get_32(&host, v.root.as_bytes());
+    assert_eq!(len_slot[31], 3);
+    assert!(len_slot[..31].iter().all(|&b| b == 0));
+
+    // Body base is keccak256(pad32(5)).
+    let mut body = [0u8; 32];
+    host.hash_keccak_256(v.root.as_bytes(), &mut body);
+
+    // Elements at body + 0, body + 1, body + 2.
+    let e0 = storage_get_32(&host, &body);
+    assert_eq!(e0[31], 0xAA);
+    let mut k = body;
+    inc_slot(&mut k);
+    let e1 = storage_get_32(&host, &k);
+    assert_eq!(e1[31], 0xBB);
+    inc_slot(&mut k);
+    let e2 = storage_get_32(&host, &k);
+    assert_eq!(e2[31], 0xCC);
+}
+
+#[test]
+fn storage_vec_body_base_independent_of_other_slots() {
+    // Two arrays at different slots must not collide.
+    let host = h();
+    let mut v0 = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host.clone()) };
+    let mut v1 = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(1), host.clone()) };
+    v0.push(&U256::from(111u64));
+    v1.push(&U256::from(222u64));
+    assert_eq!(v0.get(0), U256::from(111u64));
+    assert_eq!(v1.get(0), U256::from(222u64));
+    assert_eq!(v0.len(), 1);
+    assert_eq!(v1.len(), 1);
+}
+
+#[test]
+fn storage_vec_get_after_set_reuses_body_base_cache() {
+    // Smoke test the OnceCell: many element accesses on the same handle.
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    for i in 0..16u64 {
+        v.push(&U256::from(i + 100));
+    }
+    for i in 0..16u64 {
+        assert_eq!(v.get(i), U256::from(i + 100));
+    }
+}
+
+#[test]
+fn storage_vec_storage_component_metadata() {
+    assert_eq!(<StorageVec<U256> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<U256> as StorageComponent>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<Address> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<Address> as StorageComponent>::PACKED_BYTES, 32);
+}
+
+#[test]
+fn storage_vec_new_at_matches_unsafe_new() {
+    // `StorageComponent::new_at` is the macro-emitted safe path; assert
+    // it produces a handle indistinguishable from `unsafe { new(...) }`.
+    let host = h();
+    let mut a = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(3), host.clone()) };
+    let mut b = <StorageVec<U256> as StorageComponent>::new_at(3, 0, host);
+    a.push(&U256::from(7u64));
+    assert_eq!(b.get(0), U256::from(7u64));
+    b.push(&U256::from(9u64));
+    assert_eq!(a.get(1), U256::from(9u64));
+}
+
+// --- StorageVec<T> for sub-word T (uint32[], uint64[], bool[], etc.) ---
+
+#[test]
+fn storage_vec_subword_u32_roundtrip() {
+    let mut v = unsafe { StorageVec::<u32>::new(StorageKey::from_slot(0), h()) };
+    for i in 0u32..20 {
+        v.push(&(i * 100));
+    }
+    assert_eq!(v.len(), 20);
+    for i in 0u32..20 {
+        assert_eq!(v.get(i as u64), i * 100);
+    }
+    // Overwrite a middle element via `set`.
+    v.set(5, &9999u32);
+    assert_eq!(v.get(5), 9999u32);
+    // Neighbours in the same packed slot are preserved.
+    assert_eq!(v.get(4), 400u32);
+    assert_eq!(v.get(6), 600u32);
+}
+
+#[test]
+fn storage_vec_subword_u32_layout_matches_solc() {
+    // solc `uint32[]` at slot S:
+    //   length at S
+    //   element i at slot keccak(pad32(S)) + (i / 8), bytes 32 - 4*(within+1)..
+    //   where within = i % 8 (per_slot = 32 / 4 = 8)
+    let host = h();
+    let mut v = unsafe { StorageVec::<u32>::new(StorageKey::from_slot(2), host.clone()) };
+    for i in 0u32..10 {
+        v.push(&(0xC0DE_0000 | i));
+    }
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(2).as_bytes());
+
+    // Slot 0 of body holds elements 0..8 (right-aligned: 0 lowest, 7 highest).
+    let s0 = storage_get_32(&host, &body);
+    for within in 0u32..8 {
+        let off = 32 - 4 * (within as usize + 1);
+        let mut bytes = [0u8; 4];
+        bytes.copy_from_slice(&s0[off..off + 4]);
+        assert_eq!(u32::from_be_bytes(bytes), 0xC0DE_0000 | within);
+    }
+
+    // Slot 1 of body holds elements 8..10.
+    let mut s1_key = body;
+    inc_slot(&mut s1_key);
+    let s1 = storage_get_32(&host, &s1_key);
+    // Element 8 lives at within=0 (bytes 28..32).
+    assert_eq!(
+        u32::from_be_bytes([s1[28], s1[29], s1[30], s1[31]]),
+        0xC0DE_0008
+    );
+    // Element 9 at within=1 (bytes 24..28).
+    assert_eq!(
+        u32::from_be_bytes([s1[24], s1[25], s1[26], s1[27]]),
+        0xC0DE_0009
+    );
+    // No data above element 9 (high bytes of slot 1 are zero).
+    assert_eq!(&s1[..24], &[0u8; 24]);
+}
+
+#[test]
+fn storage_vec_subword_bool_packs_32_per_slot() {
+    // `bool` has PACKED_BYTES = 1, so 32 bools fit per slot.
+    let mut v = unsafe { StorageVec::<bool>::new(StorageKey::from_slot(0), h()) };
+    for i in 0..40 {
+        v.push(&(i % 3 == 0));
+    }
+    for i in 0..40u64 {
+        assert_eq!(v.get(i), (i % 3) == 0);
+    }
+}
+
+#[test]
+fn storage_vec_subword_pop_preserves_packed_siblings() {
+    // After pushing 5 u32s and popping the last one, the remaining 4 must
+    // still be readable — pop's RMW must zero only the freed bytes.
+    let mut v = unsafe { StorageVec::<u32>::new(StorageKey::from_slot(0), h()) };
+    for i in 0u32..5 {
+        v.push(&(0x1000 + i));
+    }
+    assert_eq!(v.pop(), Some(0x1004));
+    assert_eq!(v.len(), 4);
+    for i in 0u32..4 {
+        assert_eq!(v.get(i as u64), 0x1000 + i);
+    }
+}
+
+#[test]
+fn storage_vec_subword_pop_clears_slot_when_freeing_first_in_slot() {
+    // u32 with per_slot = 8. Push 9 elements (slot 0: indices 0..8, slot 1:
+    // index 8). Popping index 8 should clear slot 1 entirely — verify via
+    // raw read that the slot is zero.
+    let host = h();
+    let mut v = unsafe { StorageVec::<u32>::new(StorageKey::from_slot(0), host.clone()) };
+    for i in 0u32..9 {
+        v.push(&(i + 1));
+    }
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let mut slot1_key = body;
+    inc_slot(&mut slot1_key);
+    // Before pop: slot 1 has element 8 at bytes 28..32.
+    let before = storage_get_32(&host, &slot1_key);
+    assert_eq!(
+        u32::from_be_bytes([before[28], before[29], before[30], before[31]]),
+        9
+    );
+
+    assert_eq!(v.pop(), Some(9));
+
+    // After pop: slot 1 is fully cleared (it had only one element).
+    let after = storage_get_32(&host, &slot1_key);
+    assert_eq!(after, [0u8; 32]);
+
+    // And slot 0 still has all 8 surviving elements packed.
+    let slot0 = storage_get_32(&host, &body);
+    assert_ne!(slot0, [0u8; 32]);
+}
+
+#[test]
+fn storage_vec_subword_clear_resets_all_body_slots() {
+    let host = h();
+    let mut v = unsafe { StorageVec::<u32>::new(StorageKey::from_slot(0), host.clone()) };
+    for i in 0u32..17 {
+        // 17 u32s span 3 slots (8 + 8 + 1).
+        v.push(&(i + 1));
+    }
+    v.clear();
+    assert_eq!(v.len(), 0);
+
+    // Verify all 3 body slots are zero.
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let mut key = body;
+    for _ in 0..3 {
+        assert_eq!(storage_get_32(&host, &key), [0u8; 32]);
+        inc_slot(&mut key);
+    }
+}
+
+#[test]
+fn storage_vec_subword_storage_component_metadata() {
+    // Sub-word StorageVecs report the same metadata as full-word ones:
+    // one root slot, never packs with neighbours.
+    assert_eq!(<StorageVec<u32> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<u32> as StorageComponent>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<u64> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<bool> as StorageComponent>::SLOTS, 1);
+}
+
+// --- StorageVec<T> for multi-slot static T ((U256, U256)[], etc.) ---
+
+#[test]
+fn storage_vec_multislot_tuple_roundtrip() {
+    // `(U256, U256)` has STORAGE_SLOTS == 2 — each element claims two slots.
+    let mut v = unsafe { StorageVec::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+    let pairs: [(U256, U256); 4] = [
+        (U256::from(1u64), U256::from(2u64)),
+        (U256::from(3u64), U256::from(4u64)),
+        (U256::from(5u64), U256::from(6u64)),
+        (U256::from(7u64), U256::from(8u64)),
+    ];
+    for p in &pairs {
+        v.push(p);
+    }
+    assert_eq!(v.len(), 4);
+    for (i, expected) in pairs.iter().enumerate() {
+        assert_eq!(v.get(i as u64), *expected);
+    }
+}
+
+#[test]
+fn storage_vec_multislot_layout_uses_stride() {
+    // Verify that element i occupies slots [body_base + i*N, body_base + i*N + N).
+    let host = h();
+    let mut v = unsafe { StorageVec::<(U256, U256)>::new(StorageKey::from_slot(5), host.clone()) };
+    v.push(&(U256::from(0x1111u64), U256::from(0x2222u64)));
+    v.push(&(U256::from(0x3333u64), U256::from(0x4444u64)));
+
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(5).as_bytes());
+    // Element 0 occupies slots body+0, body+1.
+    let e0_s0 = storage_get_32(&host, &body);
+    let mut k = body;
+    inc_slot(&mut k);
+    let e0_s1 = storage_get_32(&host, &k);
+    // Tuple `(a, b)` encoding: a at slot 0, b at slot 1 (both right-aligned U256s).
+    assert_eq!(U256::from_be_bytes(e0_s0), U256::from(0x1111u64));
+    assert_eq!(U256::from_be_bytes(e0_s1), U256::from(0x2222u64));
+
+    // Element 1 occupies slots body+2, body+3.
+    inc_slot(&mut k);
+    let e1_s0 = storage_get_32(&host, &k);
+    inc_slot(&mut k);
+    let e1_s1 = storage_get_32(&host, &k);
+    assert_eq!(U256::from_be_bytes(e1_s0), U256::from(0x3333u64));
+    assert_eq!(U256::from_be_bytes(e1_s1), U256::from(0x4444u64));
+}
+
+#[test]
+fn storage_vec_multislot_set_overwrites() {
+    let mut v = unsafe { StorageVec::<(U256, U256)>::new(StorageKey::from_slot(0), h()) };
+    v.push(&(U256::from(1u64), U256::from(2u64)));
+    v.push(&(U256::from(3u64), U256::from(4u64)));
+    v.set(0, &(U256::from(99u64), U256::from(100u64)));
+    assert_eq!(v.get(0), (U256::from(99u64), U256::from(100u64)));
+    assert_eq!(v.get(1), (U256::from(3u64), U256::from(4u64)));
+}
+
+#[test]
+fn storage_vec_multislot_pop_clears_all_slots() {
+    let host = h();
+    let mut v = unsafe { StorageVec::<(U256, U256)>::new(StorageKey::from_slot(0), host.clone()) };
+    v.push(&(U256::from(7u64), U256::from(8u64)));
+    v.push(&(U256::from(9u64), U256::from(10u64)));
+
+    assert_eq!(v.pop(), Some((U256::from(9u64), U256::from(10u64))));
+    assert_eq!(v.len(), 1);
+
+    // Verify the freed element's slots are both zero.
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let mut k = body;
+    inc_slot_by(&mut k, 2); // element 1 starts at body + 2
+    assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
+    inc_slot(&mut k);
+    assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
+}
+
+// --- StorageVec<T> for dynamic-body T (string[], bytes[]) ---
+
+#[cfg(feature = "alloc")]
+#[test]
+fn storage_vec_dynamic_string_roundtrip() {
+    let mut v = unsafe { StorageVec::<String>::new(StorageKey::from_slot(0), h()) };
+    v.push(&String::from("short"));
+    // 32+ byte string forces the spilled-body path.
+    v.push(&String::from(
+        "this is a much longer string that exceeds 31 bytes",
+    ));
+    v.push(&String::new());
+    v.push(&String::from("another"));
+
+    assert_eq!(v.len(), 4);
+    assert_eq!(v.get(0), "short");
+    assert_eq!(
+        v.get(1),
+        "this is a much longer string that exceeds 31 bytes"
+    );
+    assert_eq!(v.get(2), "");
+    assert_eq!(v.get(3), "another");
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn storage_vec_dynamic_bytes_roundtrip() {
+    let mut v = unsafe { StorageVec::<Bytes>::new(StorageKey::from_slot(0), h()) };
+    v.push(&Bytes(alloc::vec![0xAA, 0xBB, 0xCC]));
+    v.push(&Bytes(alloc::vec![0x11; 100])); // forces spill
+    v.push(&Bytes(alloc::vec::Vec::new()));
+
+    assert_eq!(v.len(), 3);
+    assert_eq!(v.get(0).0, alloc::vec![0xAA, 0xBB, 0xCC]);
+    assert_eq!(v.get(1).0, alloc::vec![0x11; 100]);
+    assert_eq!(v.get(2).0, alloc::vec::Vec::<u8>::new());
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn storage_vec_dynamic_string_set_replaces_inline_with_spilled() {
+    // Replacing a short (inline) element with a long (spilled) one must
+    // overwrite cleanly through `T::write_to_storage`.
+    let mut v = unsafe { StorageVec::<String>::new(StorageKey::from_slot(0), h()) };
+    v.push(&String::from("short"));
+    let long: String = str::repeat("x", 80);
+    v.set(0, &long);
+    assert_eq!(v.get(0), long);
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn storage_vec_dynamic_pop_clears_spilled_body() {
+    // pop must call T::clear_storage which tears down both header and any
+    // spilled body chunks — verify via len + try_get.
+    let mut v = unsafe { StorageVec::<String>::new(StorageKey::from_slot(0), h()) };
+    let s100: String = str::repeat("x", 100); // spilled
+    let s80: String = str::repeat("y", 80); // spilled
+    v.push(&s100);
+    v.push(&s80);
+
+    let popped: Option<String> = v.pop();
+    assert_eq!(popped.as_ref().map(|s| s.len()), Some(80usize));
+    assert_eq!(v.len(), 1);
+    assert_eq!(v.try_get(1), None);
+    assert_eq!(v.get(0).len(), 100);
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn storage_vec_dynamic_clear_zeros_spilled_bodies() {
+    // clear() must call T::clear_storage on every element, tearing down
+    // both the inline header and any spilled body chunks. Verify the
+    // header slots AND a representative spilled-body slot all read zero
+    // after clear().
+    let host = h();
+    let mut v = unsafe { StorageVec::<String>::new(StorageKey::from_slot(0), host.clone()) };
+    let s_a: String = str::repeat("a", 100); // spilled (4 body chunks)
+    let s_b: String = str::repeat("b", 80); // spilled (3 body chunks)
+    let s_c: String = str::repeat("c", 50); // spilled (2 body chunks)
+    v.push(&s_a);
+    v.push(&s_b);
+    v.push(&s_c);
+    assert_eq!(v.len(), 3);
+
+    // Capture the first spilled-body chunk of element 0 (proves it's
+    // non-zero before clear, so the post-clear assertion is meaningful).
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let header_e0 = body;
+    let mut spilled_e0_chunk0 = [0u8; 32];
+    host.hash_keccak_256(&header_e0, &mut spilled_e0_chunk0);
+    assert_ne!(storage_get_32(&host, &spilled_e0_chunk0), [0u8; 32]);
+
+    v.clear();
+    assert_eq!(v.len(), 0);
+    assert!(v.is_empty());
+
+    // Outer length slot is zero.
+    assert_eq!(
+        storage_get_32(&host, StorageKey::from_slot(0).as_bytes()),
+        [0u8; 32]
+    );
+
+    // Each element's header slot (in the array body) is zero.
+    let mut header_key = body;
+    for _ in 0..3 {
+        assert_eq!(storage_get_32(&host, &header_key), [0u8; 32]);
+        inc_slot(&mut header_key);
+    }
+
+    // The previously-non-zero spilled chunk of element 0 is now zero.
+    assert_eq!(storage_get_32(&host, &spilled_e0_chunk0), [0u8; 32]);
+}
+
+// --- Mapping<K, StorageVec<T>> — `mapping(K => T[])` in Solidity ---
+
+#[test]
+fn mapping_of_storage_vec_roundtrip() {
+    let mut m = unsafe { Mapping::<Address, StorageVec<U256>>::new(StorageKey::from_slot(4), h()) };
+    let alice = Address([0xAA; 20]);
+    let bob = Address([0xBB; 20]);
+
+    {
+        let mut alice_vec = m.entry(&alice);
+        alice_vec.push(&U256::from(1u64));
+        alice_vec.push(&U256::from(2u64));
+        alice_vec.push(&U256::from(3u64));
+    }
+    {
+        let mut bob_vec = m.entry(&bob);
+        bob_vec.push(&U256::from(99u64));
+    }
+
+    assert_eq!(m.get(&alice).len(), 3);
+    assert_eq!(m.get(&alice).get(0), U256::from(1u64));
+    assert_eq!(m.get(&alice).get(2), U256::from(3u64));
+    assert_eq!(m.get(&bob).len(), 1);
+    assert_eq!(m.get(&bob).get(0), U256::from(99u64));
+}
+
+#[test]
+fn mapping_of_storage_vec_keys_are_independent() {
+    // Two keys must produce non-overlapping element ranges.
+    let mut m = unsafe { Mapping::<Address, StorageVec<U256>>::new(StorageKey::from_slot(0), h()) };
+    let a = Address([0x11; 20]);
+    let b = Address([0x22; 20]);
+
+    m.entry(&a).push(&U256::from(100u64));
+    m.entry(&b).push(&U256::from(200u64));
+    m.entry(&a).push(&U256::from(101u64));
+
+    assert_eq!(m.get(&a).len(), 2);
+    assert_eq!(m.get(&b).len(), 1);
+    assert_eq!(m.get(&a).get(0), U256::from(100u64));
+    assert_eq!(m.get(&a).get(1), U256::from(101u64));
+    assert_eq!(m.get(&b).get(0), U256::from(200u64));
+}
+
+#[test]
+fn mapping_of_storage_vec_matches_solc_layout() {
+    // Cross-check that `Mapping<K, StorageVec<T>>` lays out elements at the
+    // same slots solc would for `mapping(K => T[]) at slot S`:
+    //   T[]_slot       = keccak256(pad32(K) ++ pad32(S))
+    //   length         = T[]_slot
+    //   element i      = keccak256(T[]_slot) + i
+    let host = h();
+    let mut m = unsafe {
+        Mapping::<Address, StorageVec<U256>>::new(StorageKey::from_slot(7), host.clone())
+    };
+    let key = Address([0x33; 20]);
+
+    m.entry(&key).push(&U256::from(0xDEADu64));
+    m.entry(&key).push(&U256::from(0xBEEFu64));
+
+    // Derive the inner-vec root the same way `Mapping::slot_of` does.
+    let inner_root = StorageKey::from_slot(7).derive(&host, &key);
+    // Length lives at the inner root.
+    let len_slot = storage_get_32(&host, inner_root.as_bytes());
+    assert_eq!(len_slot[31], 2);
+
+    // Element 0 lives at keccak256(inner_root).
+    let body_base = storage_derive_body_base(&host, inner_root.as_bytes());
+    let e0 = storage_get_32(&host, &body_base);
+    assert_eq!(U256::from_be_bytes(e0), U256::from(0xDEADu64));
+
+    let mut e1_key = body_base;
+    inc_slot(&mut e1_key);
+    let e1 = storage_get_32(&host, &e1_key);
+    assert_eq!(U256::from_be_bytes(e1), U256::from(0xBEEFu64));
+}
+
+#[test]
+fn mapping_of_storage_vec_view_borrow_is_read_only() {
+    // Behavioural check that the `Ref<'_, StorageVec<T>>` returned by
+    // `Mapping<K, StorageVec<T>>::get` exposes only `&self` methods. The
+    // compile-fail UI test pins the type-level guarantee; this test
+    // exercises the read path.
+    let mut m = unsafe { Mapping::<Address, StorageVec<U256>>::new(StorageKey::from_slot(0), h()) };
+    let k = Address([0x44; 20]);
+    m.entry(&k).push(&U256::from(7u64));
+
+    let view = m.get(&k);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view.get(0), U256::from(7u64));
+    assert_eq!(view.try_get(1), None);
+}
+
+// --- StorageVec<StorageVec<T>> — `T[][]` in Solidity ---
+
+#[test]
+fn nested_storage_vec_roundtrip() {
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+
+    outer.push_empty();
+    outer.push_empty();
+    assert_eq!(outer.outer_len(), 2);
+
+    {
+        let mut row0 = outer.entry(0);
+        row0.push(&U256::from(10u64));
+        row0.push(&U256::from(20u64));
+    }
+    {
+        let mut row1 = outer.entry(1);
+        row1.push(&U256::from(30u64));
+    }
+
+    assert_eq!(outer.get(0).len(), 2);
+    assert_eq!(outer.get(0).get(0), U256::from(10u64));
+    assert_eq!(outer.get(0).get(1), U256::from(20u64));
+    assert_eq!(outer.get(1).len(), 1);
+    assert_eq!(outer.get(1).get(0), U256::from(30u64));
+}
+
+#[test]
+fn nested_storage_vec_inner_rows_are_independent() {
+    // Two different outer indices must derive non-overlapping inner roots.
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+
+    outer.push_empty();
+    outer.push_empty();
+    outer.entry(0).push(&U256::from(0xAAu64));
+    outer.entry(1).push(&U256::from(0xBBu64));
+    outer.entry(0).push(&U256::from(0xCCu64));
+
+    assert_eq!(outer.get(0).len(), 2);
+    assert_eq!(outer.get(1).len(), 1);
+    assert_eq!(outer.get(0).get(0), U256::from(0xAAu64));
+    assert_eq!(outer.get(0).get(1), U256::from(0xCCu64));
+    assert_eq!(outer.get(1).get(0), U256::from(0xBBu64));
+}
+
+#[test]
+fn nested_storage_vec_matches_solc_layout() {
+    // Cross-check that nested layout matches solc's `T[][] at slot S`:
+    //   inner_root(i) = keccak256(pad32(S)) + i
+    //   inner length  at inner_root(i)
+    //   inner body    at keccak256(inner_root(i)) + j
+    let host = h();
+    let mut outer = unsafe {
+        StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(11), host.clone())
+    };
+
+    outer.push_empty();
+    outer.push_empty();
+    outer.push_empty();
+    outer.entry(0).push(&U256::from(0x1111u64));
+    outer.entry(2).push(&U256::from(0x2222u64));
+    outer.entry(2).push(&U256::from(0x3333u64));
+
+    let outer_body = storage_derive_body_base(&host, StorageKey::from_slot(11).as_bytes());
+
+    // inner_root(0) = outer_body + 0
+    let inner0_root = outer_body;
+    let inner0_len = storage_get_32(&host, &inner0_root);
+    assert_eq!(inner0_len[31], 1, "inner[0] length");
+
+    let inner0_body = storage_derive_body_base(&host, &inner0_root);
+    let inner0_e0 = storage_get_32(&host, &inner0_body);
+    assert_eq!(U256::from_be_bytes(inner0_e0), U256::from(0x1111u64));
+
+    // inner_root(2) = outer_body + 2
+    let mut inner2_root = outer_body;
+    inc_slot_by(&mut inner2_root, 2);
+    let inner2_len = storage_get_32(&host, &inner2_root);
+    assert_eq!(inner2_len[31], 2, "inner[2] length");
+
+    let inner2_body = storage_derive_body_base(&host, &inner2_root);
+    let inner2_e0 = storage_get_32(&host, &inner2_body);
+    assert_eq!(U256::from_be_bytes(inner2_e0), U256::from(0x2222u64));
+
+    let mut inner2_e1_key = inner2_body;
+    inc_slot(&mut inner2_e1_key);
+    let inner2_e1 = storage_get_32(&host, &inner2_e1_key);
+    assert_eq!(U256::from_be_bytes(inner2_e1), U256::from(0x3333u64));
+}
+
+#[test]
+fn nested_storage_vec_outer_len_tracks_push_empty() {
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+
+    assert_eq!(outer.outer_len(), 0);
+    assert!(outer.is_empty());
+
+    outer.push_empty();
+    assert_eq!(outer.outer_len(), 1);
+    assert!(!outer.is_empty());
+
+    outer.push_empty();
+    outer.push_empty();
+    assert_eq!(outer.outer_len(), 3);
+
+    // Inner array at index 0 is empty (no elements pushed).
+    assert_eq!(outer.get(0).len(), 0);
+    assert!(outer.get(0).is_empty());
+}
+
+#[test]
+fn nested_storage_vec_view_borrow_is_read_only() {
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+    outer.push_empty();
+    outer.entry(0).push(&U256::from(42u64));
+
+    let view = outer.get(0);
+    assert_eq!(view.len(), 1);
+    assert_eq!(view.get(0), U256::from(42u64));
+    assert_eq!(view.try_get(1), None);
+}
+
+#[test]
+fn nested_storage_vec_storage_component_metadata() {
+    // `StorageVec<StorageVec<T>>` plugs into the `#[storage]` /
+    // `#[contract]` macro path as a full-slot, non-packing component —
+    // matches the flat `StorageVec<T>` shape exactly.
+    assert_eq!(<StorageVec<StorageVec<U256>> as StorageComponent>::SLOTS, 1);
+    assert_eq!(
+        <StorageVec<StorageVec<U256>> as StorageComponent>::PACKED_BYTES,
+        32
+    );
+}
+
+#[test]
+fn nested_storage_vec_new_at_matches_new_nested() {
+    // `StorageComponent::new_at` is the macro-emitted safe path; assert it
+    // produces a handle indistinguishable from `unsafe { new_nested(...) }`.
+    let host = h();
+    let mut a = unsafe {
+        StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(4), host.clone())
+    };
+    let mut b = <StorageVec<StorageVec<U256>> as StorageComponent>::new_at(4, 0, host);
+    a.push_empty();
+    a.entry(0).push(&U256::from(0xAAu64));
+    // Both handles see the same underlying storage.
+    assert_eq!(b.outer_len(), 1);
+    assert_eq!(b.get(0).get(0), U256::from(0xAAu64));
+    b.entry(0).push(&U256::from(0xBBu64));
+    assert_eq!(a.get(0).len(), 2);
+    assert_eq!(a.get(0).get(1), U256::from(0xBBu64));
+}
+
+#[test]
+fn nested_storage_vec_subword_inner_roundtrip() {
+    // u64 has PACKED_BYTES = 8, so 4 elements pack per slot in the inner
+    // body. Verify nested dispatch threads through to sub-word read/write
+    // and that two inner rows packing 6 and 10 elements stay independent.
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<u64>>::new_nested(StorageKey::from_slot(0), h()) };
+    outer.push_empty();
+    outer.push_empty();
+
+    {
+        let mut row0 = outer.entry(0);
+        for i in 0u64..6 {
+            row0.push(&(0xA000 + i));
+        }
+    }
+    {
+        let mut row1 = outer.entry(1);
+        for i in 0u64..10 {
+            row1.push(&(0xB000 + i));
+        }
+    }
+
+    let r0 = outer.get(0);
+    assert_eq!(r0.len(), 6);
+    for i in 0u64..6 {
+        assert_eq!(r0.get(i), 0xA000 + i);
+    }
+    drop(r0);
+    let r1 = outer.get(1);
+    assert_eq!(r1.len(), 10);
+    for i in 0u64..10 {
+        assert_eq!(r1.get(i), 0xB000 + i);
+    }
+}
+
+#[test]
+fn nested_storage_vec_pop_recursively_clears_inner() {
+    // pop() must destroy the popped inner array's storage — both its
+    // length slot and its body slots — matching solc `T[][].pop()`.
+    let host = h();
+    let mut outer = unsafe {
+        StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), host.clone())
+    };
+    outer.push_empty();
+    outer.push_empty();
+    outer.entry(0).push(&U256::from(11u64));
+    outer.entry(1).push(&U256::from(22u64));
+    outer.entry(1).push(&U256::from(33u64));
+
+    // Snapshot the soon-to-be-popped inner's length and first body slot
+    // as non-zero so the post-pop zero check is meaningful.
+    let outer_body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let mut inner1_root = outer_body;
+    inc_slot_by(&mut inner1_root, 1);
+    let inner1_body = storage_derive_body_base(&host, &inner1_root);
+    assert_ne!(storage_get_32(&host, &inner1_root), [0u8; 32]);
+    assert_ne!(storage_get_32(&host, &inner1_body), [0u8; 32]);
+
+    assert!(outer.pop());
+    assert_eq!(outer.outer_len(), 1);
+
+    // Popped inner's length slot and body slots are zero.
+    assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32]);
+    assert_eq!(storage_get_32(&host, &inner1_body), [0u8; 32]);
+    let mut inner1_body_next = inner1_body;
+    inc_slot(&mut inner1_body_next);
+    assert_eq!(storage_get_32(&host, &inner1_body_next), [0u8; 32]);
+
+    // Surviving inner row is untouched.
+    assert_eq!(outer.get(0).len(), 1);
+    assert_eq!(outer.get(0).get(0), U256::from(11u64));
+
+    // pop draining to empty returns true once more, then false.
+    assert!(outer.pop());
+    assert_eq!(outer.outer_len(), 0);
+    assert!(!outer.pop());
+}
+
+#[test]
+fn nested_storage_vec_clear_recursively_clears_all_inners() {
+    // clear() walks every inner, calls its clear(), and zeroes the outer
+    // length — matching solc `delete matrix`.
+    let host = h();
+    let mut outer = unsafe {
+        StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), host.clone())
+    };
+    outer.push_empty();
+    outer.push_empty();
+    outer.entry(0).push(&U256::from(1u64));
+    outer.entry(0).push(&U256::from(2u64));
+    outer.entry(1).push(&U256::from(3u64));
+
+    let outer_body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let inner0_root = outer_body;
+    let mut inner1_root = outer_body;
+    inc_slot(&mut inner1_root);
+    let inner0_body = storage_derive_body_base(&host, &inner0_root);
+    let inner1_body = storage_derive_body_base(&host, &inner1_root);
+
+    // Sanity: storage is non-zero before clear.
+    assert_ne!(storage_get_32(&host, &inner0_root), [0u8; 32]);
+    assert_ne!(storage_get_32(&host, &inner0_body), [0u8; 32]);
+    assert_ne!(storage_get_32(&host, &inner1_root), [0u8; 32]);
+    assert_ne!(storage_get_32(&host, &inner1_body), [0u8; 32]);
+
+    outer.clear();
+    assert_eq!(outer.outer_len(), 0);
+    assert!(outer.is_empty());
+
+    // Outer length slot is zero.
+    assert_eq!(
+        storage_get_32(&host, StorageKey::from_slot(0).as_bytes()),
+        [0u8; 32]
+    );
+    // Each inner's length and body slots are zero.
+    assert_eq!(storage_get_32(&host, &inner0_root), [0u8; 32]);
+    assert_eq!(storage_get_32(&host, &inner0_body), [0u8; 32]);
+    let mut inner0_body_next = inner0_body;
+    inc_slot(&mut inner0_body_next);
+    assert_eq!(storage_get_32(&host, &inner0_body_next), [0u8; 32]);
+    assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32]);
+    assert_eq!(storage_get_32(&host, &inner1_body), [0u8; 32]);
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn nested_storage_vec_get_panics_on_oob() {
+    let outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+    // outer_len == 0: any index is OOB.
+    let _ = outer.get(0);
+}
+
+#[test]
+#[should_panic(expected = "out of bounds")]
+fn nested_storage_vec_entry_panics_on_oob() {
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+    outer.push_empty();
+    // outer_len == 1: index 1 is OOB.
+    let _ = outer.entry(1);
+}
+
+#[test]
+fn inc_slot_by_zero_is_identity() {
+    let mut slot = [0u8; 32];
+    slot[31] = 0xAB;
+    let original = slot;
+    inc_slot_by(&mut slot, 0);
+    assert_eq!(slot, original);
+}
+
+#[test]
+fn inc_slot_by_small() {
+    let mut slot = [0u8; 32];
+    inc_slot_by(&mut slot, 5);
+    let mut expected = [0u8; 32];
+    expected[31] = 5;
+    assert_eq!(slot, expected);
+}
+
+#[test]
+fn inc_slot_by_carries_through_low_bytes() {
+    let mut slot = [0u8; 32];
+    slot[31] = 0xFF;
+    inc_slot_by(&mut slot, 1);
+    let mut expected = [0u8; 32];
+    expected[30] = 1;
+    expected[31] = 0;
+    assert_eq!(slot, expected);
+}
+
+#[test]
+fn inc_slot_by_full_u64_range() {
+    let mut slot = [0u8; 32];
+    inc_slot_by(&mut slot, u64::MAX);
+    // Lowest 8 bytes should be 0xFF...FF, upper 24 bytes zero.
+    let mut expected = [0u8; 32];
+    expected[24..].copy_from_slice(&u64::MAX.to_be_bytes());
+    assert_eq!(slot, expected);
+}
+
+#[test]
+fn inc_slot_by_carries_into_high_bytes() {
+    // Start at "all 0xFF in low 8 bytes", add 1 -> carry into byte 23.
+    let mut slot = [0u8; 32];
+    slot[24..].fill(0xFF);
+    inc_slot_by(&mut slot, 1);
+    let mut expected = [0u8; 32];
+    expected[23] = 1;
+    // Bytes 24..32 wrap to zero.
+    assert_eq!(slot, expected);
+}

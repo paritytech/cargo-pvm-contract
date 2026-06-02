@@ -251,6 +251,13 @@ fn build_variant(
 }
 
 fn variants_for_contract(contract: &str) -> Vec<Variant> {
+    // The `packed_*` contracts are an A/B comparison of the storage value
+    // model (`Lazy<S>` over a `#[derive(SolType)]` struct) vs the handle
+    // bundle model (`#[storage]` of `Lazy<T>` leaves). They only build the
+    // no-alloc variant — the alloc/dsl axes are orthogonal to the question.
+    if contract.starts_with("packed_") {
+        return vec![Variant::NoAlloc];
+    }
     let mut variants = vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl];
     if contract == "mytoken" {
         variants.push(Variant::Storage);
@@ -270,7 +277,13 @@ fn main() -> Result<()> {
     let artifacts_dir = PathBuf::from("target/benchmark-artifacts");
     fs::create_dir_all(&artifacts_dir).context("Failed to create artifacts directory")?;
 
-    let contracts = vec!["fibonacci", "mytoken", "multi"];
+    let contracts = vec![
+        "fibonacci",
+        "mytoken",
+        "multi",
+        "packed_handle",
+        "packed_value",
+    ];
     let profiles = vec!["debug", "release"];
 
     let total: usize = contracts

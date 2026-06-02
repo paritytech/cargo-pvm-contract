@@ -123,12 +123,14 @@ pub use pvm_contract_core::call::{
 // Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
 // 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones
 // (`String`, `Bytes`, structs with dynamic fields) through their
-// `StorageEncode`/`StorageDecode` impls. `Vec<u8>` is intentionally not a
-// storage value — use `Bytes` for `bytes`-shaped storage (`Vec<u8>` is ABI
-// `uint8[]`, a different on-chain layout). `StorageComponent` is the trait
-// typed storage helpers implement to participate in auto-numbered slot layout.
+// `StorageEncode`/`StorageDecode` impls. `StorageVec<T>` models Solidity's
+// `T[]` dynamic arrays. `Vec<u8>` is intentionally not a storage value —
+// use `Bytes` for `bytes`-shaped storage (`Vec<u8>` is ABI `uint8[]`, a
+// different on-chain layout). `StorageComponent` is the trait typed
+// storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
-    AsStorageKey, LayoutStep, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey, layout_step,
+    AsStorageKey, LayoutStep, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey, StorageVec,
+    layout_step,
 };
 
 #[cfg(feature = "abi-gen")]
