@@ -9,7 +9,7 @@ extern crate alloc;
 
 use pvm_contract_sdk::SolType;
 use pvm_contract_sdk::{
-    Address, Lazy, Mapping, StorageDecode, StorageEncode, StorageKey, StoragePackable, U256,
+    Address, Bytes, Lazy, Mapping, StorageDecode, StorageEncode, StorageKey, StoragePackable, U256,
 };
 use pvm_contract_types::MockHostBuilder;
 
@@ -41,7 +41,7 @@ struct AddrAndCounter {
 #[test]
 fn addr_and_counter_packs_into_one_slot() {
     assert_eq!(<AddrAndCounter as StorageEncode>::STORAGE_SLOTS, 1);
-    const { assert!(<AddrAndCounter as StorageEncode>::STARTS_NEW_SLOT) };
+    assert_eq!(<AddrAndCounter as StorageEncode>::PACKED_BYTES, 32);
 }
 
 #[test]
@@ -306,7 +306,7 @@ struct DynamicReview {
 #[test]
 fn dynamic_field_struct_takes_two_slots_and_marks_dynamic_body() {
     // `reviewer` (Address, 20 bytes) packs into slot 0; `comment_uri`
-    // (`String`, STARTS_NEW_SLOT=true) starts a new slot at slot 1.
+    // (`String`, PACKED_BYTES=32) starts a new slot at slot 1.
     assert_eq!(<DynamicReview as StorageEncode>::STORAGE_SLOTS, 2);
     const { assert!(<DynamicReview as StorageEncode>::HAS_DYNAMIC_BODY) };
 }
@@ -336,6 +336,37 @@ fn dynamic_field_struct_via_mapping_round_trip_spilled() {
     };
     m.insert(&5u64, &v);
     assert_eq!(m.get(&5u64), v);
+}
+
+#[test]
+#[should_panic(expected = "encode_slot called on a dynamic-body slot")]
+fn dynamic_field_struct_encode_slot_panics_on_dynamic_slot() {
+    // Calling `encode_slot` directly on the dynamic slot of a struct with a
+    // dynamic-body field must panic — same as standalone `String::encode_slot`,
+    // which inherits the trait's `unreachable!()` default. Without this guard
+    // the dynamic arm would silently no-op and return zeros, making the
+    // behavior asymmetric between standalone `String` and a struct wrapping it.
+    let v = DynamicReview {
+        reviewer: Address([0; 20]),
+        comment_uri: alloc::string::String::from("hi"),
+    };
+    let mut buf = [0u8; 32];
+    v.encode_slot(1, &mut buf);
+}
+
+#[test]
+fn dynamic_field_struct_encode_slot_static_slot_still_writes() {
+    // Slot 0 (the static `Address` slot) must still encode normally — the
+    // panic only fires on the dynamic slot.
+    let v = DynamicReview {
+        reviewer: Address([0x42; 20]),
+        comment_uri: alloc::string::String::from("hi"),
+    };
+    let mut buf = [0u8; 32];
+    v.encode_slot(0, &mut buf);
+    let mut expected = [0u8; 32];
+    expected[12..].copy_from_slice(&[0x42; 20]);
+    assert_eq!(buf, expected);
 }
 
 // --- Struct mixing packable statics (Address + u8) with a dynamic String --
@@ -401,12 +432,142 @@ fn review_via_mapping_remove_clears_storage() {
     assert_eq!(m.try_get(&7u64), None);
 }
 
+// --- Struct with a dynamic `Bytes` field: mirrors `DynamicReview` (String) ---
+//
+// `classify_storage_field` puts `SolType::String` and `SolType::DynBytes` on
+// the same `Dynamic` arm, so a `Bytes` field exercises the identical codegen
+// path. Mirroring the `DynamicReview` / `Review` tests with `Bytes` would
+// otherwise let divergent codegen between the two go silent.
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct DynamicBlob {
+    owner: Address,
+    payload: Bytes,
+}
+
+#[test]
+fn dynamic_blob_takes_two_slots_and_marks_dynamic_body() {
+    // `owner` (Address, 20 bytes) packs into slot 0; `payload` (`Bytes`,
+    // PACKED_BYTES=32) starts a new slot at slot 1. Same shape as
+    // DynamicReview but with Bytes instead of String.
+    assert_eq!(<DynamicBlob as StorageEncode>::STORAGE_SLOTS, 2);
+    const { assert!(<DynamicBlob as StorageEncode>::HAS_DYNAMIC_BODY) };
+}
+
+#[test]
+fn dynamic_blob_via_mapping_round_trip_inline() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, DynamicBlob>::new(StorageKey::from_slot(0), host) };
+    let v = DynamicBlob {
+        owner: Address([0x42; 20]),
+        payload: Bytes(alloc::vec![0xde, 0xad, 0xbe, 0xef]),
+    };
+    m.insert(&1u64, &v);
+    assert_eq!(m.get(&1u64), v);
+}
+
+#[test]
+fn dynamic_blob_via_mapping_round_trip_spilled() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, DynamicBlob>::new(StorageKey::from_slot(0), host) };
+    let v = DynamicBlob {
+        owner: Address([0xab; 20]),
+        // > 32 bytes forces solc's spill encoding: header in slot 1, body at
+        // keccak256(slot1) + i.
+        payload: Bytes(alloc::vec![0x77u8; 80]),
+    };
+    m.insert(&5u64, &v);
+    assert_eq!(m.get(&5u64), v);
+}
+
+#[test]
+#[should_panic(expected = "from_slots called on dynamic-body struct")]
+fn dynamic_blob_from_slots_panics() {
+    // Mirrors the trait contract: a dynamic-body struct's `from_slots` is a
+    // stub — reads must dispatch through `read_from_storage`.
+    let slots = [[0u8; 32]; 2];
+    let _ = <DynamicBlob as StorageDecode>::from_slots(&slots);
+}
+
+#[test]
+#[should_panic(expected = "encode_slot called on a dynamic-body slot")]
+fn dynamic_blob_encode_slot_panics_on_dynamic_slot() {
+    let v = DynamicBlob {
+        owner: Address([0; 20]),
+        payload: Bytes(alloc::vec![1, 2, 3]),
+    };
+    let mut buf = [0u8; 32];
+    v.encode_slot(1, &mut buf);
+}
+
+// --- Struct mixing packable statics (Address + u8) with a dynamic Bytes ---
+// Mirrors `Review` (String + Address + u8) with Bytes in place of String.
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct BlobMetadata {
+    owner: Address,
+    version: u8,
+    payload: Bytes,
+}
+
+#[test]
+fn blob_metadata_takes_two_slots_and_marks_dynamic_body() {
+    // Slot 0: Address (20B at offset 12..32) + u8 (1B at offset 11) packed.
+    // Slot 1: header for `payload`. Two slots total.
+    assert_eq!(<BlobMetadata as StorageEncode>::STORAGE_SLOTS, 2);
+    const { assert!(<BlobMetadata as StorageEncode>::HAS_DYNAMIC_BODY) };
+}
+
+#[test]
+fn blob_metadata_via_mapping_round_trip_inline() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, BlobMetadata>::new(StorageKey::from_slot(0), host) };
+    let v = BlobMetadata {
+        owner: Address([0xCD; 20]),
+        version: 5,
+        payload: Bytes(alloc::vec![0xaa, 0xbb, 0xcc, 0xdd]),
+    };
+    m.insert(&42u64, &v);
+    assert_eq!(m.get(&42u64), v);
+}
+
+#[test]
+fn blob_metadata_via_mapping_round_trip_spilled() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, BlobMetadata>::new(StorageKey::from_slot(0), host) };
+    let v = BlobMetadata {
+        owner: Address([0xCD; 20]),
+        version: 9,
+        // > 32 bytes forces solc's spill encoding.
+        payload: Bytes(alloc::vec![0xee; 96]),
+    };
+    m.insert(&42u64, &v);
+    assert_eq!(m.get(&42u64), v);
+}
+
+#[test]
+fn blob_metadata_via_mapping_remove_clears_storage() {
+    let host = fresh_host();
+    let mut m = unsafe { Mapping::<u64, BlobMetadata>::new(StorageKey::from_slot(0), host) };
+    let v = BlobMetadata {
+        owner: Address([0xCD; 20]),
+        version: 9,
+        // Spilled-length value so remove must also clear the keccak-derived
+        // body chunks, not just the header slot.
+        payload: Bytes(alloc::vec![0x55; 96]),
+    };
+    m.insert(&7u64, &v);
+    assert_eq!(m.try_get(&7u64), Some(v));
+    m.remove(&7u64);
+    assert_eq!(m.try_get(&7u64), None);
+}
+
 // ========================================================================
 // Sub-word packing inside a `#[derive(SolType)]` struct stored under one
 // `Lazy<S>`.
 //
-// The derive's `__STORAGE_LAYOUT` walker uses `PACKED_BYTES` /
-// `STARTS_NEW_SLOT` to lay out fields with solc-compatible sub-word
+// The derive's `__STORAGE_LAYOUT` walker uses `PACKED_BYTES` and
+// `STORAGE_SLOTS` to lay out fields with solc-compatible sub-word
 // packing — two `u128` fields share a single 32-byte slot. The
 // contract-field walker now does the same for adjacent `Lazy<u128>`
 // fields, so this is no longer a workaround; it's the same packing rule
