@@ -1,8 +1,9 @@
 //! Typed storage helpers for PVM smart contracts with Solidity-compatible slot layout.
 //!
-//! Provides [`Lazy<T>`] for single-value storage and [`Mapping<K, V>`] for key-value
-//! storage, both using Solidity-compatible key derivation so tools like `cast storage`
-//! and `cast index` work out of the box.
+//! Provides [`Lazy<T>`] for single-value storage, [`Mapping<K, V>`] for
+//! key-value storage, and [`StorageVec<T>`] for dynamic arrays (Solidity's
+//! `T[]`). All three use Solidity-compatible key/index derivation so tools
+//! like `cast storage` and `cast index` work out of the box.
 //!
 //! [`Lazy<T>`] and [`Mapping<K, V>`] bind `T`/`V` to
 //! [`StorageEncode`](pvm_contract_types::StorageEncode) +
@@ -1227,8 +1228,8 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 
     /// Write path: derive the inner `StorageVec`'s root slot and return a
     /// [`RefMut`] tied to the caller's `&mut self` borrow. The full
-    /// mutating API on `StorageVec<T>` (`push`, `pop`, `set`, `entry`,
-    /// `clear`) is reachable through the returned guard.
+    /// mutating API on `StorageVec<T>` (`push`, `pop`, `set`, `clear`) is
+    /// reachable through the returned guard.
     pub fn entry(&mut self, key: &K) -> RefMut<'_, StorageVec<T>> {
         // SAFETY: `entry` requires `&mut self`. The caller already holds
         // mutating access through the parent borrow; the inner handle just
@@ -1247,9 +1248,15 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// storage layout byte-for-byte.
 ///
 /// The element count lives at the root slot encoded as `uint256`
-/// (big-endian). Element `i` lives at
-/// `keccak256(pad32(slot)) + i * T::STORAGE_SLOTS` — for full-slot single-slot
-/// `T` (e.g. `U256`, `Address`) that simplifies to `keccak256(slot) + i`.
+/// (big-endian). Element `i`'s slot is `keccak256(pad32(slot)) + stride(i)`,
+/// where the stride depends on `T`'s shape:
+/// - sub-word `T` (`PACKED_BYTES < 32`): `stride(i) = i / per_slot`, where
+///   `per_slot = 32 / PACKED_BYTES` (multiple elements share a slot).
+/// - single-slot `T` (`PACKED_BYTES == 32, STORAGE_SLOTS == 1`):
+///   `stride(i) = i` (one slot per element).
+/// - multi-slot static `T` (`STORAGE_SLOTS > 1`):
+///   `stride(i) = i * STORAGE_SLOTS` (each element walks `STORAGE_SLOTS`
+///   consecutive slots).
 ///
 /// `StorageVec<u8>` corresponds to Solidity's `uint8[]` (one byte per
 /// element, 32 elements per slot) — **distinct from**
@@ -1263,10 +1270,13 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// differences from Stylus:
 /// - `get(i)` / `pop()` return `T` by value (Stylus returns a guarded handle
 ///   because its `T` is itself a storage handle, not a value).
-/// - `entry(i) -> Lazy<T>` is the analogue of Stylus's `setter(i)`.
+/// - `set(i, &value)` is the direct write analogue of Stylus's
+///   `setter(i)`. There's no per-element handle on flat `StorageVec<T>` —
+///   handles only appear on the nested impl (`StorageVec<StorageVec<T>>`)
+///   where `entry(i)` returns a `RefMut<'_, StorageVec<T>>`.
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot (same gas-optimal policy as Stylus / solc).
-///   For full-slot elements (v1 scope), every pop frees a full slot.
+///   For full-slot elements, every pop frees a full slot.
 ///
 /// # Element shapes supported
 ///
@@ -1275,15 +1285,19 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 ///
 /// - **Sub-word multi-pack** (`T::PACKED_BYTES < 32`): elements share a
 ///   32-byte slot, `per_slot = 32 / PACKED_BYTES` elements per slot, packed
-///   right-aligned (solc-compatible). `set` does read-modify-write to
-///   preserve neighbours; `pop` clears the whole slot only when the freed
-///   element was the first one in its slot.
+///   right-aligned (solc-compatible). Covers `uint8`..`uint128`,
+///   `int8`..`int128`, `bool`, `Address` (`per_slot = 1`), and `[u8; N]` for
+///   `N < 32`. `set` does read-modify-write to preserve neighbours; `pop`
+///   clears the whole slot only when the freed element was the first one in
+///   its slot.
 /// - **Single-slot full-word** (`STORAGE_SLOTS == 1, PACKED_BYTES == 32`):
 ///   one slot per element, fast path with no RMW. Covers `U256`, `I256`,
-///   `Address`, `[u8; N]` for `N > 16`, and single-slot derived structs.
+///   `[u8; 32]` (i.e. `bytes32`), `[T; N]` whose total bytes fit in one
+///   slot, and single-slot derived structs.
 /// - **Multi-slot static** (`STORAGE_SLOTS > 1, !HAS_DYNAMIC_BODY`):
-///   stride of `STORAGE_SLOTS` slots per element. Covers tuples and derived
-///   structs that span 2..=8 slots.
+///   stride of `STORAGE_SLOTS` slots per element. Covers tuples, fixed
+///   arrays `[T; N]` that span >1 slot (e.g. `[U256; 3]`, `[u32; 9]`), and
+///   derived structs that span 2..=8 slots.
 /// - **Dynamic-body** (`HAS_DYNAMIC_BODY`): each element gets its own
 ///   inline/spilled layout — header lives in the element's slot, spilled
 ///   body at `keccak256(header_slot) + i`. Covers `String` and `Bytes`.
@@ -1706,8 +1720,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     }
 
     /// Mutable handle to the inner array at index `i`. Permits the full
-    /// mutating API on `StorageVec<T>` (`push`, `pop`, `set`, `entry`,
-    /// `clear`).
+    /// mutating API on `StorageVec<T>` (`push`, `pop`, `set`, `clear`).
     ///
     /// # Panics
     ///

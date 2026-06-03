@@ -582,24 +582,45 @@ impl<const N: usize> StoragePackable for [u8; N] {
 // Fixed-size arrays `[T; N]` for T != u8.
 //
 // solc supports `T[N]` for any static storage type T. This impl mirrors
-// solc's layout:
-//   - sub-word T: density elements per slot (`density = 32 / PACKED_BYTES`),
-//     right-aligned within each slot; total slots = ceil(N / density).
-//   - single-slot full-word T (U256, I256, [u8; 32]): one element per slot;
-//     total slots = N.
-//   - multi-slot static T (tuples, derived structs spanning >1 slot): each
-//     element strides by `T::STORAGE_SLOTS`; total slots = N * STORAGE_SLOTS.
+// solc's layout for the shapes the SDK ships impls for:
+//   - sub-word T (`uint16`..`uint128`, `int16`..`int128`, `bool`, `Address`,
+//     `[u8; M]` for M < 32): density elements per slot
+//     (`density = 32 / PACKED_BYTES`), right-aligned within each slot;
+//     total slots = ceil(N / density).
+//   - single-slot full-word T (`U256`, `I256`, `[u8; 32]`): one element per
+//     slot; total slots = N.
+//   - multi-slot static T (e.g. `[U256; M]` if added via marker, derived
+//     structs spanning >1 slot): each element strides by `T::STORAGE_SLOTS`;
+//     total slots = N * STORAGE_SLOTS.
 //
-// `[u8; N]` keeps its dedicated `bytesN` impl above (the marker excludes u8).
+// `[u8; N]` keeps its dedicated `bytesN` impl above (the marker excludes
+// `u8`). Tuples are not in the default `StorageArrayElement` list — `[(A,
+// B); N]` won't compile out of the box. Downstream code that wants
+// `[MyTuple; N]` or `[MyStruct; N]` must `impl StorageArrayElement` for the
+// element type manually.
+//
 // Dynamic-body T (`String`, `Bytes`) is not supported in fixed arrays —
 // solc's storage layout for those involves per-element headers and is left
-// as a follow-up.
+// as a follow-up. Manually `impl StorageArrayElement` for a dynamic-body T
+// will type-check but **panic at runtime** (its `encode_slot` /
+// `from_slots` are `unreachable!()` stubs).
 // ---------------------------------------------------------------------------
 
 /// Marker trait gating which element types can appear in `[T; N]` storage.
-/// Implemented for every primitive scalar except `u8` — `[u8; N]` keeps its
-/// own `bytesN` impl above. Downstream code can implement this for custom
-/// static `SolType`-derived structs to opt them into `[MyStruct; N]` support.
+///
+/// Implemented in-tree for every primitive scalar except `u8` (`[u8; N]`
+/// keeps its dedicated `bytesN` impl). Downstream code can implement this
+/// for custom **static** `SolType`-derived structs (or tuples) to opt them
+/// into `[MyStruct; N]` support.
+///
+/// # Do not implement for dynamic-body types
+///
+/// `String`, `Bytes`, and any `SolType` struct with `HAS_DYNAMIC_BODY =
+/// true` route their encode/decode through `write_to_storage` /
+/// `read_from_storage`; their `encode_slot` / `from_slots` are
+/// `unreachable!()` stubs. The generic `[T; N]` impl dispatches through
+/// `encode_slot` / `from_slots`, so a dynamic-body T would compile but
+/// panic at runtime. Stick to static element types.
 pub trait StorageArrayElement: StorageEncode + StorageDecode {}
 
 macro_rules! impl_storage_array_element {
