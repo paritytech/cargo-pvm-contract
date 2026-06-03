@@ -823,7 +823,7 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     key: &[u8; 32],
                 ) {
-                    ::pvm_contract_sdk::storage_codec::static_write_to_storage(self, host, key)
+                    <Self as ::pvm_contract_sdk::StaticStorageEncode>::write_to_storage_static(self, host, key)
                 }
 
                 #[inline]
@@ -831,11 +831,7 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     key: &[u8; 32],
                 ) {
-                    ::pvm_contract_sdk::storage_codec::clear_n_slots(
-                        host,
-                        key,
-                        <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS,
-                    )
+                    <Self as ::pvm_contract_sdk::StaticStorageEncode>::clear_storage_static(host, key)
                 }
             }
 
@@ -845,7 +841,7 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     key: &[u8; 32],
                 ) -> Self {
-                    ::pvm_contract_sdk::storage_codec::static_read_from_storage::<Self, 8>(host, key)
+                    <Self as ::pvm_contract_sdk::StaticStorageDecode>::read_from_storage_static(host, key)
                 }
 
                 #[inline]
@@ -853,7 +849,7 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     key: &[u8; 32],
                 ) -> Option<Self> {
-                    ::pvm_contract_sdk::storage_codec::static_try_read_from_storage::<Self, 8>(host, key)
+                    <Self as ::pvm_contract_sdk::StaticStorageDecode>::try_read_from_storage_static(host, key)
                 }
             }
 

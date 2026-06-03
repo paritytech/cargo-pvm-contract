@@ -96,15 +96,16 @@ pub trait StorageEncode {
     ///   body chunks left from a previously-longer value.
     ///
     /// Static-type impls typically delegate to
-    /// [`static_write_to_storage`] for one-line bodies. Dynamic types use
-    /// the `write_dynamic_bytes` helper.
+    /// [`StaticStorageEncode::write_to_storage_static`] for one-line bodies.
+    /// Dynamic types use the `write_dynamic_bytes` helper.
     fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]);
 
     /// Clear every storage cell this type occupies at `base_key`. Required.
     /// Static types: zero `STORAGE_SLOTS` consecutive slots. Dynamic types:
     /// zero the header slot AND clear any spilled body chunks.
     ///
-    /// Static-type impls typically delegate to [`clear_n_slots`].
+    /// Static-type impls typically delegate to
+    /// [`StaticStorageEncode::clear_storage_static`].
     fn clear_storage(host: &Host, base_key: &[u8; 32]);
 
     /// Internal polymorphic dispatch hook for `Lazy<T>`'s packed-path
@@ -127,8 +128,9 @@ pub trait StorageEncode {
 pub trait StorageDecode: StorageEncode + Sized {
     /// Read self from storage at `base_key`. Required.
     ///
-    /// Static-type impls typically delegate to [`static_read_from_storage`].
-    /// Dynamic types read their header + body chunks.
+    /// Static-type impls typically delegate to
+    /// [`StaticStorageDecode::read_from_storage_static`]. Dynamic types read
+    /// their header + body chunks.
     fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self;
 
     /// Read self if present, else `None`. **Solidity-compat invariant:** a
@@ -137,7 +139,8 @@ pub trait StorageDecode: StorageEncode + Sized {
     /// way to distinguish "never written" from "explicitly set to zero").
     /// A dynamic type returns `None` iff the header slot is zero.
     ///
-    /// Static-type impls typically delegate to [`static_try_read_from_storage`].
+    /// Static-type impls typically delegate to
+    /// [`StaticStorageDecode::try_read_from_storage_static`].
     fn try_read_from_storage(host: &Host, base_key: &[u8; 32]) -> Option<Self>;
 
     /// Internal polymorphic dispatch hook for `Lazy<T>`'s packed-path
@@ -159,6 +162,18 @@ pub trait StorageDecode: StorageEncode + Sized {
 /// structs. Dynamic types (`String`, `Bytes`, structs with dynamic fields)
 /// do NOT implement this; the absence is the type-level expression of "this
 /// has a body that lives outside its slot range."
+///
+/// The defaulted [`write_to_storage_static`](Self::write_to_storage_static) /
+/// [`clear_storage_static`](Self::clear_storage_static) methods provide the
+/// canonical host-aware codepaths for static types. Per-type
+/// [`StorageEncode::write_to_storage`] / [`StorageEncode::clear_storage`]
+/// impls are one-line delegates to these defaults.
+///
+/// **Single-slot fast path**: every method on this trait const-folds the
+/// `STORAGE_SLOTS == 1` branch at monomorphization, so primitives
+/// (`u32`, `U256`, `Address`, `[u8; N]`, ...) skip the 32-byte unaligned
+/// key copy and the wasted `inc_be_32` — they produce the same tight
+/// SSTORE/SLOAD codegen as direct calls would.
 pub trait StaticStorageEncode: StorageEncode {
     /// Encode slot `slot_idx` of this value into `buf`. Caller passes a
     /// to-be-overwritten 32-byte buffer; the implementation fills the bytes
@@ -168,6 +183,46 @@ pub trait StaticStorageEncode: StorageEncode {
     ///
     /// `slot_idx` must satisfy `slot_idx < STORAGE_SLOTS`.
     fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]);
+
+    /// Default host-aware write. Walks `STORAGE_SLOTS` consecutive slots,
+    /// encoding each via [`encode_slot`](Self::encode_slot). Per-type
+    /// [`StorageEncode::write_to_storage`] impls for static types delegate
+    /// here.
+    #[inline]
+    fn write_to_storage_static(&self, host: &Host, base_key: &[u8; 32]) {
+        if Self::STORAGE_SLOTS == 1 {
+            // Const-folds for every primitive → tight one-SSTORE body.
+            // Skips the 32-byte unaligned `*base_key` copy that the
+            // multi-slot loop forces.
+            let mut buf = [0u8; 32];
+            self.encode_slot(0, &mut buf);
+            host.set_storage_or_clear(StorageFlags::empty(), base_key, &buf);
+            return;
+        }
+        let mut k = *base_key;
+        for i in 0..Self::STORAGE_SLOTS {
+            let mut buf = [0u8; 32];
+            self.encode_slot(i, &mut buf);
+            host.set_storage_or_clear(StorageFlags::empty(), &k, &buf);
+            inc_be_32(&mut k);
+        }
+    }
+
+    /// Default host-aware clear. Zeroes `STORAGE_SLOTS` consecutive cells.
+    /// Per-type [`StorageEncode::clear_storage`] impls for static types
+    /// delegate here.
+    #[inline]
+    fn clear_storage_static(host: &Host, base_key: &[u8; 32]) {
+        if Self::STORAGE_SLOTS == 1 {
+            host.set_storage_or_clear(StorageFlags::empty(), base_key, &[0u8; 32]);
+            return;
+        }
+        let mut k = *base_key;
+        for _ in 0..Self::STORAGE_SLOTS {
+            host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
+            inc_be_32(&mut k);
+        }
+    }
 }
 
 /// Slot-buffer decoder refinement. Symmetric with [`StaticStorageEncode`].
@@ -188,107 +243,62 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
             Some(Self::from_slots(slots))
         }
     }
-}
 
-// -----------------------------------------------------------------------
-// Shared host-aware helpers. Per-type impls delegate here so all the
-// SSTORE/SLOAD code lives in one non-generic body (LLVM ICF dedup target).
-// -----------------------------------------------------------------------
-
-/// Default `write_to_storage` body for static types.
-///
-/// **Single-slot fast path** (`T::STORAGE_SLOTS == 1`, every primitive +
-/// `U256`/`Address`/`[u8; N]`): skip the local key copy and the wasted
-/// `inc_be_32` — the `if` const-folds at monomorphization, so primitives
-/// match the OLD direct `SSTORE` codegen (no 32-byte unaligned key copy
-/// unrolled as 32 byte loads + ORs).
-#[inline]
-pub fn static_write_to_storage<T: StaticStorageEncode>(
-    value: &T,
-    host: &Host,
-    base_key: &[u8; 32],
-) {
-    if T::STORAGE_SLOTS == 1 {
-        let mut buf = [0u8; 32];
-        value.encode_slot(0, &mut buf);
-        host.set_storage_or_clear(StorageFlags::empty(), base_key, &buf);
-        return;
-    }
-    let mut k = *base_key;
-    for i in 0..T::STORAGE_SLOTS {
-        let mut buf = [0u8; 32];
-        value.encode_slot(i, &mut buf);
-        host.set_storage_or_clear(StorageFlags::empty(), &k, &buf);
-        inc_be_32(&mut k);
-    }
-}
-
-/// Default `read_from_storage` body for static types.
-///
-/// **Single-slot fast path**: same rationale as
-/// [`static_write_to_storage`]. Skips the stack buffer of `N` slots and
-/// `inc_be_32` for single-slot types, matching the OLD direct `SLOAD` path.
-#[inline]
-pub fn static_read_from_storage<T: StaticStorageDecode, const N: usize>(
-    host: &Host,
-    base_key: &[u8; 32],
-) -> T {
-    debug_assert!(T::STORAGE_SLOTS <= N, "N must be >= T::STORAGE_SLOTS");
-    if T::STORAGE_SLOTS == 1 {
-        let mut buf = [0u8; 32];
-        host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut buf);
-        return T::from_slots(core::slice::from_ref(&buf));
-    }
-    let mut slots = [[0u8; 32]; N];
-    let used = T::STORAGE_SLOTS;
-    let mut k = *base_key;
-    for slot in slots[..used].iter_mut() {
-        host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
-        inc_be_32(&mut k);
-    }
-    T::from_slots(&slots[..used])
-}
-
-/// `try_read_from_storage` body for static types.
-///
-/// **Single-slot fast path**: one SLOAD, zero-check, no buffer copy.
-#[inline]
-pub fn static_try_read_from_storage<T: StaticStorageDecode, const N: usize>(
-    host: &Host,
-    base_key: &[u8; 32],
-) -> Option<T> {
-    debug_assert!(T::STORAGE_SLOTS <= N, "N must be >= T::STORAGE_SLOTS");
-    if T::STORAGE_SLOTS == 1 {
-        let mut buf = [0u8; 32];
-        host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut buf);
-        if buf == [0u8; 32] {
-            return None;
+    /// Default host-aware read. Per-type [`StorageDecode::read_from_storage`]
+    /// impls for static types delegate here.
+    #[inline]
+    fn read_from_storage_static(host: &Host, base_key: &[u8; 32]) -> Self {
+        if Self::STORAGE_SLOTS == 1 {
+            let mut buf = [0u8; 32];
+            host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut buf);
+            return Self::from_slots(core::slice::from_ref(&buf));
         }
-        return Some(T::from_slots(core::slice::from_ref(&buf)));
+        // `MAX_STATIC_SLOTS = 8` from `pvm-storage`; mirrored here as a
+        // local const so this crate doesn't take a back-dep on `pvm-storage`.
+        // Each storage-bearing type asserts `STORAGE_SLOTS <= 8` through
+        // `Lazy<T>::_SIZE_CHECK` / `Mapping<_, T>::_SIZE_CHECK`.
+        const MAX: usize = 8;
+        debug_assert!(
+            Self::STORAGE_SLOTS <= MAX,
+            "STORAGE_SLOTS exceeds MAX_STATIC_SLOTS"
+        );
+        let mut slots = [[0u8; 32]; MAX];
+        let used = Self::STORAGE_SLOTS;
+        let mut k = *base_key;
+        for slot in slots[..used].iter_mut() {
+            host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
+            inc_be_32(&mut k);
+        }
+        Self::from_slots(&slots[..used])
     }
-    let mut slots = [[0u8; 32]; N];
-    let used = T::STORAGE_SLOTS;
-    let mut k = *base_key;
-    for slot in slots[..used].iter_mut() {
-        host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
-        inc_be_32(&mut k);
-    }
-    T::try_from_slots(&slots[..used])
-}
 
-/// Non-generic clear helper: SSTORE zero into `n` consecutive slots
-/// starting at `base_key`. Shared by every static-type `clear_storage`
-/// impl — single body in the binary.
-///
-/// Note: most static types (primitives, `U256`, `Address`) call this with
-/// `n = 1`. The loop trip count is data-dependent here (not const), so
-/// LLVM doesn't unroll it — that's fine, one body shared across all
-/// callers via this non-generic helper.
-pub fn clear_n_slots(host: &Host, base_key: &[u8; 32], n: usize) {
-    let mut k = *base_key;
-    for _ in 0..n {
-        host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
-        inc_be_32(&mut k);
+    /// Default host-aware try-read. Returns `None` for an all-zero static
+    /// value (Solidity-compat presence). Per-type
+    /// [`StorageDecode::try_read_from_storage`] impls for static types
+    /// delegate here.
+    #[inline]
+    fn try_read_from_storage_static(host: &Host, base_key: &[u8; 32]) -> Option<Self> {
+        if Self::STORAGE_SLOTS == 1 {
+            let mut buf = [0u8; 32];
+            host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut buf);
+            if buf == [0u8; 32] {
+                return None;
+            }
+            return Some(Self::from_slots(core::slice::from_ref(&buf)));
+        }
+        const MAX: usize = 8;
+        debug_assert!(
+            Self::STORAGE_SLOTS <= MAX,
+            "STORAGE_SLOTS exceeds MAX_STATIC_SLOTS"
+        );
+        let mut slots = [[0u8; 32]; MAX];
+        let used = Self::STORAGE_SLOTS;
+        let mut k = *base_key;
+        for slot in slots[..used].iter_mut() {
+            host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
+            inc_be_32(&mut k);
+        }
+        Self::try_from_slots(&slots[..used])
     }
 }
 
@@ -322,11 +332,11 @@ macro_rules! impl_uint {
 
             #[inline]
             fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-                static_write_to_storage(self, host, key)
+                <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
             }
             #[inline]
             fn clear_storage(host: &Host, key: &[u8; 32]) {
-                clear_n_slots(host, key, 1)
+                <Self as StaticStorageEncode>::clear_storage_static(host, key)
             }
             #[inline]
             fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
@@ -337,11 +347,11 @@ macro_rules! impl_uint {
         impl StorageDecode for $ty {
             #[inline]
             fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
-                static_read_from_storage::<Self, 1>(host, key)
+                <Self as StaticStorageDecode>::read_from_storage_static(host, key)
             }
             #[inline]
             fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-                static_try_read_from_storage::<Self, 1>(host, key)
+                <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
             }
             #[inline]
             fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
@@ -402,11 +412,11 @@ impl StorageEncode for U256 {
 
     #[inline]
     fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-        static_write_to_storage(self, host, key)
+        <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
     }
     #[inline]
     fn clear_storage(host: &Host, key: &[u8; 32]) {
-        clear_n_slots(host, key, 1)
+        <Self as StaticStorageEncode>::clear_storage_static(host, key)
     }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
@@ -417,11 +427,11 @@ impl StorageEncode for U256 {
 impl StorageDecode for U256 {
     #[inline]
     fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
-        static_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::read_from_storage_static(host, key)
     }
     #[inline]
     fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-        static_try_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
     }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
@@ -466,11 +476,11 @@ impl StorageEncode for I256 {
 
     #[inline]
     fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-        static_write_to_storage(self, host, key)
+        <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
     }
     #[inline]
     fn clear_storage(host: &Host, key: &[u8; 32]) {
-        clear_n_slots(host, key, 1)
+        <Self as StaticStorageEncode>::clear_storage_static(host, key)
     }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
@@ -481,11 +491,11 @@ impl StorageEncode for I256 {
 impl StorageDecode for I256 {
     #[inline]
     fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
-        static_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::read_from_storage_static(host, key)
     }
     #[inline]
     fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-        static_try_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
     }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
@@ -531,11 +541,11 @@ impl StorageEncode for bool {
 
     #[inline]
     fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-        static_write_to_storage(self, host, key)
+        <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
     }
     #[inline]
     fn clear_storage(host: &Host, key: &[u8; 32]) {
-        clear_n_slots(host, key, 1)
+        <Self as StaticStorageEncode>::clear_storage_static(host, key)
     }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
@@ -546,11 +556,11 @@ impl StorageEncode for bool {
 impl StorageDecode for bool {
     #[inline]
     fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
-        static_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::read_from_storage_static(host, key)
     }
     #[inline]
     fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-        static_try_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
     }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
@@ -595,11 +605,11 @@ impl StorageEncode for Address {
 
     #[inline]
     fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-        static_write_to_storage(self, host, key)
+        <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
     }
     #[inline]
     fn clear_storage(host: &Host, key: &[u8; 32]) {
-        clear_n_slots(host, key, 1)
+        <Self as StaticStorageEncode>::clear_storage_static(host, key)
     }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
@@ -610,11 +620,11 @@ impl StorageEncode for Address {
 impl StorageDecode for Address {
     #[inline]
     fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
-        static_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::read_from_storage_static(host, key)
     }
     #[inline]
     fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-        static_try_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
     }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
@@ -662,11 +672,11 @@ impl<const N: usize> StorageEncode for [u8; N] {
 
     #[inline]
     fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-        static_write_to_storage(self, host, key)
+        <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
     }
     #[inline]
     fn clear_storage(host: &Host, key: &[u8; 32]) {
-        clear_n_slots(host, key, 1)
+        <Self as StaticStorageEncode>::clear_storage_static(host, key)
     }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
@@ -677,11 +687,11 @@ impl<const N: usize> StorageEncode for [u8; N] {
 impl<const N: usize> StorageDecode for [u8; N] {
     #[inline]
     fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
-        static_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::read_from_storage_static(host, key)
     }
     #[inline]
     fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-        static_try_read_from_storage::<Self, 1>(host, key)
+        <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
     }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
@@ -784,11 +794,11 @@ macro_rules! impl_storage_tuple {
 
                 #[inline]
                 fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
-                    static_write_to_storage(self, host, key)
+                    <Self as StaticStorageEncode>::write_to_storage_static(self, host, key)
                 }
                 #[inline]
                 fn clear_storage(host: &Host, key: &[u8; 32]) {
-                    clear_n_slots(host, key, Self::STORAGE_SLOTS)
+                    <Self as StaticStorageEncode>::clear_storage_static(host, key)
                 }
             }
 
@@ -796,11 +806,11 @@ macro_rules! impl_storage_tuple {
                 #[inline]
                 fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
                     // N=8 upper bound: tuples have arity <= 8, so STORAGE_SLOTS <= 8.
-                    static_read_from_storage::<Self, 8>(host, key)
+                    <Self as StaticStorageDecode>::read_from_storage_static(host, key)
                 }
                 #[inline]
                 fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
-                    static_try_read_from_storage::<Self, 8>(host, key)
+                    <Self as StaticStorageDecode>::try_read_from_storage_static(host, key)
                 }
             }
 

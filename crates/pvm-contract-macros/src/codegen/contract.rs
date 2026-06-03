@@ -232,11 +232,7 @@ pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
 /// `Lazy<T>` fields with no sub-word siblings can skip RMW on writes.
 pub(super) fn auto_alone_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
     let auto = auto_chain_fields(slot_fields);
-    super::storage_layout::alone_chain_consts(
-        "__pvm_storage_alone_",
-        "__pvm_storage_slot_",
-        &auto,
-    )
+    super::storage_layout::alone_chain_consts("__pvm_storage_alone_", "__pvm_storage_slot_", &auto)
 }
 
 /// Shared filter: extract the auto-numbered subset of fields as
@@ -1293,27 +1289,24 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let name = &sf.name;
             let ty = &sf.ty;
             let cfgs = &sf.cfg_attrs;
-            let (slot_expr, offset_expr, alone_expr): (
-                TokenStream,
-                TokenStream,
-                TokenStream,
-            ) = match sf.slot {
-                // Explicit `#[slot(N)]` is restricted to full-slot types
-                // elsewhere in this file (`explicit_slot_full_slot_only_checks`).
-                // Full-slot components ignore `alone`, so the literal `true`
-                // is purely cosmetic — it would behave identically as `false`
-                // for `Mapping`/`Lazy<U256>`/etc.
-                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }, quote! { true }),
-                Slot::Auto => {
-                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                    let alone_ident = quote::format_ident!("__pvm_storage_alone_{}", name);
-                    (
-                        quote! { #const_ident.slot },
-                        quote! { #const_ident.offset },
-                        quote! { #alone_ident },
-                    )
-                }
-            };
+            let (slot_expr, offset_expr, alone_expr): (TokenStream, TokenStream, TokenStream) =
+                match sf.slot {
+                    // Explicit `#[slot(N)]` is restricted to full-slot types
+                    // elsewhere in this file (`explicit_slot_full_slot_only_checks`).
+                    // Full-slot components ignore `alone`, so the literal `true`
+                    // is purely cosmetic — it would behave identically as `false`
+                    // for `Mapping`/`Lazy<U256>`/etc.
+                    Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }, quote! { true }),
+                    Slot::Auto => {
+                        let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
+                        let alone_ident = quote::format_ident!("__pvm_storage_alone_{}", name);
+                        (
+                            quote! { #const_ident.slot },
+                            quote! { #const_ident.offset },
+                            quote! { #alone_ident },
+                        )
+                    }
+                };
             quote! {
                 #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
