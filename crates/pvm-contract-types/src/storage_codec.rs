@@ -579,6 +579,107 @@ impl<const N: usize> StoragePackable for [u8; N] {
 }
 
 // ---------------------------------------------------------------------------
+// Fixed-size arrays `[T; N]` for T != u8.
+//
+// solc supports `T[N]` for any static storage type T. This impl mirrors
+// solc's layout:
+//   - sub-word T: density elements per slot (`density = 32 / PACKED_BYTES`),
+//     right-aligned within each slot; total slots = ceil(N / density).
+//   - single-slot full-word T (U256, I256, [u8; 32]): one element per slot;
+//     total slots = N.
+//   - multi-slot static T (tuples, derived structs spanning >1 slot): each
+//     element strides by `T::STORAGE_SLOTS`; total slots = N * STORAGE_SLOTS.
+//
+// `[u8; N]` keeps its dedicated `bytesN` impl above (the marker excludes u8).
+// Dynamic-body T (`String`, `Bytes`) is not supported in fixed arrays —
+// solc's storage layout for those involves per-element headers and is left
+// as a follow-up.
+// ---------------------------------------------------------------------------
+
+/// Marker trait gating which element types can appear in `[T; N]` storage.
+/// Implemented for every primitive scalar except `u8` — `[u8; N]` keeps its
+/// own `bytesN` impl above. Downstream code can implement this for custom
+/// static `SolType`-derived structs to opt them into `[MyStruct; N]` support.
+pub trait StorageArrayElement: StorageEncode + StorageDecode {}
+
+macro_rules! impl_storage_array_element {
+    ($($T:ty),+ $(,)?) => {
+        $(impl StorageArrayElement for $T {})+
+    };
+}
+
+impl_storage_array_element!(
+    u16, u32, u64, u128, U256, i16, i32, i64, i128, I256, bool, Address,
+);
+
+impl<T: StorageArrayElement, const N: usize> StorageEncode for [T; N] {
+    /// Sub-word: ceil(N / density). Single-slot full-word: N. Multi-slot
+    /// static: N * STORAGE_SLOTS.
+    const STORAGE_SLOTS: usize = {
+        if T::PACKED_BYTES < 32 {
+            let density = 32 / T::PACKED_BYTES;
+            N.div_ceil(density)
+        } else {
+            N * T::STORAGE_SLOTS
+        }
+    };
+
+    /// Fixed arrays always start a fresh slot (`PACKED_BYTES = 32`), matching
+    /// solc's layout for `T[N]` fields.
+    const PACKED_BYTES: usize = 32;
+
+    fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]) {
+        *buf = [0u8; 32];
+        if T::PACKED_BYTES < 32 {
+            // Sub-word: pack `density` elements right-aligned within this slot.
+            let density = 32 / T::PACKED_BYTES;
+            let start = slot_idx * density;
+            let end = ((slot_idx + 1) * density).min(N);
+            let mut tmp = [0u8; 32];
+            let elem_start = 32 - T::PACKED_BYTES;
+            for (within, elem) in self[start..end].iter().enumerate() {
+                let offset = 32 - T::PACKED_BYTES * (within + 1);
+                tmp.fill(0);
+                elem.encode_slot(0, &mut tmp);
+                buf[offset..offset + T::PACKED_BYTES]
+                    .copy_from_slice(&tmp[elem_start..elem_start + T::PACKED_BYTES]);
+            }
+        } else if T::STORAGE_SLOTS == 1 {
+            // One element per slot.
+            self[slot_idx].encode_slot(0, buf);
+        } else {
+            // Multi-slot static: stride `T::STORAGE_SLOTS` per element.
+            let elem_idx = slot_idx / T::STORAGE_SLOTS;
+            let within_elem = slot_idx % T::STORAGE_SLOTS;
+            self[elem_idx].encode_slot(within_elem, buf);
+        }
+    }
+}
+
+impl<T: StorageArrayElement, const N: usize> StorageDecode for [T; N] {
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        core::array::from_fn(|i| {
+            if T::PACKED_BYTES < 32 {
+                let density = 32 / T::PACKED_BYTES;
+                let slot_idx = i / density;
+                let within = i % density;
+                let offset = 32 - T::PACKED_BYTES * (within + 1);
+                let mut tmp = [0u8; 32];
+                let elem_start = 32 - T::PACKED_BYTES;
+                tmp[elem_start..elem_start + T::PACKED_BYTES]
+                    .copy_from_slice(&slots[slot_idx][offset..offset + T::PACKED_BYTES]);
+                T::from_slots(&[tmp])
+            } else if T::STORAGE_SLOTS == 1 {
+                T::from_slots(&slots[i..i + 1])
+            } else {
+                let start = i * T::STORAGE_SLOTS;
+                T::from_slots(&slots[start..start + T::STORAGE_SLOTS])
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tuple impls — same packing rules as structs.
 //
 // Implemented for arities 1..=8 over `StoragePackable` element types. Each

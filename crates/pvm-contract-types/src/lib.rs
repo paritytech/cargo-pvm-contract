@@ -62,7 +62,7 @@ mod i256;
 pub use i256::{I256, ParseI256Error};
 
 mod storage_codec;
-pub use storage_codec::{StorageDecode, StorageEncode, StoragePackable};
+pub use storage_codec::{StorageArrayElement, StorageDecode, StorageEncode, StoragePackable};
 
 #[doc(hidden)]
 pub use const_format;

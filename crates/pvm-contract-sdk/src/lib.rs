@@ -96,6 +96,7 @@ pub use pvm_contract_types::{
     SolEvent,
     StaticDecode,
     StaticEncodedLen,
+    StorageArrayElement,
     StorageDecode,
     StorageEncode,
     StorageFlags,

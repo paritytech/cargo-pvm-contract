@@ -2331,6 +2331,153 @@ fn storage_vec_multislot_pop_clears_all_slots() {
     assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
 }
 
+// --- StorageVec<T> for fixed-size arrays [T; N] (T != u8) ---
+
+#[test]
+fn storage_vec_fixed_array_u32_roundtrip() {
+    // `uint32[4]` fits in one slot (4*4 = 16 bytes); the array's STORAGE_SLOTS
+    // is 1, so each StorageVec element claims exactly one body slot.
+    let mut v = unsafe { StorageVec::<[u32; 4]>::new(StorageKey::from_slot(0), h()) };
+    v.push(&[10, 20, 30, 40]);
+    v.push(&[1, 2, 3, 4]);
+    assert_eq!(v.len(), 2);
+    assert_eq!(v.get(0), [10, 20, 30, 40]);
+    assert_eq!(v.get(1), [1, 2, 3, 4]);
+}
+
+#[test]
+fn storage_vec_fixed_array_u32_boundary_crossing() {
+    // `uint32[9]` spans 2 slots (8 elements + 1 spillover). Verify byte
+    // placement matches solc:
+    //   slot 0: elements 0..8 right-aligned (element i at bytes 28-4i .. 32-4i)
+    //   slot 1: element 8 at bytes 28..32, rest zero
+    let host = h();
+    let mut v = unsafe { StorageVec::<[u32; 9]>::new(StorageKey::from_slot(0), host.clone()) };
+    let arr: [u32; 9] = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18];
+    v.push(&arr);
+
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let slot0 = storage_get_32(&host, &body);
+    // element 0 right-aligned in slot 0
+    assert_eq!(
+        u32::from_be_bytes([slot0[28], slot0[29], slot0[30], slot0[31]]),
+        0x10
+    );
+    // element 7 at the high end of slot 0
+    assert_eq!(
+        u32::from_be_bytes([slot0[0], slot0[1], slot0[2], slot0[3]]),
+        0x17
+    );
+
+    let mut slot1_key = body;
+    inc_slot(&mut slot1_key);
+    let slot1 = storage_get_32(&host, &slot1_key);
+    // element 8 right-aligned in slot 1
+    assert_eq!(
+        u32::from_be_bytes([slot1[28], slot1[29], slot1[30], slot1[31]]),
+        0x18
+    );
+    // high 28 bytes of slot 1 are zero
+    assert_eq!(&slot1[..28], &[0u8; 28]);
+
+    // Round-trip
+    assert_eq!(v.get(0), arr);
+}
+
+#[test]
+fn storage_vec_fixed_array_bool_packing() {
+    // `bool[40]` spans 2 slots (32 + 8). Each bool is 1 byte, density 32.
+    let mut v = unsafe { StorageVec::<[bool; 40]>::new(StorageKey::from_slot(0), h()) };
+    let mut arr = [false; 40];
+    for (i, slot) in arr.iter_mut().enumerate() {
+        *slot = i % 3 == 0;
+    }
+    v.push(&arr);
+    assert_eq!(v.get(0), arr);
+}
+
+#[test]
+fn storage_vec_fixed_array_address_no_packing() {
+    // `address[3]` — Address is 20 bytes, density = 32/20 = 1 (no packing
+    // across addresses). Should consume 3 slots, one per element.
+    assert_eq!(<[Address; 3] as StorageEncode>::STORAGE_SLOTS, 3);
+    let host = h();
+    let mut v = unsafe { StorageVec::<[Address; 3]>::new(StorageKey::from_slot(0), host.clone()) };
+    let arr = [
+        Address([0xAA; 20]),
+        Address([0xBB; 20]),
+        Address([0xCC; 20]),
+    ];
+    v.push(&arr);
+    assert_eq!(v.get(0), arr);
+
+    // Verify the 3 slots each hold one address right-aligned.
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let mut k = body;
+    for expected in arr.iter() {
+        let slot = storage_get_32(&host, &k);
+        assert_eq!(&slot[..12], &[0u8; 12]);
+        assert_eq!(&slot[12..32], &expected.0);
+        inc_slot(&mut k);
+    }
+}
+
+#[test]
+fn storage_vec_fixed_array_u256_full_slot() {
+    // `uint256[3]` — full-slot T, 3 slots per element. STORAGE_SLOTS = 3.
+    assert_eq!(<[U256; 3] as StorageEncode>::STORAGE_SLOTS, 3);
+    let mut v = unsafe { StorageVec::<[U256; 3]>::new(StorageKey::from_slot(0), h()) };
+    let arr = [
+        U256::from(0xAAu64),
+        U256::from(0xBBu64),
+        U256::from(0xCCu64),
+    ];
+    v.push(&arr);
+    v.push(&[U256::from(1u64), U256::from(2u64), U256::from(3u64)]);
+    assert_eq!(v.get(0), arr);
+    assert_eq!(
+        v.get(1),
+        [U256::from(1u64), U256::from(2u64), U256::from(3u64)]
+    );
+}
+
+#[test]
+fn storage_vec_fixed_array_pop_clears_all_slots() {
+    // Popping an `[u32; 9]` must clear both its slots so a later push doesn't
+    // see stale bytes — matches solc's `pop()` zeroing.
+    let host = h();
+    let mut v = unsafe { StorageVec::<[u32; 9]>::new(StorageKey::from_slot(0), host.clone()) };
+    v.push(&[0xFF; 9]);
+
+    let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
+    let mut slot1 = body;
+    inc_slot(&mut slot1);
+    assert_ne!(storage_get_32(&host, &body), [0u8; 32]);
+    assert_ne!(storage_get_32(&host, &slot1), [0u8; 32]);
+
+    let _ = v.pop();
+    assert_eq!(v.len(), 0);
+    assert_eq!(storage_get_32(&host, &body), [0u8; 32]);
+    assert_eq!(storage_get_32(&host, &slot1), [0u8; 32]);
+}
+
+#[test]
+fn storage_vec_fixed_array_storage_slots_metadata() {
+    // Compile-time STORAGE_SLOTS for representative shapes.
+    assert_eq!(<[u32; 4] as StorageEncode>::STORAGE_SLOTS, 1); // fits 1 slot
+    assert_eq!(<[u32; 8] as StorageEncode>::STORAGE_SLOTS, 1); // exactly fills 1 slot
+    assert_eq!(<[u32; 9] as StorageEncode>::STORAGE_SLOTS, 2); // spills to 2
+    assert_eq!(<[u64; 4] as StorageEncode>::STORAGE_SLOTS, 1); // 4*8 = 32
+    assert_eq!(<[u64; 5] as StorageEncode>::STORAGE_SLOTS, 2);
+    assert_eq!(<[bool; 32] as StorageEncode>::STORAGE_SLOTS, 1);
+    assert_eq!(<[bool; 33] as StorageEncode>::STORAGE_SLOTS, 2);
+    assert_eq!(<[U256; 1] as StorageEncode>::STORAGE_SLOTS, 1);
+    assert_eq!(<[U256; 5] as StorageEncode>::STORAGE_SLOTS, 5);
+    assert_eq!(<[Address; 3] as StorageEncode>::STORAGE_SLOTS, 3);
+    // PACKED_BYTES is always 32 — arrays start a fresh slot.
+    assert_eq!(<[u32; 4] as StorageEncode>::PACKED_BYTES, 32);
+}
+
 // --- StorageVec<T> for dynamic-body T (string[], bytes[]) ---
 
 #[cfg(feature = "alloc")]
