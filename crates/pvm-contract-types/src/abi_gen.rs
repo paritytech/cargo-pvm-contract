@@ -121,19 +121,23 @@ pub struct StorageLayout {
 pub trait StorageTypeName {
     /// Solidity-compat type name used in the `"type"` field of a
     /// `storageLayout` entry. Primitives return their solc name
-    /// (`"uint256"`, `"address"`); `#[storage]` sub-structs return their
-    /// Rust ident; `Lazy<T>` returns `T`'s name; `Mapping<K, V>` returns
+    /// (`"uint256"`, `"address"`); `#[storage]` sub-structs and
+    /// `#[derive(SolStorage)]` value structs return their Rust ident;
+    /// `Lazy<T>` returns `T`'s name; `Mapping<K, V>` returns
     /// `"mapping(K_name,V_name)"`.
+    ///
+    /// **No `SolEncode` blanket impl.** A naive
+    /// `impl<T: SolEncode> StorageTypeName for T` would let *any* ABI type
+    /// claim a storage-layout name — including ABI-only structs that have
+    /// no business appearing in `storageLayout` — and would emit the ABI
+    /// tuple notation (`"(uint64,uint64)"`) for `#[derive(SolStorage)]`
+    /// value structs instead of the Rust ident (parity break with the
+    /// `#[storage]` attribute path, which returns the ident). Every
+    /// storage-eligible type therefore provides an explicit impl —
+    /// primitives in `storage_codec.rs` / `alloc_types.rs`, derived
+    /// structs via `#[derive(SolStorage)]` and `#[storage]`, container
+    /// handles via `pvm-storage`.
     fn name() -> String;
-}
-
-/// Blanket: any `T: SolEncode` forwards to `SOL_NAME`. Covers primitives
-/// (`uint256`, `address`, `bytesN`, …) and `#[derive(SolType)]` value
-/// structs automatically — no per-type wiring required for those.
-impl<T: crate::SolEncode + ?Sized> StorageTypeName for T {
-    fn name() -> String {
-        String::from(<T as crate::SolEncode>::SOL_NAME)
-    }
 }
 
 /// Serialize a [`StorageLayout`] to a JSON string.

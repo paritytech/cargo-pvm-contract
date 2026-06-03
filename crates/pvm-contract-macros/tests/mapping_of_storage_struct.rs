@@ -409,10 +409,10 @@ fn delete_then_overwrite_storage_struct_entry() {
 // The macro's `sol_storage_type_name` syntactically detects `Lazy<T>` /
 // `Mapping<K, V>` and unwraps/recurses. For a type *alias* the syntactic
 // ident is the alias name, not "Mapping" — the detection fails and the
-// codegen falls through to `<Alias as StorageTypeName>::name()`. Without
-// explicit `StorageTypeName` impls on `Lazy<T>` / `Mapping<K, V>`, the
-// blanket SolEncode-forwarding wouldn't apply (neither implements
-// SolEncode) and codegen would fail.
+// codegen falls through to `<Alias as StorageTypeName>::name()`. Since
+// there is no blanket `StorageTypeName` impl, the explicit impls on
+// `Lazy<T>` / `Mapping<K, V>` in `pvm-storage` are what make this resolve;
+// without them codegen would fail.
 //
 // These tests pin the alias-resolution path so that the impls live forever.
 // ---------------------------------------------------------------------------
@@ -467,5 +467,81 @@ fn type_alias_resolution_for_lazy_and_mapping_in_layout_json() {
     assert_eq!(
         entries[2]["type"],
         "mapping(address,mapping(address,uint256))",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Layout JSON for value-shaped `#[derive(SolType, SolStorage)]` structs.
+//
+// A struct deriving `SolType + SolStorage` is a value-shaped storage element:
+// it lives at a fixed slot range (like a primitive) but carries multiple
+// fields. When used as `Lazy<S>` or `Mapping<_, S>`, the storage layout JSON
+// must name it the same way solc does — by the Rust ident (≈ Solidity
+// struct name), not by the ABI tuple notation that `SolEncode::SOL_NAME`
+// produces (`"(uint64,uint64)"`).
+//
+// This is a parity test against the existing `#[storage]` attribute path
+// (one section above) which correctly emits `"VaultData"` for the value
+// type. The same shape must hold for `#[derive(SolStorage)]` — anything
+// else would mean two storage-eligible structs in the same JSON come out
+// with inconsistent type-name conventions, breaking downstream tooling
+// that reads the `"type"` field.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq, Eq, pvm_contract_sdk::SolType, pvm_contract_sdk::SolStorage)]
+pub struct PackedPoint {
+    pub x: u64,
+    pub y: u64,
+}
+
+#[cfg(feature = "abi-gen")]
+#[allow(dead_code)]
+#[pvm_contract_macros::contract(no_main)]
+mod sol_storage_layout_contract {
+    use super::*;
+
+    pub struct PointRegistry {
+        pub origin: Lazy<PackedPoint>,
+        pub by_id: Mapping<u64, PackedPoint>,
+    }
+
+    impl PointRegistry {
+        #[pvm_contract_macros::constructor]
+        pub fn constructor(&mut self) {}
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn sol_storage_value_struct_uses_struct_name_in_layout_json() {
+    let layout = sol_storage_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    // Find each field's entry (order isn't guaranteed by the JSON spec).
+    let origin = entries
+        .iter()
+        .find(|e| e["label"] == "origin")
+        .expect("origin entry");
+    let by_id = entries
+        .iter()
+        .find(|e| e["label"] == "by_id")
+        .expect("by_id entry");
+
+    // `Lazy<PackedPoint>` — value-type name must be the Rust ident
+    // (matches how `#[storage]` sub-structs render via StorageTypeName).
+    // The `SolStorage` derive emits a `StorageTypeName` impl returning the
+    // ident; without it the type would render as the ABI tuple
+    // `"(uint64,uint64)"`.
+    assert_eq!(
+        origin["type"], "PackedPoint",
+        "Lazy<PackedPoint> should report struct ident, not ABI tuple notation. Got layout: {layout}",
+    );
+
+    // `Mapping<u64, PackedPoint>` — value-type name embedded in mapping
+    // notation, again as the struct ident.
+    assert_eq!(
+        by_id["type"], "mapping(uint64,PackedPoint)",
+        "Mapping<_, PackedPoint> should embed struct ident, not ABI tuple. Got layout: {layout}",
     );
 }

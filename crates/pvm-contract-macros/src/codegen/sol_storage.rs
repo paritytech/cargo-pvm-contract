@@ -296,10 +296,10 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         // Name resolver for the layout-emit code path: when this struct is
         // used as the value type of a `Mapping<K, Self>`, the parent layout
         // emit asks `<Self as StorageTypeName>::name()` for the `"type"`
-        // string of the `"mapping(K, …)"` entry. `#[storage]` sub-structs
-        // don't implement `SolEncode` (they're not value-shaped), so the
-        // blanket SolEncode-forwarding impl in `pvm-contract-types`
-        // doesn't cover them. Emit the impl here returning the Rust ident.
+        // string of the `"mapping(K, …)"` entry. `pvm-contract-types` has no
+        // blanket `StorageTypeName` impl — each type provides its own — so
+        // `#[storage]` sub-structs need this explicit impl returning the
+        // Rust ident.
         #[cfg(feature = "abi-gen")]
         impl #impl_generics ::pvm_contract_sdk::StorageTypeName
             for #struct_name #ty_generics
@@ -580,10 +580,16 @@ fn generate_sol_storage_impls(
         }
     };
 
-    let slot_count_assert = quote! {
-        let _: () = const {
+    // Module-scope `const _: () = ...` assertion. Evaluated at type-check
+    // time (cargo check), so trybuild UI fixtures can pin the rejection
+    // without needing a use site to force monomorphization. Each dynamic
+    // struct emits exactly one of these; the inline trait-method bodies
+    // no longer carry their own per-method copy.
+    let slot_count_assert_item = quote! {
+        #[doc(hidden)]
+        const _: () = {
             assert!(
-                <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS <= 8,
+                <#name as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS <= 8,
                 concat!(
                     "`#[derive(SolStorage)]` on `",
                     stringify!(#name),
@@ -670,6 +676,11 @@ fn generate_sol_storage_impls(
         };
 
         Ok(quote! {
+            // Eager type-check-time slot-count guard. Module-scope so it
+            // fires under `cargo check` (visible to trybuild) instead of
+            // only firing when a trait method is monomorphized.
+            #slot_count_assert_item
+
             impl #name {
                 #layout_const
 
@@ -690,7 +701,6 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) {
-                    #slot_count_assert
                     #[inline]
                     fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
                         for byte in slot.iter_mut().rev() {
@@ -718,7 +728,6 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) {
-                    #slot_count_assert
                     #[inline]
                     fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
                         for byte in slot.iter_mut().rev() {
@@ -746,7 +755,6 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) -> Self {
-                    #slot_count_assert
                     #[inline]
                     fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
                         for byte in slot.iter_mut().rev() {
@@ -778,7 +786,6 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) -> Option<Self> {
-                    #slot_count_assert
                     #[inline]
                     fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
                         for byte in slot.iter_mut().rev() {
@@ -804,6 +811,17 @@ fn generate_sol_storage_impls(
                         return None;
                     }
                     Some(<Self as ::pvm_contract_sdk::StorageDecode>::read_from_storage(host, base_key))
+                }
+            }
+
+            // Storage-layout JSON type-name resolver — same shape as the
+            // static branch and as `#[storage]` sub-structs. Returns the
+            // Rust ident so storage layout JSON uses solc-struct-style
+            // names, not the ABI tuple notation `SolEncode::SOL_NAME` gives.
+            #[cfg(feature = "abi-gen")]
+            impl ::pvm_contract_sdk::StorageTypeName for #name {
+                fn name() -> ::std::string::String {
+                    ::std::string::String::from(stringify!(#name))
                 }
             }
         })
@@ -865,6 +883,21 @@ fn generate_sol_storage_impls(
             impl ::pvm_contract_sdk::StaticStorageDecode for #name {
                 fn from_slots(slots: &[[u8; 32]]) -> Self {
                     #decode_construct
+                }
+            }
+
+            // Storage-layout JSON type-name resolver. When this struct is
+            // used as the value of a `Lazy<Self>` or `Mapping<_, Self>`,
+            // the layout-emit code calls `<Self as StorageTypeName>::name()`
+            // for the `"type"` field. Emitting the Rust ident here keeps
+            // the name parallel with `#[storage]` sub-structs (which also
+            // emit their ident) — both code paths produce
+            // solc-struct-style names rather than the ABI tuple notation
+            // that `SolEncode::SOL_NAME` would supply.
+            #[cfg(feature = "abi-gen")]
+            impl ::pvm_contract_sdk::StorageTypeName for #name {
+                fn name() -> ::std::string::String {
+                    ::std::string::String::from(stringify!(#name))
                 }
             }
         })

@@ -176,11 +176,12 @@ fn is_layout_leaf(ty: &syn::Type) -> bool {
 /// `Mapping<K, V>` syntactically; everything else is named via
 /// `<T as StorageTypeName>::NAME`.
 ///
-/// `StorageTypeName` (in `pvm-contract-types`) has a blanket impl for
-/// `T: SolEncode` that forwards to `SOL_NAME`, so primitives and
-/// `#[derive(SolType)]` value-shaped structs work out of the box. The
-/// `#[storage]` derive additionally emits a `StorageTypeName` impl for
-/// its target struct returning the Rust ident — this is what makes
+/// `StorageTypeName` (in `pvm-contract-types`) has no blanket impl — every
+/// storage-eligible type provides an explicit one (primitives in
+/// `storage_codec.rs` / `alloc_types.rs`), so primitives and
+/// `#[derive(SolStorage)]` value-shaped structs work out of the box. The
+/// `#[storage]` / `#[derive(SolStorage)]` derives emit a `StorageTypeName`
+/// impl for the target struct returning the Rust ident — this is what makes
 /// `Mapping<K, MyStorageStruct>` produce `"mapping(K, MyStorageStruct)"`
 /// in the layout JSON. Map keys (`K`) are also resolved through
 /// `StorageTypeName`, so any key type that has a name is acceptable.

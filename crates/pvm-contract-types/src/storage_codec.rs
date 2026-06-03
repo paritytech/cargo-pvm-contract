@@ -390,6 +390,13 @@ macro_rules! impl_uint {
                 <$ty>::from_be_bytes(bytes)
             }
         }
+
+        #[cfg(feature = "abi-gen")]
+        impl crate::StorageTypeName for $ty {
+            fn name() -> alloc::string::String {
+                alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+            }
+        }
     };
 }
 
@@ -470,6 +477,13 @@ impl StoragePackable for U256 {
     }
 }
 
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for U256 {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+    }
+}
+
 impl StorageEncode for I256 {
     const STORAGE_SLOTS: usize = 1;
     const PACKED_BYTES: usize = 32;
@@ -531,6 +545,13 @@ impl StoragePackable for I256 {
     fn unpack_from(buf: &[u8; 32], offset: usize) -> Self {
         debug_assert!(offset == 0, "I256 takes a full slot");
         I256::from_be_slice(buf)
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for I256 {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
 }
 
@@ -598,6 +619,13 @@ impl StoragePackable for bool {
     }
 }
 
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for bool {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+    }
+}
+
 // Address — 20 bytes, right-aligned (solc convention).
 impl StorageEncode for Address {
     const STORAGE_SLOTS: usize = 1;
@@ -661,6 +689,13 @@ impl StoragePackable for Address {
         let mut bytes = [0u8; 20];
         bytes.copy_from_slice(&buf[offset..offset + 20]);
         Address(bytes)
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for Address {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
 }
 
@@ -751,6 +786,13 @@ impl<const N: usize> StoragePackable for [u8; N] {
         let mut out = [0u8; N];
         out.copy_from_slice(&buf[offset..offset + N]);
         out
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+impl<const N: usize> crate::StorageTypeName for [u8; N] {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
 }
 
@@ -860,6 +902,16 @@ macro_rules! impl_storage_tuple {
                     );
                     let _ = (slot, space, placed);
                     result
+                }
+            }
+
+            // Tuples have no Rust struct name; the ABI tuple notation
+            // (e.g. `"(uint256,address)"`) is the natural representation in
+            // storage layout JSON, so forward to `SolEncode::SOL_NAME`.
+            #[cfg(feature = "abi-gen")]
+            impl<$($T: StoragePackable + crate::SolEncode),+> crate::StorageTypeName for ($($T,)+) {
+                fn name() -> alloc::string::String {
+                    alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
                 }
             }
         )+
@@ -1099,6 +1151,13 @@ impl StorageDecode for alloc::string::String {
         }
         // Header is non-zero → some value was written; load body.
         Some(Self::read_from_storage(host, base_key))
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for alloc::string::String {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
 }
 

@@ -106,6 +106,13 @@ impl crate::StorageDecode for Bytes {
     }
 }
 
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for Bytes {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as SolEncode>::SOL_NAME)
+    }
+}
+
 impl SolEncode for alloc::string::String {
     const IS_DYNAMIC: bool = true;
     const SOL_NAME: &'static str = "string";
