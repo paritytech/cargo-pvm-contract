@@ -29,7 +29,7 @@
 //!         + <Mapping<Address, U256> as StorageComponent>::SLOTS
 //!         + <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS;
 //!
-//!     fn new_at(base: StorageKey, offset: u8, host: ::pvm_contract_sdk::Host) -> Self {
+//!     fn new_at(base: StorageKey, offset: u8, alone: bool, host: ::pvm_contract_sdk::Host) -> Self {
 //!         const __OFF_total_supply: u64 = 0;
 //!         const __OFF_balances: u64 =
 //!             __OFF_total_supply + <Lazy<U256> as StorageComponent>::SLOTS;
@@ -37,15 +37,17 @@
 //!             __OFF_balances + <Mapping<Address, U256> as StorageComponent>::SLOTS;
 //!         Erc20 {
 //!             total_supply: <Lazy<U256> as StorageComponent>::new_at(
-//!                 base.add(__OFF_total_supply), 0, host.clone()),
+//!                 base.add(__OFF_total_supply), 0, true, host.clone()),
 //!             balances: <_ as StorageComponent>::new_at(
-//!                 base.add(__OFF_balances), 0, host.clone()),
+//!                 base.add(__OFF_balances), 0, true, host.clone()),
 //!             allowances: <_ as StorageComponent>::new_at(
-//!                 base.add(__OFF_allowances), 0, host.clone()),
+//!                 base.add(__OFF_allowances), 0, true, host.clone()),
 //!         }
 //!         // Every field — including the last — receives `host.clone()`.
 //!         // `Host` is a ZST on riscv64 and a cheap `Rc` clone on host
 //!         // targets, so cloning per-field has no measurable cost.
+//!         // `alone = true` is derived by the macro's layout walker from
+//!         // each field's position (uniquely-keyed slots can't collide).
 //!     }
 //! }
 //! ```

@@ -23,7 +23,7 @@
 //!   [`unpack_from`](StoragePackable::unpack_from) operations as required
 //!   methods (no defaults), so the bound enforces that callers can actually
 //!   pack the type — used by tuple `StorageEncode` impls and the
-//!   `#[derive(SolType)]` macro's struct field encoders.
+//!   `#[derive(SolStorage)]` macro's struct field encoders.
 //!
 //! `StorageEncode` / `StorageDecode` also carry hidden polymorphic dispatch
 //! hooks (`__pack_into_dispatched` / `__unpack_from_dispatched`) used by
@@ -770,7 +770,7 @@ macro_rules! impl_storage_tuple {
         $(
             impl<$($T: StoragePackable),+> StorageEncode for ($($T,)+) {
                 /// Compile-time-evaluated layout walker. Mirrors the
-                /// algorithm `#[derive(SolType)]` emits for static structs.
+                /// algorithm `#[derive(SolStorage)]` emits for static structs.
                 const STORAGE_SLOTS: usize = {
                     let mut slot: usize = 0;
                     let mut space: usize = 32;

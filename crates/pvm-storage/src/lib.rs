@@ -10,9 +10,10 @@
 //! [`STORAGE_SLOTS`](pvm_contract_types::StorageEncode::STORAGE_SLOTS) is
 //! checked at compile time and must be in `1..=MAX_STATIC_SLOTS`. Single-slot
 //! values (`U256`, `Address`, `bool`, `[u8; 32]`, …) occupy one slot;
-//! multi-slot values like `(U256, U256)` or static `#[derive(SolType)]`
-//! structs are striped across `T::STORAGE_SLOTS` consecutive slots, mirroring
-//! Solidity's struct-in-storage layout.
+//! multi-slot values like `(U256, U256)` or static
+//! `#[derive(SolType, SolStorage)]` structs are striped across
+//! `T::STORAGE_SLOTS` consecutive slots, mirroring Solidity's
+//! struct-in-storage layout.
 //!
 //! Dynamic `bytes` / `string` values ride the same `Lazy<T>` / `Mapping<K, V>`
 //! accessors as static types — `Lazy<String>`, `Lazy<Bytes>`,
@@ -41,9 +42,9 @@
 //! packing infrastructure.
 //!
 //! Multi-slot composites (`Lazy<(U256, U256)>`, multi-slot
-//! `#[derive(SolType)]` structs), mappings, and `#[storage]` sub-structs
-//! always start a fresh slot and never pack with neighbours. They report
-//! `PACKED_BYTES = 32`.
+//! `#[derive(SolType, SolStorage)]` structs), mappings, and `#[storage]`
+//! sub-structs always start a fresh slot and never pack with neighbours.
+//! They report `PACKED_BYTES = 32`.
 //!
 //! # Usage
 //!
@@ -58,14 +59,16 @@
 //! // The `#[contract]` macro emits calls like the lines below. Direct user
 //! // code shouldn't need to construct handles by hand — use macro-managed
 //! // storage fields and access them via `self.balances.get(&caller)` etc.
+//! // `alone = true` is the safe choice for contract-field positions where
+//! // the macro's layout walker has proven no neighbour shares the slot.
 //! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(
-//!     StorageKey::from_slot(0), 0, host.clone(),
+//!     StorageKey::from_slot(0), 0, true, host.clone(),
 //! );
 //! total_supply.set(&U256::from(1000));
 //! assert_eq!(total_supply.get(), U256::from(1000));
 //!
 //! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(
-//!     StorageKey::from_slot(1), 0, host,
+//!     StorageKey::from_slot(1), 0, true, host,
 //! );
 //! balances.insert(&caller, &U256::from(500));
 //! assert_eq!(balances.get(&caller), U256::from(500));
@@ -600,16 +603,18 @@ pub fn join_label(prefix: &str, name: &str) -> String {
 ///
 /// Static `T` must report `STORAGE_SLOTS` in `1..=`[`MAX_STATIC_SLOTS`].
 /// Single-slot `T` (`U256`, `Address`, `bool`, `[u8; 32]`, …) occupies one
-/// slot; an `N`-slot `T` (e.g. `(U256, U256)`, or a `#[derive(SolType)]`
-/// struct of static fields) is striped across `N` consecutive slots starting
-/// at `self.key`, matching Solidity's struct-in-storage layout.
+/// slot; an `N`-slot `T` (e.g. `(U256, U256)`, or a
+/// `#[derive(SolType, SolStorage)]` struct of static fields) is striped
+/// across `N` consecutive slots starting at `self.key`, matching Solidity's
+/// struct-in-storage layout.
 ///
 /// Dynamic `T` (`String`, [`Bytes`](pvm_contract_types::Bytes), or
-/// `#[derive(SolType)]` structs with dynamic fields) uses the same `Lazy<T>`
-/// accessor: the header lives inline at `self.key` and any spilled body sits
-/// at `keccak256(key) + i`. `Vec<u8>` is rejected at compile time — use
-/// [`Bytes`](pvm_contract_types::Bytes) instead, since `Vec<u8>` is ABI
-/// `"uint8[]"` and would disagree with the on-chain `bytes` layout.
+/// `#[derive(SolType, SolStorage)]` structs with dynamic fields) uses the
+/// same `Lazy<T>` accessor: the header lives inline at `self.key` and any
+/// spilled body sits at `keccak256(key) + i`. `Vec<u8>` is rejected at
+/// compile time — use [`Bytes`](pvm_contract_types::Bytes) instead, since
+/// `Vec<u8>` is ABI `"uint8[]"` and would disagree with the on-chain
+/// `bytes` layout.
 pub struct Lazy<T> {
     key: StorageKey,
     /// Byte offset within `key`'s 32-byte slot where this value lives.
@@ -760,10 +765,12 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// semantics), so `try_get()` returns `None` after writing the zero
     /// value of `T`.
     ///
-    /// For `HAS_DYNAMIC_BODY` types, "present" is decided by the **header
-    /// slot** at `self.key`: a non-zero header (including the empty-string
-    /// sentinel) → `Some(value)` with the full body loaded; a zero header
-    /// → `None`.
+    /// For dynamic types (`String`, `Bytes`, structs with a dynamic field),
+    /// "present" is decided by the **header slot** at `self.key`: a non-zero
+    /// header (including the empty-string sentinel) → `Some(value)` with
+    /// the full body loaded; a zero header → `None`. Each dynamic type
+    /// owns its own `StorageDecode::try_read_from_storage` impl that
+    /// implements this check.
     ///
     /// **Not available for packed fields:** when `T::PACKED_BYTES < 32`
     /// (sub-32-byte primitives sharing a slot with neighbours), `try_get`
@@ -1151,8 +1158,11 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// **Canonical offset within the entry slot:** for sub-word `V`
     /// (`PACKED_BYTES < 32` — `u8`..`u128`, `i8`..`i128`, `bool`, `Address`,
     /// `[u8; N<32]`), solc stores the value right-aligned within the derived
-    /// slot at byte `32 - PACKED_BYTES`. `insert` / `get` / `remove` route
-    /// through `encode_slot` / `from_slots` and observe that convention; the
+    /// slot at byte `32 - PACKED_BYTES`. `insert` / `get` / `remove` go
+    /// through each type's `StorageEncode::write_to_storage` /
+    /// `StorageDecode::read_from_storage` / `StorageEncode::clear_storage`,
+    /// which for static types delegate to the `StaticStorageEncode`/
+    /// `StaticStorageDecode` slot codec and observe that convention; the
     /// returned `Lazy` must use the same offset so `entry().set()` / `.get()`
     /// agree byte-for-byte with `insert` / `get`. For full-slot `V`
     /// (`PACKED_BYTES == 32`) this is `0` — identical to the previous behavior.

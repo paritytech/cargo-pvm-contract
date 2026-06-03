@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[derive(SolType)]`, `#[derive(SolError)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error traits (`SolError`, `SolRevert`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -277,7 +277,8 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 | `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
 | `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
 
-- Supports static values up to `MAX_STATIC_SLOTS` * 32 bytes (single-word and multi-word static structs/tuples) and dynamic values (`String`, `Bytes`, `#[derive(SolType)]` structs with dynamic fields) using solc's inline/spilled `bytes`/`string` layout
+- Supports static values up to `MAX_STATIC_SLOTS` * 32 bytes (single-word and multi-word static structs/tuples) and dynamic values (`String`, `Bytes`, `#[derive(SolType, SolStorage)]` structs with dynamic fields) using solc's inline/spilled `bytes`/`string` layout
+- **Custom struct as storage value:** structs that live in `Lazy<S>` / `Mapping<_, S>` must derive **both** `SolType` (for ABI / field-layout signature) **and** `SolStorage` (for `StorageEncode`/`StorageDecode` + the `StaticStorageEncode`/`StaticStorageDecode` refinement when fully static). `SolType` alone is sufficient for ABI-only types (function parameter structs, event field structs). Deriving `SolStorage` on a struct with a non-storage-compatible field (e.g. `Vec<U256>`, nested SolType structs, tuples, fixed arrays of non-`u8`) emits a `compile_error!` at expansion time — visible to `cargo check` and `trybuild`
 - `Vec<u8>` is rejected as a storage value — its ABI name is `"uint8[]"`, a different on-chain layout from Solidity `bytes`; use `Bytes` for `bytes`-shaped storage. `Vec<u8>` is still valid as an ABI parameter and as a mapping key
 - Solidity-compatible key derivation: `keccak256(pad32(key) ++ pad32(slot))`
 - `set(&mut self)` / `insert(&mut self)` / `entry(&mut self)` take `&mut self` for future view enforcement
