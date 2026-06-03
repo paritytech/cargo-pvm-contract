@@ -96,6 +96,8 @@ pub use pvm_contract_types::{
     SolEvent,
     StaticDecode,
     StaticEncodedLen,
+    StaticStorageDecode,
+    StaticStorageEncode,
     StorageDecode,
     StorageEncode,
     StorageFlags,
@@ -148,6 +150,11 @@ pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;
+
+/// Storage codec helpers used by macro-generated impls (kept under a public
+/// path so generated `::pvm_contract_sdk::storage_codec::static_*` calls
+/// resolve in downstream crates).
+pub use pvm_contract_types::storage_codec;
 
 // ---------------------------------------------------------------------------
 // Hidden re-exports for macro-generated code

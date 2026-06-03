@@ -78,37 +78,31 @@ impl From<Bytes> for alloc::vec::Vec<u8> {
 impl crate::StorageEncode for Bytes {
     const STORAGE_SLOTS: usize = 1;
     const PACKED_BYTES: usize = 32;
-    const HAS_DYNAMIC_BODY: bool = true;
-
-    // Dynamic-body type: live path goes through `write_to_storage` (header +
-    // body in one operation). `encode_slot` exists only to satisfy the
-    // trait's required-method contract that compile-checks static impls
-    // never forget a real slot codec.
-    fn encode_slot(&self, _slot_idx: usize, _buf: &mut [u8; 32]) {
-        unreachable!("Bytes::encode_slot: dispatch through write_to_storage")
-    }
 
     fn write_to_storage(&self, host: &crate::Host, base_key: &[u8; 32]) {
         crate::storage_codec::write_dynamic_bytes(host, base_key, &self.0);
     }
 
-    fn clear_storage(host: &crate::Host, base_key: &[u8; 32], _slots: usize) {
+    fn clear_storage(host: &crate::Host, base_key: &[u8; 32]) {
         crate::storage_codec::clear_dynamic_bytes(host, base_key);
     }
 }
 
 impl crate::StorageDecode for Bytes {
-    // Dynamic-body type: see `encode_slot` above. Reads dispatch through
-    // `read_from_storage`.
-    fn from_slots(_slots: &[[u8; 32]]) -> Self {
-        unreachable!("Bytes::from_slots: dispatch through read_from_storage")
+    fn read_from_storage(host: &crate::Host, base_key: &[u8; 32]) -> Self {
+        Bytes(crate::storage_codec::read_dynamic_bytes(host, base_key))
     }
 
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
-        host: &crate::Host,
-        base_key: &[u8; 32],
-    ) -> Self {
-        Bytes(crate::storage_codec::read_dynamic_bytes(host, base_key))
+    fn try_read_from_storage(host: &crate::Host, base_key: &[u8; 32]) -> Option<Self> {
+        // Header-only peek: zero header means nothing written. Empty values
+        // are tagged with EMPTY_INLINE_SENTINEL at byte 30 (see storage_codec).
+        use crate::HostApi;
+        let mut header = [0u8; 32];
+        host.get_storage_or_zero(crate::StorageFlags::empty(), base_key, &mut header);
+        if header == [0u8; 32] {
+            return None;
+        }
+        Some(Self::read_from_storage(host, base_key))
     }
 }
 

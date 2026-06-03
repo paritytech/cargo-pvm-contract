@@ -61,8 +61,10 @@ pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue};
 mod i256;
 pub use i256::{I256, ParseI256Error};
 
-mod storage_codec;
-pub use storage_codec::{StorageDecode, StorageEncode, StoragePackable};
+pub mod storage_codec;
+pub use storage_codec::{
+    StaticStorageDecode, StaticStorageEncode, StorageDecode, StorageEncode, StoragePackable,
+};
 
 #[doc(hidden)]
 pub use const_format;

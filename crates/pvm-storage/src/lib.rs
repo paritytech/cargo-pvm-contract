@@ -154,10 +154,12 @@ fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
     output
 }
 
-/// Increment a 32-byte big-endian integer in-place (used to walk consecutive
-/// storage slots — both the body of dynamic values and multi-word static
-/// values that span more than one slot).
-fn inc_slot(slot: &mut [u8; 32]) {
+/// Increment a 32-byte big-endian integer in-place. Used by test code that
+/// walks consecutive slots; the production paths now delegate slot-walking
+/// to the per-type `write_to_storage` / `read_from_storage` impls in
+/// `pvm_contract_types::storage_codec`.
+#[cfg(test)]
+pub(crate) fn inc_slot(slot: &mut [u8; 32]) {
     for byte in slot.iter_mut().rev() {
         let (next, carry) = byte.overflowing_add(1);
         *byte = next;
@@ -180,51 +182,11 @@ fn inc_slot(slot: &mut [u8; 32]) {
 pub const MAX_STATIC_SLOTS: usize = 8;
 
 /// Read `out.len()` consecutive slots starting at `key` into `out`.
-fn read_slots(host: &Host, key: &[u8; 32], out: &mut [[u8; 32]]) {
-    let mut k = *key;
-    for slot in out.iter_mut() {
-        *slot = storage_get_32(host, &k);
-        inc_slot(&mut k);
-    }
-}
-
-/// Read `out.len()` consecutive slots starting at `key`. Returns `None` iff
-/// every slot read back as `[0; 32]` — matches Solidity's "value-zero ≡
-/// deleted ≡ never-written" semantics aggregated across a multi-slot value.
-fn try_read_slots(host: &Host, key: &[u8; 32], out: &mut [[u8; 32]]) -> Option<()> {
-    let mut k = *key;
-    let mut any_present = false;
-    for slot in out.iter_mut() {
-        let read = storage_get_32(host, &k);
-        if read != [0u8; 32] {
-            any_present = true;
-        }
-        *slot = read;
-        inc_slot(&mut k);
-    }
-    any_present.then_some(())
-}
-
-/// Stream-encode `value` slot-by-slot and write to consecutive slots starting
-/// at `key`. Uses a 32-byte stack buffer regardless of `T::STORAGE_SLOTS`.
-fn write_value<T: StorageEncode>(host: &Host, key: &[u8; 32], value: &T) {
-    let mut k = *key;
-    for i in 0..T::STORAGE_SLOTS {
-        let mut buf = [0u8; 32];
-        value.encode_slot(i, &mut buf);
-        storage_set_32(host, &k, &buf);
-        inc_slot(&mut k);
-    }
-}
-
-/// Clear `n` consecutive slots starting at `key`.
-fn clear_n_slots(host: &Host, key: &[u8; 32], n: usize) {
-    let mut k = *key;
-    for _ in 0..n {
-        host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
-        inc_slot(&mut k);
-    }
-}
+// `read_slots`, `try_read_slots`, `write_value`, `clear_n_slots` removed —
+// each storage type now owns its own host access via
+// `StorageEncode::write_to_storage` / `clear_storage` and
+// `StorageDecode::read_from_storage` / `try_read_from_storage`. Shared
+// helpers live in `pvm_contract_types::storage_codec`.
 
 // ---------------------------------------------------------------------------
 // StorageKey
@@ -286,10 +248,12 @@ impl StorageKey {
     ///
     /// For a contract-field StorageKey produced by `from_slot(s)`, `add(N)`
     /// equals `from_slot(s + N)` modulo 64-bit wrap of `s + N`. For a
-    /// derived key, `add` performs proper 256-bit big-endian addition. Wrap
-    /// past `2^256 - 1` is not handled — derived keys are uniformly
-    /// distributed in the 256-bit space, so wrap is effectively impossible
-    /// at any realistic depth.
+    /// derived key, `add` performs proper 256-bit big-endian addition that
+    /// is modular mod 2^256, matching EVM `uint256` semantics — a carry past
+    /// the top byte is dropped, which is exactly the EVM wrap. In practice
+    /// wrap is unreachable because derived keys are uniformly distributed in
+    /// the 256-bit space, so no realistic struct/array depth approaches the
+    /// wrap boundary.
     pub fn add(self, n: u64) -> StorageKey {
         let mut out = self.0;
         // Add `n` into the low 8 bytes (bytes 24..32) with carry up.
@@ -775,30 +739,16 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         let () = Self::_SIZE_CHECK;
         if T::PACKED_BYTES < 32 {
             // Packed sub-slot path: read the slot, unpack our byte window via
-            // the polymorphic dispatch hook. `__unpack_from_dispatched` is a
-            // no-zeroing reader; the caller (us) doesn't touch the rest of the
-            // buffer, so neighbours stay correct. The hook delegates to
+            // the polymorphic dispatch hook. The hook delegates to
             // `<T as StoragePackable>::unpack_from` for packable T; full-slot
-            // T never reaches this branch.
+            // and dynamic T never reach this branch.
             let buf = storage_get_32(&self.host, self.key.as_bytes());
             T::__unpack_from_dispatched(&buf, self.offset as usize)
-        } else if T::HAS_DYNAMIC_BODY {
-            // Dispatch to the type's host-aware reader (e.g. `String` / `Bytes`
-            // read their body from `keccak256(key) + i`).
-            T::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, self.key.as_bytes())
-        } else if T::STORAGE_SLOTS == 1 {
-            // Fast path: skip the loop + multi-slot buffer for single-slot V.
-            // The branch is const-folded at monomorphization.
-            let one = [storage_get_32(&self.host, self.key.as_bytes())];
-            T::from_slots(&one)
         } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            read_slots(
-                &self.host,
-                self.key.as_bytes(),
-                &mut slots[..T::STORAGE_SLOTS],
-            );
-            T::from_slots(&slots[..T::STORAGE_SLOTS])
+            // Full-slot OR dynamic — each type owns its access pattern.
+            // Primitives do one SLOAD; tuples do N SLOADs; String/Bytes do
+            // header + body. `Lazy<T>` doesn't need to know which.
+            T::read_from_storage(&self.host, self.key.as_bytes())
         }
     }
 
@@ -851,38 +801,10 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
                  indistinguishable from `get`.",
             );
         }
-        if T::HAS_DYNAMIC_BODY {
-            // Multi-slot dynamic V: "set" iff any header slot is non-zero.
-            // For a single-slot dynamic type (`String` / `Bytes`), the header
-            // itself is the marker. For a struct with a dynamic field, that
-            // field's header may be the only non-zero slot — checking just
-            // slot 0 would miss it.
-            let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(
-                &self.host,
-                self.key.as_bytes(),
-                &mut buf[..T::STORAGE_SLOTS],
-            )?;
-            Some(T::read_from_storage::<MAX_STATIC_SLOTS>(
-                &self.host,
-                self.key.as_bytes(),
-            ))
-        } else if T::STORAGE_SLOTS == 1 {
-            let read = storage_get_32(&self.host, self.key.as_bytes());
-            if read == [0u8; 32] {
-                None
-            } else {
-                Some(T::from_slots(&[read]))
-            }
-        } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(
-                &self.host,
-                self.key.as_bytes(),
-                &mut slots[..T::STORAGE_SLOTS],
-            )?;
-            Some(T::from_slots(&slots[..T::STORAGE_SLOTS]))
-        }
+        // Each type owns its presence check:
+        // - static types: all-zero slots → None (Solidity-compat semantics)
+        // - dynamic types (String/Bytes): zero header slot → None
+        T::try_read_from_storage(&self.host, self.key.as_bytes())
     }
 
     /// Write a value to storage. Encodes `value` slot-by-slot and writes to
@@ -915,25 +837,15 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
         } else if T::PACKED_BYTES < 32 {
             // Packed sub-slot RMW: load slot, zero our window, write our
-            // bytes back via the polymorphic dispatch hook, store. One extra
-            // SLOAD on each write vs. the full-slot path — same gas profile
-            // as solc / Stylus for adjacent sub-32-byte fields sharing a
-            // slot. `__pack_into_dispatched` delegates to
-            // `<T as StoragePackable>::pack_into` for packable T; full-slot T
-            // never reaches this branch.
+            // bytes back via the polymorphic dispatch hook, store.
             let mut buf = storage_get_32(&self.host, self.key.as_bytes());
             let off = self.offset as usize;
             buf[off..off + T::PACKED_BYTES].fill(0);
             value.__pack_into_dispatched(&mut buf, off);
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
-        } else if T::HAS_DYNAMIC_BODY {
-            value.write_to_storage(&self.host, self.key.as_bytes());
-        } else if T::STORAGE_SLOTS == 1 {
-            let mut buf = [0u8; 32];
-            value.encode_slot(0, &mut buf);
-            storage_set_32(&self.host, self.key.as_bytes(), &buf);
         } else {
-            write_value(&self.host, self.key.as_bytes(), value);
+            // Full-slot OR dynamic — each type owns its write pattern.
+            value.write_to_storage(&self.host, self.key.as_bytes());
         }
     }
 
@@ -990,21 +902,16 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
             // all-zero directly. `set_storage_or_clear` auto-deletes the slot.
             storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
         } else if T::PACKED_BYTES < 32 {
-            // Packed sub-slot clear: RMW that zeros only our window. Calling
-            // `set_storage_or_clear` with an all-zero buffer would auto-delete
-            // the slot and clobber any neighbour bytes — so we load, zero
-            // OUR range, write back. If our zeroing leaves the slot all-zero
-            // (no neighbour present), the host auto-deletes on store anyway.
+            // Packed sub-slot clear: RMW that zeros only our window. If our
+            // zeroing leaves the slot all-zero (no neighbour present), the
+            // host auto-deletes on store anyway.
             let mut buf = storage_get_32(&self.host, self.key.as_bytes());
             let off = self.offset as usize;
             buf[off..off + T::PACKED_BYTES].fill(0);
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
-        } else if T::HAS_DYNAMIC_BODY {
-            <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
-        } else if T::STORAGE_SLOTS == 1 {
-            storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
         } else {
-            clear_n_slots(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
+            // Full-slot OR dynamic — each type owns its clear pattern.
+            <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes());
         }
     }
 }
@@ -1286,16 +1193,7 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     pub fn get(&self, key: &K) -> V {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            V::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, slot.as_bytes())
-        } else if V::STORAGE_SLOTS == 1 {
-            let one = [storage_get_32(&self.host, slot.as_bytes())];
-            V::from_slots(&one)
-        } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            read_slots(&self.host, slot.as_bytes(), &mut slots[..V::STORAGE_SLOTS]);
-            V::from_slots(&slots[..V::STORAGE_SLOTS])
-        }
+        V::read_from_storage(&self.host, slot.as_bytes())
     }
 
     /// Read the value, returning `None` if every slot occupied by the entry
@@ -1312,54 +1210,21 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     pub fn try_get(&self, key: &K) -> Option<V> {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, slot.as_bytes(), &mut buf[..V::STORAGE_SLOTS])?;
-            Some(V::read_from_storage::<MAX_STATIC_SLOTS>(
-                &self.host,
-                slot.as_bytes(),
-            ))
-        } else if V::STORAGE_SLOTS == 1 {
-            let read = storage_get_32(&self.host, slot.as_bytes());
-            if read == [0u8; 32] {
-                None
-            } else {
-                Some(V::from_slots(&[read]))
-            }
-        } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, slot.as_bytes(), &mut slots[..V::STORAGE_SLOTS])?;
-            Some(V::from_slots(&slots[..V::STORAGE_SLOTS]))
-        }
+        V::try_read_from_storage(&self.host, slot.as_bytes())
     }
 
-    /// Write a value at the given key. Encodes `value` slot-by-slot and writes
-    /// to `V::STORAGE_SLOTS` consecutive slots beneath the derived key.
+    /// Write a value at the given key. Each type owns its access pattern.
     pub fn insert(&mut self, key: &K, value: &V) {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            value.write_to_storage(&self.host, slot.as_bytes());
-        } else if V::STORAGE_SLOTS == 1 {
-            let mut buf = [0u8; 32];
-            value.encode_slot(0, &mut buf);
-            storage_set_32(&self.host, slot.as_bytes(), &buf);
-        } else {
-            write_value(&self.host, slot.as_bytes(), value);
-        }
+        value.write_to_storage(&self.host, slot.as_bytes());
     }
 
     /// Delete every slot occupied by the entry at the given key.
     pub fn remove(&mut self, key: &K) {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            <V as StorageEncode>::clear_storage(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
-        } else if V::STORAGE_SLOTS == 1 {
-            storage_set_32(&self.host, slot.as_bytes(), &[0u8; 32]);
-        } else {
-            clear_n_slots(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
-        }
+        <V as StorageEncode>::clear_storage(&self.host, slot.as_bytes());
     }
 }
 

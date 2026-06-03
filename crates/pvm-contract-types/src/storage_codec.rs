@@ -33,20 +33,26 @@
 //! mirror the delegation pattern in its `StorageEncode` / `StorageDecode`
 //! impls so `Lazy<T>` works.
 //!
-//! Composite types (structs, fixed arrays of compound elements) and dynamic
-//! types (`String`, `Bytes`) always start a new slot and never pack — they
-//! implement only [`StorageEncode`] / [`StorageDecode`]. Dynamic types
-//! additionally set [`HAS_DYNAMIC_BODY`](StorageEncode::HAS_DYNAMIC_BODY) so
-//! `Mapping` / `Lazy` route reads and writes through the host-aware
-//! [`write_to_storage`](StorageEncode::write_to_storage) /
-//! [`read_from_storage`](StorageDecode::read_from_storage) path.
+//! Static types additionally implement [`StaticStorageEncode`] /
+//! [`StaticStorageDecode`] — the slot-buffer codec refinement. Dynamic types
+//! (`String`, `Bytes`, structs containing dynamic fields) do NOT impl the
+//! `Static*` refinement; their body lives at `keccak256(slot)+i`, so they
+//! cannot be reconstructed from a slot buffer alone. Each type owns its
+//! own host access via the required [`write_to_storage`], [`read_from_storage`],
+//! [`try_read_from_storage`], [`clear_storage`] methods — `Lazy<T>` and
+//! `Mapping<K, V>` never branch on which kind T is.
+//!
+//! [`write_to_storage`]: StorageEncode::write_to_storage
+//! [`read_from_storage`]: StorageDecode::read_from_storage
+//! [`try_read_from_storage`]: StorageDecode::try_read_from_storage
+//! [`clear_storage`]: StorageEncode::clear_storage
 
 use crate::{Address, Host, HostApi, I256, StorageFlags, U256};
 
 /// Increment a 32-byte big-endian integer in-place. Used to walk consecutive
 /// storage slots for multi-slot values.
 #[inline]
-fn inc_be_32(slot: &mut [u8; 32]) {
+pub(crate) fn inc_be_32(slot: &mut [u8; 32]) {
     for byte in slot.iter_mut().rev() {
         let (next, carry) = byte.overflowing_add(1);
         *byte = next;
@@ -59,16 +65,9 @@ fn inc_be_32(slot: &mut [u8; 32]) {
 /// Top-level storage encoder.
 ///
 /// A type implementing this trait can be the value of a `Mapping<K, V>` or
-/// `Lazy<T>`. The total number of slots is fixed at compile time
-/// ([`STORAGE_SLOTS`](Self::STORAGE_SLOTS)).
-///
-/// For primitives, [`STORAGE_SLOTS`](Self::STORAGE_SLOTS) is 1 and
-/// [`encode_slot`](Self::encode_slot) writes the value at the type's canonical
-/// position within a freshly-zeroed slot (right-aligned for both integers and
-/// `bytesN`).
-///
-/// For structs, [`encode_slot`](Self::encode_slot) walks the per-slot field
-/// placements computed by `#[derive(SolType)]`.
+/// `Lazy<T>`. Required methods are host-aware — each type owns its own
+/// access pattern (single-slot primitives do one SLOAD; multi-slot tuples
+/// loop; dynamic types like `String` write a header + body chunks).
 pub trait StorageEncode {
     /// Total number of slots this type occupies when stored at the top of a
     /// layout. Always >= 1.
@@ -76,8 +75,8 @@ pub trait StorageEncode {
 
     /// Number of bytes this type consumes within a single slot when packed
     /// alongside sibling fields. Must satisfy `1 <= PACKED_BYTES <= 32`.
-    /// Full-slot types use `32`; composites that always claim a fresh slot
-    /// also use `32`.
+    /// Full-slot types use `32`; composites and dynamic-body types
+    /// (`String`, `Bytes`) also use `32` — they always claim a fresh slot.
     ///
     /// **Types with `PACKED_BYTES < 32` must also implement
     /// [`StoragePackable`].** `Lazy<T>::set` / `Lazy<T>::get` take a
@@ -86,36 +85,27 @@ pub trait StorageEncode {
     /// [`StorageDecode::__unpack_from_dispatched`], whose default impls
     /// panic at runtime; the `StoragePackable` impl is what supplies a
     /// non-panicking override.
-    const PACKED_BYTES: usize;
+    const PACKED_BYTES: usize = 32;
 
-    /// `true` iff this type stores data outside its `STORAGE_SLOTS` (e.g.
-    /// `String` / `Bytes` spill their body to `keccak256(slot)+i`). Containers
-    /// like `Mapping<K, V>` and `Lazy<T>` use this to route reads/writes
-    /// through the host-aware [`write_to_storage`](Self::write_to_storage) /
-    /// [`StorageDecode::read_from_storage`] path instead of the
-    /// single-slot fast path.
+    /// Write self to storage starting at `base_key`. Required. Each impl
+    /// owns its access pattern:
+    /// - Single-slot primitives do one SSTORE.
+    /// - Multi-slot static types (tuples, multi-field structs) loop SSTOREs.
+    /// - Dynamic types (`String`, `Bytes`) write a header slot at `base_key`
+    ///   and body chunks at `keccak256(base_key) + i`, clearing any stale
+    ///   body chunks left from a previously-longer value.
     ///
-    /// Default `false` so primitives and pure-static structs aren't affected.
-    const HAS_DYNAMIC_BODY: bool = false;
+    /// Static-type impls typically delegate to
+    /// [`static_write_to_storage`] for one-line bodies. Dynamic types use
+    /// the `write_dynamic_bytes` helper.
+    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]);
 
-    /// Encode slot `slot_idx` of this value into `buf`. Caller passes a
-    /// freshly-zeroed (or to-be-zeroed) `buf`; for top-level primitive types
-    /// the implementation overwrites the entire slot, for composite types it
-    /// fills the bytes that belong to slot `slot_idx`.
+    /// Clear every storage cell this type occupies at `base_key`. Required.
+    /// Static types: zero `STORAGE_SLOTS` consecutive slots. Dynamic types:
+    /// zero the header slot AND clear any spilled body chunks.
     ///
-    /// `slot_idx` must satisfy `slot_idx < STORAGE_SLOTS`.
-    ///
-    /// Required for every impl. Static types implement this with their actual
-    /// slot codec; dynamic-body types ([`HAS_DYNAMIC_BODY`] = `true`) provide
-    /// a panicking `unreachable!()` body and override [`write_to_storage`]
-    /// instead — callers must dispatch through `write_to_storage` for those
-    /// types. Keeping the method required (rather than defaulted) is a
-    /// compile-time guarantee that no static impl forgets to provide a real
-    /// slot codec.
-    ///
-    /// [`HAS_DYNAMIC_BODY`]: Self::HAS_DYNAMIC_BODY
-    /// [`write_to_storage`]: Self::write_to_storage
-    fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]);
+    /// Static-type impls typically delegate to [`clear_n_slots`].
+    fn clear_storage(host: &Host, base_key: &[u8; 32]);
 
     /// Internal polymorphic dispatch hook for `Lazy<T>`'s packed-path
     /// (`Lazy<T>::set` when `PACKED_BYTES < 32`). The canonical
@@ -123,68 +113,32 @@ pub trait StorageEncode {
     /// `Lazy<T>`, whose `T` is only bound by `StorageEncode + StorageDecode`,
     /// reach a packable impl through a const-folded `T::PACKED_BYTES < 32`
     /// branch. Default impl panics — packable types override to delegate
-    /// to `<Self as StoragePackable>::pack_into`. Full-slot types never
-    /// reach this branch.
+    /// to `<Self as StoragePackable>::pack_into`. Full-slot and dynamic
+    /// types never reach this branch.
     #[doc(hidden)]
     fn __pack_into_dispatched(&self, _buf: &mut [u8; 32], _offset: usize) {
         panic!(
-            "__pack_into_dispatched not implemented for full-slot type; Lazy<T>::set should never reach this branch",
+            "__pack_into_dispatched not implemented for non-packable type; Lazy<T>::set should never reach this branch",
         );
-    }
-
-    /// Write self to storage starting at `base_key`. The default impl writes
-    /// `STORAGE_SLOTS` consecutive 32-byte slots via [`encode_slot`]; types
-    /// with [`HAS_DYNAMIC_BODY`] = `true` override this to also write body
-    /// chunks at `keccak256(base_key) + i`.
-    ///
-    /// [`encode_slot`]: Self::encode_slot
-    /// [`HAS_DYNAMIC_BODY`]: Self::HAS_DYNAMIC_BODY
-    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
-        let mut k = *base_key;
-        for i in 0..Self::STORAGE_SLOTS {
-            let mut buf = [0u8; 32];
-            self.encode_slot(i, &mut buf);
-            host.set_storage_or_clear(StorageFlags::empty(), &k, &buf);
-            inc_be_32(&mut k);
-        }
-    }
-
-    /// Clear every slot this type occupies at `base_key`. Default impl writes
-    /// `STORAGE_SLOTS` zero-slots (`set_storage_or_clear` auto-deletes).
-    /// Dynamic types override to also clear body chunks.
-    fn clear_storage(host: &Host, base_key: &[u8; 32], slots: usize) {
-        let mut k = *base_key;
-        for _ in 0..slots {
-            host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
-            inc_be_32(&mut k);
-        }
     }
 }
 
-/// Top-level storage decoder.
-///
-/// Symmetric with [`StorageEncode`]: given exactly [`STORAGE_SLOTS`] consecutive
-/// 32-byte slots in `slots`, reconstruct the value.
-///
-/// [`STORAGE_SLOTS`]: StorageEncode::STORAGE_SLOTS
+/// Top-level storage decoder. Symmetric with [`StorageEncode`].
 pub trait StorageDecode: StorageEncode + Sized {
-    /// Decode from `slots`, which must have length `STORAGE_SLOTS`.
+    /// Read self from storage at `base_key`. Required.
     ///
-    /// The name `from_slots` (rather than `decode`) avoids ambiguity with
-    /// [`SolDecode::decode`](crate::SolDecode::decode); the two codecs are
-    /// distinct and a type implementing both must dispatch through trait
-    /// qualification at the call site.
+    /// Static-type impls typically delegate to [`static_read_from_storage`].
+    /// Dynamic types read their header + body chunks.
+    fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self;
+
+    /// Read self if present, else `None`. **Solidity-compat invariant:** a
+    /// static type with all-zero slots returns `None` (matches solc's
+    /// "writing the zero value deletes the slot" semantics — there is no
+    /// way to distinguish "never written" from "explicitly set to zero").
+    /// A dynamic type returns `None` iff the header slot is zero.
     ///
-    /// Required for every impl. Static types implement this with their actual
-    /// slot codec; dynamic-body types ([`StorageEncode::HAS_DYNAMIC_BODY`] =
-    /// `true`) cannot fully reconstruct from a slot buffer alone — the body
-    /// lives outside the passed slots, so they provide a panicking
-    /// `unreachable!()` body and override
-    /// [`read_from_storage`](Self::read_from_storage) instead. Callers must
-    /// dispatch through `read_from_storage` for those types. Keeping the
-    /// method required is a compile-time guarantee that no static impl
-    /// forgets to provide a real slot codec.
-    fn from_slots(slots: &[[u8; 32]]) -> Self;
+    /// Static-type impls typically delegate to [`static_try_read_from_storage`].
+    fn try_read_from_storage(host: &Host, base_key: &[u8; 32]) -> Option<Self>;
 
     /// Internal polymorphic dispatch hook for `Lazy<T>`'s packed-path
     /// (`Lazy<T>::get` when `PACKED_BYTES < 32`). Symmetric with
@@ -194,56 +148,151 @@ pub trait StorageDecode: StorageEncode + Sized {
     #[doc(hidden)]
     fn __unpack_from_dispatched(_buf: &[u8; 32], _offset: usize) -> Self {
         panic!(
-            "__unpack_from_dispatched not implemented for full-slot type; Lazy<T>::get should never reach this branch",
+            "__unpack_from_dispatched not implemented for non-packable type; Lazy<T>::get should never reach this branch",
         );
-    }
-
-    /// Read self from storage starting at `base_key`. Default impl reads
-    /// `STORAGE_SLOTS` consecutive slots and decodes via [`from_slots`].
-    /// Types with [`StorageEncode::HAS_DYNAMIC_BODY`] = `true` override
-    /// this to also read body chunks at `keccak256(base_key) + i`.
-    ///
-    /// `MAX_INLINE_SLOTS` caps the stack buffer used by the default impl.
-    /// Callers (like `Mapping::get`) sized this for the typical record
-    /// shape; types occupying more slots must override.
-    ///
-    /// [`from_slots`]: Self::from_slots
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(host: &Host, base_key: &[u8; 32]) -> Self {
-        debug_assert!(
-            Self::STORAGE_SLOTS <= MAX_INLINE_SLOTS,
-            "STORAGE_SLOTS exceeds MAX_INLINE_SLOTS",
-        );
-        let mut slots = [[0u8; 32]; MAX_INLINE_SLOTS];
-        let n = Self::STORAGE_SLOTS;
-        let mut k = *base_key;
-        for slot in slots[..n].iter_mut() {
-            host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
-            inc_be_32(&mut k);
-        }
-        Self::from_slots(&slots[..n])
     }
 }
 
-/// Sub-word packable primitive.
+/// Slot-buffer encoder refinement. Implemented only by types that can be
+/// reconstructed from a fixed-size slot buffer alone — primitives, fixed
+/// arrays, tuples of packable elements, and fully-static SolType-derived
+/// structs. Dynamic types (`String`, `Bytes`, structs with dynamic fields)
+/// do NOT implement this; the absence is the type-level expression of "this
+/// has a body that lives outside its slot range."
+pub trait StaticStorageEncode: StorageEncode {
+    /// Encode slot `slot_idx` of this value into `buf`. Caller passes a
+    /// to-be-overwritten 32-byte buffer; the implementation fills the bytes
+    /// that belong to this slot at their canonical positions. For primitives
+    /// the entire slot is overwritten; for composites only the field's
+    /// byte window is touched.
+    ///
+    /// `slot_idx` must satisfy `slot_idx < STORAGE_SLOTS`.
+    fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]);
+}
+
+/// Slot-buffer decoder refinement. Symmetric with [`StaticStorageEncode`].
+pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
+    /// Decode from `slots`, which must have length `STORAGE_SLOTS`.
+    fn from_slots(slots: &[[u8; 32]]) -> Self;
+
+    /// All-zero slots → `None`; otherwise decode via [`from_slots`]. This is
+    /// the canonical Solidity-compat presence check for static types: if
+    /// every slot reads as zero, the type was never written (or was
+    /// explicitly cleared to zero — solc/EVM cannot distinguish those).
+    ///
+    /// [`from_slots`]: Self::from_slots
+    fn try_from_slots(slots: &[[u8; 32]]) -> Option<Self> {
+        if slots.iter().all(|s| s == &[0u8; 32]) {
+            None
+        } else {
+            Some(Self::from_slots(slots))
+        }
+    }
+}
+
+// -----------------------------------------------------------------------
+// Shared host-aware helpers. Per-type impls delegate here so all the
+// SSTORE/SLOAD code lives in one non-generic body (LLVM ICF dedup target).
+// -----------------------------------------------------------------------
+
+/// Default `write_to_storage` body for static types.
 ///
-/// Implemented by types that fit in a single 32-byte slot and can share that
-/// slot with sibling fields at arbitrary byte offsets. Owns the canonical
-/// [`pack_into`](Self::pack_into) / [`unpack_from`](Self::unpack_from)
-/// operations as required methods — the bound `T: StoragePackable` enforces
-/// at compile time that callers can actually pack/unpack the type. Used by
-/// tuple `StorageEncode` impls and the `#[derive(SolType)]` macro's struct
-/// field encoders.
+/// **Single-slot fast path** (`T::STORAGE_SLOTS == 1`, every primitive +
+/// `U256`/`Address`/`[u8; N]`): skip the local key copy and the wasted
+/// `inc_be_32` — the `if` const-folds at monomorphization, so primitives
+/// match the OLD direct `SSTORE` codegen (no 32-byte unaligned key copy
+/// unrolled as 32 byte loads + ORs).
+#[inline]
+pub fn static_write_to_storage<T: StaticStorageEncode>(
+    value: &T,
+    host: &Host,
+    base_key: &[u8; 32],
+) {
+    if T::STORAGE_SLOTS == 1 {
+        let mut buf = [0u8; 32];
+        value.encode_slot(0, &mut buf);
+        host.set_storage_or_clear(StorageFlags::empty(), base_key, &buf);
+        return;
+    }
+    let mut k = *base_key;
+    for i in 0..T::STORAGE_SLOTS {
+        let mut buf = [0u8; 32];
+        value.encode_slot(i, &mut buf);
+        host.set_storage_or_clear(StorageFlags::empty(), &k, &buf);
+        inc_be_32(&mut k);
+    }
+}
+
+/// Default `read_from_storage` body for static types.
 ///
-/// Composite types do not implement this trait — they always start a new
-/// slot and never pack.
+/// **Single-slot fast path**: same rationale as
+/// [`static_write_to_storage`]. Skips the stack buffer of `N` slots and
+/// `inc_be_32` for single-slot types, matching the OLD direct `SLOAD` path.
+#[inline]
+pub fn static_read_from_storage<T: StaticStorageDecode, const N: usize>(
+    host: &Host,
+    base_key: &[u8; 32],
+) -> T {
+    debug_assert!(T::STORAGE_SLOTS <= N, "N must be >= T::STORAGE_SLOTS");
+    if T::STORAGE_SLOTS == 1 {
+        let mut buf = [0u8; 32];
+        host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut buf);
+        return T::from_slots(core::slice::from_ref(&buf));
+    }
+    let mut slots = [[0u8; 32]; N];
+    let used = T::STORAGE_SLOTS;
+    let mut k = *base_key;
+    for slot in slots[..used].iter_mut() {
+        host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
+        inc_be_32(&mut k);
+    }
+    T::from_slots(&slots[..used])
+}
+
+/// `try_read_from_storage` body for static types.
 ///
-/// Implementing this trait for a downstream type also requires implementing
-/// `StorageEncode` and `StorageDecode` (the supertraits) and overriding
-/// their `__pack_into_dispatched` / `__unpack_from_dispatched` hooks to
-/// delegate to the `StoragePackable` methods. This delegation is what lets
-/// `Lazy<T>` reach the packed-path code through its polymorphic
-/// `T: StorageEncode + StorageDecode` bound.
-pub trait StoragePackable: StorageEncode + StorageDecode + Sized {
+/// **Single-slot fast path**: one SLOAD, zero-check, no buffer copy.
+#[inline]
+pub fn static_try_read_from_storage<T: StaticStorageDecode, const N: usize>(
+    host: &Host,
+    base_key: &[u8; 32],
+) -> Option<T> {
+    debug_assert!(T::STORAGE_SLOTS <= N, "N must be >= T::STORAGE_SLOTS");
+    if T::STORAGE_SLOTS == 1 {
+        let mut buf = [0u8; 32];
+        host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut buf);
+        if buf == [0u8; 32] {
+            return None;
+        }
+        return Some(T::from_slots(core::slice::from_ref(&buf)));
+    }
+    let mut slots = [[0u8; 32]; N];
+    let used = T::STORAGE_SLOTS;
+    let mut k = *base_key;
+    for slot in slots[..used].iter_mut() {
+        host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
+        inc_be_32(&mut k);
+    }
+    T::try_from_slots(&slots[..used])
+}
+
+/// Non-generic clear helper: SSTORE zero into `n` consecutive slots
+/// starting at `base_key`. Shared by every static-type `clear_storage`
+/// impl — single body in the binary.
+///
+/// Note: most static types (primitives, `U256`, `Address`) call this with
+/// `n = 1`. The loop trip count is data-dependent here (not const), so
+/// LLVM doesn't unroll it — that's fine, one body shared across all
+/// callers via this non-generic helper.
+pub fn clear_n_slots(host: &Host, base_key: &[u8; 32], n: usize) {
+    let mut k = *base_key;
+    for _ in 0..n {
+        host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
+        inc_be_32(&mut k);
+    }
+}
+
+pub trait StoragePackable: StaticStorageEncode + StaticStorageDecode + Sized {
     /// Byte offset within a slot where this type lives when it occupies a slot
     /// on its own (solc's right-aligned rule for both integers and `bytesN`).
     /// Always equals `32 - PACKED_BYTES` in practice; kept as an explicit
@@ -272,12 +321,13 @@ macro_rules! impl_uint {
             const PACKED_BYTES: usize = $bytes;
 
             #[inline]
-            fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-                debug_assert!(_slot_idx == 0);
-                *buf = [0u8; 32];
-                <Self as StoragePackable>::pack_into(self, buf, 32 - $bytes);
+            fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+                static_write_to_storage(self, host, key)
             }
-
+            #[inline]
+            fn clear_storage(host: &Host, key: &[u8; 32]) {
+                clear_n_slots(host, key, 1)
+            }
             #[inline]
             fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
                 <Self as StoragePackable>::pack_into(self, buf, offset)
@@ -286,13 +336,32 @@ macro_rules! impl_uint {
 
         impl StorageDecode for $ty {
             #[inline]
-            fn from_slots(slots: &[[u8; 32]]) -> Self {
-                <Self as StoragePackable>::unpack_from(&slots[0], 32 - $bytes)
+            fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+                static_read_from_storage::<Self, 1>(host, key)
             }
-
+            #[inline]
+            fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+                static_try_read_from_storage::<Self, 1>(host, key)
+            }
             #[inline]
             fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
                 <Self as StoragePackable>::unpack_from(buf, offset)
+            }
+        }
+
+        impl StaticStorageEncode for $ty {
+            #[inline]
+            fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+                debug_assert!(_slot_idx == 0);
+                *buf = [0u8; 32];
+                <Self as StoragePackable>::pack_into(self, buf, 32 - $bytes);
+            }
+        }
+
+        impl StaticStorageDecode for $ty {
+            #[inline]
+            fn from_slots(slots: &[[u8; 32]]) -> Self {
+                <Self as StoragePackable>::unpack_from(&slots[0], 32 - $bytes)
             }
         }
 
@@ -332,11 +401,13 @@ impl StorageEncode for U256 {
     const PACKED_BYTES: usize = 32;
 
     #[inline]
-    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert!(_slot_idx == 0);
-        *buf = self.to_be_bytes::<32>();
+    fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+        static_write_to_storage(self, host, key)
     }
-
+    #[inline]
+    fn clear_storage(host: &Host, key: &[u8; 32]) {
+        clear_n_slots(host, key, 1)
+    }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
         <Self as StoragePackable>::pack_into(self, buf, offset)
@@ -345,13 +416,31 @@ impl StorageEncode for U256 {
 
 impl StorageDecode for U256 {
     #[inline]
-    fn from_slots(slots: &[[u8; 32]]) -> Self {
-        U256::from_be_bytes(slots[0])
+    fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+        static_read_from_storage::<Self, 1>(host, key)
     }
-
+    #[inline]
+    fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+        static_try_read_from_storage::<Self, 1>(host, key)
+    }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
         <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl StaticStorageEncode for U256 {
+    #[inline]
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert!(_slot_idx == 0);
+        *buf = self.to_be_bytes::<32>();
+    }
+}
+
+impl StaticStorageDecode for U256 {
+    #[inline]
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        U256::from_be_bytes(slots[0])
     }
 }
 
@@ -376,11 +465,13 @@ impl StorageEncode for I256 {
     const PACKED_BYTES: usize = 32;
 
     #[inline]
-    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert!(_slot_idx == 0);
-        *buf = self.to_be_bytes();
+    fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+        static_write_to_storage(self, host, key)
     }
-
+    #[inline]
+    fn clear_storage(host: &Host, key: &[u8; 32]) {
+        clear_n_slots(host, key, 1)
+    }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
         <Self as StoragePackable>::pack_into(self, buf, offset)
@@ -389,13 +480,31 @@ impl StorageEncode for I256 {
 
 impl StorageDecode for I256 {
     #[inline]
-    fn from_slots(slots: &[[u8; 32]]) -> Self {
-        I256::from_be_slice(&slots[0])
+    fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+        static_read_from_storage::<Self, 1>(host, key)
     }
-
+    #[inline]
+    fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+        static_try_read_from_storage::<Self, 1>(host, key)
+    }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
         <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl StaticStorageEncode for I256 {
+    #[inline]
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert!(_slot_idx == 0);
+        *buf = self.to_be_bytes();
+    }
+}
+
+impl StaticStorageDecode for I256 {
+    #[inline]
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        I256::from_be_slice(&slots[0])
     }
 }
 
@@ -421,12 +530,13 @@ impl StorageEncode for bool {
     const PACKED_BYTES: usize = 1;
 
     #[inline]
-    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert!(_slot_idx == 0);
-        *buf = [0u8; 32];
-        <Self as StoragePackable>::pack_into(self, buf, 31);
+    fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+        static_write_to_storage(self, host, key)
     }
-
+    #[inline]
+    fn clear_storage(host: &Host, key: &[u8; 32]) {
+        clear_n_slots(host, key, 1)
+    }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
         <Self as StoragePackable>::pack_into(self, buf, offset)
@@ -435,13 +545,32 @@ impl StorageEncode for bool {
 
 impl StorageDecode for bool {
     #[inline]
-    fn from_slots(slots: &[[u8; 32]]) -> Self {
-        <Self as StoragePackable>::unpack_from(&slots[0], 31)
+    fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+        static_read_from_storage::<Self, 1>(host, key)
     }
-
+    #[inline]
+    fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+        static_try_read_from_storage::<Self, 1>(host, key)
+    }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
         <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl StaticStorageEncode for bool {
+    #[inline]
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert!(_slot_idx == 0);
+        *buf = [0u8; 32];
+        <Self as StoragePackable>::pack_into(self, buf, 31);
+    }
+}
+
+impl StaticStorageDecode for bool {
+    #[inline]
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        <Self as StoragePackable>::unpack_from(&slots[0], 31)
     }
 }
 
@@ -465,12 +594,13 @@ impl StorageEncode for Address {
     const PACKED_BYTES: usize = 20;
 
     #[inline]
-    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
-        debug_assert!(_slot_idx == 0);
-        *buf = [0u8; 32];
-        <Self as StoragePackable>::pack_into(self, buf, 12);
+    fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+        static_write_to_storage(self, host, key)
     }
-
+    #[inline]
+    fn clear_storage(host: &Host, key: &[u8; 32]) {
+        clear_n_slots(host, key, 1)
+    }
     #[inline]
     fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
         <Self as StoragePackable>::pack_into(self, buf, offset)
@@ -479,13 +609,32 @@ impl StorageEncode for Address {
 
 impl StorageDecode for Address {
     #[inline]
-    fn from_slots(slots: &[[u8; 32]]) -> Self {
-        <Self as StoragePackable>::unpack_from(&slots[0], 12)
+    fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+        static_read_from_storage::<Self, 1>(host, key)
     }
-
+    #[inline]
+    fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+        static_try_read_from_storage::<Self, 1>(host, key)
+    }
     #[inline]
     fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
         <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl StaticStorageEncode for Address {
+    #[inline]
+    fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
+        debug_assert!(_slot_idx == 0);
+        *buf = [0u8; 32];
+        <Self as StoragePackable>::pack_into(self, buf, 12);
+    }
+}
+
+impl StaticStorageDecode for Address {
+    #[inline]
+    fn from_slots(slots: &[[u8; 32]]) -> Self {
+        <Self as StoragePackable>::unpack_from(&slots[0], 12)
     }
 }
 
@@ -505,15 +654,42 @@ impl StoragePackable for Address {
     }
 }
 
-// [u8; N] — Solidity `bytesN`, right-aligned in the slot (see the
-// `StoragePackable` impl below for the verification against solc).
-//
-// Note: N is bounded at 1..=32 to match solc's `bytesN` types. A const assert
-// in each method enforces the bound at monomorphisation.
+// [u8; N] — Solidity `bytesN`, right-aligned in the slot.
+// N is bounded at 1..=32 to match solc's `bytesN` types.
 impl<const N: usize> StorageEncode for [u8; N] {
     const STORAGE_SLOTS: usize = 1;
     const PACKED_BYTES: usize = N;
 
+    #[inline]
+    fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+        static_write_to_storage(self, host, key)
+    }
+    #[inline]
+    fn clear_storage(host: &Host, key: &[u8; 32]) {
+        clear_n_slots(host, key, 1)
+    }
+    #[inline]
+    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
+        <Self as StoragePackable>::pack_into(self, buf, offset)
+    }
+}
+
+impl<const N: usize> StorageDecode for [u8; N] {
+    #[inline]
+    fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+        static_read_from_storage::<Self, 1>(host, key)
+    }
+    #[inline]
+    fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+        static_try_read_from_storage::<Self, 1>(host, key)
+    }
+    #[inline]
+    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
+        <Self as StoragePackable>::unpack_from(buf, offset)
+    }
+}
+
+impl<const N: usize> StaticStorageEncode for [u8; N] {
     #[inline]
     fn encode_slot(&self, _slot_idx: usize, buf: &mut [u8; 32]) {
         const {
@@ -526,22 +702,12 @@ impl<const N: usize> StorageEncode for [u8; N] {
         *buf = [0u8; 32];
         <Self as StoragePackable>::pack_into(self, buf, 32 - N);
     }
-
-    #[inline]
-    fn __pack_into_dispatched(&self, buf: &mut [u8; 32], offset: usize) {
-        <Self as StoragePackable>::pack_into(self, buf, offset)
-    }
 }
 
-impl<const N: usize> StorageDecode for [u8; N] {
+impl<const N: usize> StaticStorageDecode for [u8; N] {
     #[inline]
     fn from_slots(slots: &[[u8; 32]]) -> Self {
         <Self as StoragePackable>::unpack_from(&slots[0], 32 - N)
-    }
-
-    #[inline]
-    fn __unpack_from_dispatched(buf: &[u8; 32], offset: usize) -> Self {
-        <Self as StoragePackable>::unpack_from(buf, offset)
     }
 }
 
@@ -616,6 +782,29 @@ macro_rules! impl_storage_tuple {
 
                 const PACKED_BYTES: usize = 32;
 
+                #[inline]
+                fn write_to_storage(&self, host: &Host, key: &[u8; 32]) {
+                    static_write_to_storage(self, host, key)
+                }
+                #[inline]
+                fn clear_storage(host: &Host, key: &[u8; 32]) {
+                    clear_n_slots(host, key, Self::STORAGE_SLOTS)
+                }
+            }
+
+            impl<$($T: StoragePackable),+> StorageDecode for ($($T,)+) {
+                #[inline]
+                fn read_from_storage(host: &Host, key: &[u8; 32]) -> Self {
+                    // N=8 upper bound: tuples have arity <= 8, so STORAGE_SLOTS <= 8.
+                    static_read_from_storage::<Self, 8>(host, key)
+                }
+                #[inline]
+                fn try_read_from_storage(host: &Host, key: &[u8; 32]) -> Option<Self> {
+                    static_try_read_from_storage::<Self, 8>(host, key)
+                }
+            }
+
+            impl<$($T: StoragePackable),+> StaticStorageEncode for ($($T,)+) {
                 fn encode_slot(&self, slot_idx: usize, buf: &mut [u8; 32]) {
                     *buf = [0u8; 32];
                     let mut slot: usize = 0;
@@ -637,7 +826,7 @@ macro_rules! impl_storage_tuple {
                 }
             }
 
-            impl<$($T: StoragePackable),+> StorageDecode for ($($T,)+) {
+            impl<$($T: StoragePackable),+> StaticStorageDecode for ($($T,)+) {
                 fn from_slots(slots: &[[u8; 32]]) -> Self {
                     let mut slot: usize = 0;
                     let mut space: usize = 32;
@@ -866,54 +1055,40 @@ pub(crate) fn clear_dynamic_bytes(host: &Host, slot: &[u8; 32]) {
 impl StorageEncode for alloc::string::String {
     const STORAGE_SLOTS: usize = 1;
     const PACKED_BYTES: usize = 32;
-    const HAS_DYNAMIC_BODY: bool = true;
-
-    // Dynamic-body type: the live path goes through `write_to_storage` below,
-    // which writes header + body in one operation. `encode_slot` exists only
-    // to satisfy the trait's required-method contract — making the method
-    // required (rather than defaulted) is what compile-checks that every
-    // static impl provides a real slot codec.
-    fn encode_slot(&self, _slot_idx: usize, _buf: &mut [u8; 32]) {
-        unreachable!("String::encode_slot: dispatch through write_to_storage")
-    }
 
     fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
         write_dynamic_bytes(host, base_key, self.as_bytes());
     }
 
-    fn clear_storage(host: &Host, base_key: &[u8; 32], _slots: usize) {
+    fn clear_storage(host: &Host, base_key: &[u8; 32]) {
         clear_dynamic_bytes(host, base_key);
     }
 }
 
 #[cfg(feature = "alloc")]
 impl StorageDecode for alloc::string::String {
-    // Dynamic-body type: see `encode_slot` above for the rationale. Reads
-    // dispatch through `read_from_storage`.
-    fn from_slots(_slots: &[[u8; 32]]) -> Self {
-        unreachable!("String::from_slots: dispatch through read_from_storage")
+    fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self {
+        let bytes = read_dynamic_bytes(host, base_key);
+        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Matches
+        // Stylus's `StorageString::get_string`. Trapping on invalid bytes
+        // would be a DoS vector when storage is shared with a Solidity
+        // contract that doesn't validate. For byte-exact roundtrips use
+        // `Lazy<Bytes>` / `Mapping<K, Bytes>` instead.
+        alloc::string::String::from_utf8_lossy(&bytes).into_owned()
     }
 
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(host: &Host, base_key: &[u8; 32]) -> Self {
-        let bytes = read_dynamic_bytes(host, base_key);
-        // Rust's `String` invariant requires valid UTF-8. We use lossy decoding
-        // to keep `get()` infallible: invalid sequences are replaced with
-        // U+FFFD instead of trapping.
-        //
-        // This matches Stylus's `StorageString::get_string`
-        // (`stylus-sdk/src/storage/bytes.rs:528`) — also lossy, also infallible,
-        // also offers a `Bytes` escape hatch for byte-exact reads. It diverges
-        // from a Solidity contract reading the same slot, which sees the raw
-        // bytes verbatim because solc never decodes `string` (it's just `bytes`
-        // with a UTF-8 hint). Trapping on invalid bytes (ink!'s choice via
-        // SCALE decode) would be a DoS vector when storage is shared with a
-        // Solidity contract that doesn't validate.
-        //
-        // Contracts needing byte-exact roundtrips (e.g. computing a keccak256
-        // that matches what an off-chain client hashed) must use
-        // `Lazy<Bytes>` / `Mapping<K, Bytes>` instead — `Bytes` round-trips
-        // every byte verbatim, no substitution.
-        alloc::string::String::from_utf8_lossy(&bytes).into_owned()
+    fn try_read_from_storage(host: &Host, base_key: &[u8; 32]) -> Option<Self> {
+        // Header-only peek: if the slot is all-zero, nothing was ever written.
+        // Solidity-compat — empty inline values write the
+        // [`EMPTY_INLINE_SENTINEL`] at byte 30, so they're distinguishable
+        // from a never-written slot.
+        let mut header = [0u8; 32];
+        host.get_storage_or_zero(StorageFlags::empty(), base_key, &mut header);
+        if header == [0u8; 32] {
+            return None;
+        }
+        // Header is non-zero → some value was written; load body.
+        Some(Self::read_from_storage(host, base_key))
     }
 }
 
