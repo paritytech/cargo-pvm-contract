@@ -14,7 +14,9 @@
 //!   - **Layout** — the inner field's slot matches the
 //!     `keccak256(pad32(k)+slot).add(N)` derivation solc would emit.
 
-use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping, StorageComponent, StorageFlags, StorageKey};
+use pvm_contract_sdk::{
+    Address, HostApi, Lazy, Mapping, StorageComponent, StorageFlags, StorageKey,
+};
 use pvm_contract_types::{Host, MockHostBuilder};
 use ruint::aliases::U256;
 use std::rc::Rc;
@@ -37,9 +39,9 @@ fn raw_slot(host: &Host, key: &StorageKey) -> [u8; 32] {
 
 #[pvm_contract_sdk::storage]
 pub struct VaultData {
-    pub total_shares: Lazy<U256>,                 // field offset 0 of derived key
-    pub shares: Mapping<Address, U256>,           // field offset 1 of derived key
-    pub last_deposit: Mapping<Address, U256>,     // field offset 2 of derived key
+    pub total_shares: Lazy<U256>,       // field offset 0 of derived key
+    pub shares: Mapping<Address, U256>, // field offset 1 of derived key
+    pub last_deposit: Mapping<Address, U256>, // field offset 2 of derived key
 }
 
 #[test]
@@ -109,8 +111,7 @@ fn mapping_of_storage_struct_layout_matches_solc_derivation() {
     // occupies `derived + 0` (i.e. derived itself). Independently
     // constructing a Lazy<U256> at that key should read the same value.
     let derived = vaults.slot_of(&vault);
-    let total_shares_via_raw =
-        unsafe { Lazy::<U256>::new(derived, 0, host.clone()) };
+    let total_shares_via_raw = unsafe { Lazy::<U256>::new(derived, 0, host.clone()) };
     assert_eq!(total_shares_via_raw.get(), U256::from(99_999));
 }
 
@@ -121,8 +122,7 @@ fn mapping_of_storage_struct_layout_matches_solc_derivation() {
 #[test]
 fn mapping_of_lazy_round_trip() {
     let host = fresh_host();
-    let mut m =
-        unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
+    let mut m = unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
 
     // Storage-typed map: write/read via view_mut/view returning Ref<Lazy<U256>>
     m.view_mut(&1u64).set(&U256::from(42));
@@ -138,8 +138,7 @@ fn mapping_of_lazy_subword_matches_canonical_offset() {
     // the u128 at byte 16 of the derived slot, matching solc's
     // `mapping(uint64 => uint128)`.
     let host = fresh_host();
-    let mut m =
-        unsafe { Mapping::<u64, Lazy<u128>>::new(StorageKey::from_slot(0), host.clone()) };
+    let mut m = unsafe { Mapping::<u64, Lazy<u128>>::new(StorageKey::from_slot(0), host.clone()) };
     let v: u128 = 0xCAFE_BABE_DEAD_BEEFu128;
     m.view_mut(&1u64).set(&v);
 
@@ -339,8 +338,7 @@ fn delete_struct_entry_clears_all_lazy_fields() {
 #[test]
 fn delete_lazy_entry_clears_the_slot() {
     let host = fresh_host();
-    let mut m =
-        unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
+    let mut m = unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
     m.view_mut(&1u64).set(&U256::from(42));
     assert_eq!(m.view(&1u64).get(), U256::from(42));
 
@@ -354,8 +352,7 @@ fn delete_lazy_entry_clears_the_slot() {
 #[test]
 fn delete_lazy_subword_entry_clears_the_canonical_window() {
     let host = fresh_host();
-    let mut m =
-        unsafe { Mapping::<u64, Lazy<u128>>::new(StorageKey::from_slot(0), host.clone()) };
+    let mut m = unsafe { Mapping::<u64, Lazy<u128>>::new(StorageKey::from_slot(0), host.clone()) };
     let v: u128 = 0xCAFE_BABE_DEAD_BEEFu128;
     m.view_mut(&1u64).set(&v);
     assert_eq!(m.view(&1u64).get(), v);

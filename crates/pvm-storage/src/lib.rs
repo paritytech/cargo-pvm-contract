@@ -848,7 +848,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             value.write_to_storage(&self.host, self.key.as_bytes());
         }
     }
-
 }
 
 impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
@@ -1268,7 +1267,12 @@ impl<K, V: StorageComponent> Mapping<K, V> {
         let offset = (32 - V::PACKED_BYTES) as u8;
         // `alone = true`: the derived slot is keccak-keyed by `key`, so no
         // other handle (sibling field, other entry, etc.) can collide with it.
-        Ref::new(V::new_at(self.slot_of(key), offset, true, self.host.clone()))
+        Ref::new(V::new_at(
+            self.slot_of(key),
+            offset,
+            true,
+            self.host.clone(),
+        ))
     }
 
     /// Mutable view into the sub-component at `key`. Caller has `&mut self`

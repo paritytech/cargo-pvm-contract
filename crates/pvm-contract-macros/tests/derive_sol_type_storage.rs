@@ -7,11 +7,11 @@
 
 extern crate alloc;
 
-use pvm_contract_sdk::{SolStorage, SolType};
 use pvm_contract_sdk::{
     Address, Bytes, Lazy, Mapping, StaticStorageDecode, StaticStorageEncode, StorageEncode,
     StorageKey, StoragePackable, U256,
 };
+use pvm_contract_sdk::{SolStorage, SolType};
 use pvm_contract_types::MockHostBuilder;
 
 fn fresh_host() -> pvm_contract_sdk::Host {

@@ -115,8 +115,10 @@ fn build_packed_pair(host: &Host) -> packed_pair::PackedPair {
     //   __pvm_storage_slot_b = layout_step(prev_a, 16, 1) -> (slot=0, offset=0)
     // Both share slot 0 — neighbours of each other, so `alone = false`
     // (sub-word writes must take the RMW path).
-    let a = <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, false, host.clone());
-    let b = <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, false, host.clone());
+    let a =
+        <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, false, host.clone());
+    let b =
+        <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, false, host.clone());
     packed_pair::PackedPair {
         a,
         b,
@@ -258,10 +260,30 @@ fn build_classic(host: &Host) -> classic_layout::ClassicLayout {
         // flag/counter/owner all share slot 0 — `alone = false`.
         // balance is the only field in slot 1 — `alone = true` (full-slot
         // U256 ignores the flag anyway).
-        flag: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(0), 31, false, host.clone()),
-        counter: <Lazy<u32> as StorageComponent>::new_at(StorageKey::from_slot(0), 27, false, host.clone()),
-        owner: <Lazy<Address> as StorageComponent>::new_at(StorageKey::from_slot(0), 7, false, host.clone()),
-        balance: <Lazy<U256> as StorageComponent>::new_at(StorageKey::from_slot(1), 0, true, host.clone()),
+        flag: <Lazy<bool> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            31,
+            false,
+            host.clone(),
+        ),
+        counter: <Lazy<u32> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            27,
+            false,
+            host.clone(),
+        ),
+        owner: <Lazy<Address> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            7,
+            false,
+            host.clone(),
+        ),
+        balance: <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        ),
         host: host.clone(),
     }
 }
@@ -349,9 +371,24 @@ fn three_u128_fields_spill_third_to_a_fresh_slot() {
     let (host, mock) = fresh();
     let mut c = spill::Spill {
         // a/b share slot 0 (not alone); c lands on its own slot 1 (alone).
-        a: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, false, host.clone()),
-        b: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, false, host.clone()),
-        c: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(1), 16, true, host.clone()),
+        a: <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            16,
+            false,
+            host.clone(),
+        ),
+        b: <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            false,
+            host.clone(),
+        ),
+        c: <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            16,
+            true,
+            host.clone(),
+        ),
         host: host.clone(),
     };
 
@@ -439,9 +476,19 @@ fn mapping_forces_fresh_slot_and_following_packable_lands_on_a_new_slot() {
     let mut c = with_mapping::WithMapping {
         // before/after each occupy their own slot (the mapping in between
         // forces a fresh slot), so both `alone = true`.
-        before: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(0), 31, true, host.clone()),
+        before: <Lazy<bool> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            31,
+            true,
+            host.clone(),
+        ),
         balances: unsafe { Mapping::<Address, U256>::new(StorageKey::from_slot(1), host.clone()) },
-        after: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(2), 31, true, host.clone()),
+        after: <Lazy<bool> as StorageComponent>::new_at(
+            StorageKey::from_slot(2),
+            31,
+            true,
+            host.clone(),
+        ),
         host: host.clone(),
     };
 
@@ -537,9 +584,24 @@ fn multi_slot_composite_forces_fresh_slot_for_following_field() {
     let mut c = with_multi_slot::WithMultiSlot {
         // flag is alone in slot 0; the (U256,U256) tuple consumes slots 1..=2
         // (full-slot, ignores alone); tail is alone in slot 3.
-        flag: <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(0), 31, true, host.clone()),
-        pair: <Lazy<(U256, U256)> as StorageComponent>::new_at(StorageKey::from_slot(1), 0, true, host.clone()),
-        tail: <Lazy<u32> as StorageComponent>::new_at(StorageKey::from_slot(3), 28, true, host.clone()),
+        flag: <Lazy<bool> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            31,
+            true,
+            host.clone(),
+        ),
+        pair: <Lazy<(U256, U256)> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        ),
+        tail: <Lazy<u32> as StorageComponent>::new_at(
+            StorageKey::from_slot(3),
+            28,
+            true,
+            host.clone(),
+        ),
         host: host.clone(),
     };
 
@@ -632,8 +694,18 @@ fn clear_packed_field_preserves_neighbour_via_method() {
     let (host, mock) = fresh();
     let mut c = packed_clear::PackedClear {
         // Both share slot 0 — clear_b must RMW to preserve a's bytes.
-        a: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 16, false, host.clone()),
-        b: <Lazy<u128> as StorageComponent>::new_at(StorageKey::from_slot(0), 0, false, host.clone()),
+        a: <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            16,
+            false,
+            host.clone(),
+        ),
+        b: <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            false,
+            host.clone(),
+        ),
         host: host.clone(),
     };
 

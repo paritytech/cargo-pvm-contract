@@ -990,7 +990,11 @@ fn lazy_set_alone_in_slot_skips_rmw_and_clobbers_neighbour_bytes() {
     // Bytes 16..32 hold the value; bytes 0..16 are zero (RMW would have
     // preserved the 0xCC pattern).
     let slot = storage_get_32(&host, key.as_bytes());
-    assert_eq!(&slot[16..32], &v.to_be_bytes(), "value written at offset 16");
+    assert_eq!(
+        &slot[16..32],
+        &v.to_be_bytes(),
+        "value written at offset 16"
+    );
     assert!(
         slot[..16].iter().all(|&b| b == 0),
         "alone fast path clobbered the neighbour bytes (no SLOAD): got {:02x?}",
@@ -1015,7 +1019,11 @@ fn lazy_set_not_alone_rmw_preserves_neighbour_bytes() {
     lazy.set(&v);
 
     let slot = storage_get_32(&host, key.as_bytes());
-    assert_eq!(&slot[16..32], &v.to_be_bytes(), "value written at offset 16");
+    assert_eq!(
+        &slot[16..32],
+        &v.to_be_bytes(),
+        "value written at offset 16"
+    );
     assert_eq!(
         &slot[..16],
         &[0xCC; 16],
@@ -1044,8 +1052,7 @@ fn lazy_clear_alone_in_slot_skips_rmw_and_clobbers_neighbour_bytes() {
     // all-zero slot, so `storage_get_32` reads back zeros for every byte.
     let slot = storage_get_32(&host, key.as_bytes());
     assert_eq!(
-        slot,
-        [0u8; 32],
+        slot, [0u8; 32],
         "alone-in-slot clear wiped the whole slot — no RMW",
     );
 }
@@ -1737,9 +1744,7 @@ fn erc20_storage_example() {
     assert_eq!(balances.get(&bob), U256::from(300));
 
     // Approve: alice approves bob for 500
-    allowances
-        .view_mut(&alice)
-        .insert(&bob, &U256::from(500));
+    allowances.view_mut(&alice).insert(&bob, &U256::from(500));
 
     // Read allowance via chaining
     assert_eq!(allowances.view(&alice).get(&bob), U256::from(500));

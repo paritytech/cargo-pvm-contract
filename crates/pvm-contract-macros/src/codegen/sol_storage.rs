@@ -67,7 +67,9 @@ use syn::{DeriveInput, Fields, ItemStruct, Type};
 
 use super::contract::find_derive_clone;
 use super::sol_type::extract_field_info;
-use super::storage_layout::{ChainField, alone_chain_consts, generate_layout_emit, slot_chain_consts};
+use super::storage_layout::{
+    ChainField, alone_chain_consts, generate_layout_emit, slot_chain_consts,
+};
 use crate::signature::SolType;
 
 pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
