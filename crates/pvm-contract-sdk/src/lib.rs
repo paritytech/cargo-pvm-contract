@@ -101,11 +101,14 @@ pub use pvm_contract_types::{
     StorageFlags,
     StoragePackable,
     U256,
+    // Checked decode-offset helpers (used by `#[derive(SolType)]` codegen)
+    checked_sum,
     const_keccak256,
     const_selector,
     // Framework errors
     framework_errors,
     keccak256,
+    read_word_offset,
     value_transferred_is_nonzero,
 };
 

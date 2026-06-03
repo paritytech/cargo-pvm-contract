@@ -107,7 +107,7 @@ impl SolError for DecodeError {
 /// with [`DecodeError`] instead of wrapping (silent under
 /// `overflow-checks = false`) or panicking.
 #[inline]
-pub(crate) fn read_word_offset(input: &[u8], offset: usize) -> Result<usize, DecodeError> {
+pub fn read_word_offset(input: &[u8], offset: usize) -> Result<usize, DecodeError> {
     let start = offset.checked_add(24).ok_or(DecodeError)?;
     let end = offset.checked_add(32).ok_or(DecodeError)?;
     input
@@ -121,7 +121,7 @@ pub(crate) fn read_word_offset(input: &[u8], offset: usize) -> Result<usize, Dec
 /// Sum a sequence of attacker-controlled offset components with checked
 /// arithmetic, returning [`DecodeError`] on overflow.
 #[inline]
-pub(crate) fn checked_sum(parts: impl IntoIterator<Item = usize>) -> Result<usize, DecodeError> {
+pub fn checked_sum(parts: impl IntoIterator<Item = usize>) -> Result<usize, DecodeError> {
     parts
         .into_iter()
         .try_fold(0usize, |acc, p| acc.checked_add(p))

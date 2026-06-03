@@ -1311,35 +1311,46 @@ fn generate_dynamic_field_decode(
     sol_type: &SolType,
     head_offset_expr: &TokenStream,
 ) -> TokenStream {
+    // Offsets read from calldata are attacker-controlled, so every composition
+    // routes through checked arithmetic (`read_word_offset` / `checked_sum`) —
+    // matching the hand-written decoders in `pvm-contract-types`. A raw `+`
+    // here would wrap silently under `overflow-checks = false` and alias reads
+    // back into the calldata buffer instead of failing closed.
     match sol_type.is_dynamic() {
         Some(true) => quote! {{
             let __ho = #head_offset_expr;
-            let __field_offset = TryInto::<[u8; 8]>::try_into(
-                input
-                    .get(offset + __ho + 24..offset + __ho + 32)
-                    .ok_or(::pvm_contract_sdk::DecodeError)?,
-            )
-            .map_err(|_| ::pvm_contract_sdk::DecodeError)
-            .map(u64::from_be_bytes)? as usize;
-            <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)?
+            let __field_offset = ::pvm_contract_sdk::read_word_offset(
+                input,
+                ::pvm_contract_sdk::checked_sum([offset, __ho])?,
+            )?;
+            <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(
+                input,
+                ::pvm_contract_sdk::checked_sum([offset, __field_offset])?,
+            )?
         }},
         Some(false) => quote! {{
             let __ho = #head_offset_expr;
-            <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)?
+            <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(
+                input,
+                ::pvm_contract_sdk::checked_sum([offset, __ho])?,
+            )?
         }},
         None => quote! {{
             let __ho = #head_offset_expr;
             if <#ty as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
-                let __field_offset = TryInto::<[u8; 8]>::try_into(
-                    input
-                        .get(offset + __ho + 24..offset + __ho + 32)
-                        .ok_or(::pvm_contract_sdk::DecodeError)?,
-                )
-                .map_err(|_| ::pvm_contract_sdk::DecodeError)
-                .map(u64::from_be_bytes)? as usize;
-                <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(input, offset + __field_offset)?
+                let __field_offset = ::pvm_contract_sdk::read_word_offset(
+                    input,
+                    ::pvm_contract_sdk::checked_sum([offset, __ho])?,
+                )?;
+                <#ty as ::pvm_contract_sdk::SolDecode>::decode_tail(
+                    input,
+                    ::pvm_contract_sdk::checked_sum([offset, __field_offset])?,
+                )?
             } else {
-                <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(input, offset + __ho)?
+                <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(
+                    input,
+                    ::pvm_contract_sdk::checked_sum([offset, __ho])?,
+                )?
             }
         }},
     }
