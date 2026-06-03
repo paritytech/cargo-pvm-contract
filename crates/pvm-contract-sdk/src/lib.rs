@@ -43,8 +43,8 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolEvent, SolType, abi_import, constructor, contract, fallback, method, payable,
-    receive, storage,
+    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback, method,
+    payable, receive, storage,
 };
 
 // ---------------------------------------------------------------------------

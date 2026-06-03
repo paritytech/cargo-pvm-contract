@@ -7,7 +7,7 @@
 
 extern crate alloc;
 
-use pvm_contract_sdk::SolType;
+use pvm_contract_sdk::{SolStorage, SolType};
 use pvm_contract_sdk::{
     Address, Bytes, Lazy, Mapping, StaticStorageDecode, StaticStorageEncode, StorageEncode,
     StorageKey, StoragePackable, U256,
@@ -33,7 +33,7 @@ fn encode_all<T: StaticStorageEncode>(value: &T) -> alloc::vec::Vec<[u8; 32]> {
 // One-slot packed: (address, uint32) — solc packs into a single 32-byte slot.
 // ========================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct AddrAndCounter {
     addr: Address,
     counter: u32,
@@ -85,7 +85,7 @@ fn addr_and_counter_round_trip() {
 // Two-slot packed: a packed slot 0 + a full U256 slot 1.
 // ========================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct UserInfo {
     active: bool,
     joined_at: u32,
@@ -143,7 +143,7 @@ fn user_info_round_trip() {
 // bytesN — right-aligned in solc storage (verified vs. solc 0.8.30 bytecode).
 // ========================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct WithBytes {
     tag: [u8; 4],
     payload: U256,
@@ -173,7 +173,7 @@ fn bytes4_right_aligned_in_slot() {
 // Single-field struct — same slot count as the field's type.
 // ========================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct OneField {
     x: u32,
 }
@@ -191,7 +191,7 @@ fn single_field_struct_one_slot() {
 // Spill across a slot boundary: small + small + big that doesn't fit.
 // ========================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct Spill {
     a: u128,
     b: u128,
@@ -244,7 +244,7 @@ fn primitives_implement_storage_packable() {
 
 // --- Two `u64`s pack into a single slot (sub-word static path) -------------
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct RunningAverage {
     sum: u64,
     total: u64,
@@ -271,7 +271,7 @@ fn packed_struct_single_slot_via_lazy_round_trip() {
 
 // --- Three `U256`s — genuinely multi-slot static (3 slots) -----------------
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct ThreeWords {
     a: U256,
     b: U256,
@@ -298,7 +298,7 @@ fn multi_slot_static_struct_via_mapping_round_trip() {
 
 // --- Struct with a dynamic `String` field: solc's header + spilled body ----
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct DynamicReview {
     reviewer: Address,
     comment_uri: alloc::string::String,
@@ -362,7 +362,7 @@ fn dynamic_field_struct_inherent_static_slot_encoder_writes_address() {
 
 // --- Struct mixing packable statics (Address + u8) with a dynamic String --
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct Review {
     reviewer: Address,
     rating: u8,
@@ -429,7 +429,7 @@ fn review_via_mapping_remove_clears_storage() {
 // path. Mirroring the `DynamicReview` / `Review` tests with `Bytes` would
 // otherwise let divergent codegen between the two go silent.
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct DynamicBlob {
     owner: Address,
     payload: Bytes,
@@ -476,7 +476,7 @@ fn dynamic_blob_via_mapping_round_trip_spilled() {
 // --- Struct mixing packable statics (Address + u8) with a dynamic Bytes ---
 // Mirrors `Review` (String + Address + u8) with Bytes in place of String.
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct BlobMetadata {
     owner: Address,
     version: u8,
@@ -546,7 +546,7 @@ fn blob_metadata_via_mapping_remove_clears_storage() {
 // applied one level down, exercised here on the derive path.
 // ========================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 struct U128Pair {
     a: u128,
     b: u128,
