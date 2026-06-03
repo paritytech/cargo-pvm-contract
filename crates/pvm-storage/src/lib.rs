@@ -181,13 +181,6 @@ pub(crate) fn inc_slot(slot: &mut [u8; 32]) {
 /// so any larger buffer here would fail at host-call time on chain.
 pub const MAX_STATIC_SLOTS: usize = 8;
 
-/// Read `out.len()` consecutive slots starting at `key` into `out`.
-// `read_slots`, `try_read_slots`, `write_value`, `clear_n_slots` removed —
-// each storage type now owns its own host access via
-// `StorageEncode::write_to_storage` / `clear_storage` and
-// `StorageDecode::read_from_storage` / `try_read_from_storage`. Shared
-// helpers live in `pvm_contract_types::storage_codec`.
-
 // ---------------------------------------------------------------------------
 // StorageKey
 // ---------------------------------------------------------------------------
@@ -254,6 +247,11 @@ impl StorageKey {
     /// wrap is unreachable because derived keys are uniformly distributed in
     /// the 256-bit space, so no realistic struct/array depth approaches the
     /// wrap boundary.
+    ///
+    /// Named `add` despite clippy's `should_implement_trait` lint: this is
+    /// EVM `uint256` modular addition (matches solc's storage-key derivation),
+    /// not host-side `core::ops::Add` arithmetic — a trait impl would mislead.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, n: u64) -> StorageKey {
         let mut out = self.0;
         // Add `n` into the low 8 bytes (bytes 24..32) with carry up.
