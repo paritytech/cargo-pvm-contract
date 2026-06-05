@@ -630,7 +630,7 @@ macro_rules! impl_storage_array_element {
 }
 
 impl_storage_array_element!(
-    u16, u32, u64, u128, U256, i16, i32, i64, i128, I256, bool, Address,
+    u16, u32, u64, u128, U256, i8, i16, i32, i64, i128, I256, bool, Address,
 );
 
 impl<T: StorageArrayElement, const N: usize> StorageEncode for [T; N] {
