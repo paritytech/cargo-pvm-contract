@@ -8,7 +8,6 @@ enum Variant {
     NoAlloc,
     WithAlloc,
     BuilderDsl,
-    Storage,
 }
 
 impl Variant {
@@ -17,13 +16,12 @@ impl Variant {
             Variant::NoAlloc => "no-alloc",
             Variant::WithAlloc => "with-alloc",
             Variant::BuilderDsl => "builder-dsl",
-            Variant::Storage => "storage",
         }
     }
 
     fn cargo_toml(&self, contract: &str, base_path: &Path) -> String {
         match self {
-            Variant::NoAlloc | Variant::Storage => cargo_toml_no_alloc(contract, base_path),
+            Variant::NoAlloc => cargo_toml_no_alloc(contract, base_path),
             Variant::WithAlloc => cargo_toml_with_alloc(contract, base_path),
             Variant::BuilderDsl => cargo_toml_builder_dsl(contract, base_path),
         }
@@ -154,7 +152,6 @@ fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result
     let source_file = match variant {
         Variant::NoAlloc => format!("{contract}_no_alloc.rs"),
         Variant::WithAlloc => format!("{contract}_with_alloc.rs"),
-        Variant::Storage => format!("{contract}_storage.rs"),
         Variant::BuilderDsl => unreachable!(),
     };
 
@@ -251,18 +248,23 @@ fn build_variant(
 }
 
 fn variants_for_contract(contract: &str) -> Vec<Variant> {
-    // The `packed_*` contracts are an A/B comparison of the storage value
-    // model (`Lazy<S>` over a `#[derive(SolType)]` struct) vs the handle
-    // bundle model (`#[storage]` of `Lazy<T>` leaves). They only build the
-    // no-alloc variant — the alloc/dsl axes are orthogonal to the question.
-    if contract.starts_with("packed_") {
+    // Single-source contracts: each is its own implementation and doesn't
+    // span the alloc/dsl variant axes.
+    //   - `mytoken_storage`: ERC20-style contract using `Lazy<U256>` +
+    //     `Mapping<Address, U256>` typed storage helpers. Paired against
+    //     `mytoken_no_alloc` / `mytoken_with_alloc` / `mytoken_dsl` to
+    //     measure the typed-storage overhead vs. raw-uAPI styles.
+    //   - `amm_reserves`: Uniswap V2-style packed pool reserves
+    //     (`Lazy<u128>` × 2 landing in one slot). Exercises the
+    //     `#[contract]` macro's auto-numbered slot walker for sub-word
+    //     siblings — the canonical Solidity packed-storage pattern.
+    //   - `allowlist`: address allowlist backed by `StorageVec<Address>`
+    //     (push/pop/swap-remove/linear scan). Exercises `StorageVec`'s
+    //     sub-word dispatch and length tracking.
+    if contract == "mytoken_storage" || contract == "amm_reserves" || contract == "allowlist" {
         return vec![Variant::NoAlloc];
     }
-    let mut variants = vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl];
-    if contract == "mytoken" {
-        variants.push(Variant::Storage);
-    }
-    variants
+    vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl]
 }
 
 fn main() -> Result<()> {
@@ -280,9 +282,10 @@ fn main() -> Result<()> {
     let contracts = vec![
         "fibonacci",
         "mytoken",
+        "mytoken_storage",
         "multi",
-        "packed_handle",
-        "packed_value",
+        "amm_reserves",
+        "allowlist",
     ];
     let profiles = vec!["debug", "release"];
 
