@@ -1382,7 +1382,12 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
         } else if T::STORAGE_SLOTS > 1 {
             // Multi-slot static. Dynamic-body always has STORAGE_SLOTS == 1
             // (one header slot per element; bodies derive elsewhere).
-            i * (T::STORAGE_SLOTS as u64)
+            // `checked_mul` so a corrupted length / pathologically large `i`
+            // surfaces as a clean panic rather than silently wrapping into
+            // the wrong slot. Physically unreachable in any real contract
+            // (would require `i > u64::MAX / STORAGE_SLOTS`), defensive.
+            i.checked_mul(T::STORAGE_SLOTS as u64)
+                .expect("StorageVec: element-stride overflow")
         } else {
             i
         }
@@ -1614,8 +1619,13 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
                 }
             } else {
                 // Single-slot full-word or multi-slot static: clear
-                // `len * STORAGE_SLOTS` consecutive slots.
-                let total_slots = len * (T::STORAGE_SLOTS as u64);
+                // `len * STORAGE_SLOTS` consecutive slots. `checked_mul` so a
+                // corrupted length can't silently wrap and clear an
+                // unintended slot range — physically unreachable for
+                // honest writers, defensive against external corruption.
+                let total_slots = len
+                    .checked_mul(T::STORAGE_SLOTS as u64)
+                    .expect("StorageVec::clear: total-slots overflow");
                 let mut key = *self.body_base();
                 for _ in 0..total_slots {
                     storage_set_32(&self.host, &key, &[0u8; 32]);

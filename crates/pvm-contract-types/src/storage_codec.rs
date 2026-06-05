@@ -636,7 +636,22 @@ impl_storage_array_element!(
 impl<T: StorageArrayElement, const N: usize> StorageEncode for [T; N] {
     /// Sub-word: ceil(N / density). Single-slot full-word: N. Multi-slot
     /// static: N * STORAGE_SLOTS.
+    ///
+    /// The leading `assert!(!T::HAS_DYNAMIC_BODY, ...)` is a compile-time
+    /// guard: if a downstream impl opts a dynamic-body type (e.g. `String`,
+    /// `Bytes`) into [`StorageArrayElement`], the const-eval of
+    /// `STORAGE_SLOTS` (forced as soon as the array is used in a `Lazy`,
+    /// `Mapping`, or `StorageVec`) fails with a clear message — preventing
+    /// the runtime `unreachable!()` panic from `encode_slot` / `from_slots`
+    /// that would otherwise occur.
     const STORAGE_SLOTS: usize = {
+        assert!(
+            !T::HAS_DYNAMIC_BODY,
+            "[T; N]: dynamic-body T (String, Bytes, or any SolType with \
+             HAS_DYNAMIC_BODY = true) is not supported in fixed-size arrays. \
+             solc's layout for arrays of dynamic-body elements requires \
+             per-element header+body routing that this impl does not provide."
+        );
         if T::PACKED_BYTES < 32 {
             let density = 32 / T::PACKED_BYTES;
             N.div_ceil(density)
