@@ -619,8 +619,8 @@ impl<const N: usize> StoragePackable for [u8; N] {
 /// true` route their encode/decode through `write_to_storage` /
 /// `read_from_storage`; their `encode_slot` / `from_slots` are
 /// `unreachable!()` stubs. The generic `[T; N]` impl dispatches through
-/// `encode_slot` / `from_slots`, so a dynamic-body T would compile but
-/// panic at runtime. Stick to static element types.
+/// `encode_slot` / `from_slots`, so a dynamic-body T will be rejected at
+/// compile time by the `[T; N]` const-assert. Stick to static element types.
 pub trait StorageArrayElement: StorageEncode + StorageDecode {}
 
 macro_rules! impl_storage_array_element {
