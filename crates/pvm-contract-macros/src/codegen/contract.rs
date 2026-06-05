@@ -1208,6 +1208,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 use alloc::vec::Vec;
 
                 #[cfg(not(feature = "abi-gen"))]
+                use alloc::string::String;
+
+                #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]
                 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
                     static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
@@ -1229,6 +1232,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
                 #[cfg(not(feature = "abi-gen"))]
                 use alloc::vec::Vec;
+
+                #[cfg(not(feature = "abi-gen"))]
+                use alloc::string::String;
 
                 #[cfg(not(feature = "abi-gen"))]
                 #[global_allocator]

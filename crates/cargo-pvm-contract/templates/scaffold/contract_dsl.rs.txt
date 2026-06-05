@@ -52,8 +52,13 @@ static ALLOC: BumpAllocator = BumpAllocator;
 use pvm_contract_builder_dsl::{
     ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
 };
-use pvm_contract_builder_dsl::pvm_contract_types::{Host, SolDecode, SolEncode, StaticEncodedLen};
-use pvm_contract_builder_dsl::ruint::aliases::U256;
+use pvm_contract_builder_dsl::pvm_contract_types::{
+    Address, Host, I256, SolDecode, SolEncode, StaticEncodedLen, U256,
+};
+{% if use_alloc -%}
+use pvm_contract_builder_dsl::pvm_contract_types::Bytes;
+use alloc::{string::String, vec::Vec};
+{% endif -%}
 
 #[cfg(not(test))]
 #[panic_handler]

@@ -220,6 +220,10 @@ pub trait SolRevert {
 - `EmptyError` — zero-cost uninhabited type for contracts with no error paths.
 - `sol_revert_enum!` — generates error enum + `SolRevert` impl + `From` conversions, auto-injects `RevertString` and `Panic` variants.
 
+### Scaffolder type mapping
+
+The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (tuples, non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a non-tuple parameter shape.
+
 ### Type Support Matrix
 
 | Solidity Type | Rust Type | SolEncode | SolDecode | Trait Impl | Notes |
@@ -233,7 +237,7 @@ pub trait SolRevert {
 | `bytesN` | `[u8; N]` | yes | yes | blanket impl | SOL_NAME = `"bytesN"`, left-aligned encoding |
 | `string` | `String` | yes | yes | alloc feature | |
 | `string` (encode only) | `&str` | yes | no | core | Can't decode into a borrow |
-| `bytes` | `Vec<u8>` | yes | yes | alloc feature | |
+| `bytes` | `Bytes` | yes | yes | alloc feature | Newtype around `Vec<u8>`. `Vec<u8>` is reserved for `uint8[]` — same Rust shape, different on-chain layout. |
 | `T[]` | `Vec<T>` | yes | yes | alloc feature, blanket impl | |
 | `T[N]` (fixed array) | `[T; N]` | yes | yes | blanket impl, requires `T: SolArrayElement` | SOL_NAME = `"T[N]"` via `ConstStr` |
 | `(T1,T2,...)` (tuple) | `(T, U, ...)` | yes | yes | macro-generated, arities 1-12 | SOL_NAME = `"(T1,T2,...)"` via `ConstStr` |
