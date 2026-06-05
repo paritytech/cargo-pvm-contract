@@ -1035,6 +1035,21 @@ fn generate_storage_impls(
         quote! {}
     };
 
+    // Auto-opt into `StorageArrayElement` for static structs so users can
+    // write `Lazy<[MyStruct; N]>` / `StorageVec<[MyStruct; N]>` /
+    // `Mapping<K, [MyStruct; N]>` without an extra manual impl. Dynamic-body
+    // structs are *not* opted in — their `encode_slot` / `from_slots` route
+    // through `unreachable!()` stubs (they use `write_to_storage` /
+    // `read_from_storage` instead), and the `[T; N]` generic impl dispatches
+    // through the static path, which would panic at runtime for a dynamic T.
+    let storage_array_element_impl = if has_dynamic {
+        quote! {}
+    } else {
+        quote! {
+            impl ::pvm_contract_sdk::StorageArrayElement for #name {}
+        }
+    };
+
     Ok(quote! {
         impl #name {
             #layout_const
@@ -1057,6 +1072,8 @@ fn generate_storage_impls(
             #from_slots_impl
             #read_from_storage_impl
         }
+
+        #storage_array_element_impl
     })
 }
 

@@ -248,21 +248,19 @@ fn build_variant(
 }
 
 fn variants_for_contract(contract: &str) -> Vec<Variant> {
-    // Single-source contracts: each is its own implementation and doesn't
-    // span the alloc/dsl variant axes.
+    // Storage-focused contracts (typed-helper API surface). Each gets both
+    // no-alloc and with-alloc variants so the bench shows how adding a
+    // runtime allocator interacts with typed-storage code generation. No
+    // builder-DSL variant — these patterns ride on the `#[contract]` macro.
     //   - `mytoken_storage`: ERC20-style contract using `Lazy<U256>` +
-    //     `Mapping<Address, U256>` typed storage helpers. Paired against
-    //     `mytoken_no_alloc` / `mytoken_with_alloc` / `mytoken_dsl` to
-    //     measure the typed-storage overhead vs. raw-uAPI styles.
+    //     `Mapping<Address, U256>` typed storage helpers.
     //   - `amm_reserves`: Uniswap V2-style packed pool reserves
-    //     (`Lazy<u128>` × 2 landing in one slot). Exercises the
-    //     `#[contract]` macro's auto-numbered slot walker for sub-word
-    //     siblings — the canonical Solidity packed-storage pattern.
+    //     (`Lazy<u128>` × 2 landing in one slot). Exercises the macro's
+    //     auto-numbered slot walker for sub-word siblings.
     //   - `allowlist`: address allowlist backed by `StorageVec<Address>`
-    //     (push/pop/swap-remove/linear scan). Exercises `StorageVec`'s
-    //     sub-word dispatch and length tracking.
+    //     (push/pop/swap-remove/linear scan).
     if contract == "mytoken_storage" || contract == "amm_reserves" || contract == "allowlist" {
-        return vec![Variant::NoAlloc];
+        return vec![Variant::NoAlloc, Variant::WithAlloc];
     }
     vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl]
 }

@@ -618,3 +618,40 @@ fn lazy_of_u128_pair_advances_chain_by_one_slot() {
     );
     assert_eq!(<Lazy<u128> as pvm_contract_sdk::StorageComponent>::SLOTS, 1);
 }
+
+// ========================================================================
+// Auto-derive of StorageArrayElement for static structs — lets
+// `[MyStruct; N]` work in `Lazy` / `Mapping` / `StorageVec` without
+// a manual `impl StorageArrayElement`.
+// ========================================================================
+
+#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+struct PairU64 {
+    a: u64,
+    b: u64,
+}
+
+#[test]
+fn fixed_array_of_static_struct_compiles_without_manual_impl() {
+    // The derive auto-emits `impl StorageArrayElement for PairU64`, so the
+    // generic `[T; N]` impl accepts it. Round-trip a `Lazy<[PairU64; 3]>`.
+    let host = fresh_host();
+    let mut lazy = unsafe { Lazy::<[PairU64; 3]>::new(StorageKey::from_slot(0), 0, host) };
+
+    let value = [
+        PairU64 { a: 1, b: 2 },
+        PairU64 { a: 3, b: 4 },
+        PairU64 { a: 5, b: 6 },
+    ];
+    lazy.set(&value);
+    assert_eq!(lazy.get(), value);
+}
+
+#[test]
+fn storage_array_element_metadata_on_derived_static_struct() {
+    // The impl is empty (marker trait); just verify the bound is satisfied
+    // at the type level. The function below would fail to compile if
+    // `PairU64` didn't impl `StorageArrayElement`.
+    fn requires<T: pvm_contract_sdk::StorageArrayElement>() {}
+    requires::<PairU64>();
+}
