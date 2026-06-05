@@ -65,7 +65,7 @@
       },
       {
         "label": "paused",
-        "offset": 31,
+        "offset": 0,
         "slot": "5",
         "type": "bool"
       }

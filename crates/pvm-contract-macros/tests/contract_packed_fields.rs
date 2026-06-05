@@ -663,8 +663,11 @@ fn packed_pair_emits_solc_compatible_storage_layout() {
         pvm_contract_sdk::serde_json::from_str(&packed_pair::__storage_layout_json()).unwrap();
     let expected: pvm_contract_sdk::serde_json::Value = pvm_contract_sdk::serde_json::json!({
         "storage": [
-            { "label": "a", "offset": 16, "slot": "0", "type": "uint128" },
-            { "label": "b", "offset": 0,  "slot": "0", "type": "uint128" },
+            // solc `offset` counts from the least-significant byte: the first
+            // packed field is lower-order aligned (offset 0), the next sits
+            // above it (offset 16).
+            { "label": "a", "offset": 0,  "slot": "0", "type": "uint128" },
+            { "label": "b", "offset": 16, "slot": "0", "type": "uint128" },
         ]
     });
     assert_eq!(actual, expected);
@@ -677,10 +680,12 @@ fn classic_layout_emits_solc_compatible_storage_layout() {
         pvm_contract_sdk::serde_json::from_str(&classic_layout::__storage_layout_json()).unwrap();
     let expected: pvm_contract_sdk::serde_json::Value = pvm_contract_sdk::serde_json::json!({
         "storage": [
-            { "label": "flag",    "offset": 31, "slot": "0", "type": "bool" },
-            { "label": "counter", "offset": 27, "slot": "0", "type": "uint32" },
-            { "label": "owner",   "offset": 7,  "slot": "0", "type": "address" },
-            { "label": "balance", "offset": 0,  "slot": "1", "type": "uint256" },
+            // bool(1) + uint32(4) + address(20) packed low-order first:
+            // offsets 0, 1, 5 — matching solc's classic packing example.
+            { "label": "flag",    "offset": 0, "slot": "0", "type": "bool" },
+            { "label": "counter", "offset": 1, "slot": "0", "type": "uint32" },
+            { "label": "owner",   "offset": 5, "slot": "0", "type": "address" },
+            { "label": "balance", "offset": 0, "slot": "1", "type": "uint256" },
         ]
     });
     assert_eq!(actual, expected);
@@ -693,9 +698,10 @@ fn spill_emits_solc_compatible_storage_layout() {
         pvm_contract_sdk::serde_json::from_str(&spill::__storage_layout_json()).unwrap();
     let expected: pvm_contract_sdk::serde_json::Value = pvm_contract_sdk::serde_json::json!({
         "storage": [
-            { "label": "a", "offset": 16, "slot": "0", "type": "uint128" },
-            { "label": "b", "offset": 0,  "slot": "0", "type": "uint128" },
-            { "label": "c", "offset": 16, "slot": "1", "type": "uint128" },
+            { "label": "a", "offset": 0,  "slot": "0", "type": "uint128" },
+            { "label": "b", "offset": 16, "slot": "0", "type": "uint128" },
+            // `c` spills to a fresh slot as the first (lower-order) field there.
+            { "label": "c", "offset": 0,  "slot": "1", "type": "uint128" },
         ]
     });
     assert_eq!(actual, expected);
@@ -708,9 +714,9 @@ fn with_mapping_emits_solc_compatible_storage_layout() {
         pvm_contract_sdk::serde_json::from_str(&with_mapping::__storage_layout_json()).unwrap();
     let expected: pvm_contract_sdk::serde_json::Value = pvm_contract_sdk::serde_json::json!({
         "storage": [
-            { "label": "before",   "offset": 31, "slot": "0", "type": "bool" },
-            { "label": "balances", "offset": 0,  "slot": "1", "type": "mapping(address,uint256)" },
-            { "label": "after",    "offset": 31, "slot": "2", "type": "bool" },
+            { "label": "before",   "offset": 0, "slot": "0", "type": "bool" },
+            { "label": "balances", "offset": 0, "slot": "1", "type": "mapping(address,uint256)" },
+            { "label": "after",    "offset": 0, "slot": "2", "type": "bool" },
         ]
     });
     assert_eq!(actual, expected);
@@ -723,9 +729,9 @@ fn with_multi_slot_emits_solc_compatible_storage_layout() {
         pvm_contract_sdk::serde_json::from_str(&with_multi_slot::__storage_layout_json()).unwrap();
     let expected: pvm_contract_sdk::serde_json::Value = pvm_contract_sdk::serde_json::json!({
         "storage": [
-            { "label": "flag", "offset": 31, "slot": "0", "type": "bool" },
-            { "label": "pair", "offset": 0,  "slot": "1", "type": "(uint256,uint256)" },
-            { "label": "tail", "offset": 28, "slot": "3", "type": "uint32" },
+            { "label": "flag", "offset": 0, "slot": "0", "type": "bool" },
+            { "label": "pair", "offset": 0, "slot": "1", "type": "(uint256,uint256)" },
+            { "label": "tail", "offset": 0, "slot": "3", "type": "uint32" },
         ]
     });
     assert_eq!(actual, expected);

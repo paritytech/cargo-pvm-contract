@@ -91,7 +91,21 @@ pub(super) fn generate_layout_emit(
                     let slot_value: u64 = #slot_expr;
                     ::std::format!("{}", slot_value)
                 },
-                offset: #offset_expr,
+                // The walker tracks `offset` as the big-endian start index of
+                // the field's bytes (distance from the most-significant byte).
+                // solc's storageLayout counts `offset` from the least-significant
+                // byte, so convert: `solc_offset = 32 - high - size`, where
+                // `size` is the field's packed width. Full-slot types
+                // (`PACKED_BYTES == 32`, `offset == 0`) map to `0` unchanged.
+                // Right-alignment holds for every value type in solc storage
+                // (integers, bool, address, and `bytesN`), so this one formula
+                // covers all leaves. The internal RMW window in `Lazy::set/get`
+                // keeps using the unconverted big-endian `offset`.
+                offset: {
+                    let __high: u8 = #offset_expr;
+                    32u8 - __high
+                        - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES as u8
+                },
                 ty: #ty_name_expr,
             });
         }

@@ -324,23 +324,25 @@ mod tests {
     fn storage_layout_emits_non_zero_offsets_for_packed_fields() {
         let layout = StorageLayout {
             storage: vec![
-                // Classic solc packing example: bool + uint32 + address fit in slot 0.
+                // Classic solc packing example: bool + uint32 + address fit in
+                // slot 0. solc counts `offset` from the least-significant byte,
+                // so the lower-order-aligned fields land at 0, 1, 5.
                 StorageLayoutEntry {
                     label: "a".into(),
                     slot: "0".into(),
-                    offset: 31,
+                    offset: 0,
                     ty: "bool".into(),
                 },
                 StorageLayoutEntry {
                     label: "b".into(),
                     slot: "0".into(),
-                    offset: 27,
+                    offset: 1,
                     ty: "uint32".into(),
                 },
                 StorageLayoutEntry {
                     label: "c".into(),
                     slot: "0".into(),
-                    offset: 7,
+                    offset: 5,
                     ty: "address".into(),
                 },
                 StorageLayoutEntry {
@@ -354,7 +356,7 @@ mod tests {
         let json = storage_layout_to_json(&layout);
         assert_eq!(
             json,
-            r#"{"storage":[{"label":"a","slot":"0","offset":31,"type":"bool"},{"label":"b","slot":"0","offset":27,"type":"uint32"},{"label":"c","slot":"0","offset":7,"type":"address"},{"label":"d","slot":"1","offset":0,"type":"uint256"}]}"#
+            r#"{"storage":[{"label":"a","slot":"0","offset":0,"type":"bool"},{"label":"b","slot":"0","offset":1,"type":"uint32"},{"label":"c","slot":"0","offset":5,"type":"address"},{"label":"d","slot":"1","offset":0,"type":"uint256"}]}"#
         );
         let parsed: StorageLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, layout);
