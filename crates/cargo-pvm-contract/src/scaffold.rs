@@ -257,17 +257,16 @@ fn init_from_example_files_inner(
         extract_solc_metadata_from_bytes(sol_contents, &sol_file_name)?;
     let actual_contract_kebab = actual_contract_name.to_case(Case::Kebab);
 
-    // Reject at scaffold time when the DSL template would produce
-    // non-compiling code. The DSL handler body uses
-    // `<{type} as StaticEncodedLen>::ENCODED_SIZE` for both the inter-parameter
-    // offset accumulator and the return-encoding length. `StaticEncodedLen` is
-    // only implemented for static types, so two combinations break:
-    //   - Any dynamic return type (e.g. `bytes`, `string`, `T[]`).
-    //   - Multi-parameter signatures where any parameter is dynamic.
-    // Single-parameter dynamic inputs with a non-dynamic return happen to
-    // work because the accumulator is never written into source for `i == 0`.
-    // Skipped when `rust_contents = Some(...)` (the `--example` path uses
-    // pre-baked Rust and bypasses the DSL template's offset codegen).
+    // Reject at scaffold time when the DSL scaffolder would emit Rust that
+    // won't compile. The DSL template's generated decoder requires every
+    // parameter and return type to implement `StaticEncodedLen`, which only
+    // static types do. Two shapes always break:
+    //   - Any function with a dynamic return type.
+    //   - Multi-parameter functions where any parameter is dynamic.
+    // Single-param dynamic input with a non-dynamic return happens to compile
+    // (the `StaticEncodedLen` reference is skipped at the first parameter).
+    // Skipped on the `--example` path, which uses pre-written Rust instead of
+    // generating it from the ABI.
     if use_dsl && rust_contents.is_none() {
         for item in &metadata.output.abi {
             if let AbiItem::Function {
@@ -299,13 +298,10 @@ fn init_from_example_files_inner(
         }
     }
 
-    // Reject at scaffold time when the user requested `--allocator no-alloc`
-    // but the Solidity interface uses dynamic types. `bytes`/`string`/`T[]`
-    // require Bytes/String/Vec from `alloc`, which a no-alloc contract can't
-    // reach. Without this gate, the user gets a cryptic compile error from the
-    // scaffolded project rather than an actionable message here. Skipped when
-    // `rust_contents = Some(...)` because the example path uses pre-baked Rust
-    // and bypasses type mapping.
+    // Reject `--allocator no-alloc` paired with a `.sol` containing dynamic
+    // types. `bytes`/`string`/`T[]` map to `Bytes`/`String`/`Vec`, which need
+    // `alloc` — unreachable in a no-alloc contract. Skipped on the `--example`
+    // path, which uses pre-written Rust instead of generating it from the ABI.
     if !use_alloc && rust_contents.is_none() {
         let uses_dynamic = metadata.output.abi.iter().any(|item| {
             if let AbiItem::Function {
@@ -683,10 +679,10 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
 
 /// Map a Solidity ABI type string (as emitted by solc) to a Rust SDK type.
 ///
-/// Fails closed: unrecognized or unsupported types return `Err` rather than
-/// silently mapping to `U256`. The returned type name is unqualified and is
-/// inserted directly into the scaffolded source, so the templates must `use`
-/// the names this function emits (`Address`, `Bytes`, `String`, `Vec`, `I256`).
+/// Unrecognized or unsupported types return `Err` rather than silently mapping
+/// to `U256`. The returned type name is unqualified and is inserted directly
+/// into the scaffolded source, so the templates must `use` the names this
+/// function emits (`Address`, `Bytes`, `String`, `Vec`, `I256`).
 fn solidity_to_rust_type(sol_type: &str) -> Result<String> {
     // 1. Dynamic array T[]. Recurse on the element type.
     if let Some(inner) = sol_type.strip_suffix("[]") {
@@ -694,10 +690,8 @@ fn solidity_to_rust_type(sol_type: &str) -> Result<String> {
         return Ok(format!("Vec<{inner_type}>"));
     }
 
-    // 2. Fixed array T[N]. Recurse on the element type.
-    // Array suffixes must be checked before primitive name matching: a type
-    // like `uint256[2]` contains the substring `uint` but should parse as a
-    // fixed array first, then recurse on `uint256`.
+    // 2. Fixed array T[N]. Must come before `uintN`/`intN`/`bytesN` so
+    //    `uint256[2]` parses as an array, not as a width.
     if let Some(bracket_pos) = sol_type.rfind('[')
         && let Some(n_str) = sol_type[bracket_pos + 1..].strip_suffix(']')
         && let Ok(n) = n_str.parse::<usize>()
@@ -774,8 +768,8 @@ fn solidity_to_rust_type(sol_type: &str) -> Result<String> {
     }
 
     // 7. Tuple — AbiInput/AbiOutput drop the `components` field, so the
-    //    sub-structure is gone by the time we see `"tuple"` here. Reject
-    //    explicitly until tuple-decoder codegen is added.
+    //    sub-structure is gone by the time we see `"tuple"` here.
+    //    Tuple-decoder codegen will be added later; reject for now.
     if sol_type == "tuple" {
         anyhow::bail!(
             "tuple types are not yet supported by the scaffolder. \
