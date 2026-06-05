@@ -110,19 +110,21 @@ pub(super) fn generate_layout_emit(
     }
 }
 
-/// Whether the type's layout entry is a single inlined leaf (`Lazy<T>` or
-/// `Mapping<K, V>`) rather than something that should recurse through
-/// [`StorageLayoutEmit`].
+/// Whether the type's layout entry is a single inlined leaf (`Lazy<T>`,
+/// `Mapping<K, V>`, or `StorageVec<T>`) rather than something that should
+/// recurse through [`StorageLayoutEmit`].
 fn is_layout_leaf(ty: &syn::Type) -> bool {
     matches!(wrapper_and_type_args(ty), Some((name, args)) if {
-        (name == "Lazy" && args.len() == 1) || (name == "Mapping" && args.len() == 2)
+        (name == "Lazy" && args.len() == 1)
+            || (name == "Mapping" && args.len() == 2)
+            || (name == "StorageVec" && args.len() == 1)
     })
 }
 
 /// Build a `String`-valued token expression that names the Solidity storage
-/// type for a storage field's Rust type. Unwraps `Lazy<T>` and recurses into
-/// `Mapping<K, V>` syntactically; everything else is named via
-/// `<T as SolEncode>::SOL_NAME`.
+/// type for a storage field's Rust type. Unwraps `Lazy<T>`, recurses into
+/// `Mapping<K, V>` and `StorageVec<T>` (`T[]`) syntactically; everything else
+/// is named via `<T as SolEncode>::SOL_NAME`.
 fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
     if let Some((wrapper, args)) = wrapper_and_type_args(ty) {
         match (wrapper.as_str(), args.as_slice()) {
@@ -139,6 +141,15 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
                     )
                 };
             }
+            // `StorageVec<T>` is Solidity's `T[]`. Recurse on the element type
+            // so `StorageVec<StorageVec<U256>>` resolves to `uint256[][]` and
+            // `Mapping<K, StorageVec<T>>` nests correctly.
+            ("StorageVec", [inner]) => {
+                let inner_expr = sol_storage_type_name(inner);
+                return quote! {
+                    ::std::format!("{}[]", #inner_expr)
+                };
+            }
             _ => {}
         }
     }
@@ -147,10 +158,10 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
     }
 }
 
-/// If `ty` is a path type whose final segment is `Lazy` or `Mapping`, return
-/// the segment name and the type-position generic arguments. Matches on the
-/// last segment's ident only, so `Lazy<T>`, `pvm_storage::Lazy<T>`, and
-/// `pvm_contract_sdk::Lazy<T>` all resolve.
+/// If `ty` is a path type whose final segment is `Lazy`, `Mapping`, or
+/// `StorageVec`, return the segment name and the type-position generic
+/// arguments. Matches on the last segment's ident only, so `Lazy<T>`,
+/// `pvm_storage::Lazy<T>`, and `pvm_contract_sdk::Lazy<T>` all resolve.
 ///
 /// Returns `None` for any other type shape, which falls through to the
 /// `SolEncode::SOL_NAME` leaf path.
@@ -161,7 +172,7 @@ fn wrapper_and_type_args(ty: &syn::Type) -> Option<(String, Vec<&syn::Type>)> {
     };
     let last = path.segments.last()?;
     let name = last.ident.to_string();
-    if name != "Lazy" && name != "Mapping" {
+    if name != "Lazy" && name != "Mapping" && name != "StorageVec" {
         return None;
     }
     let args = match &last.arguments {

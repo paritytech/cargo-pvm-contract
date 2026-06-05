@@ -1,0 +1,62 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidCalldata",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "CalldataTooLarge",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnknownSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NonPayableValueReceived",
+      "type": "error"
+    }
+  ],
+  "storageLayout": {
+    "storage": [
+      {
+        "label": "numbers",
+        "offset": 0,
+        "slot": "0",
+        "type": "uint256[]"
+      },
+      {
+        "label": "accounts",
+        "offset": 0,
+        "slot": "1",
+        "type": "address[]"
+      },
+      {
+        "label": "matrix",
+        "offset": 0,
+        "slot": "2",
+        "type": "uint256[][]"
+      },
+      {
+        "label": "buckets",
+        "offset": 0,
+        "slot": "3",
+        "type": "mapping(address,uint256[])"
+      }
+    ]
+  }
+}

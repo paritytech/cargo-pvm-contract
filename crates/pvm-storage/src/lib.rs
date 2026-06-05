@@ -1264,16 +1264,29 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// (inline header or spilled body). Use `Bytes` when you need `bytes`-shaped
 /// storage; use `StorageVec<u8>` when you need a `uint8[]` array.
 ///
+/// # API summary
+///
+/// - **Read:** `len` / `is_empty`, `get(i)` (panics OOB) / `try_get(i)`
+///   (`Option`), `first` / `last`, and [`iter`](Self::iter) (reads the
+///   length once, then streams elements — cheaper than a manual
+///   `0..len`/`get` loop). All take `&self`, so they work in `view` methods.
+/// - **Write:** `push`, `pop`, `set(i, &value)` (direct-write — no
+///   per-element handle on flat `StorageVec<T>`), and `clear`. All take
+///   `&mut self`.
+///
 /// # Notable design choices
 ///
 /// - `get(i)` / `pop()` return `T` by value.
-/// - `set(i, &value)` is the direct-write API. There's no per-element
-///   handle on flat `StorageVec<T>` — handles only appear on the nested
-///   impl (`StorageVec<StorageVec<T>>`) where `entry(i)` returns a
-///   `RefMut<'_, StorageVec<T>>`.
+/// - Per-element handles only appear on the nested impl
+///   (`StorageVec<StorageVec<T>>`), where `entry(i)` / `push_inner()` return
+///   a `RefMut<'_, StorageVec<T>>`.
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot — the gas-optimal policy that matches solc.
 ///   For full-slot elements, every pop frees a full slot.
+/// - Out-of-bounds `get`/`set` revert via a plain trap with a static message
+///   (no `core::fmt` in the bytecode), **not** solc's ABI-encoded
+///   `Panic(0x32)` — off-chain callers won't see the `0x32` code. Use
+///   `try_get` to avoid the trap.
 ///
 /// # Element shapes supported
 ///
@@ -1427,17 +1440,16 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `index >= len()` (matches solc's `Panic(0x32)` revert for
-    /// out-of-bounds array access).
+    /// Panics (reverts) if `index >= len()`, mirroring Solidity's
+    /// out-of-bounds behaviour. Note: the SDK reverts via a plain trap, not
+    /// the ABI-encoded `Panic(0x32)` selector solc emits — an off-chain
+    /// caller decoding revert data won't see the `0x32` code. Use
+    /// [`try_get`](Self::try_get) for a non-panicking read. The message is a
+    /// static string (no `{}` interpolation) to keep `core::fmt` out of the
+    /// bytecode.
     pub fn get(&self, index: u64) -> T {
         let () = Self::_SHAPE_CHECK;
-        let len = self.len();
-        assert!(
-            index < len,
-            "StorageVec::get: index {} out of bounds (len = {})",
-            index,
-            len
-        );
+        assert!(index < self.len(), "StorageVec::get: index out of bounds");
         self.read_at(index)
     }
 
@@ -1448,6 +1460,45 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
             return None;
         }
         Some(self.read_at(index))
+    }
+
+    /// Read the first element, or `None` if the array is empty.
+    pub fn first(&self) -> Option<T> {
+        self.try_get(0)
+    }
+
+    /// Read the last element, or `None` if the array is empty.
+    ///
+    /// Reads the length once and skips the per-access bounds check, so it's
+    /// one SLOAD cheaper than `try_get(len - 1)` for full-slot `T`.
+    pub fn last(&self) -> Option<T> {
+        let () = Self::_SHAPE_CHECK;
+        let len = self.len();
+        if len == 0 {
+            None
+        } else {
+            Some(self.read_at(len - 1))
+        }
+    }
+
+    /// Iterate over the elements by value, front to back.
+    ///
+    /// The length is read **once** when the iterator is created; each step
+    /// then reads an element directly with no per-element bounds re-check.
+    /// This is both more ergonomic and cheaper than
+    /// `for i in 0..v.len() { v.get(i) }`, where every `get` re-reads the
+    /// length slot.
+    ///
+    /// The iterator borrows the vec immutably (`&self`), so it can be used
+    /// from `view` methods. Mutating the vec while iterating is rejected by
+    /// the borrow checker.
+    pub fn iter(&self) -> StorageVecIter<'_, T> {
+        let () = Self::_SHAPE_CHECK;
+        StorageVecIter {
+            vec: self,
+            pos: 0,
+            len: self.len(),
+        }
     }
 
     /// Element read, dispatched on `T`'s shape. Caller is responsible for
@@ -1478,17 +1529,12 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `index >= len()`. Use [`push`](Self::push) to extend the
-    /// array.
+    /// Panics (reverts) if `index >= len()`. Use [`push`](Self::push) to
+    /// extend the array. Like [`get`](Self::get), the revert is a plain trap
+    /// rather than solc's ABI-encoded `Panic(0x32)`.
     pub fn set(&mut self, index: u64, value: &T) {
         let () = Self::_SHAPE_CHECK;
-        let len = self.len();
-        assert!(
-            index < len,
-            "StorageVec::set: index {} out of bounds (len = {})",
-            index,
-            len
-        );
+        assert!(index < self.len(), "StorageVec::set: index out of bounds");
         self.write_at(index, value);
     }
 
@@ -1660,6 +1706,48 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<T> {
     }
 }
 
+/// By-value iterator over a [`StorageVec<T>`], produced by
+/// [`StorageVec::iter`].
+///
+/// Captures the length at construction and yields elements `0..len` by
+/// reading each directly (no per-element bounds re-check). Holds an
+/// immutable borrow of the vec, so it composes with `view` methods.
+pub struct StorageVecIter<'a, T> {
+    vec: &'a StorageVec<T>,
+    pos: u64,
+    len: u64,
+}
+
+impl<T: StorageEncode + StorageDecode> Iterator for StorageVecIter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        if self.pos >= self.len {
+            return None;
+        }
+        let value = self.vec.read_at(self.pos);
+        self.pos += 1;
+        Some(value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.len - self.pos) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> DoubleEndedIterator for StorageVecIter<'_, T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.pos >= self.len {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.vec.read_at(self.len))
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> ExactSizeIterator for StorageVecIter<'_, T> {}
+
 // ---------------------------------------------------------------------------
 // StorageVec<StorageVec<T>> — `T[][]` in Solidity.
 // ---------------------------------------------------------------------------
@@ -1705,17 +1793,11 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= outer_len()` — matches solc's `Panic(0x32)` for
-    /// out-of-bounds array access and stays consistent with flat
-    /// [`StorageVec::get`].
+    /// Panics (reverts) if `i >= outer_len()`, consistent with flat
+    /// [`StorageVec::get`]. As there, the revert is a plain trap rather than
+    /// solc's ABI-encoded `Panic(0x32)`.
     pub fn get(&self, i: u64) -> Ref<'_, StorageVec<T>> {
-        let len = self.outer_len();
-        assert!(
-            i < len,
-            "StorageVec::get: index {} out of bounds (outer_len = {})",
-            i,
-            len
-        );
+        assert!(i < self.outer_len(), "StorageVec::get: index out of bounds");
         let inner_root = self.inner_root(i);
         // SAFETY: the inner handle is immediately wrapped in `Ref<'_, _>`,
         // which forwards only `&self` methods. The parent `&self` borrow
@@ -1729,16 +1811,14 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics if `i >= outer_len()` — solc rejects writes through
-    /// out-of-bounds indices with `Panic(0x32)`. Grow the outer first via
-    /// [`push_empty`](Self::push_empty).
+    /// Panics (reverts) if `i >= outer_len()`. Grow the outer first via
+    /// [`push_empty`](Self::push_empty) or [`push_inner`](Self::push_inner).
+    /// As with flat [`StorageVec::set`], the revert is a plain trap rather
+    /// than solc's ABI-encoded `Panic(0x32)`.
     pub fn entry(&mut self, i: u64) -> RefMut<'_, StorageVec<T>> {
-        let len = self.outer_len();
         assert!(
-            i < len,
-            "StorageVec::entry: index {} out of bounds (outer_len = {})",
-            i,
-            len
+            i < self.outer_len(),
+            "StorageVec::entry: index out of bounds"
         );
         let inner_root = self.inner_root(i);
         // SAFETY: `&mut self` proves mutating access through the parent
@@ -1757,6 +1837,33 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
             .checked_add(1)
             .expect("StorageVec::push_empty: length overflow");
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
+    }
+
+    /// Append a new empty inner array and return a [`RefMut`] handle to it,
+    /// ready to be populated in one step:
+    ///
+    /// ```ignore
+    /// let mut row = matrix.push_inner();
+    /// row.push(&a);
+    /// row.push(&b);
+    /// ```
+    ///
+    /// Equivalent to [`push_empty`](Self::push_empty) followed by
+    /// [`entry`](Self::entry)`(outer_len() - 1)`, but without re-deriving
+    /// the bounds check.
+    ///
+    /// # Panics
+    /// Panics if the outer length would overflow `u64::MAX`.
+    pub fn push_inner(&mut self) -> RefMut<'_, StorageVec<T>> {
+        let len = self.outer_len();
+        let new_len = len
+            .checked_add(1)
+            .expect("StorageVec::push_inner: length overflow");
+        write_len_u64(&self.host, self.root.as_bytes(), new_len);
+        let inner_root = self.inner_root(len);
+        // SAFETY: `&mut self` proves mutating access through the parent
+        // borrow; the freshly appended inner array is exclusively ours.
+        RefMut::new(unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) })
     }
 
     /// Remove the last inner array, recursively clearing its storage.

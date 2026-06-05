@@ -1963,6 +1963,60 @@ fn storage_vec_try_get_oob_returns_none() {
 }
 
 #[test]
+fn storage_vec_first_last() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    assert_eq!(v.first(), None);
+    assert_eq!(v.last(), None);
+    v.push(&U256::from(10u64));
+    v.push(&U256::from(20u64));
+    v.push(&U256::from(30u64));
+    assert_eq!(v.first(), Some(U256::from(10u64)));
+    assert_eq!(v.last(), Some(U256::from(30u64)));
+}
+
+#[test]
+fn storage_vec_iter_yields_all_in_order() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    for i in 0..5u64 {
+        v.push(&U256::from(i * 100));
+    }
+    let collected: alloc::vec::Vec<U256> = v.iter().collect();
+    assert_eq!(
+        collected,
+        alloc::vec![
+            U256::from(0u64),
+            U256::from(100u64),
+            U256::from(200u64),
+            U256::from(300u64),
+            U256::from(400u64),
+        ]
+    );
+    // ExactSizeIterator length.
+    assert_eq!(v.iter().len(), 5);
+    // Empty vec yields nothing.
+    let empty = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(9), h()) };
+    assert_eq!(empty.iter().next(), None);
+}
+
+#[test]
+fn storage_vec_iter_double_ended() {
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
+    for i in 0..4u64 {
+        v.push(&U256::from(i));
+    }
+    let collected: alloc::vec::Vec<U256> = v.iter().rev().collect();
+    assert_eq!(
+        collected,
+        alloc::vec![
+            U256::from(3u64),
+            U256::from(2u64),
+            U256::from(1u64),
+            U256::from(0u64),
+        ]
+    );
+}
+
+#[test]
 #[should_panic(expected = "out of bounds")]
 fn storage_vec_get_oob_panics() {
     let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
@@ -2714,6 +2768,46 @@ fn nested_storage_vec_roundtrip() {
 }
 
 #[test]
+fn nested_storage_vec_push_inner_populates_in_one_step() {
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+
+    {
+        let mut row = outer.push_inner();
+        row.push(&U256::from(1u64));
+        row.push(&U256::from(2u64));
+    }
+    {
+        let mut row = outer.push_inner();
+        row.push(&U256::from(3u64));
+    }
+
+    assert_eq!(outer.outer_len(), 2);
+    assert_eq!(outer.get(0).len(), 2);
+    assert_eq!(outer.get(0).get(0), U256::from(1u64));
+    assert_eq!(outer.get(0).get(1), U256::from(2u64));
+    assert_eq!(outer.get(1).len(), 1);
+    assert_eq!(outer.get(1).get(0), U256::from(3u64));
+
+    // push_inner targets the same inner root that push_empty + entry would.
+    // Use one shared host so both write paths hit the same backing store.
+    let host = h();
+    {
+        let mut via_steps = unsafe {
+            StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(5), host.clone())
+        };
+        via_steps.push_empty();
+        via_steps.entry(0).push(&U256::from(42u64));
+    }
+    let mut via_push_inner =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(5), host) };
+    // A fresh handle at the same slot reads back what push_empty + entry wrote.
+    assert_eq!(via_push_inner.get(0).get(0), U256::from(42u64));
+    via_push_inner.push_inner().push(&U256::from(7u64));
+    assert_eq!(via_push_inner.get(1).get(0), U256::from(7u64));
+}
+
+#[test]
 fn nested_storage_vec_inner_rows_are_independent() {
     // Two different outer indices must derive non-overlapping inner roots.
     let mut outer =
@@ -3035,4 +3129,43 @@ fn inc_slot_by_carries_into_high_bytes() {
     expected[23] = 1;
     // Bytes 24..32 wrap to zero.
     assert_eq!(slot, expected);
+}
+
+// --- Probing tests added during deep review of nested / push_inner API ---
+
+#[test]
+fn probe_nested_pop_then_push_inner_no_stale_data() {
+    let mut m =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(0), h()) };
+    {
+        let mut row = m.push_inner();
+        row.push(&U256::from(111u64));
+        row.push(&U256::from(222u64));
+    }
+    assert_eq!(m.get(0).len(), 2);
+    // pop the row (clears its body), then add a fresh row at the SAME outer index.
+    assert!(m.pop());
+    assert_eq!(m.outer_len(), 0);
+    {
+        let mut row = m.push_inner();
+        row.push(&U256::from(999u64));
+    }
+    // The new row must NOT see the old length(2) or old elements.
+    assert_eq!(m.get(0).len(), 1);
+    assert_eq!(m.get(0).get(0), U256::from(999u64));
+}
+
+#[test]
+fn probe_nested_entry_grows_inner_independently() {
+    let mut m =
+        unsafe { StorageVec::<StorageVec<U256>>::new_nested(StorageKey::from_slot(3), h()) };
+    m.push_empty();
+    m.push_empty();
+    m.entry(0).push(&U256::from(1u64));
+    m.entry(0).push(&U256::from(2u64));
+    m.entry(1).push(&U256::from(9u64));
+    assert_eq!(m.get(0).len(), 2);
+    assert_eq!(m.get(1).len(), 1);
+    assert_eq!(m.get(0).get(1), U256::from(2u64));
+    assert_eq!(m.get(1).get(0), U256::from(9u64));
 }

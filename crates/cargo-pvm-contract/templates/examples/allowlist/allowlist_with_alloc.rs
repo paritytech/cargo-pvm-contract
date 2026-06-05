@@ -23,7 +23,7 @@ mod allowlist {
             Ok(())
         }
 
-        /// Solc-style swap-and-pop removal: O(1) writes, preserves no order.
+        /// Swap-and-pop removal: O(1) writes, preserves no order.
         /// Out-of-bounds `index` is a no-op.
         #[pvm_contract_sdk::method]
         pub fn remove(&mut self, index: u64) -> Result<(), EmptyError> {
@@ -44,15 +44,7 @@ mod allowlist {
         /// multisig owners). For large sets use `Mapping<Address, bool>`.
         #[pvm_contract_sdk::method]
         pub fn contains(&self, a: Address) -> bool {
-            let len = self.addresses.len();
-            let mut i = 0u64;
-            while i < len {
-                if self.addresses.get(i) == a {
-                    return true;
-                }
-                i += 1;
-            }
-            false
+            self.addresses.iter().any(|entry| entry == a)
         }
 
         #[pvm_contract_sdk::method]
