@@ -367,36 +367,49 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     let content = std::fs::read_to_string(sol_path)
         .with_context(|| format!("Failed to read sol file: {}", sol_path.display()))?;
 
-    let mut items = Vec::new();
-    // Accumulate multiline declarations using balanced-paren detection,
-    // matching the approach in pvm-contract-macros/src/solidity.rs.
-    let mut pending: Option<String> = None;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("//") {
-            continue;
+    let file: syn_solidity::File = match syn::parse_str(&content) {
+        Ok(file) => file,
+        // syn-solidity rejects input with no top-level items (e.g. a file that
+        // is only comments/whitespace) as a parse error. Distinguish that from
+        // a genuinely malformed file by relexing: a comments-only file produces
+        // an empty token stream, which we treat as "no ABI" rather than a hard
+        // failure. Every other parse error propagates.
+        Err(e) => {
+            return match content.parse::<proc_macro2::TokenStream>() {
+                Ok(tokens) if tokens.is_empty() => Ok(None),
+                _ => Err(anyhow::anyhow!(
+                    "Failed to parse Solidity file {}: {e}",
+                    sol_path.display()
+                )),
+            };
         }
+    };
 
-        if let Some(ref mut acc) = pending {
-            acc.push(' ');
-            acc.push_str(line);
-            if has_balanced_parens(acc) {
-                try_parse_decl(acc, &mut items);
-                pending = None;
+    // Flatten items, descending into contract/interface/library bodies.
+    let mut flat: Vec<&syn_solidity::Item> = Vec::new();
+    collect_items(&file.items, &mut flat);
+
+    // First pass: build a registry of struct definitions for named-struct
+    // resolution, keyed by the struct's last path segment.
+    let mut structs: StructMap = std::collections::HashMap::new();
+    for item in &flat {
+        if let syn_solidity::Item::Struct(s) = item {
+            structs.insert(s.name.to_string(), s);
+        }
+    }
+
+    // Second pass: map declarations to ABI items.
+    let mut items: Vec<AbiItem> = Vec::new();
+    for item in &flat {
+        match item {
+            syn_solidity::Item::Function(func) => {
+                if let Some(abi) = function_to_abi(func, &structs) {
+                    items.push(abi);
+                }
             }
-        } else if line.starts_with("function ")
-            || line.starts_with("constructor")
-            || line.starts_with("error ")
-            || line.starts_with("event ")
-            || line.starts_with("receive(")
-            || line.starts_with("receive ")
-        {
-            if has_balanced_parens(line) {
-                try_parse_decl(line, &mut items);
-            } else {
-                pending = Some(line.to_string());
-            }
+            syn_solidity::Item::Error(err) => items.push(error_to_abi(err, &structs)),
+            syn_solidity::Item::Event(evt) => items.push(event_to_abi(evt, &structs)),
+            _ => {}
         }
     }
 
@@ -421,254 +434,163 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     Ok(Some(AbiJson(items)))
 }
 
-/// Try to parse a complete declaration line as function, constructor, or error.
-fn try_parse_decl(line: &str, items: &mut Vec<AbiItem>) {
-    if line.starts_with("function ")
-        && let Some(func) = parse_sol_function_line(line)
-    {
-        items.push(func);
-    } else if line.starts_with("constructor")
-        && let Some(ctor) = parse_sol_constructor_line(line)
-    {
-        items.push(ctor);
-    } else if line.starts_with("error ")
-        && let Some(err) = parse_sol_error_line(line)
-    {
-        items.push(err);
-    } else if line.starts_with("event ")
-        && let Some(evt) = parse_sol_event_line(line)
-    {
-        items.push(evt);
-    } else if (line.starts_with("receive(") || line.starts_with("receive "))
-        && let Some(recv) = parse_sol_receive_line(line)
-    {
-        items.push(recv);
-    }
-}
+type StructMap<'a> = std::collections::HashMap<String, &'a syn_solidity::ItemStruct>;
 
-fn parse_sol_receive_line(line: &str) -> Option<AbiItem> {
-    let rest = line.strip_prefix("receive")?;
-    let after = rest.trim_start();
-    if !after.starts_with('(') {
-        return None;
-    }
-    Some(AbiItem::Receive {
-        state_mutability: Some("payable".to_string()),
-    })
-}
-
-/// Check whether all parentheses in `s` are balanced.
-fn has_balanced_parens(s: &str) -> bool {
-    let mut depth = 0i32;
-    for ch in s.chars() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            _ => {}
-        }
-        if depth < 0 {
-            return false;
+/// Recursively collect items, descending into contract/interface/library
+/// bodies so nested structs, functions, errors, and events are all visited.
+fn collect_items<'a>(items: &'a [syn_solidity::Item], out: &mut Vec<&'a syn_solidity::Item>) {
+    for item in items {
+        out.push(item);
+        if let syn_solidity::Item::Contract(c) = item {
+            collect_items(&c.body, out);
         }
     }
-    depth == 0
 }
 
-/// Find the index of the closing `)` that matches the `(` at `start`.
-fn find_matching_paren(s: &str, start: usize) -> Option<usize> {
-    let mut depth = 0;
-    for (i, ch) in s[start..].char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(start + i);
-                }
+/// Render a `syn_solidity::Type` to its canonical Solidity type string,
+/// expanding named structs inline into tuple strings (e.g. `(uint256,uint256)`)
+/// so `parse_type_str` produces proper ABI `tuple` components.
+fn type_to_sol_string(ty: &syn_solidity::Type, structs: &StructMap) -> String {
+    use syn_solidity::Type;
+    match ty {
+        Type::Address(_, _) => "address".to_string(),
+        Type::Bool(_) => "bool".to_string(),
+        Type::String(_) => "string".to_string(),
+        Type::Bytes(_) => "bytes".to_string(),
+        Type::FixedBytes(_, size) => format!("bytes{}", size.get()),
+        Type::Int(_, size) => format!("int{}", size.map(|s| s.get()).unwrap_or(256)),
+        Type::Uint(_, size) => format!("uint{}", size.map(|s| s.get()).unwrap_or(256)),
+        Type::Array(arr) => {
+            let inner = type_to_sol_string(&arr.ty, structs);
+            match arr.size() {
+                Some(n) => format!("{inner}[{n}]"),
+                None => format!("{inner}[]"),
             }
-            _ => {}
         }
-    }
-    None
-}
-
-/// Split parameters at top-level commas, respecting nested parens and brackets.
-fn split_top_level(params_str: &str) -> Vec<String> {
-    let mut params = Vec::new();
-    let mut depth = 0;
-    let mut current = String::new();
-
-    for ch in params_str.chars() {
-        match ch {
-            '(' | '[' => {
-                depth += 1;
-                current.push(ch);
-            }
-            ')' | ']' => {
-                depth -= 1;
-                current.push(ch);
-            }
-            ',' if depth == 0 => {
-                if !current.trim().is_empty() {
-                    params.push(current.trim().to_string());
-                }
-                current.clear();
-            }
-            _ => current.push(ch),
-        }
-    }
-
-    if !current.trim().is_empty() {
-        params.push(current.trim().to_string());
-    }
-
-    params
-}
-
-pub(crate) fn parse_sol_function_line(line: &str) -> Option<AbiItem> {
-    let line = line.strip_prefix("function ")?.trim();
-
-    let paren_start = line.find('(')?;
-    let name = line[..paren_start].trim().to_string();
-
-    let paren_end = find_matching_paren(line, paren_start)?;
-    let params_str = &line[paren_start + 1..paren_end];
-    let inputs = parse_sol_params(params_str);
-
-    let outputs = if let Some(returns_idx) = line.find("returns") {
-        let after_returns = &line[returns_idx + 7..];
-        if let Some(start) = after_returns.find('(') {
-            let abs_start = returns_idx + 7 + start;
-            if let Some(end) = find_matching_paren(line, abs_start) {
-                parse_sol_params(&line[abs_start + 1..end])
-            } else {
-                vec![]
-            }
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
-
-    let state_mutability = line
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .find(|tok| matches!(*tok, "view" | "pure" | "payable"))
-        .unwrap_or("nonpayable")
-        .to_string();
-
-    Some(AbiItem::Function {
-        name,
-        inputs,
-        outputs,
-        state_mutability: Some(state_mutability),
-    })
-}
-
-fn parse_sol_constructor_line(line: &str) -> Option<AbiItem> {
-    let line = line.strip_prefix("constructor")?.trim();
-    let paren_start = line.find('(')?;
-    let paren_end = find_matching_paren(line, paren_start)?;
-    let params_str = &line[paren_start + 1..paren_end];
-    let inputs = parse_sol_params(params_str);
-
-    let state_mutability = if line.contains(" payable") {
-        "payable"
-    } else {
-        "nonpayable"
-    }
-    .to_string();
-
-    Some(AbiItem::Constructor {
-        inputs,
-        state_mutability: Some(state_mutability),
-    })
-}
-
-fn parse_sol_error_line(line: &str) -> Option<AbiItem> {
-    let line = line.strip_prefix("error ")?.trim();
-
-    let paren_start = line.find('(')?;
-    let name = line[..paren_start].trim().to_string();
-
-    let paren_end = find_matching_paren(line, paren_start)?;
-    let params_str = &line[paren_start + 1..paren_end];
-    let inputs = parse_sol_params(params_str);
-
-    Some(AbiItem::Error { name, inputs })
-}
-
-fn parse_sol_event_line(line: &str) -> Option<AbiItem> {
-    let line = line.strip_prefix("event ")?.trim();
-
-    let paren_start = line.find('(')?;
-    let name = line[..paren_start].trim().to_string();
-
-    let paren_end = find_matching_paren(line, paren_start)?;
-    let params_str = &line[paren_start + 1..paren_end];
-    let inputs = parse_sol_event_params(params_str);
-
-    let anonymous = line[paren_end..].contains("anonymous");
-
-    Some(AbiItem::Event {
-        name,
-        inputs,
-        anonymous,
-    })
-}
-
-fn parse_sol_event_params(params_str: &str) -> Vec<AbiEventParam> {
-    if params_str.trim().is_empty() {
-        return vec![];
-    }
-
-    split_top_level(params_str)
-        .into_iter()
-        .filter_map(|p| {
-            let p = p.trim().to_string();
-            let parts: Vec<&str> = p.split_whitespace().collect();
-            if parts.is_empty() {
-                return None;
-            }
-            let raw_type = parts[0];
-            let indexed = parts.contains(&"indexed");
-            let name = parts[1..]
+        Type::Tuple(tuple) => {
+            let parts: Vec<String> = tuple
+                .types
                 .iter()
-                .find(|s| !matches!(**s, "indexed" | "memory" | "calldata" | "storage"))
-                .map(|s| s.to_string())
+                .map(|t| type_to_sol_string(t, structs))
+                .collect();
+            format!("({})", parts.join(","))
+        }
+        Type::Custom(path) => {
+            let name = path.last().to_string();
+            if let Some(def) = structs.get(&name) {
+                let parts: Vec<String> = def
+                    .fields
+                    .iter()
+                    .map(|field| type_to_sol_string(&field.ty, structs))
+                    .collect();
+                format!("({})", parts.join(","))
+            } else {
+                // Unknown custom type (enum, UDT, or undefined): fall back to
+                // its bare name, matching pre-syn behavior.
+                name
+            }
+        }
+        // Mappings and function types are not valid ABI parameter types.
+        Type::Mapping(_) | Type::Function(_) => String::new(),
+    }
+}
+
+fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &StructMap) -> AbiParam {
+    let name = decl
+        .name
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let rendered = type_to_sol_string(&decl.ty, structs);
+    parse_type_str(&name, &rendered)
+}
+
+fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &StructMap) -> Option<AbiItem> {
+    use syn_solidity::{FunctionKind, Mutability};
+
+    match func.kind {
+        FunctionKind::Function(_) => {
+            let inputs = func
+                .parameters
+                .iter()
+                .map(|p| param_to_abi(p, structs))
+                .collect();
+            let outputs = func
+                .returns
+                .as_ref()
+                .map(|r| r.returns.iter().map(|p| param_to_abi(p, structs)).collect())
                 .unwrap_or_default();
-            let expanded = parse_type_str(&name, raw_type);
-            Some(AbiEventParam {
+            let state_mutability = match func.attributes.mutability() {
+                Some(Mutability::Pure(_)) => "pure",
+                Some(Mutability::View(_)) => "view",
+                Some(Mutability::Payable(_)) => "payable",
+                _ => "nonpayable",
+            }
+            .to_string();
+            Some(AbiItem::Function {
+                name: func.name().to_string(),
+                inputs,
+                outputs,
+                state_mutability: Some(state_mutability),
+            })
+        }
+        FunctionKind::Constructor(_) => {
+            let inputs = func
+                .parameters
+                .iter()
+                .map(|p| param_to_abi(p, structs))
+                .collect();
+            let state_mutability = match func.attributes.mutability() {
+                Some(Mutability::Payable(_)) => "payable",
+                _ => "nonpayable",
+            }
+            .to_string();
+            Some(AbiItem::Constructor {
+                inputs,
+                state_mutability: Some(state_mutability),
+            })
+        }
+        FunctionKind::Receive(_) => Some(AbiItem::Receive {
+            state_mutability: Some("payable".to_string()),
+        }),
+        // Fallback and modifier definitions are not emitted in the ABI
+        // (preserving the prior parser, which never handled them).
+        FunctionKind::Fallback(_) | FunctionKind::Modifier(_) => None,
+    }
+}
+
+fn error_to_abi(err: &syn_solidity::ItemError, structs: &StructMap) -> AbiItem {
+    AbiItem::Error {
+        name: err.name.to_string(),
+        inputs: err
+            .parameters
+            .iter()
+            .map(|p| param_to_abi(p, structs))
+            .collect(),
+    }
+}
+
+fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &StructMap) -> AbiItem {
+    let inputs = evt
+        .parameters
+        .iter()
+        .map(|p| {
+            let name = p.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+            let rendered = type_to_sol_string(&p.ty, structs);
+            let expanded = parse_type_str(&name, &rendered);
+            AbiEventParam {
                 name: expanded.name,
                 param_type: expanded.param_type,
                 components: expanded.components,
-                indexed,
-            })
-        })
-        .collect()
-}
-
-pub(crate) fn parse_sol_params(params_str: &str) -> Vec<AbiParam> {
-    if params_str.trim().is_empty() {
-        return vec![];
-    }
-
-    split_top_level(params_str)
-        .into_iter()
-        .filter_map(|p| {
-            let p = p.trim().to_string();
-            let parts: Vec<&str> = p.split_whitespace().collect();
-            if parts.is_empty() {
-                return None;
+                indexed: p.indexed.is_some(),
             }
-            let raw_type = parts[0].to_string();
-            let name = parts[1..]
-                .iter()
-                .find(|s| !matches!(**s, "memory" | "calldata" | "storage"))
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            Some(parse_type_str(&name, &raw_type))
         })
-        .collect()
+        .collect();
+    AbiItem::Event {
+        name: evt.name.to_string(),
+        inputs,
+        anonymous: evt.is_anonymous(),
+    }
 }
 
 #[cfg(test)]
@@ -676,6 +598,171 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    fn write_sol(name: &str, body: &str) -> (TempDir, std::path::PathBuf) {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        write!(f, "{body}").unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn generate_abi_from_sol_handles_block_and_inline_comments() {
+        let (_d, path) = write_sol(
+            "Commented.sol",
+            r#"// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+interface Commented {
+    /* a block comment
+       function notAFunction(uint256 ignored) external; */
+    function transfer(
+        address to, // inline comment mid-signature
+        uint256 amount
+    ) external returns (bool);
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let funcs: Vec<_> = abi
+            .0
+            .iter()
+            .filter(|i| matches!(i, AbiItem::Function { .. }))
+            .collect();
+        assert_eq!(funcs.len(), 1);
+        assert_eq!(
+            funcs[0],
+            &AbiItem::Function {
+                name: "transfer".to_string(),
+                inputs: vec![
+                    AbiParam {
+                        name: "to".to_string(),
+                        param_type: "address".to_string(),
+                        components: vec![],
+                    },
+                    AbiParam {
+                        name: "amount".to_string(),
+                        param_type: "uint256".to_string(),
+                        components: vec![],
+                    },
+                ],
+                outputs: vec![AbiParam {
+                    name: "".to_string(),
+                    param_type: "bool".to_string(),
+                    components: vec![],
+                }],
+                state_mutability: Some("nonpayable".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_resolves_named_struct_into_tuple() {
+        let (_d, path) = write_sol(
+            "Points.sol",
+            r#"pragma solidity ^0.8.0;
+
+struct Point {
+    uint256 x;
+    uint256 y;
+}
+
+interface Points {
+    function add(Point a, Point b) external returns (Point);
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let (inputs, outputs) = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function {
+                    name,
+                    inputs,
+                    outputs,
+                    ..
+                } if name == "add" => Some((inputs, outputs)),
+                _ => None,
+            })
+            .unwrap();
+        let expected_components = vec![
+            AbiParam {
+                name: "".to_string(),
+                param_type: "uint256".to_string(),
+                components: vec![],
+            },
+            AbiParam {
+                name: "".to_string(),
+                param_type: "uint256".to_string(),
+                components: vec![],
+            },
+        ];
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].param_type, "tuple");
+        assert_eq!(inputs[0].components, expected_components);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].param_type, "tuple");
+        assert_eq!(outputs[0].components, expected_components);
+    }
+
+    #[test]
+    fn generate_abi_from_sol_strips_storage_locations_and_inline_tuples() {
+        let (_d, path) = write_sol(
+            "Mixed.sol",
+            r#"pragma solidity ^0.8.0;
+interface Mixed {
+    function f(string calldata s, uint256[] memory arr, (uint256,address) pair) external view;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function { name, inputs, .. } if name == "f" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            inputs[0],
+            AbiParam {
+                name: "s".to_string(),
+                param_type: "string".to_string(),
+                components: vec![],
+            }
+        );
+        assert_eq!(
+            inputs[1],
+            AbiParam {
+                name: "arr".to_string(),
+                param_type: "uint256[]".to_string(),
+                components: vec![],
+            }
+        );
+        assert_eq!(inputs[2].param_type, "tuple");
+        assert_eq!(inputs[2].name, "pair");
+        assert_eq!(
+            inputs[2].components,
+            vec![
+                AbiParam {
+                    name: "".to_string(),
+                    param_type: "uint256".to_string(),
+                    components: vec![],
+                },
+                AbiParam {
+                    name: "".to_string(),
+                    param_type: "address".to_string(),
+                    components: vec![],
+                },
+            ]
+        );
+    }
 
     // --- extract_sol_path_from_source ---
 
@@ -897,185 +984,7 @@ mod tests {
 
     // --- parse_sol_params ---
 
-    #[test]
-    fn parse_params_empty() {
-        assert_eq!(parse_sol_params(""), Vec::<AbiParam>::new());
-    }
-
-    #[test]
-    fn parse_params_whitespace_only() {
-        assert_eq!(parse_sol_params("   "), Vec::<AbiParam>::new());
-    }
-
-    #[test]
-    fn parse_params_single_with_name() {
-        let params = parse_sol_params("uint256 amount");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].param_type, "uint256");
-        assert_eq!(params[0].name, "amount");
-    }
-
-    #[test]
-    fn parse_params_single_type_only() {
-        let params = parse_sol_params("uint256");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].param_type, "uint256");
-        assert_eq!(params[0].name, "");
-    }
-
-    #[test]
-    fn parse_params_multiple() {
-        let params = parse_sol_params("address to, uint256 amount");
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0].param_type, "address");
-        assert_eq!(params[0].name, "to");
-        assert_eq!(params[1].param_type, "uint256");
-        assert_eq!(params[1].name, "amount");
-    }
-
     // --- parse_sol_function_line ---
-
-    #[test]
-    fn parse_function_simple_transfer() {
-        let item =
-            parse_sol_function_line("function transfer(address to, uint256 amount) external")
-                .unwrap();
-        assert_eq!(
-            item,
-            AbiItem::Function {
-                name: "transfer".to_string(),
-                inputs: vec![
-                    AbiParam {
-                        name: "to".to_string(),
-                        param_type: "address".to_string(),
-                        components: vec![],
-                    },
-                    AbiParam {
-                        name: "amount".to_string(),
-                        param_type: "uint256".to_string(),
-                        components: vec![],
-                    },
-                ],
-                outputs: vec![],
-                state_mutability: Some("nonpayable".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_function_view_with_returns() {
-        let item = parse_sol_function_line(
-            "function balanceOf(address account) external view returns (uint256)",
-        )
-        .unwrap();
-        assert_eq!(
-            item,
-            AbiItem::Function {
-                name: "balanceOf".to_string(),
-                inputs: vec![AbiParam {
-                    name: "account".to_string(),
-                    param_type: "address".to_string(),
-                    components: vec![],
-                }],
-                outputs: vec![AbiParam {
-                    name: "".to_string(),
-                    param_type: "uint256".to_string(),
-                    components: vec![],
-                }],
-                state_mutability: Some("view".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_function_no_params() {
-        let item =
-            parse_sol_function_line("function totalSupply() external view returns (uint256)")
-                .unwrap();
-        assert_eq!(
-            item,
-            AbiItem::Function {
-                name: "totalSupply".to_string(),
-                inputs: vec![],
-                outputs: vec![AbiParam {
-                    name: "".to_string(),
-                    param_type: "uint256".to_string(),
-                    components: vec![],
-                }],
-                state_mutability: Some("view".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_function_pure_mutability() {
-        let item =
-            parse_sol_function_line("function add(uint256 a, uint256 b) pure returns (uint256)")
-                .unwrap();
-        if let AbiItem::Function {
-            state_mutability, ..
-        } = &item
-        {
-            assert_eq!(state_mutability.as_deref(), Some("pure"));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn parse_function_payable_mutability() {
-        let item =
-            parse_sol_function_line("function deposit() external payable returns (bool)").unwrap();
-        if let AbiItem::Function {
-            state_mutability, ..
-        } = &item
-        {
-            assert_eq!(state_mutability.as_deref(), Some("payable"));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn parse_function_payable_with_trailing_semicolon() {
-        let item = parse_sol_function_line("function deposit() external payable;").unwrap();
-        if let AbiItem::Function {
-            state_mutability, ..
-        } = &item
-        {
-            assert_eq!(state_mutability.as_deref(), Some("payable"));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn parse_function_view_with_trailing_semicolon() {
-        let item = parse_sol_function_line("function owner() external view;").unwrap();
-        if let AbiItem::Function {
-            state_mutability, ..
-        } = &item
-        {
-            assert_eq!(state_mutability.as_deref(), Some("view"));
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn parse_function_no_returns() {
-        let item = parse_sol_function_line("function setOwner(address newOwner) external").unwrap();
-        if let AbiItem::Function { outputs, .. } = &item {
-            assert!(outputs.is_empty());
-        } else {
-            panic!("expected Function");
-        }
-    }
-
-    #[test]
-    fn parse_function_not_a_function() {
-        assert!(parse_sol_function_line("event Transfer(address,address,uint256)").is_none());
-    }
 
     // --- generate_abi_from_sol (uses temp files) ---
 
@@ -1203,92 +1112,7 @@ version = "0.1.0"
         assert_eq!(path, dir.path().join("src/bin/mybin.rs"));
     }
 
-    #[test]
-    fn parse_params_strips_data_location_qualifiers() {
-        let params = parse_sol_params("string calldata s, uint256[] memory arr");
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0].param_type, "string");
-        assert_eq!(params[0].name, "s");
-        assert_eq!(params[1].param_type, "uint256[]");
-        assert_eq!(params[1].name, "arr");
-    }
-
-    #[test]
-    fn parse_params_strips_qualifier_without_name() {
-        let params = parse_sol_params("string memory");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].param_type, "string");
-        assert_eq!(params[0].name, "");
-    }
-
-    #[test]
-    fn parse_function_with_tuple_param() {
-        let item = parse_sol_function_line(
-            "function foo((address,uint256) param) external returns (bool)",
-        )
-        .unwrap();
-        if let AbiItem::Function {
-            name,
-            inputs,
-            outputs,
-            ..
-        } = &item
-        {
-            assert_eq!(name, "foo");
-            assert_eq!(inputs.len(), 1);
-            assert_eq!(inputs[0].param_type, "tuple");
-            assert_eq!(inputs[0].components.len(), 2);
-            assert_eq!(inputs[0].components[0].param_type, "address");
-            assert_eq!(inputs[0].components[1].param_type, "uint256");
-            assert_eq!(outputs.len(), 1);
-            assert_eq!(outputs[0].param_type, "bool");
-        } else {
-            panic!("expected Function");
-        }
-    }
-
     // --- Error parsing ---
-
-    #[test]
-    fn parse_error_with_params() {
-        assert_eq!(
-            parse_sol_error_line(
-                "error InsufficientBalance(address account, uint256 required, uint256 available);",
-            )
-            .unwrap(),
-            AbiItem::Error {
-                name: "InsufficientBalance".to_string(),
-                inputs: vec![
-                    AbiParam {
-                        name: "account".to_string(),
-                        param_type: "address".to_string(),
-                        components: vec![],
-                    },
-                    AbiParam {
-                        name: "required".to_string(),
-                        param_type: "uint256".to_string(),
-                        components: vec![],
-                    },
-                    AbiParam {
-                        name: "available".to_string(),
-                        param_type: "uint256".to_string(),
-                        components: vec![],
-                    },
-                ],
-            }
-        );
-    }
-
-    #[test]
-    fn parse_error_no_params() {
-        assert_eq!(
-            parse_sol_error_line("error Unauthorized();").unwrap(),
-            AbiItem::Error {
-                name: "Unauthorized".to_string(),
-                inputs: vec![],
-            }
-        );
-    }
 
     #[test]
     fn generate_abi_from_sol_includes_errors() {
@@ -1356,69 +1180,7 @@ version = "0.1.0"
 
     // --- Constructor parsing ---
 
-    #[test]
-    fn parse_constructor_no_params() {
-        let item = parse_sol_constructor_line("constructor() public").unwrap();
-        assert_eq!(
-            item,
-            AbiItem::Constructor {
-                inputs: vec![],
-                state_mutability: Some("nonpayable".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn parse_constructor_with_params() {
-        let item =
-            parse_sol_constructor_line("constructor(address owner, uint256 supply) public payable")
-                .unwrap();
-        if let AbiItem::Constructor {
-            inputs,
-            state_mutability,
-        } = &item
-        {
-            assert_eq!(inputs.len(), 2);
-            assert_eq!(inputs[0].param_type, "address");
-            assert_eq!(inputs[0].name, "owner");
-            assert_eq!(inputs[1].param_type, "uint256");
-            assert_eq!(inputs[1].name, "supply");
-            assert_eq!(state_mutability.as_deref(), Some("payable"));
-        } else {
-            panic!("expected Constructor");
-        }
-    }
-
     // --- Tuple type expansion in parse_sol_params ---
-
-    #[test]
-    fn parse_params_tuple_becomes_components() {
-        let params = parse_sol_params("(uint256,address) value");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].param_type, "tuple");
-        assert_eq!(params[0].name, "value");
-        assert_eq!(params[0].components.len(), 2);
-        assert_eq!(params[0].components[0].param_type, "uint256");
-        assert_eq!(params[0].components[1].param_type, "address");
-    }
-
-    #[test]
-    fn parse_params_tuple_array() {
-        let params = parse_sol_params("(uint256,address)[] items");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].param_type, "tuple[]");
-        assert_eq!(params[0].components.len(), 2);
-    }
-
-    #[test]
-    fn parse_params_nested_tuple() {
-        let params = parse_sol_params("((uint64,uint64),(uint64,uint64)) line");
-        assert_eq!(params.len(), 1);
-        assert_eq!(params[0].param_type, "tuple");
-        assert_eq!(params[0].components.len(), 2);
-        assert_eq!(params[0].components[0].param_type, "tuple");
-        assert_eq!(params[0].components[0].components.len(), 2);
-    }
 
     // --- Constructor in generate_abi_from_sol ---
 
@@ -1536,95 +1298,6 @@ interface Token {{
     }
 
     // --- Event parsing ---
-
-    #[test]
-    fn parse_event_with_indexed_params() {
-        assert_eq!(
-            parse_sol_event_line(
-                "event Transfer(address indexed from, address indexed to, uint256 value);"
-            )
-            .unwrap(),
-            AbiItem::Event {
-                name: "Transfer".to_string(),
-                inputs: vec![
-                    AbiEventParam {
-                        name: "from".to_string(),
-                        param_type: "address".to_string(),
-                        components: vec![],
-                        indexed: true,
-                    },
-                    AbiEventParam {
-                        name: "to".to_string(),
-                        param_type: "address".to_string(),
-                        components: vec![],
-                        indexed: true,
-                    },
-                    AbiEventParam {
-                        name: "value".to_string(),
-                        param_type: "uint256".to_string(),
-                        components: vec![],
-                        indexed: false,
-                    },
-                ],
-                anonymous: false,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_event_no_params() {
-        assert_eq!(
-            parse_sol_event_line("event Paused();").unwrap(),
-            AbiItem::Event {
-                name: "Paused".to_string(),
-                inputs: vec![],
-                anonymous: false,
-            }
-        );
-    }
-
-    #[test]
-    fn parse_event_anonymous() {
-        let item = parse_sol_event_line("event Debug(uint256 value) anonymous;").unwrap();
-        if let AbiItem::Event { anonymous, .. } = &item {
-            assert!(anonymous);
-        } else {
-            panic!("expected Event");
-        }
-    }
-
-    #[test]
-    fn parse_event_not_an_event() {
-        assert!(parse_sol_event_line("function transfer(address,uint256)").is_none());
-    }
-
-    #[test]
-    fn parse_event_with_indexed_tuple_param() {
-        assert_eq!(
-            parse_sol_event_line("event PointMoved((uint64,uint64) indexed point);").unwrap(),
-            AbiItem::Event {
-                name: "PointMoved".to_string(),
-                inputs: vec![AbiEventParam {
-                    name: "point".to_string(),
-                    param_type: "tuple".to_string(),
-                    components: vec![
-                        AbiParam {
-                            name: "".to_string(),
-                            param_type: "uint64".to_string(),
-                            components: vec![],
-                        },
-                        AbiParam {
-                            name: "".to_string(),
-                            param_type: "uint64".to_string(),
-                            components: vec![],
-                        },
-                    ],
-                    indexed: true,
-                }],
-                anonymous: false,
-            }
-        );
-    }
 
     #[test]
     fn generate_abi_from_sol_includes_events() {
