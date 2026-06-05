@@ -41,15 +41,9 @@ struct MacroFunctionInfo {
     name_snake: String,
     params: String,
     return_type: String,
-    /// Rust receiver derived from the Solidity `stateMutability` field. The
-    /// SDK macro infers mutability from the receiver shape and cross-checks
-    /// it against the `.sol` declaration. The mapping:
-    ///   - `pure`       -> no receiver (empty string)
-    ///   - `view`       -> `&self`
-    ///   - `nonpayable` -> `&mut self`
-    ///   - `payable`    -> `&mut self` + the `#[payable]` attribute
-    /// Empty for `pure`, in which case the template omits the leading
-    /// comma between receiver and params.
+    /// Rust receiver derived from the Solidity `stateMutability` field, set by
+    /// `receiver_from_mutability`. Empty for `pure`, in which case the template
+    /// omits the leading comma between receiver and params.
     receiver: String,
     /// `#[pvm_contract_sdk::payable]` attribute line if the function is
     /// payable; empty otherwise. Emitted on a line above `#[method]`.
@@ -583,12 +577,12 @@ fn extract_function_info(metadata: &ContractMetadata) -> Result<Vec<MacroFunctio
 /// `#[payable]` attribute the SDK macro expects. Mirrors the inference table
 /// documented in CLAUDE.md ("Mutability Inference"):
 ///
-/// - `pure`       -> no receiver (the SDK macro infers `pure` from the absence
-///                  of a `self` argument; emitting `&self` would be inferred as
-///                  `view`, mismatching the `.sol` declaration).
-/// - `view`       -> `&self`.
+/// - `pure` -> no receiver. The SDK macro infers `pure` from the absence of a
+///   `self` argument; emitting `&self` would be inferred as `view`, mismatching
+///   the `.sol` declaration.
+/// - `view` -> `&self`.
 /// - `nonpayable` -> `&mut self`.
-/// - `payable`    -> `&mut self` + `#[pvm_contract_sdk::payable]`.
+/// - `payable` -> `&mut self` + `#[pvm_contract_sdk::payable]`.
 fn receiver_from_mutability(sm: &str) -> Result<(String, String)> {
     Ok(match sm {
         "pure" => (String::new(), String::new()),
