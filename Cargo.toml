@@ -46,4 +46,5 @@ convert_case = "0.6"
 toml_edit = "0.22"
 trybuild = "1.0"
 syn = { version = "2.0", features = ["full", "parsing"] }
+syn-solidity = { version = "1.5" }
 inquire = "0.7"
