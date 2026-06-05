@@ -212,9 +212,9 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             const SLOTS: u64 = #slots_expr;
 
             // Embedded `#[storage]` sub-structs always start a fresh slot and
-            // never pack with neighbouring contract fields. Matches Stylus
-            // (and solc) — packing applies inside the sub-struct, never
-            // across its outer boundary.
+            // never pack with neighbouring contract fields. Matches solc —
+            // packing applies inside the sub-struct, never across its outer
+            // boundary.
             const PACKED_BYTES: usize = 32;
 
             fn new_at(base: u64, offset: u8, host: ::pvm_contract_sdk::Host) -> Self {

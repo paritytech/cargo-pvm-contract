@@ -38,7 +38,7 @@
 //! ([`layout_step`]) is the const-fn that decides each field's placement.
 //!
 //! Packed writes are read-modify-write (one SLOAD + one SSTORE), matching
-//! solc/Stylus. Full-slot writes are a single SSTORE — no overhead from the
+//! solc. Full-slot writes are a single SSTORE — no overhead from the
 //! packing infrastructure.
 //!
 //! Multi-slot composites (`Lazy<(U256, U256)>`, multi-slot
@@ -706,13 +706,13 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// matching Solidity's default-to-zero semantics.
     ///
     /// **Lossy decode for `T = String`:** Rust's `String` must hold valid
-    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD
-    /// (matching Stylus's `StorageString::get_string`). A Solidity contract
-    /// reading the same slot sees the raw bytes verbatim — `string` in solc
-    /// is just `bytes` with a UTF-8 hint and has no decode step. If you need
-    /// byte-exact roundtrips (e.g. on-chain `keccak256` matching an off-chain
-    /// hash), use [`Lazy<Bytes>`] instead — it preserves every byte. See
-    /// also `Mapping::get` for the same caveat on `V = String`.
+    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD.
+    /// A Solidity contract reading the same slot sees the raw bytes verbatim
+    /// — `string` in solc is just `bytes` with a UTF-8 hint and has no
+    /// decode step. If you need byte-exact roundtrips (e.g. on-chain
+    /// `keccak256` matching an off-chain hash), use [`Lazy<Bytes>`] instead
+    /// — it preserves every byte. See also `Mapping::get` for the same
+    /// caveat on `V = String`.
     ///
     /// [`Lazy<Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self) -> T {
@@ -782,9 +782,9 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         // try_get is only meaningful for full-slot types. For sub-slot packed
         // fields, "is this written?" cannot be answered honestly — a neighbor
         // writing to the same slot makes our `try_get` return Some(zero) even
-        // if we never wrote. Solidity has the same conflation; Stylus avoids
-        // it by not exposing try_get at all. We keep it for full-slot and
-        // reject it for packed with a clear compile-time message.
+        // if we never wrote. Solidity has the same conflation. We keep
+        // `try_get` for full-slot and reject it for packed with a clear
+        // compile-time message.
         const {
             assert!(
                 T::PACKED_BYTES == 32,
@@ -839,16 +839,16 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// (sub-32-byte primitives that share a slot with neighbours via the
     /// macro walker), `set` performs one SLOAD + one SSTORE: it loads the
     /// shared slot, zeros only the field's byte window, writes the new
-    /// bytes back, and stores. This matches solc and Stylus's gas profile
-    /// for packed `SSTORE`s — neighbours sharing the slot are preserved.
+    /// bytes back, and stores. This matches solc's gas profile for packed
+    /// `SSTORE`s — neighbours sharing the slot are preserved.
     pub fn set(&mut self, value: &T) {
         let () = Self::_SIZE_CHECK;
         if T::PACKED_BYTES < 32 {
             // Packed sub-slot RMW: load slot, zero our window, write our
             // bytes back via the polymorphic dispatch hook, store. One extra
             // SLOAD on each write vs. the full-slot path — same gas profile
-            // as solc / Stylus for adjacent sub-32-byte fields sharing a
-            // slot. `__pack_into_dispatched` delegates to
+            // as solc for adjacent sub-32-byte fields sharing a slot.
+            // `__pack_into_dispatched` delegates to
             // `<T as StoragePackable>::pack_into` for packable T; full-slot T
             // never reaches this branch.
             let mut buf = storage_get_32(&self.host, self.key.as_bytes());
@@ -1072,12 +1072,12 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// Returns the zero value if the key was never written.
     ///
     /// **Lossy decode for `V = String`:** Rust's `String` must hold valid
-    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD
-    /// (matching Stylus's `StorageString::get_string`). A Solidity contract
-    /// reading the same slot sees the raw bytes verbatim — `string` in solc
-    /// is just `bytes` with a UTF-8 hint and has no decode step. If you need
-    /// byte-exact roundtrips (e.g. on-chain `keccak256` matching an off-chain
-    /// hash), use [`Mapping<K, Bytes>`] instead — it preserves every byte.
+    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD.
+    /// A Solidity contract reading the same slot sees the raw bytes verbatim
+    /// — `string` in solc is just `bytes` with a UTF-8 hint and has no
+    /// decode step. If you need byte-exact roundtrips (e.g. on-chain
+    /// `keccak256` matching an off-chain hash), use [`Mapping<K, Bytes>`]
+    /// instead — it preserves every byte.
     ///
     /// [`Mapping<K, Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self, key: &K) -> V {
@@ -1264,18 +1264,15 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// (inline header or spilled body). Use `Bytes` when you need `bytes`-shaped
 /// storage; use `StorageVec<u8>` when you need a `uint8[]` array.
 ///
-/// # Cross-check vs Stylus
+/// # Notable design choices
 ///
-/// API surface mirrors `stylus-sdk::storage::vec::StorageVec`. Notable
-/// differences from Stylus:
-/// - `get(i)` / `pop()` return `T` by value (Stylus returns a guarded handle
-///   because its `T` is itself a storage handle, not a value).
-/// - `set(i, &value)` is the direct write analogue of Stylus's
-///   `setter(i)`. There's no per-element handle on flat `StorageVec<T>` —
-///   handles only appear on the nested impl (`StorageVec<StorageVec<T>>`)
-///   where `entry(i)` returns a `RefMut<'_, StorageVec<T>>`.
+/// - `get(i)` / `pop()` return `T` by value.
+/// - `set(i, &value)` is the direct-write API. There's no per-element
+///   handle on flat `StorageVec<T>` — handles only appear on the nested
+///   impl (`StorageVec<StorageVec<T>>`) where `entry(i)` returns a
+///   `RefMut<'_, StorageVec<T>>`.
 /// - `pop()` zeros the freed slot only when the freed element was the first
-///   packed element in its slot (same gas-optimal policy as Stylus / solc).
+///   packed element in its slot — the gas-optimal policy that matches solc.
 ///   For full-slot elements, every pop frees a full slot.
 ///
 /// # Element shapes supported
@@ -1358,8 +1355,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
 
     /// Lazily compute and cache the body base `keccak256(pad32(slot))`.
     /// View methods that touch only the length (`len`, `is_empty`) skip
-    /// this — only element accessors trigger the keccak. Matches Stylus's
-    /// `OnceCell<U256>` body-base caching.
+    /// this — only element accessors trigger the keccak.
     fn body_base(&self) -> &[u8; 32] {
         self.base
             .get_or_init(|| storage_derive_body_base(&self.host, self.root.as_bytes()))
@@ -1660,8 +1656,7 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<T> {
 
 /// Solidity's `T[][]` lays out the outer length at the parent slot, each
 /// inner array's "root" (length slot) at `keccak256(parent_root) + i`, and
-/// then the inner body at `keccak256(inner_root) + j`. Stylus exposes the
-/// same shape via nested `StorageVec`; this impl matches it.
+/// then the inner body at `keccak256(inner_root) + j`.
 ///
 /// `StorageVec<T>` is a handle (not a `StorageEncode` value), so the
 /// generic `StorageVec<T>::new` won't construct a `StorageVec<StorageVec<T>>`

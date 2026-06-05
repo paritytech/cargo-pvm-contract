@@ -1022,14 +1022,13 @@ impl StorageDecode for alloc::string::String {
         // to keep `get()` infallible: invalid sequences are replaced with
         // U+FFFD instead of trapping.
         //
-        // This matches Stylus's `StorageString::get_string`
-        // (`stylus-sdk/src/storage/bytes.rs:528`) — also lossy, also infallible,
-        // also offers a `Bytes` escape hatch for byte-exact reads. It diverges
-        // from a Solidity contract reading the same slot, which sees the raw
-        // bytes verbatim because solc never decodes `string` (it's just `bytes`
-        // with a UTF-8 hint). Trapping on invalid bytes (ink!'s choice via
-        // SCALE decode) would be a DoS vector when storage is shared with a
-        // Solidity contract that doesn't validate.
+        // Also lossy, also infallible — use `Bytes` for byte-exact reads.
+        // This diverges from a Solidity contract reading the same slot,
+        // which sees the raw bytes verbatim because solc never decodes
+        // `string` (it's just `bytes` with a UTF-8 hint). Trapping on
+        // invalid bytes (ink!'s choice via SCALE decode) would be a DoS
+        // vector when storage is shared with a Solidity contract that
+        // doesn't validate.
         //
         // Contracts needing byte-exact roundtrips (e.g. computing a keccak256
         // that matches what an off-chain client hashed) must use
