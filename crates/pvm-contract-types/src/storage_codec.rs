@@ -601,9 +601,9 @@ impl<const N: usize> StoragePackable for [u8; N] {
 //
 // Dynamic-body T (`String`, `Bytes`) is not supported in fixed arrays —
 // solc's storage layout for those involves per-element headers and is left
-// as a follow-up. Manually `impl StorageArrayElement` for a dynamic-body T
-// will type-check but **panic at runtime** (its `encode_slot` /
-// `from_slots` are `unreachable!()` stubs).
+// as a follow-up. Even if a downstream crate implements `StorageArrayElement`
+// for a dynamic-body T, `[T; N]` will be rejected at compile time by the
+// `!T::HAS_DYNAMIC_BODY` const-assert in `StorageEncode for [T; N]`.
 // ---------------------------------------------------------------------------
 
 /// Marker trait gating which element types can appear in `[T; N]` storage.
