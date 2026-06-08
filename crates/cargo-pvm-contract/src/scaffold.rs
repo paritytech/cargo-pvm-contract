@@ -632,10 +632,13 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
                         p.name.to_case(Case::Snake)
                     };
                     let rust_type = solidity_to_rust_type(&p.type_name)?;
+                    // Angle-bracket the type so compound shapes like
+                    // `[U256; 3]` / `Vec<U256>` parse as qualified paths;
+                    // the bare form would be a Rust syntax error.
                     let decode_expr = if i == 0 {
-                        format!("{rust_type}::decode_at(input, 0)")
+                        format!("<{rust_type}>::decode_at(input, 0)")
                     } else {
-                        format!("{rust_type}::decode_at(input, {offset_expr})")
+                        format!("<{rust_type}>::decode_at(input, {offset_expr})")
                     };
 
                     // Accumulate offset for next parameter.

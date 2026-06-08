@@ -796,11 +796,14 @@ fn scaffold_from_sol_macro_no_alloc_static_surface() {
 fn scaffold_from_sol_dsl_single_dynamic() {
     // Single-param dynamic input with no return is the only DSL shape that
     // survives the `StaticEncodedLen` safety net; other dynamic-in-DSL shapes
-    // are rejected by the `scaffold_rejects_dsl_*` gate tests.
+    // are rejected by the `scaffold_rejects_dsl_*` gate tests. The two
+    // compound-type params also regression-test the `<T>::decode_at` wrap.
     let temp_dir = TempDir::new().expect("temp dir");
     let sol = sol_interface(
         "DslDynIface",
-        "    function setBytes(bytes calldata data) external;",
+        "    function setBytes(bytes calldata data) external;\n\
+         \x20   function setFixed(uint256[3] calldata xs) external;\n\
+         \x20   function setDyn(uint256[] calldata xs) external;",
     );
     scaffold_from_sol_and_build(&temp_dir, "dsl-bytes-bump", "dsl", Some("bump"), &sol);
 }
