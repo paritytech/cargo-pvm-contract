@@ -224,6 +224,40 @@ pub fn build_contract(
 
         let cdm_path = output_dir.join(format!("{}.{}.cdm.json", bin, profile.directory()));
         generate_cdm_file(&elf_path, &cdm_path)?;
+
+        emit_flat_layout(output_dir, &profile, bin, &polkavm_path, &abi_path)?;
+    }
+
+    Ok(())
+}
+
+/// Also emit artifacts under the flat `target/<profile>/<bin>.{polkavm,abi.json}`
+/// layout that the contract-dependency-manager `cdm` deploy/publish pipeline
+/// reads (it resolves `target/release/<crate>.polkavm` and
+/// `target/release/<crate>.abi.json`). This is additive: the branch's existing
+/// `<bin>.<profile>.*` outputs are left untouched.
+fn emit_flat_layout(
+    target_dir: &Path,
+    profile: &Profile,
+    bin: &str,
+    polkavm_path: &Path,
+    abi_path: &Path,
+) -> Result<()> {
+    let flat_dir = target_dir.join(profile.directory());
+    fs::create_dir_all(&flat_dir)
+        .with_context(|| format!("Failed to create {}", flat_dir.display()))?;
+
+    let flat_polkavm = flat_dir.join(format!("{}.polkavm", bin));
+    fs::copy(polkavm_path, &flat_polkavm).with_context(|| {
+        format!("Failed to copy {} -> {}", polkavm_path.display(), flat_polkavm.display())
+    })?;
+
+    // ABI may be absent (contract emitted no ABI section); only mirror it when present.
+    if abi_path.exists() {
+        let flat_abi = flat_dir.join(format!("{}.abi.json", bin));
+        fs::copy(abi_path, &flat_abi).with_context(|| {
+            format!("Failed to copy {} -> {}", abi_path.display(), flat_abi.display())
+        })?;
     }
 
     Ok(())
@@ -271,6 +305,8 @@ fn build_project(
 
         let cdm_path = target_root.join(format!("{}.{}.cdm.json", bin, profile.directory()));
         generate_cdm_file(&elf_path, &cdm_path)?;
+
+        emit_flat_layout(&target_root, &profile, bin, &output_path, &abi_path)?;
     }
 
     Ok(())

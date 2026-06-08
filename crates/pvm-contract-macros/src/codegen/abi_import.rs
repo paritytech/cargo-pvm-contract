@@ -1,7 +1,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::{Ident, LitStr, Token};
+use syn::{Attribute, Ident, LitStr, Token};
 
 use crate::codegen::decode::generate_decode;
 use crate::codegen::encode::generate_encode_params;
@@ -20,10 +20,35 @@ pub struct AbiImportArgs {
     pub module_name: String,
     pub abi_path: String,
     pub cdm: Option<String>,
+    /// `true` for the `cdm::import!`-emitted form
+    /// (`#![abi_import(alloc = true)] <ident>, "<path>"`), which expects a
+    /// 4-generic typestate-shaped contract type rather than the legacy
+    /// `Reference` struct. See [`expand_abi_import`].
+    pub typestate: bool,
 }
 
 impl Parse for AbiImportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        // New `cdm::import!` form, emitted as:
+        //   abi_import! { #![abi_import(alloc = true)] <ident>, "<abs path>" }
+        // Discriminated by a leading inner attribute, or a leading ident
+        // (the legacy form always starts with a string literal). We ignore the
+        // `alloc` flag — this branch is always alloc-enabled for imports.
+        let inner_attrs = Attribute::parse_inner(input)?;
+        if !inner_attrs.is_empty() || input.peek(Ident) {
+            let name: Ident = input.parse()?;
+            input.parse::<Token![,]>()?;
+            let abi_path: LitStr = input.parse()?;
+            let _ = input.parse::<Option<Token![,]>>()?;
+            return Ok(AbiImportArgs {
+                module_name: name.to_string(),
+                abi_path: abi_path.value(),
+                cdm: None,
+                typestate: true,
+            });
+        }
+
+        // Legacy form: "name", "path" [, cdm = "@org/x"]
         let module_name: LitStr = input.parse()?;
         input.parse::<Token![,]>()?;
         let abi_path: LitStr = input.parse()?;
@@ -41,6 +66,7 @@ impl Parse for AbiImportArgs {
             module_name: module_name.value(),
             abi_path: abi_path.value(),
             cdm,
+            typestate: false,
         })
     }
 }
@@ -464,13 +490,53 @@ pub fn expand_abi_import(args: AbiImportArgs) -> syn::Result<TokenStream> {
         methods.push(method);
     }
 
+    let mod_name = format_ident!("{}", args.module_name);
+
+    // New `cdm::import!` form: emit a 4-generic, typestate-shaped contract type
+    // (`Foo<M, I, O, const INITIALIZED: bool>`) with a `from_address`
+    // constructor on `<Pure, (), (), false>`, so `pvm_cdm::reference!` can
+    // attach `cdm_lookup()` / `cdm_from_env()`. The imported call methods are
+    // the SAME direct-call methods used by the legacy `Reference` — they read
+    // `self.addr` and route through `api::call_evm`, so no CallBuilder /
+    // ContractContext layer is needed.
+    if args.typestate {
+        let type_name = format_ident!("{}", to_pascal_case(&args.module_name));
+        return Ok(quote! {
+            pub mod #mod_name {
+                #(#return_structs)*
+
+                pub struct #type_name<
+                    M = pvm_contract::Pure,
+                    I = (),
+                    O = (),
+                    const INITIALIZED: bool = false,
+                > {
+                    addr: pvm_contract::Address,
+                    _cdm_marker: core::marker::PhantomData<(M, I, O)>,
+                }
+
+                impl #type_name<pvm_contract::Pure, (), (), false> {
+                    /// Construct a handle to an already-deployed instance at `addr`.
+                    pub fn from_address(addr: pvm_contract::Address) -> Self {
+                        Self { addr, _cdm_marker: core::marker::PhantomData }
+                    }
+
+                    /// The on-chain address this handle targets.
+                    pub fn address(&self) -> pvm_contract::Address {
+                        self.addr
+                    }
+
+                    #(#methods)*
+                }
+            }
+        });
+    }
+
     let cdm_fn = if let Some(cdm_name) = &args.cdm {
         generate_cdm_reference(cdm_name)
     } else {
         quote! {}
     };
-
-    let mod_name = format_ident!("{}", args.module_name);
 
     Ok(quote! {
         pub mod #mod_name {

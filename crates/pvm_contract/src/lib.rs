@@ -9,6 +9,10 @@ pub mod abi;
 
 pub mod call;
 
+// CDM cross-contract compat surface (see `call.rs`): re-exported at the crate
+// root because `pvm_cdm::reference!` references these as `pvm_contract_sdk::*`.
+pub use call::{HostApi, PolkaVmHost, Pure};
+
 pub use pvm_contract_macros::{abi_import, constructor, contract, fallback, method, storage, SolAbi};
 
 pub use ethereum_types::Address;
