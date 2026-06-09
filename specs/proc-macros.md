@@ -125,12 +125,12 @@ If a `.sol` interface is provided, the macro rejects any mismatch between the Ru
 
 ## Storage
 
-Storage helpers live in `pvm-storage` (re-exported from `pvm-contract-sdk`). The two primary types are `Lazy<T>` (single value at a fixed slot) and `Mapping<K, V>` (key-value).
+Storage helpers live in `pvm-storage` (re-exported from `pvm-contract-sdk`). The primary types are `Lazy<T>` (single value at a fixed slot), `Mapping<K, V>` (key-value), and `StorageVec<T>` (dynamic array, Solidity `T[]`). Fixed-size arrays `[T; N]` (Solidity `T[N]`, static element) are supported as values inside any of these.
 
 Declare fields directly on the contract struct. Two layout modes:
 
 - **Auto-numbered (default).** Omit `#[slot]` and the macro assigns slots in declaration order. Sub-word siblings pack into a shared slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, both in slot 0).
-- **Explicit `#[slot(N)]`.** Pins a field at slot `N`. Restricted to full-slot types (`Mapping`, `Lazy<U256>`, `Lazy<String>`, multi-slot composites, `#[storage]` sub-structs). Sub-word types are rejected because solc would place them at byte `32 - sizeof(T)`, while explicit-slot mode would place them at byte 0. Mixing the two modes within one struct is not supported.
+- **Explicit `#[slot(N)]`.** Pins a field at slot `N`. Restricted to full-slot types (`Mapping`, `StorageVec`, `Lazy<U256>`, `Lazy<String>`, multi-slot composites, `#[storage]` sub-structs). Sub-word types are rejected because solc would place them at byte `32 - sizeof(T)`, while explicit-slot mode would place them at byte 0. Mixing the two modes within one struct is not supported.
 
 `#[slot(N)]` is mainly useful when fields need `#[cfg(...)]` gating — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
 
@@ -167,7 +167,7 @@ mod my_token {
 }
 ```
 
-Mutability gating comes from the borrow checker: `&self` methods can only call `get` / `try_get` on storage fields; `&mut self` can also call `set`, `insert`, `entry`, and `remove`. To prevent a view method from reconstructing a writable handle from `self.host().clone()` plus a derived `StorageKey`, `Lazy::new` and `Mapping::new` are `unsafe fn` — the macro path (`StorageComponent::new_at`) stays safe, and `#![forbid(unsafe_code)]` at the contract crate root closes the reconstruction bypass entirely.
+Mutability gating comes from the borrow checker: `&self` methods can only call read accessors (`get` / `try_get`, plus `len` / `first` / `last` / `iter` on `StorageVec`); `&mut self` can also call mutators (`set`, `insert`, `entry`, `remove`, and `push` / `pop` / `set` / `grow` / `erase_last` on `StorageVec`). To prevent a view method from reconstructing a writable handle from `self.host().clone()` plus a derived `StorageKey`, `Lazy::new`, `Mapping::new`, and `StorageVec::new` are `unsafe fn` — the macro path (`StorageComponent::new_at`) stays safe, and `#![forbid(unsafe_code)]` at the contract crate root closes the reconstruction bypass entirely.
 
 ### `#[storage]` Sub-Structs
 
@@ -200,6 +200,37 @@ Under `--features abi-gen`, embedded `#[storage]` sub-structs flatten into the `
 ### Dynamic Values
 
 `Lazy<String>`, `Lazy<Bytes>`, and `Mapping<K, V>` with `V = String` / `Bytes` / a `#[derive(SolType)]` struct containing dynamic fields all use solc's inline/spilled `bytes`/`string` storage layout. `Vec<u8>` is rejected as a storage value (its ABI name is `"uint8[]"`, a different on-chain layout) — use `Bytes` for `bytes`-shaped storage; `Vec<u8>` remains valid as an ABI parameter type and as a mapping key.
+
+### Dynamic Arrays (`StorageVec`)
+
+`StorageVec<T>` is a dynamic array with Solidity's `T[]` slot layout (length at the field's slot; elements at `keccak256(slot) + i`). Reads take `&self`, writes `&mut self`:
+
+```rust,ignore
+pub struct Registry {
+    entries: StorageVec<U256>,                 // T[]
+}
+
+impl Registry {
+    #[pvm_contract_sdk::method]
+    pub fn len(&self) -> u64 {
+        self.entries.len()                     // read: len / is_empty / get / try_get / first / last / iter
+    }
+
+    #[pvm_contract_sdk::method]
+    pub fn add(&mut self, v: U256) {
+        self.entries.push(&v);                 // write: push / pop / set(i, &v) / clear
+    }
+}
+```
+
+Out-of-bounds `get` / `set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` for a non-panicking read.
+
+**Nested and composite shapes.** Because an inner collection is a *handle* (not a `StorageEncode` value), the nested accessors return borrow guards (`Ref` / `RefMut`) rather than the inner collection by value — which also enforces the view gate (a `&self` outer can only hand out a read-only `Ref`):
+
+- `Mapping<K, StorageVec<T>>` (`mapping(K => T[])`): `get(&K) -> Ref<StorageVec<T>>` (read) / `entry(&K) -> RefMut<StorageVec<T>>` (write), then operate on the inner vec — `self.posts.entry(&author).push(&post)`.
+- `StorageVec<StorageVec<T>>` (`T[][]`): `len` / `get(i) -> Ref<…>` / `try_get` / `first` / `last` / `iter` for reads; `grow() -> RefMut<…>` appends an empty inner row, `entry(i) -> RefMut<…>` mutates an existing one, and `erase_last() -> bool` drops the last row (the inner vec can't be returned by value, so it is destroyed rather than popped).
+
+These shapes are provided by dedicated impls today; arbitrary deeper nesting (3+ levels, `StorageVec<Mapping<…>>`) awaits the planned `StorageType` unification. Under `--features abi-gen`, `StorageVec<T>` is recognized by the macro's layout resolver and named as `T[]` (recursively, so `T[][]` and `mapping(K => T[])` resolve correctly) — it participates through `StorageComponent` alone and does not implement `StorageLayoutEmit`.
 
 ### Raw Host Calls
 
