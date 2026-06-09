@@ -1223,7 +1223,9 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
         // _>`, which only exposes `&self` methods. No bypass surface is
         // widened by producing the inner handle via the `unsafe`
         // constructor here.
-        Ref::new(unsafe { StorageVec::new(self.root.derive(&self.host, key), self.host.clone()) })
+        Ref::new(unsafe {
+            StorageVec::<T>::new(self.root.derive(&self.host, key), self.host.clone())
+        })
     }
 
     /// Write path: derive the inner `StorageVec`'s root slot and return a
@@ -1235,7 +1237,7 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
         // mutating access through the parent borrow; the inner handle just
         // forwards that capability.
         RefMut::new(unsafe {
-            StorageVec::new(self.root.derive(&self.host, key), self.host.clone())
+            StorageVec::<T>::new(self.root.derive(&self.host, key), self.host.clone())
         })
     }
 }
@@ -1278,7 +1280,7 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 ///
 /// - `get(i)` / `pop()` return `T` by value.
 /// - Per-element handles only appear on the nested impl
-///   (`StorageVec<StorageVec<T>>`), where `entry(i)` / `push_inner()` return
+///   (`StorageVec<StorageVec<T>>`), where `entry(i)` / `grow()` return
 ///   a `RefMut<'_, StorageVec<T>>`.
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot — the gas-optimal policy that matches solc.
@@ -1702,7 +1704,8 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<T> {
         // SAFETY: macro-only safe entry point. See `Lazy::new_at` for the
         // full justification — bypass would require direct user calls to
         // `StorageVec::new`, which is what the `unsafe` keyword marks.
-        unsafe { StorageVec::new(StorageKey::from_slot(slot), host) }
+        // Turbofish disambiguates from the nested `StorageVec<StorageVec<T>>::new`.
+        unsafe { StorageVec::<T>::new(StorageKey::from_slot(slot), host) }
     }
 }
 
@@ -1759,16 +1762,29 @@ impl<T: StorageEncode + StorageDecode> ExactSizeIterator for StorageVecIter<'_, 
 /// `StorageVec<T>` is a handle (not a `StorageEncode` value), so the
 /// generic `StorageVec<T>::new` won't construct a `StorageVec<StorageVec<T>>`
 /// — its bound requires the inner type to be a value. This block provides
-/// a dedicated `new_nested` constructor plus `outer_len` / `get` / `entry` /
-/// `push_empty` / `pop` / `clear` for managing the outer-and-inner pair.
+/// a dedicated `new` constructor plus structural accessors (`len`, `get`, `entry`, `clear`).
+///
+/// **Handle-not-value constraint:** an inner `StorageVec` cannot be
+/// materialized in memory by value, so the API hands out reference handles
+/// ([`Ref`] / [`RefMut`]) rather than the inner vec itself:
+/// * `get`, `try_get`, `first`, `last`, `iter` return `Ref<'_, StorageVec<T>>`.
+/// * [`grow`](Self::grow) appends an empty inner array and returns a `RefMut`
+///   handle to populate it.
+/// * [`erase_last`](Self::erase_last) removes the last inner array and returns
+///   `bool` (whether one was removed) — the inner vec is destroyed, not returned.
 impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     /// Construct a nested storage vec rooted at `root`.
+    ///
+    /// This is the `StorageVec<StorageVec<T>>` counterpart to the flat
+    /// [`StorageVec::new`]; it lives on a separate impl because the inner
+    /// `StorageVec<T>` is a handle, not a `StorageEncode` value, so the flat
+    /// `new`'s `T: StorageEncode + StorageDecode` bound excludes this shape.
     ///
     /// # Safety
     /// Same safety contract as [`StorageVec::new`]. Direct construction
     /// outside macro-generated code lets a `&self` (view) method reconstruct
     /// a writable handle and bypass the borrow-check view gate.
-    pub unsafe fn new_nested(root: StorageKey, host: Host) -> Self {
+    pub unsafe fn new(root: StorageKey, host: Host) -> Self {
         StorageVec {
             root,
             base: core::cell::OnceCell::new(),
@@ -1777,33 +1793,64 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
         }
     }
 
-    /// Number of inner arrays appended via [`push_empty`](Self::push_empty).
-    pub fn outer_len(&self) -> u64 {
+    /// Number of inner arrays appended.
+    pub fn len(&self) -> u64 {
         read_len_u64(&self.host, self.root.as_bytes())
     }
 
     /// `true` if no inner arrays have been appended.
     pub fn is_empty(&self) -> bool {
-        self.outer_len() == 0
+        self.len() == 0
     }
 
     /// Read-only view of the inner array at index `i`. The returned [`Ref`]
-    /// only exposes `&self` methods on `StorageVec<T>` (`len`, `get`,
-    /// `try_get`); mutating ops are blocked by the borrow.
+    /// only exposes `&self` methods on `StorageVec<T>`.
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `i >= outer_len()`, consistent with flat
+    /// Panics (reverts) if `i >= len()`, consistent with flat
     /// [`StorageVec::get`]. As there, the revert is a plain trap rather than
     /// solc's ABI-encoded `Panic(0x32)`.
     pub fn get(&self, i: u64) -> Ref<'_, StorageVec<T>> {
-        assert!(i < self.outer_len(), "StorageVec::get: index out of bounds");
-        let inner_root = self.inner_root(i);
+        assert!(i < self.len(), "StorageVec::get: index out of bounds");
         // SAFETY: the inner handle is immediately wrapped in `Ref<'_, _>`,
         // which forwards only `&self` methods. The parent `&self` borrow
-        // gates mutation: `push`/`pop`/`set` require `&mut self` and are
-        // unreachable through a `Ref`.
-        Ref::new(unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) })
+        // gates mutation: `grow`/`erase_last`/`set` require `&mut self` and
+        // are unreachable through a `Ref`.
+        Ref::new(self.inner_handle(i))
+    }
+
+    /// Read-only view of the inner array at `index`, returning `None` if out of bounds.
+    pub fn try_get(&self, i: u64) -> Option<Ref<'_, StorageVec<T>>> {
+        if i >= self.len() {
+            return None;
+        }
+        // SAFETY: see `get` — read-only `Ref` gates mutation.
+        Some(Ref::new(self.inner_handle(i)))
+    }
+
+    /// Read-only view of the first inner array, or `None` if empty.
+    pub fn first(&self) -> Option<Ref<'_, StorageVec<T>>> {
+        self.try_get(0)
+    }
+
+    /// Read-only view of the last inner array, or `None` if empty.
+    pub fn last(&self) -> Option<Ref<'_, StorageVec<T>>> {
+        let len = self.len();
+        if len == 0 {
+            None
+        } else {
+            self.try_get(len - 1)
+        }
+    }
+
+    /// Returns an iterator over read-only views of the inner arrays.
+    pub fn iter(&self) -> NestedStorageVecIter<'_, T> {
+        NestedStorageVecIter {
+            vec: self,
+            pos: 0,
+            len: self.len(),
+        }
     }
 
     /// Mutable handle to the inner array at index `i`. Permits the full
@@ -1811,59 +1858,38 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `i >= outer_len()`. Grow the outer first via
-    /// [`push_empty`](Self::push_empty) or [`push_inner`](Self::push_inner).
-    /// As with flat [`StorageVec::set`], the revert is a plain trap rather
-    /// than solc's ABI-encoded `Panic(0x32)`.
+    /// Panics (reverts) if `i >= len()`. Append a new inner first via
+    /// [`grow`](Self::grow). As with flat [`StorageVec::set`], the revert is
+    /// a plain trap rather than solc's ABI-encoded `Panic(0x32)`.
     pub fn entry(&mut self, i: u64) -> RefMut<'_, StorageVec<T>> {
-        assert!(
-            i < self.outer_len(),
-            "StorageVec::entry: index out of bounds"
-        );
-        let inner_root = self.inner_root(i);
+        assert!(i < self.len(), "StorageVec::entry: index out of bounds");
         // SAFETY: `&mut self` proves mutating access through the parent
         // borrow; the inner handle just forwards that capability.
-        RefMut::new(unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) })
-    }
-
-    /// Append a new (empty) inner array. Increments outer length by 1; the
-    /// inner array starts with length 0 and no element slots written.
-    ///
-    /// # Panics
-    /// Panics if the outer length would overflow `u64::MAX`.
-    pub fn push_empty(&mut self) {
-        let len = self.outer_len();
-        let new_len = len
-            .checked_add(1)
-            .expect("StorageVec::push_empty: length overflow");
-        write_len_u64(&self.host, self.root.as_bytes(), new_len);
+        RefMut::new(self.inner_handle(i))
     }
 
     /// Append a new empty inner array and return a [`RefMut`] handle to it,
-    /// ready to be populated in one step:
+    /// ready to be populated in one step. This is the nested analogue of flat
+    /// [`StorageVec::push`]: because an inner vec cannot be passed by value,
+    /// you grow the outer and write through the returned handle.
     ///
     /// ```ignore
-    /// let mut row = matrix.push_inner();
+    /// let mut row = matrix.grow();
     /// row.push(&a);
     /// row.push(&b);
     /// ```
     ///
-    /// Equivalent to [`push_empty`](Self::push_empty) followed by
-    /// [`entry`](Self::entry)`(outer_len() - 1)`, but without re-deriving
-    /// the bounds check.
-    ///
     /// # Panics
     /// Panics if the outer length would overflow `u64::MAX`.
-    pub fn push_inner(&mut self) -> RefMut<'_, StorageVec<T>> {
-        let len = self.outer_len();
+    pub fn grow(&mut self) -> RefMut<'_, StorageVec<T>> {
+        let len = self.len();
         let new_len = len
             .checked_add(1)
-            .expect("StorageVec::push_inner: length overflow");
+            .expect("StorageVec::grow: length overflow");
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
-        let inner_root = self.inner_root(len);
         // SAFETY: `&mut self` proves mutating access through the parent
         // borrow; the freshly appended inner array is exclusively ours.
-        RefMut::new(unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) })
+        RefMut::new(self.inner_handle(len))
     }
 
     /// Remove the last inner array, recursively clearing its storage.
@@ -1871,20 +1897,23 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     /// Matches solc's `T[][].pop()`, which destroys the popped inner array
     /// (its length slot and every element slot are zeroed, allowing the
     /// SSTORE-to-zero gas refund). Returns `true` if an inner array was
-    /// popped, `false` if the outer was already empty.
+    /// removed, `false` if the outer was already empty.
+    ///
+    /// Note: Unlike the flat [`StorageVec::pop`], this method does not return
+    /// the removed element by value (an inner `StorageVec` cannot be materialized
+    /// in memory). It is named `erase_last` rather than `pop` to clarify this distinction.
     ///
     /// **O(inner_len) gas** — every element of the popped inner is cleared.
-    pub fn pop(&mut self) -> bool {
-        let len = self.outer_len();
+    pub fn erase_last(&mut self) -> bool {
+        let len = self.len();
         if len == 0 {
             return false;
         }
         let new_len = len - 1;
-        let inner_root = self.inner_root(new_len);
         // SAFETY: short-lived handle used purely to dispatch `clear()` over
         // the inner array's body slots. Same justification as `entry`: the
         // parent `&mut self` borrow gates the operation.
-        let mut inner = unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) };
+        let mut inner = self.inner_handle(new_len);
         inner.clear();
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
         true
@@ -1897,23 +1926,19 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     /// length slot.
     ///
     /// **O(total elements) gas** — every element across every inner is
-    /// cleared. For large matrices, drain via repeated `pop()` across
+    /// cleared. For large matrices, drain via repeated `erase_last()` across
     /// multiple transactions instead.
     pub fn clear(&mut self) {
-        let len = self.outer_len();
+        let len = self.len();
         for i in 0..len {
-            let inner_root = self.inner_root(i);
-            // SAFETY: see `pop` — short-lived handle, parent borrow gates
-            // the mutation.
-            let mut inner =
-                unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) };
+            // SAFETY: see `erase_last` — short-lived handle, parent borrow
+            // gates the mutation.
+            let mut inner = self.inner_handle(i);
             inner.clear();
         }
         storage_set_32(&self.host, self.root.as_bytes(), &[0u8; 32]);
     }
 
-    /// Inner array's root slot (its length slot). Lives at
-    /// `keccak256(pad32(outer_root)) + i`.
     fn inner_root(&self, i: u64) -> [u8; 32] {
         let body = self
             .base
@@ -1921,6 +1946,18 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
         let mut key = *body;
         inc_slot_by(&mut key, i);
         key
+    }
+
+    /// Raw (unguarded) handle to the inner array at index `i`. Callers wrap
+    /// it in [`Ref`] / [`RefMut`] (per their borrow) or use it directly for
+    /// internal mutation; the bounds check, if any, is the caller's
+    /// responsibility.
+    fn inner_handle(&self, i: u64) -> StorageVec<T> {
+        let inner_root = self.inner_root(i);
+        // SAFETY: every caller either gates the resulting handle behind a
+        // `Ref`/`RefMut` matching the parent borrow, or (for `clear` /
+        // `erase_last`) holds `&mut self`, so the view gate is preserved.
+        unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) }
     }
 }
 
@@ -1940,10 +1977,56 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<StorageVe
         let _ = offset;
         // SAFETY: macro-only safe entry point. Same justification as the flat
         // `StorageVec<T>` `new_at` — bypass would require direct user calls
-        // to `StorageVec::new_nested`, which is marked `unsafe`.
-        unsafe { StorageVec::new_nested(StorageKey::from_slot(slot), host) }
+        // to `StorageVec::<StorageVec<T>>::new`, which is marked `unsafe`.
+        // Turbofish disambiguates from the flat `StorageVec<T>::new`.
+        unsafe { StorageVec::<StorageVec<T>>::new(StorageKey::from_slot(slot), host) }
     }
 }
+
+/// Read-only iterator over a [`StorageVec<StorageVec<T>>`], produced by its
+/// [`iter`](StorageVec::iter) method.
+///
+/// Captures the outer length at construction and yields each inner array as a
+/// [`Ref<'_, StorageVec<T>>`](Ref). Holds an immutable borrow of the outer
+/// vec, so it composes with `view` methods; the yielded `Ref`s own their inner
+/// handle and forward only `&self` methods.
+pub struct NestedStorageVecIter<'a, T> {
+    vec: &'a StorageVec<StorageVec<T>>,
+    pos: u64,
+    len: u64,
+}
+
+impl<'a, T: StorageEncode + StorageDecode> Iterator for NestedStorageVecIter<'a, T> {
+    type Item = Ref<'a, StorageVec<T>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.len {
+            return None;
+        }
+        // SAFETY: read-only `Ref` gates mutation; the borrow of the outer vec
+        // (`'a`) outlives each yielded handle.
+        let handle = self.vec.inner_handle(self.pos);
+        self.pos += 1;
+        Some(Ref::new(handle))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.len - self.pos) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, T: StorageEncode + StorageDecode> DoubleEndedIterator for NestedStorageVecIter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.len {
+            return None;
+        }
+        self.len -= 1;
+        Some(Ref::new(self.vec.inner_handle(self.len)))
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> ExactSizeIterator for NestedStorageVecIter<'_, T> {}
 
 // ---------------------------------------------------------------------------
 // Tests
