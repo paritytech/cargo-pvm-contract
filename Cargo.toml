@@ -47,4 +47,5 @@ toml_edit = "0.22"
 trybuild = "1.0"
 syn = { version = "2.0", features = ["full", "parsing"] }
 syn-solidity = { version = "1.5" }
+proc-macro2 = "1.0"
 inquire = "0.7"

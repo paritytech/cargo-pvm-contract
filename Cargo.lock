@@ -1237,6 +1237,7 @@ name = "cargo-pvm-contract-builder"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "expect-test",
  "polkavm-linker",
  "proc-macro2",
  "pvm-contract-types",

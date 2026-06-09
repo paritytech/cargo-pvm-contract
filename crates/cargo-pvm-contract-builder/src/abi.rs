@@ -3,7 +3,7 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
-pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam, parse_type_str};
+pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam};
 
 pub fn generate_abi_for_bin(
     manifest_dir: &Path,
@@ -389,12 +389,21 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     let mut flat: Vec<&syn_solidity::Item> = Vec::new();
     collect_items(&file.items, &mut flat);
 
-    // First pass: build a registry of struct definitions for named-struct
-    // resolution, keyed by the struct's last path segment.
-    let mut structs: StructMap = std::collections::HashMap::new();
+    // First pass: build a registry of user-defined types (structs, enums, and
+    // value types) for resolution, keyed by the type's name.
+    let mut structs: CustomMap = std::collections::HashMap::new();
     for item in &flat {
-        if let syn_solidity::Item::Struct(s) = item {
-            structs.insert(s.name.to_string(), s);
+        match item {
+            syn_solidity::Item::Struct(s) => {
+                structs.insert(s.name.to_string(), CustomDef::Struct(s));
+            }
+            syn_solidity::Item::Enum(e) => {
+                structs.insert(e.name.to_string(), CustomDef::Enum);
+            }
+            syn_solidity::Item::Udt(u) => {
+                structs.insert(u.name.to_string(), CustomDef::Udt(&u.ty));
+            }
+            _ => {}
         }
     }
 
@@ -434,7 +443,16 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     Ok(Some(AbiJson(items)))
 }
 
-type StructMap<'a> = std::collections::HashMap<String, &'a syn_solidity::ItemStruct>;
+/// A user-defined Solidity type, resolved to its ABI representation:
+/// a struct becomes a `tuple`, an enum a `uint8`, and a value type its
+/// underlying elementary type.
+enum CustomDef<'a> {
+    Struct(&'a syn_solidity::ItemStruct),
+    Enum,
+    Udt(&'a syn_solidity::Type),
+}
+
+type CustomMap<'a> = std::collections::HashMap<String, CustomDef<'a>>;
 
 /// Recursively collect items, descending into contract/interface/library
 /// bodies so nested structs, functions, errors, and events are all visited.
@@ -447,65 +465,105 @@ fn collect_items<'a>(items: &'a [syn_solidity::Item], out: &mut Vec<&'a syn_soli
     }
 }
 
-/// Render a `syn_solidity::Type` to its canonical Solidity type string,
-/// expanding named structs inline into tuple strings (e.g. `(uint256,uint256)`)
-/// so `parse_type_str` produces proper ABI `tuple` components.
-fn type_to_sol_string(ty: &syn_solidity::Type, structs: &StructMap) -> String {
-    use syn_solidity::Type;
-    match ty {
-        Type::Address(_, _) => "address".to_string(),
-        Type::Bool(_) => "bool".to_string(),
-        Type::String(_) => "string".to_string(),
-        Type::Bytes(_) => "bytes".to_string(),
-        Type::FixedBytes(_, size) => format!("bytes{}", size.get()),
-        Type::Int(_, size) => format!("int{}", size.map(|s| s.get()).unwrap_or(256)),
-        Type::Uint(_, size) => format!("uint{}", size.map(|s| s.get()).unwrap_or(256)),
-        Type::Array(arr) => {
-            let inner = type_to_sol_string(&arr.ty, structs);
-            match arr.size() {
-                Some(n) => format!("{inner}[{n}]"),
-                None => format!("{inner}[]"),
-            }
-        }
-        Type::Tuple(tuple) => {
-            let parts: Vec<String> = tuple
-                .types
-                .iter()
-                .map(|t| type_to_sol_string(t, structs))
-                .collect();
-            format!("({})", parts.join(","))
-        }
-        Type::Custom(path) => {
-            let name = path.last().to_string();
-            if let Some(def) = structs.get(&name) {
-                let parts: Vec<String> = def
-                    .fields
-                    .iter()
-                    .map(|field| type_to_sol_string(&field.ty, structs))
-                    .collect();
-                format!("({})", parts.join(","))
-            } else {
-                // Unknown custom type (enum, UDT, or undefined): fall back to
-                // its bare name, matching pre-syn behavior.
-                name
-            }
-        }
-        // Mappings and function types are not valid ABI parameter types.
-        Type::Mapping(_) | Type::Function(_) => String::new(),
-    }
-}
-
-fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &StructMap) -> AbiParam {
+fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &CustomMap) -> AbiParam {
     let name = decl
         .name
         .as_ref()
         .map(|n| n.to_string())
         .unwrap_or_default();
-    let rendered = type_to_sol_string(&decl.ty, structs);
-    parse_type_str(&name, &rendered)
+    type_to_abi_param(&name, &decl.ty, structs, &mut Vec::new())
 }
 
-fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &StructMap) -> Option<AbiItem> {
+/// Build an [`AbiParam`] for a `name: ty` declaration, expanding named structs
+/// and tuples into `tuple` + `components`. Struct fields keep their declared
+/// names (matching solc and the macro abi-gen path); inline-tuple elements are
+/// unnamed. `active` is the stack of struct names currently being expanded: a
+/// struct may legally reference itself through a dynamic array
+/// (`struct S { S[] children; }`), so when a struct name is already on the stack
+/// the cycle is broken by falling back to its bare name — the same fallback used
+/// for unresolved custom types (enum, UDT, undefined).
+fn type_to_abi_param(
+    name: &str,
+    ty: &syn_solidity::Type,
+    structs: &CustomMap,
+    active: &mut Vec<String>,
+) -> AbiParam {
+    use syn_solidity::Type;
+    let leaf = |param_type: String| AbiParam {
+        name: name.to_string(),
+        param_type,
+        components: Vec::new(),
+    };
+    match ty {
+        Type::Address(_, _) => leaf("address".to_string()),
+        Type::Bool(_) => leaf("bool".to_string()),
+        Type::String(_) => leaf("string".to_string()),
+        Type::Bytes(_) => leaf("bytes".to_string()),
+        Type::FixedBytes(_, size) => leaf(format!("bytes{}", size.get())),
+        Type::Int(_, size) => leaf(format!("int{}", size.map(|s| s.get()).unwrap_or(256))),
+        Type::Uint(_, size) => leaf(format!("uint{}", size.map(|s| s.get()).unwrap_or(256))),
+        // Mappings and function types are not valid ABI parameter types.
+        Type::Mapping(_) | Type::Function(_) => leaf(String::new()),
+        Type::Array(arr) => {
+            let inner = type_to_abi_param("", &arr.ty, structs, active);
+            let suffix = match arr.size() {
+                Some(n) => format!("[{n}]"),
+                None => "[]".to_string(),
+            };
+            AbiParam {
+                name: name.to_string(),
+                param_type: format!("{}{}", inner.param_type, suffix),
+                components: inner.components,
+            }
+        }
+        Type::Tuple(tuple) => {
+            let mut components = Vec::with_capacity(tuple.types.len());
+            for t in tuple.types.iter() {
+                components.push(type_to_abi_param("", t, structs, active));
+            }
+            AbiParam {
+                name: name.to_string(),
+                param_type: "tuple".to_string(),
+                components,
+            }
+        }
+        Type::Custom(path) => {
+            let custom = path.last().to_string();
+            if active.contains(&custom) {
+                return leaf(custom);
+            }
+            match structs.get(&custom) {
+                // Enums encode as uint8; value types as their underlying type.
+                Some(CustomDef::Enum) => leaf("uint8".to_string()),
+                Some(CustomDef::Udt(underlying)) => {
+                    type_to_abi_param(name, underlying, structs, active)
+                }
+                Some(CustomDef::Struct(def)) => {
+                    active.push(custom);
+                    let mut components = Vec::with_capacity(def.fields.len());
+                    for field in def.fields.iter() {
+                        let field_name = field
+                            .name
+                            .as_ref()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default();
+                        components.push(type_to_abi_param(&field_name, &field.ty, structs, active));
+                    }
+                    active.pop();
+                    AbiParam {
+                        name: name.to_string(),
+                        param_type: "tuple".to_string(),
+                        components,
+                    }
+                }
+                // Truly unknown custom type: fall back to its bare name.
+                None => leaf(custom),
+            }
+        }
+    }
+}
+
+fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &CustomMap) -> Option<AbiItem> {
     use syn_solidity::{FunctionKind, Mutability};
 
     match func.kind {
@@ -559,7 +617,7 @@ fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &StructMap) -> Op
     }
 }
 
-fn error_to_abi(err: &syn_solidity::ItemError, structs: &StructMap) -> AbiItem {
+fn error_to_abi(err: &syn_solidity::ItemError, structs: &CustomMap) -> AbiItem {
     AbiItem::Error {
         name: err.name.to_string(),
         inputs: err
@@ -570,18 +628,17 @@ fn error_to_abi(err: &syn_solidity::ItemError, structs: &StructMap) -> AbiItem {
     }
 }
 
-fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &StructMap) -> AbiItem {
+fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> AbiItem {
     let inputs = evt
         .parameters
         .iter()
         .map(|p| {
             let name = p.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
-            let rendered = type_to_sol_string(&p.ty, structs);
-            let expanded = parse_type_str(&name, &rendered);
+            let param = type_to_abi_param(&name, &p.ty, structs, &mut Vec::new());
             AbiEventParam {
-                name: expanded.name,
-                param_type: expanded.param_type,
-                components: expanded.components,
+                name: param.name,
+                param_type: param.param_type,
+                components: param.components,
                 indexed: p.indexed.is_some(),
             }
         })
@@ -596,8 +653,111 @@ fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &StructMap) -> AbiItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use expect_test::expect;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn generate_abi_from_sol_recursive_struct_does_not_overflow() {
+        // A struct may reference itself through a dynamic array; expanding the
+        // back-edge must terminate rather than recurse forever.
+        let (_d, path) = write_sol(
+            "Recursive.sol",
+            r#"pragma solidity ^0.8.0;
+
+struct S {
+    S[] children;
+    uint256 v;
+}
+
+interface I {
+    function f(S s) external;
+}
+"#,
+        );
+
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "f",
+                "inputs": [
+                  {
+                    "name": "s",
+                    "type": "tuple",
+                    "components": [
+                      {
+                        "name": "children",
+                        "type": "S[]"
+                      },
+                      {
+                        "name": "v",
+                        "type": "uint256"
+                      }
+                    ]
+                  }
+                ],
+                "outputs": [],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&path));
+    }
+
+    #[test]
+    fn generate_abi_from_sol_resolves_enum_and_udvt() {
+        // Solidity enums encode as uint8; user-defined value types encode as
+        // their underlying type — neither should leak its bare name into the ABI.
+        let (_d, path) = write_sol(
+            "Tokens.sol",
+            r#"pragma solidity ^0.8.0;
+
+enum Color { Red, Green, Blue }
+type Decimal is uint256;
+
+interface Tokens {
+    function set(Color c, Decimal d) external;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function { name, inputs, .. } if name == "set" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(inputs[0].param_type, "uint8");
+        assert_eq!(inputs[1].param_type, "uint256");
+    }
 
     fn write_sol(name: &str, body: &str) -> (TempDir, std::path::PathBuf) {
         let dir = TempDir::new().unwrap();
@@ -605,6 +765,12 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap();
         write!(f, "{body}").unwrap();
         (dir, path)
+    }
+
+    /// Generate ABI for a `.sol` file and render it as pretty JSON for snapshotting.
+    fn abi_json(path: &std::path::Path) -> String {
+        let abi = generate_abi_from_sol(path).unwrap().unwrap();
+        pvm_contract_types::abi_to_json(&abi.0)
     }
 
     #[test]
@@ -625,37 +791,56 @@ interface Commented {
 "#,
         );
 
-        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
-        let funcs: Vec<_> = abi
-            .0
-            .iter()
-            .filter(|i| matches!(i, AbiItem::Function { .. }))
-            .collect();
-        assert_eq!(funcs.len(), 1);
-        assert_eq!(
-            funcs[0],
-            &AbiItem::Function {
-                name: "transfer".to_string(),
-                inputs: vec![
-                    AbiParam {
-                        name: "to".to_string(),
-                        param_type: "address".to_string(),
-                        components: vec![],
-                    },
-                    AbiParam {
-                        name: "amount".to_string(),
-                        param_type: "uint256".to_string(),
-                        components: vec![],
-                    },
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "transfer",
+                "inputs": [
+                  {
+                    "name": "to",
+                    "type": "address"
+                  },
+                  {
+                    "name": "amount",
+                    "type": "uint256"
+                  }
                 ],
-                outputs: vec![AbiParam {
-                    name: "".to_string(),
-                    param_type: "bool".to_string(),
-                    components: vec![],
-                }],
-                state_mutability: Some("nonpayable".to_string()),
-            }
-        );
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "bool"
+                  }
+                ],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&path));
     }
 
     #[test]
@@ -675,38 +860,86 @@ interface Points {
 "#,
         );
 
-        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
-        let (inputs, outputs) = abi
-            .0
-            .iter()
-            .find_map(|i| match i {
-                AbiItem::Function {
-                    name,
-                    inputs,
-                    outputs,
-                    ..
-                } if name == "add" => Some((inputs, outputs)),
-                _ => None,
-            })
-            .unwrap();
-        let expected_components = vec![
-            AbiParam {
-                name: "".to_string(),
-                param_type: "uint256".to_string(),
-                components: vec![],
-            },
-            AbiParam {
-                name: "".to_string(),
-                param_type: "uint256".to_string(),
-                components: vec![],
-            },
-        ];
-        assert_eq!(inputs.len(), 2);
-        assert_eq!(inputs[0].param_type, "tuple");
-        assert_eq!(inputs[0].components, expected_components);
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].param_type, "tuple");
-        assert_eq!(outputs[0].components, expected_components);
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "add",
+                "inputs": [
+                  {
+                    "name": "a",
+                    "type": "tuple",
+                    "components": [
+                      {
+                        "name": "x",
+                        "type": "uint256"
+                      },
+                      {
+                        "name": "y",
+                        "type": "uint256"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "b",
+                    "type": "tuple",
+                    "components": [
+                      {
+                        "name": "x",
+                        "type": "uint256"
+                      },
+                      {
+                        "name": "y",
+                        "type": "uint256"
+                      }
+                    ]
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "tuple",
+                    "components": [
+                      {
+                        "name": "x",
+                        "type": "uint256"
+                      },
+                      {
+                        "name": "y",
+                        "type": "uint256"
+                      }
+                    ]
+                  }
+                ],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&path));
     }
 
     #[test]
@@ -720,48 +953,65 @@ interface Mixed {
 "#,
         );
 
-        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
-        let inputs = abi
-            .0
-            .iter()
-            .find_map(|i| match i {
-                AbiItem::Function { name, inputs, .. } if name == "f" => Some(inputs.clone()),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(
-            inputs[0],
-            AbiParam {
-                name: "s".to_string(),
-                param_type: "string".to_string(),
-                components: vec![],
-            }
-        );
-        assert_eq!(
-            inputs[1],
-            AbiParam {
-                name: "arr".to_string(),
-                param_type: "uint256[]".to_string(),
-                components: vec![],
-            }
-        );
-        assert_eq!(inputs[2].param_type, "tuple");
-        assert_eq!(inputs[2].name, "pair");
-        assert_eq!(
-            inputs[2].components,
-            vec![
-                AbiParam {
-                    name: "".to_string(),
-                    param_type: "uint256".to_string(),
-                    components: vec![],
-                },
-                AbiParam {
-                    name: "".to_string(),
-                    param_type: "address".to_string(),
-                    components: vec![],
-                },
-            ]
-        );
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "f",
+                "inputs": [
+                  {
+                    "name": "s",
+                    "type": "string"
+                  },
+                  {
+                    "name": "arr",
+                    "type": "uint256[]"
+                  },
+                  {
+                    "name": "pair",
+                    "type": "tuple",
+                    "components": [
+                      {
+                        "name": "",
+                        "type": "uint256"
+                      },
+                      {
+                        "name": "",
+                        "type": "address"
+                      }
+                    ]
+                  }
+                ],
+                "outputs": [],
+                "stateMutability": "view"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&path));
     }
 
     // --- extract_sol_path_from_source ---
@@ -1003,22 +1253,68 @@ interface IToken {{
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-        let json = serde_json::to_value(&abi).unwrap();
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 7);
-        assert_eq!(arr[0]["name"], "totalSupply");
-        assert_eq!(arr[1]["name"], "transfer");
-        assert_eq!(arr[2]["name"], "InvalidCalldata");
-        assert_eq!(arr[2]["type"], "error");
-        assert_eq!(arr[3]["name"], "CalldataTooLarge");
-        assert_eq!(arr[3]["type"], "error");
-        assert_eq!(arr[4]["name"], "NoSelector");
-        assert_eq!(arr[4]["type"], "error");
-        assert_eq!(arr[5]["name"], "UnknownSelector");
-        assert_eq!(arr[5]["type"], "error");
-        assert_eq!(arr[6]["name"], "NonPayableValueReceived");
-        assert_eq!(arr[6]["type"], "error");
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "totalSupply",
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "uint256"
+                  }
+                ],
+                "stateMutability": "view"
+              },
+              {
+                "type": "function",
+                "name": "transfer",
+                "inputs": [
+                  {
+                    "name": "to",
+                    "type": "address"
+                  },
+                  {
+                    "name": "amount",
+                    "type": "uint256"
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "bool"
+                  }
+                ],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 
     #[test]
@@ -1129,26 +1425,70 @@ version = "0.1.0"
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-        let json = serde_json::to_value(&abi).unwrap();
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 8);
-        assert_eq!(arr[0]["name"], "transfer");
-        assert_eq!(arr[0]["type"], "function");
-        assert_eq!(arr[1]["name"], "InsufficientBalance");
-        assert_eq!(arr[1]["type"], "error");
-        assert_eq!(arr[2]["name"], "Unauthorized");
-        assert_eq!(arr[2]["type"], "error");
-        assert_eq!(arr[3]["name"], "InvalidCalldata");
-        assert_eq!(arr[3]["type"], "error");
-        assert_eq!(arr[4]["name"], "CalldataTooLarge");
-        assert_eq!(arr[4]["type"], "error");
-        assert_eq!(arr[5]["name"], "NoSelector");
-        assert_eq!(arr[5]["type"], "error");
-        assert_eq!(arr[6]["name"], "UnknownSelector");
-        assert_eq!(arr[6]["type"], "error");
-        assert_eq!(arr[7]["name"], "NonPayableValueReceived");
-        assert_eq!(arr[7]["type"], "error");
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "transfer",
+                "inputs": [
+                  {
+                    "name": "to",
+                    "type": "address"
+                  },
+                  {
+                    "name": "amount",
+                    "type": "uint256"
+                  }
+                ],
+                "outputs": [],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "error",
+                "name": "InsufficientBalance",
+                "inputs": [
+                  {
+                    "name": "account",
+                    "type": "address"
+                  },
+                  {
+                    "name": "required",
+                    "type": "uint256"
+                  }
+                ]
+              },
+              {
+                "type": "error",
+                "name": "Unauthorized",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 
     // --- Multiline declaration support ---
@@ -1163,19 +1503,51 @@ version = "0.1.0"
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-        let func = abi
-            .0
-            .iter()
-            .find(|item| matches!(item, AbiItem::Function { name, .. } if name == "transfer"))
-            .expect("should parse multiline function");
-        if let AbiItem::Function { inputs, .. } = func {
-            assert_eq!(inputs.len(), 2);
-            assert_eq!(inputs[0].param_type, "address");
-            assert_eq!(inputs[0].name, "to");
-            assert_eq!(inputs[1].param_type, "uint256");
-            assert_eq!(inputs[1].name, "amount");
-        }
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "transfer",
+                "inputs": [
+                  {
+                    "name": "to",
+                    "type": "address"
+                  },
+                  {
+                    "name": "amount",
+                    "type": "uint256"
+                  }
+                ],
+                "outputs": [],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 
     // --- Constructor parsing ---
@@ -1199,52 +1571,61 @@ interface Token {{
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-
-        // Find constructor entry
-        let ctor = abi
-            .0
-            .iter()
-            .find(|item| matches!(item, AbiItem::Constructor { .. }))
-            .expect("ABI should include constructor");
-        assert_eq!(
-            *ctor,
-            AbiItem::Constructor {
-                inputs: vec![
-                    AbiParam {
-                        name: "owner".into(),
-                        param_type: "address".into(),
-                        components: vec![],
-                    },
-                    AbiParam {
-                        name: "supply".into(),
-                        param_type: "uint256".into(),
-                        components: vec![],
-                    },
+        expect![[r#"
+            [
+              {
+                "type": "constructor",
+                "inputs": [
+                  {
+                    "name": "owner",
+                    "type": "address"
+                  },
+                  {
+                    "name": "supply",
+                    "type": "uint256"
+                  }
                 ],
-                state_mutability: Some("nonpayable".into()),
-            }
-        );
-
-        // Find function entry
-        let func = abi
-            .0
-            .iter()
-            .find(|item| matches!(item, AbiItem::Function { name, .. } if name == "totalSupply"))
-            .expect("ABI should include totalSupply");
-        assert_eq!(
-            *func,
-            AbiItem::Function {
-                name: "totalSupply".into(),
-                inputs: vec![],
-                outputs: vec![AbiParam {
-                    name: "".into(),
-                    param_type: "uint256".into(),
-                    components: vec![],
-                }],
-                state_mutability: Some("view".into()),
-            }
-        );
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "function",
+                "name": "totalSupply",
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "uint256"
+                  }
+                ],
+                "stateMutability": "view"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 
     #[test]
@@ -1257,30 +1638,61 @@ interface Token {{
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-        let ctor = abi
-            .0
-            .iter()
-            .find(|item| matches!(item, AbiItem::Constructor { .. }))
-            .expect("ABI should include multiline constructor");
-        assert_eq!(
-            *ctor,
-            AbiItem::Constructor {
-                inputs: vec![
-                    AbiParam {
-                        name: "owner".into(),
-                        param_type: "address".into(),
-                        components: vec![],
-                    },
-                    AbiParam {
-                        name: "supply".into(),
-                        param_type: "uint256".into(),
-                        components: vec![],
-                    },
+        expect![[r#"
+            [
+              {
+                "type": "constructor",
+                "inputs": [
+                  {
+                    "name": "owner",
+                    "type": "address"
+                  },
+                  {
+                    "name": "supply",
+                    "type": "uint256"
+                  }
                 ],
-                state_mutability: Some("payable".into()),
-            }
-        );
+                "stateMutability": "payable"
+              },
+              {
+                "type": "function",
+                "name": "totalSupply",
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "",
+                    "type": "uint256"
+                  }
+                ],
+                "stateMutability": "view"
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 
     // --- has_slot_fields ---
@@ -1313,25 +1725,69 @@ interface Token {{
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-        let json = serde_json::to_value(&abi).unwrap();
-        let arr = json.as_array().unwrap();
-
-        let event = arr.iter().find(|item| item["type"] == "event").unwrap();
-        assert_eq!(event["name"], "ValueChanged");
-        assert_eq!(event["anonymous"], false);
-
-        let inputs = event["inputs"].as_array().unwrap();
-        assert_eq!(inputs.len(), 3);
-        assert_eq!(inputs[0]["name"], "who");
-        assert_eq!(inputs[0]["type"], "address");
-        assert_eq!(inputs[0]["indexed"], true);
-        assert_eq!(inputs[1]["name"], "oldValue");
-        assert_eq!(inputs[1]["type"], "uint256");
-        assert_eq!(inputs[1]["indexed"], false);
-        assert_eq!(inputs[2]["name"], "newValue");
-        assert_eq!(inputs[2]["type"], "uint256");
-        assert_eq!(inputs[2]["indexed"], false);
+        expect![[r#"
+            [
+              {
+                "type": "function",
+                "name": "setValue",
+                "inputs": [
+                  {
+                    "name": "val",
+                    "type": "uint256"
+                  }
+                ],
+                "outputs": [],
+                "stateMutability": "nonpayable"
+              },
+              {
+                "type": "event",
+                "name": "ValueChanged",
+                "inputs": [
+                  {
+                    "name": "who",
+                    "type": "address",
+                    "indexed": true
+                  },
+                  {
+                    "name": "oldValue",
+                    "type": "uint256",
+                    "indexed": false
+                  },
+                  {
+                    "name": "newValue",
+                    "type": "uint256",
+                    "indexed": false
+                  }
+                ],
+                "anonymous": false
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 
     #[test]
@@ -1351,20 +1807,56 @@ interface Token {{
         )
         .unwrap();
 
-        let abi = generate_abi_from_sol(&sol_path).unwrap().unwrap();
-        let json = serde_json::to_value(&abi).unwrap();
-        let arr = json.as_array().unwrap();
-
-        let event = arr.iter().find(|item| item["type"] == "event").unwrap();
-        assert_eq!(event["name"], "Transfer");
-
-        let inputs = event["inputs"].as_array().unwrap();
-        assert_eq!(inputs.len(), 3);
-        assert_eq!(inputs[0]["name"], "from");
-        assert_eq!(inputs[0]["indexed"], true);
-        assert_eq!(inputs[1]["name"], "to");
-        assert_eq!(inputs[1]["indexed"], true);
-        assert_eq!(inputs[2]["name"], "value");
-        assert_eq!(inputs[2]["indexed"], false);
+        expect![[r#"
+            [
+              {
+                "type": "event",
+                "name": "Transfer",
+                "inputs": [
+                  {
+                    "name": "from",
+                    "type": "address",
+                    "indexed": true
+                  },
+                  {
+                    "name": "to",
+                    "type": "address",
+                    "indexed": true
+                  },
+                  {
+                    "name": "value",
+                    "type": "uint256",
+                    "indexed": false
+                  }
+                ],
+                "anonymous": false
+              },
+              {
+                "type": "error",
+                "name": "InvalidCalldata",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "CalldataTooLarge",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NoSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "UnknownSelector",
+                "inputs": []
+              },
+              {
+                "type": "error",
+                "name": "NonPayableValueReceived",
+                "inputs": []
+              }
+            ]"#]]
+        .assert_eq(&abi_json(&sol_path));
     }
 }
