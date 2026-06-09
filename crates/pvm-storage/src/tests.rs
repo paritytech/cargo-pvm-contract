@@ -1999,7 +1999,7 @@ fn storage_vec_iter_yields_all_in_order() {
 }
 
 #[test]
-fn storage_vec_iter_double_ended() {
+fn storage_vec_iter_reverse() {
     let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
     for i in 0..4u64 {
         v.push(&U256::from(i));
