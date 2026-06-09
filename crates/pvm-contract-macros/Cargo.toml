@@ -20,8 +20,8 @@ syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
 syn-solidity = { version = "1.5" }
 alloy-json-abi = { version = "1.5" }
 keccak-const.workspace = true
-pvm-contract-types = { path = "../pvm-contract-types" }
-pvm-contract-core = { path = "../pvm-contract-core" }
+pvm-contract-types = { path = "../pvm-contract-types", version = "0.4.0" }
+pvm-contract-core = { path = "../pvm-contract-core", version = "0.4.0" }
 serde_json = { workspace = true }
 const-hex = { version = "^1" }
 macro-string = { version = "0.2" }

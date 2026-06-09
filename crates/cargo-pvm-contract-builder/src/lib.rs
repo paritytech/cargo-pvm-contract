@@ -1,5 +1,3 @@
-#![doc = include_str!("../../../specs/build.md")]
-
 mod abi;
 
 use anyhow::{Context, Result};

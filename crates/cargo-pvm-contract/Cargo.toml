@@ -28,11 +28,11 @@ inquire = { workspace = true }
 askama = { workspace = true }
 polkavm-linker = { workspace = true }
 convert_case = { workspace = true }
-cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
+cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder", version = "0.4.0" }
 tiny-keccak = { workspace = true }
 hex = "0.4"
 alloy-core = { version = "1.5", features = ["dyn-abi"] }
-cargo-pvm-contract-extrinsics = { path = "../cargo-pvm-contract-extrinsics" }
+cargo-pvm-contract-extrinsics = { path = "../cargo-pvm-contract-extrinsics", version = "0.4.0" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 subxt = "0.44"
 subxt-signer = { version = "0.44", features = ["subxt", "sr25519"] }
