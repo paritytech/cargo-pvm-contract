@@ -1,9 +1,9 @@
 //! A view-style `&self` method must not be able to mutate a `StorageVec`
 //! field: `push` (like `pop` / `set` / `clear`) takes `&mut self`, so it
 //! requires `&mut self` on the contract struct and is unreachable from a
-//! `&self` method. Parallel to `lazy_set_requires_mut` /
-//! `mapping_insert_requires_mut`, but modelled as the actual view-method
-//! scenario the borrow gate exists for rather than a non-`mut` local.
+//! `&self` method. The flat-field counterpart to
+//! `nested_storage_vec_view_blocks_push` (and to
+//! `nested_mapping_view_blocks_insert`).
 use pvm_contract_types::{Host, MockHostBuilder};
 use pvm_storage::{StorageKey, StorageVec};
 use ruint::aliases::U256;

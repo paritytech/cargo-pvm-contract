@@ -1,5 +1,5 @@
 error[E0596]: cannot borrow `self.entries` as mutable, as it is behind a `&` reference
-  --> tests/ui/storage_vec_push_requires_mut.rs:20:9
+  --> tests/ui/storage_vec_view_blocks_push.rs:20:9
    |
 20 |         self.entries.push(&U256::from(42));
    |         ^^^^^^^^^^^^ `self` is a `&` reference, so it cannot be borrowed as mutable
