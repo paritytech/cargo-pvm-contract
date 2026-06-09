@@ -255,13 +255,19 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
         }
         // `MAX_STATIC_SLOTS = 8` from `pvm-storage`; mirrored here as a
         // local const so this crate doesn't take a back-dep on `pvm-storage`.
-        // Each storage-bearing type asserts `STORAGE_SLOTS <= 8` through
-        // `Lazy<T>::_SIZE_CHECK` / `Mapping<_, T>::_SIZE_CHECK`.
+        // The `Lazy<T>` / `Mapping<_, T>` entry points also assert this via
+        // `_SIZE_CHECK`, but the `const { assert!(..) }` below makes the bound
+        // hold for *any* `StaticStorageDecode` impl at monomorphization —
+        // including downstream impls that bypass those entry points — and,
+        // unlike `debug_assert!`, it is not compiled out in release (the
+        // on-chain build profile), so `slots[..used]` can never index OOB.
         const MAX: usize = 8;
-        debug_assert!(
-            Self::STORAGE_SLOTS <= MAX,
-            "STORAGE_SLOTS exceeds MAX_STATIC_SLOTS"
-        );
+        const {
+            assert!(
+                Self::STORAGE_SLOTS <= MAX,
+                "STORAGE_SLOTS exceeds MAX_STATIC_SLOTS",
+            )
+        };
         let mut slots = [[0u8; 32]; MAX];
         let used = Self::STORAGE_SLOTS;
         let mut k = *base_key;
@@ -287,10 +293,12 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
             return Some(Self::from_slots(core::slice::from_ref(&buf)));
         }
         const MAX: usize = 8;
-        debug_assert!(
-            Self::STORAGE_SLOTS <= MAX,
-            "STORAGE_SLOTS exceeds MAX_STATIC_SLOTS"
-        );
+        const {
+            assert!(
+                Self::STORAGE_SLOTS <= MAX,
+                "STORAGE_SLOTS exceeds MAX_STATIC_SLOTS",
+            )
+        };
         let mut slots = [[0u8; 32]; MAX];
         let used = Self::STORAGE_SLOTS;
         let mut k = *base_key;
@@ -944,6 +952,18 @@ impl_storage_tuple! {
 #[cfg(feature = "alloc")]
 pub(crate) const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 
+/// Upper bound on the decoded length of a dynamic storage value, in bytes.
+///
+/// `pallet-revive` caps a single storage value at 416 bytes (13 × 32-byte
+/// slots — see `pvm_storage::MAX_STATIC_SLOTS` docs), so a dynamic value's
+/// self-reported header length can never legitimately exceed this. The
+/// spilled-form decoder in [`decode_dyn_header`] clamps to this value: a
+/// corrupt or hostile co-located writer claiming a huge length (e.g. `2^50`)
+/// must not be able to drive an unbounded allocation or SLOAD loop in
+/// [`read_dyn_body`] / [`clear_dynamic_bytes`] / [`write_dynamic_bytes`].
+#[cfg(feature = "alloc")]
+const MAX_STORAGE_BYTES: usize = 416;
+
 #[cfg(feature = "alloc")]
 enum DynHeader {
     Inline { len: usize },
@@ -967,11 +987,16 @@ fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
         len_be.copy_from_slice(&slot_bytes[16..32]);
         let raw = u128::from_be_bytes(len_be);
         let raw_len = raw >> 1;
-        if !high_zero || raw_len > usize::MAX as u128 {
+        if !high_zero {
             return DynHeader::Spilled { len: 0 };
         }
+        // Clamp to the runtime's per-value cap. A legitimate value never
+        // exceeds `MAX_STORAGE_BYTES`, so clamping a wildly large header
+        // bounds the downstream allocation and SLOAD loop without affecting
+        // any value a conforming writer could have produced. (The previous
+        // `raw_len > usize::MAX as u128` guard was always false on 64-bit.)
         DynHeader::Spilled {
-            len: raw_len as usize,
+            len: raw_len.min(MAX_STORAGE_BYTES as u128) as usize,
         }
     }
 }
@@ -993,7 +1018,11 @@ fn dyn_body_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
 
 #[cfg(feature = "alloc")]
 fn read_dyn_body(host: &Host, slot: &[u8; 32], len: usize) -> alloc::vec::Vec<u8> {
-    let mut out = alloc::vec::Vec::with_capacity(len);
+    // Grow incrementally: capacity tracks bytes actually read from storage,
+    // never the self-reported header length. `decode_dyn_header` already
+    // clamps `len` to `MAX_STORAGE_BYTES`, but starting from an empty `Vec`
+    // keeps this resilient regardless of how the length was derived.
+    let mut out = alloc::vec::Vec::new();
     let mut body_slot = dyn_body_root(host, slot);
     let mut remaining = len;
     while remaining > 0 {
@@ -1321,6 +1350,58 @@ mod tests {
     }
 
     // --- consts ---
+
+    // --- dynamic-body length clamping (host-target only) ---
+
+    #[cfg(feature = "std")]
+    fn mock_host() -> Host {
+        Host::from_dyn(alloc::rc::Rc::new(crate::MockHostBuilder::new().build()))
+    }
+
+    #[cfg(feature = "alloc")]
+    #[test]
+    fn decode_dyn_header_clamps_hostile_spilled_length() {
+        // Spilled header claiming len = 2^50 from a corrupt / hostile writer.
+        let raw: u128 = (1u128 << 50) * 2 + 1;
+        let mut header = [0u8; 32];
+        header[16..32].copy_from_slice(&raw.to_be_bytes());
+        match decode_dyn_header(&header) {
+            DynHeader::Spilled { len } => assert_eq!(len, MAX_STORAGE_BYTES),
+            DynHeader::Inline { .. } => panic!("expected spilled header"),
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn read_dyn_body_bounded_by_hostile_header() {
+        // A header claiming 2^50 bytes must not drive an unbounded allocation:
+        // the read is bounded to MAX_STORAGE_BYTES and returns cleanly. Before
+        // the clamp + incremental-growth fix this aborted in
+        // `Vec::with_capacity(2^50)` before any SLOAD ran.
+        let host = mock_host();
+        let slot = [7u8; 32];
+        let raw: u128 = (1u128 << 50) * 2 + 1;
+        let mut header = [0u8; 32];
+        header[16..32].copy_from_slice(&raw.to_be_bytes());
+        host.set_storage(StorageFlags::empty(), &slot, &header);
+
+        let out = read_dynamic_bytes(&host, &slot);
+        assert_eq!(out.len(), MAX_STORAGE_BYTES);
+        // Body chunks were never written, so they read back as zero.
+        assert!(out.iter().all(|&b| b == 0));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn dynamic_bytes_long_roundtrip() {
+        // A legitimate long value (>= 32 bytes, under the cap) still
+        // roundtrips byte-for-byte through the spilled path.
+        let host = mock_host();
+        let slot = [9u8; 32];
+        let data: alloc::vec::Vec<u8> = (0..200u32).map(|i| i as u8).collect();
+        write_dynamic_bytes(&host, &slot, &data);
+        assert_eq!(read_dynamic_bytes(&host, &slot), data);
+    }
 
     #[test]
     fn const_invariants() {

@@ -25,12 +25,14 @@ pub(super) struct ChainField<'a> {
 /// so sub-word `Lazy<T>` can skip the read-modify-write SLOAD when the slot
 /// has no sub-word neighbour.
 ///
-/// `slot_prefix` must match the prefix used by [`slot_chain_consts`] so
-/// the layout-step consts can be referenced by name (`<slot_prefix><name>`).
-/// Per-field `#[cfg]` attributes are propagated.
+/// `slot_idents` are the `LayoutStep` const idents produced by
+/// [`slot_chain_consts`] (one per field, in the same order); the generated
+/// comparisons reference them directly, so there is no prefix string to keep
+/// in sync between the two builders. Per-field `#[cfg]` attributes are
+/// propagated.
 pub(super) fn alone_chain_consts(
     alone_prefix: &str,
-    slot_prefix: &str,
+    slot_idents: &[syn::Ident],
     fields: &[ChainField],
 ) -> Vec<TokenStream> {
     fields
@@ -39,21 +41,19 @@ pub(super) fn alone_chain_consts(
         .map(|(i, sf)| {
             let alone_ident = format_ident!("{}{}", alone_prefix, sf.name);
             let cfgs = sf.cfg_attrs;
-            let cur_slot = format_ident!("{}{}", slot_prefix, sf.name);
+            let cur_slot = &slot_idents[i];
             // Comparison against the previous field (if any).
             let prev_check = if i == 0 {
                 quote! { true }
             } else {
-                let prev = &fields[i - 1];
-                let prev_slot = format_ident!("{}{}", slot_prefix, prev.name);
+                let prev_slot = &slot_idents[i - 1];
                 quote! { #cur_slot.slot != #prev_slot.slot }
             };
             // Comparison against the next field (if any).
             let next_check = if i + 1 == fields.len() {
                 quote! { true }
             } else {
-                let next = &fields[i + 1];
-                let next_slot = format_ident!("{}{}", slot_prefix, next.name);
+                let next_slot = &slot_idents[i + 1];
                 quote! { #cur_slot.slot != #next_slot.slot }
             };
             quote! {
@@ -80,19 +80,29 @@ pub(super) fn alone_chain_consts(
 ///
 /// Shared by `#[contract]` (top-level struct fields) and `#[storage]`
 /// (sub-storage struct fields, with the chain re-rooted at `base`).
-pub(super) fn slot_chain_consts(prefix: &str, fields: &[ChainField]) -> Vec<TokenStream> {
-    fields
+///
+/// Returns the generated const items together with their idents (in field
+/// order) so callers — notably [`alone_chain_consts`] — can reference the
+/// consts by value instead of reconstructing their names from `prefix`.
+pub(super) fn slot_chain_consts(
+    prefix: &str,
+    fields: &[ChainField],
+) -> (Vec<TokenStream>, Vec<syn::Ident>) {
+    let idents: Vec<syn::Ident> = fields
+        .iter()
+        .map(|sf| format_ident!("{}{}", prefix, sf.name))
+        .collect();
+    let items = fields
         .iter()
         .enumerate()
         .map(|(i, sf)| {
-            let const_ident = format_ident!("{}{}", prefix, sf.name);
+            let const_ident = &idents[i];
             let cfgs = sf.cfg_attrs;
             let ty = sf.ty;
             let prev_expr = if i == 0 {
                 quote! { ::pvm_contract_sdk::LayoutStep::FIRST }
             } else {
-                let prev = &fields[i - 1];
-                let prev_const = format_ident!("{}{}", prefix, prev.name);
+                let prev_const = &idents[i - 1];
                 quote! { #prev_const }
             };
             quote! {
@@ -106,7 +116,8 @@ pub(super) fn slot_chain_consts(prefix: &str, fields: &[ChainField]) -> Vec<Toke
                     );
             }
         })
-        .collect()
+        .collect();
+    (items, idents)
 }
 
 /// Generate the TokenStream that pushes storage-layout entries for one field

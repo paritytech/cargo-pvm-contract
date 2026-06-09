@@ -74,6 +74,13 @@ use super::storage_layout::{
 };
 use crate::signature::SolType;
 
+/// Identifier prefix for the per-field offset `LayoutStep` consts. Defined
+/// once and shared by the chain builder and every field-init/layout-emit
+/// reference so the generated name and the references to it can't drift.
+const OFFSET_PREFIX: &str = "__pvm_storage_offset_";
+/// Identifier prefix for the per-field `alone` bool consts.
+const ALONE_PREFIX: &str = "__pvm_storage_alone_";
+
 pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
     let struct_name = &input.ident;
     let struct_name_str = struct_name.to_string();
@@ -164,20 +171,16 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             cfg_attrs: &[],
         })
         .collect();
-    let offset_consts = slot_chain_consts("__pvm_storage_offset_", &chain_fields);
-    let alone_consts = alone_chain_consts(
-        "__pvm_storage_alone_",
-        "__pvm_storage_offset_",
-        &chain_fields,
-    );
+    let (offset_consts, offset_idents) = slot_chain_consts(OFFSET_PREFIX, &chain_fields);
+    let alone_consts = alone_chain_consts(ALONE_PREFIX, &offset_idents, &chain_fields);
 
     let field_inits: Vec<TokenStream> = field_names
         .iter()
         .enumerate()
         .map(|(i, name)| {
             let ty = field_types[i];
-            let const_ident = format_ident!("__pvm_storage_offset_{}", name);
-            let alone_ident = format_ident!("__pvm_storage_alone_{}", name);
+            let const_ident = format_ident!("{}{}", OFFSET_PREFIX, name);
+            let alone_ident = format_ident!("{}{}", ALONE_PREFIX, name);
             quote! {
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
                     base.add(#const_ident.slot),
@@ -208,7 +211,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .iter()
         .zip(field_types.iter())
         .map(|(name, ty)| {
-            let const_ident = format_ident!("__pvm_storage_offset_{}", name);
+            let const_ident = format_ident!("{}{}", OFFSET_PREFIX, name);
             let slot_expr = quote! { base + #const_ident.slot };
             let offset_expr = quote! { #const_ident.offset };
             generate_layout_emit(
