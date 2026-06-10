@@ -123,21 +123,24 @@ pub(super) fn slot_chain_consts(
 /// Generate the TokenStream that pushes storage-layout entries for one field
 /// into the local `entries` Vec.
 ///
-/// For `Lazy<T>` / `Mapping<K, V>` (recognised syntactically) this emits a
-/// single `entries.push(StorageLayoutEntry { … })` with the type name resolved
-/// through `<T as SolEncode>::SOL_NAME`. For any other type the field is
-/// treated as an embedded `#[storage]` sub-struct and dispatched through
-/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`], which recursively
-/// flattens its leaves into the same `entries` Vec, prefixing labels with the
-/// field path (`erc20.total_supply`, `metadata.name`, …) per solc convention.
+/// Every field — `Lazy<T>`, `Mapping<K, V>`, or an embedded `#[storage]`
+/// sub-struct — dispatches uniformly through
+/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`]. Leaf types push a
+/// single entry; sub-structs recursively flatten their own leaves into the
+/// same `entries` Vec, prefixing labels with the field path
+/// (`erc20.total_supply`, `metadata.name`, …) per solc convention. There is
+/// no syntactic type-name special-casing: `<#ty as StorageLayoutEmit>` is the
+/// single source of truth for both the entry's `type` string and its layout,
+/// so adding a storage component is a pure trait-impl task.
 ///
 /// `slot_expr` is a `u64` expression (literal or `base + __pvm_storage_offset_*`
-/// const). `prefix_expr` is a `&str` expression: `""` at the top of a
-/// `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
+/// const); `offset_expr` is a `u8` expression (the packed byte offset, `0` for
+/// full-slot fields). `prefix_expr` is a `&str` expression: `""` at the top of
+/// a `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
 /// `emit_entries` body.
 ///
 /// Used by `#[contract]`'s `__storage_layout_json` (top-level) and `#[storage]`'s
-/// `__storage_layout_entries` (sub-storage).
+/// `emit_entries` (sub-storage).
 pub(super) fn generate_layout_emit(
     field_name_str: &str,
     ty: &syn::Type,
@@ -145,111 +148,17 @@ pub(super) fn generate_layout_emit(
     offset_expr: TokenStream,
     prefix_expr: TokenStream,
 ) -> TokenStream {
-    if is_layout_leaf(ty) {
-        let ty_name_expr = sol_storage_type_name(ty);
-        quote! {
-            entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                label: ::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
-                slot: {
-                    let slot_value: u64 = #slot_expr;
-                    ::std::format!("{}", slot_value)
-                },
-                offset: #offset_expr,
-                ty: #ty_name_expr,
-            });
-        }
-    } else {
-        // Caller is expected to have a `&mut Vec<StorageLayoutEntry>` binding
-        // in scope named `entries`. `entries.push(...)` works against either an
-        // owned Vec or a `&mut Vec`, while passing `entries` straight into the
-        // trait call auto-reborrows when it's already a `&mut`.
-        quote! {
-            <#ty as ::pvm_contract_sdk::StorageLayoutEmit>::emit_entries(
-                #slot_expr,
-                &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
-                entries,
-            );
-        }
-    }
-}
-
-/// Whether the type's layout entry is a single inlined leaf (`Lazy<T>` or
-/// `Mapping<K, V>`) rather than something that should recurse through
-/// [`StorageLayoutEmit`].
-fn is_layout_leaf(ty: &syn::Type) -> bool {
-    matches!(wrapper_and_type_args(ty), Some((name, args)) if {
-        (name == "Lazy" && args.len() == 1) || (name == "Mapping" && args.len() == 2)
-    })
-}
-
-/// Build a `String`-valued token expression that names the Solidity storage
-/// type for a storage field's Rust type. Unwraps `Lazy<T>` and recurses into
-/// `Mapping<K, V>` syntactically; everything else is named via
-/// `<T as StorageTypeName>::NAME`.
-///
-/// `StorageTypeName` (in `pvm-contract-types`) has no blanket impl — every
-/// storage-eligible type provides an explicit one (primitives in
-/// `storage_codec.rs` / `alloc_types.rs`), so primitives and
-/// `#[derive(SolStorage)]` value-shaped structs work out of the box. The
-/// `#[storage]` / `#[derive(SolStorage)]` derives emit a `StorageTypeName`
-/// impl for the target struct returning the Rust ident — this is what makes
-/// `Mapping<K, MyStorageStruct>` produce `"mapping(K, MyStorageStruct)"`
-/// in the layout JSON. Map keys (`K`) are also resolved through
-/// `StorageTypeName`, so any key type that has a name is acceptable.
-fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
-    if let Some((wrapper, args)) = wrapper_and_type_args(ty) {
-        match (wrapper.as_str(), args.as_slice()) {
-            ("Lazy", [inner]) => {
-                return sol_storage_type_name(inner);
-            }
-            ("Mapping", [k, v]) => {
-                let v_expr = sol_storage_type_name(v);
-                return quote! {
-                    ::std::format!(
-                        "mapping({},{})",
-                        <#k as ::pvm_contract_sdk::StorageTypeName>::name(),
-                        #v_expr,
-                    )
-                };
-            }
-            _ => {}
-        }
-    }
+    // Caller is expected to have a `&mut Vec<StorageLayoutEntry>` binding in
+    // scope named `entries`; passing it straight into the trait call
+    // auto-reborrows.
     quote! {
-        <#ty as ::pvm_contract_sdk::StorageTypeName>::name()
+        <#ty as ::pvm_contract_sdk::StorageLayoutEmit>::emit_entries(
+            #slot_expr,
+            #offset_expr,
+            &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
+            entries,
+        );
     }
-}
-
-/// If `ty` is a path type whose final segment is `Lazy` or `Mapping`, return
-/// the segment name and the type-position generic arguments. Matches on the
-/// last segment's ident only, so `Lazy<T>`, `pvm_storage::Lazy<T>`, and
-/// `pvm_contract_sdk::Lazy<T>` all resolve.
-///
-/// Returns `None` for any other type shape, which falls through to the
-/// `SolEncode::SOL_NAME` leaf path.
-fn wrapper_and_type_args(ty: &syn::Type) -> Option<(String, Vec<&syn::Type>)> {
-    let path = match ty {
-        syn::Type::Path(tp) if tp.qself.is_none() => &tp.path,
-        _ => return None,
-    };
-    let last = path.segments.last()?;
-    let name = last.ident.to_string();
-    if name != "Lazy" && name != "Mapping" {
-        return None;
-    }
-    let args = match &last.arguments {
-        syn::PathArguments::AngleBracketed(a) => a,
-        _ => return None,
-    };
-    let type_args: Vec<&syn::Type> = args
-        .args
-        .iter()
-        .filter_map(|a| match a {
-            syn::GenericArgument::Type(t) => Some(t),
-            _ => None,
-        })
-        .collect();
-    Some((name, type_args))
 }
 
 /// Extract the `#[slot(N)]` attribute value from a field, if present.

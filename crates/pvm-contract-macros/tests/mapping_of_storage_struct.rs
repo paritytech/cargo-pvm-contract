@@ -443,6 +443,50 @@ mod aliased_layout_contract {
     }
 }
 
+// Aliased *sub-word* fields. These exercise the regression that motivated
+// unifying layout emission onto `StorageLayoutEmit`: because the field types
+// are aliases (`PackedU32` / `PackedFlag`, not the literal `Lazy<…>` idents),
+// they take the trait dispatch path rather than any syntactic leaf shortcut.
+// The trait must therefore carry the packed byte `offset` — a previous version
+// hardcoded `offset: 0` on the `Lazy<T>` impl, which silently flattened
+// aliased packed fields. solc layout for `{ uint32 a; bool b; }`:
+//   a (uint32) → slot 0, offset 28   (right-aligned, 4 bytes)
+//   b (bool)   → slot 0, offset 27   (packed directly below a)
+#[cfg(feature = "abi-gen")]
+type PackedU32 = Lazy<u32>;
+#[cfg(feature = "abi-gen")]
+type PackedFlag = Lazy<bool>;
+
+#[cfg(feature = "abi-gen")]
+#[allow(dead_code)]
+#[pvm_contract_macros::contract(no_main)]
+mod aliased_packed_contract {
+    use super::*;
+    pub struct Packed {
+        pub a: PackedU32,
+        pub b: PackedFlag,
+    }
+
+    impl Packed {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn aliased_sub_word_fields_carry_packed_offset_through_trait() {
+    let actual: serde_json::Value =
+        serde_json::from_str(&aliased_packed_contract::__storage_layout_json()).unwrap();
+    let expected: serde_json::Value = serde_json::json!({
+        "storage": [
+            { "label": "a", "offset": 28, "slot": "0", "type": "uint32" },
+            { "label": "b", "offset": 27, "slot": "0", "type": "bool" },
+        ]
+    });
+    assert_eq!(actual, expected);
+}
+
 #[cfg(feature = "abi-gen")]
 #[test]
 fn type_alias_resolution_for_lazy_and_mapping_in_layout_json() {

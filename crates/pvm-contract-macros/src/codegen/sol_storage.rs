@@ -283,14 +283,20 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         #where_clause
         {
             // `entries: &mut Vec<...>` matches the call shape in
-            // `__storage_layout_json` and in the macro-generated leaf-push /
-            // trait-recursion code: leaves use auto-deref for `entries.push(...)`,
-            // recursions pass `entries` directly to reborrow.
+            // `__storage_layout_json` and in the macro-generated recursion
+            // code, which passes `entries` directly to reborrow.
+            //
+            // A `#[storage]` sub-struct always occupies a fresh slot
+            // (`PACKED_BYTES == 32`), so the incoming `offset` is always `0`
+            // here and is ignored; each field carries its own packed offset
+            // via the per-field layout-step const chain below.
             fn emit_entries(
                 base: u64,
+                offset: u8,
                 name_prefix: &str,
                 entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
             ) {
+                let _ = offset;
                 #(#offset_consts_for_layout)*
                 #(#layout_emits)*
             }

@@ -555,21 +555,27 @@ pub trait StorageComponent: Sized {
 /// Push flattened storage-layout entries for a composable storage component.
 ///
 /// The `#[contract]` macro generates the top-level `__storage_layout_json()`
-/// function by iterating contract-struct fields: leaf fields (`Lazy<T>` /
-/// `Mapping<K, V>`) get inlined as single entries via the macro's syntactic
-/// type resolver; embedded `#[storage]` sub-structs dispatch through this
-/// trait, which recursively flattens their fields and prefixes each entry's
-/// label with the field path (`erc20.total_supply`, `metadata.name`, …) to
-/// match solc's storage-layout convention.
+/// function by dispatching **every** storage field through this trait — there
+/// is no separate inlined-leaf path. `Lazy<T>` and `Mapping<K, V>` push a
+/// single entry; embedded `#[storage]` sub-structs recursively flatten their
+/// own fields, prefixing each entry's label with the field path
+/// (`erc20.total_supply`, `metadata.name`, …) to match solc's storage-layout
+/// convention. Adding a new storage component (e.g. a `StorageVec<T>`) is
+/// therefore a pure trait-impl task: implement this (and `StorageTypeName`)
+/// and the macro renders it with no codegen changes.
 ///
 /// `#[storage]` auto-emits this impl. Hand-rolled storage components need to
 /// implement it explicitly to participate in abi-gen layout output.
 #[cfg(feature = "abi-gen")]
 pub trait StorageLayoutEmit {
-    /// Append entries for this component into `out`, rooted at `base` and
-    /// prefixed by `name_prefix` (empty string at top level).
+    /// Append entries for this component into `out`, rooted at slot `base`,
+    /// byte `offset` within that slot, and prefixed by `name_prefix` (empty
+    /// string at top level). `offset` is non-zero only for packed sub-word
+    /// leaf fields sharing a slot with neighbours; multi-slot composites and
+    /// `#[storage]` sub-structs always start a fresh slot and ignore it.
     fn emit_entries(
         base: u64,
+        offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
     );
@@ -936,20 +942,21 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
     }
 }
 
-/// `Lazy<T>` as a layout-emit leaf. Used when an aliased `Lazy<T>` reaches
-/// the macro's "not syntactically a leaf" branch (`type Counter =
-/// Lazy<U256>;` declared in a contract field).
+/// `Lazy<T>` as a layout-emit leaf — a single entry at `(base, offset)`.
+/// `offset` carries the packed sub-word placement (e.g. a `Lazy<u128>`
+/// sharing a slot lands at offset 16) so the rendered layout matches solc.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
     fn emit_entries(
         base: u64,
+        offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
     ) {
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
-            offset: 0,
+            offset,
             ty: <T as pvm_contract_types::StorageTypeName>::name(),
         });
     }
@@ -1115,22 +1122,23 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
     }
 }
 
-/// `Mapping<K, V>` as a layout-emit leaf. Used when an aliased mapping
-/// (`type Balances = Mapping<Address, U256>;`) reaches the macro's
-/// "not syntactically a leaf" branch.
+/// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K,V)` entry.
+/// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
+/// is always `0` here; it is threaded through for signature uniformity.
 #[cfg(feature = "abi-gen")]
 impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeName>
     StorageLayoutEmit for Mapping<K, V>
 {
     fn emit_entries(
         base: u64,
+        offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
     ) {
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
-            offset: 0,
+            offset,
             ty: <Self as pvm_contract_types::StorageTypeName>::name(),
         });
     }
