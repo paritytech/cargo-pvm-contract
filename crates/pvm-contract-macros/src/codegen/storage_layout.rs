@@ -147,9 +147,6 @@ fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
             }
             ("Mapping", [k, v]) => {
                 let v_expr = sol_storage_type_name(v);
-                // Match solc's storageLayout type label verbatim:
-                // `mapping(address => uint256)` (spaces around `=>`), nesting as
-                // `mapping(address => mapping(address => uint256))`.
                 return quote! {
                     ::std::format!(
                         "mapping({} => {})",
