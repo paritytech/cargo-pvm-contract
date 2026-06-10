@@ -489,7 +489,7 @@ pub trait StorageComponent: Sized {
     /// the 32-byte storage key (a contract-field slot via
     /// [`StorageKey::from_slot`], or a derived key produced by a parent
     /// `Mapping`/`StorageVec`/`#[storage]` walker). `offset` is the byte
-    /// position within `key'`s slot where the component begins; only
+    /// position within `key`'s slot where the component begins; only
     /// meaningful when `PACKED_BYTES < 32` (the component packs with
     /// siblings). Full-slot components expect `offset == 0`.
     ///
