@@ -443,6 +443,20 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         quote! {}
     };
 
+    // PolkaVM's linker defaults guest stacks to 8 KiB, which deep call chains
+    // (e.g. storage B-tree split cascades) can overflow. A stack overflow is a
+    // raw VM trap (ContractTrapped) with no revert message. Declare the same
+    // 128 KiB floor resolc uses for production contracts; contracts can raise
+    // it further with their own `min_stack_size!` (the linker takes the max).
+    let stack_setup = if is_entry_point {
+        quote! {
+            #[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+            pvm_contract::polkavm_derive::min_stack_size!(131072);
+        }
+    } else {
+        quote! {}
+    };
+
     let deploy_fn = if let Some(ref ctor) = parsed.constructor {
         let constructor_name = &ctor.fn_name;
         let param_names = &ctor.param_names;
@@ -683,6 +697,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             use pvm_contract::HostFn as _;
 
             #alloc_setup
+
+            #stack_setup
 
             #deploy_fn
 

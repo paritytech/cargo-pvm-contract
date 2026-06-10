@@ -39,8 +39,126 @@ mod ordered_index;
 pub use ordered_index::OrderedIndex;
 
 use core::marker::PhantomData;
-use pallet_revive_uapi::{HostFn, HostFnImpl as api, ReturnFlags, StorageFlags};
 use parity_scale_codec::{Decode, Encode};
+
+// ============================================================================
+// Raw storage backend
+// ============================================================================
+//
+// All raw host interactions (storage get/set, keccak hashing, revert) go
+// through the free functions in `backend`. On the PolkaVM target this is a
+// set of `#[inline(always)]` wrappers over `pallet_revive_uapi` — zero-cost,
+// compiling to exactly the same code as calling the host functions directly.
+// On the host (only ever compiled under `cfg(test)` or the `host-test`
+// feature) the same functions are backed by a thread-local `HashMap`, which
+// lets the storage primitives — most importantly `OrderedIndex` — be tested
+// with plain `cargo test`. The host shim mirrors the on-chain semantics this
+// module relies on: `remove` writes an empty value (a 0-byte row that
+// `get_storage` still reports as `Ok`), and reads truncate to the caller's
+// buffer, shrinking the output slice to the bytes written.
+
+#[cfg(any(target_arch = "riscv32", target_arch = "riscv64"))]
+mod backend {
+    use pallet_revive_uapi::{HostFn, HostFnImpl as api, ReturnFlags, StorageFlags};
+
+    #[inline(always)]
+    pub fn storage_get(key: &[u8; 32], output: &mut &mut [u8]) -> Result<(), ()> {
+        api::get_storage(StorageFlags::empty(), key, output).map_err(|_| ())
+    }
+
+    #[inline(always)]
+    pub fn storage_set(key: &[u8; 32], value: &[u8]) {
+        api::set_storage(StorageFlags::empty(), key, value);
+    }
+
+    #[inline(always)]
+    pub fn hash_keccak_256(input: &[u8], output: &mut [u8; 32]) {
+        api::hash_keccak_256(input, output);
+    }
+
+    #[inline(always)]
+    pub fn revert(msg: &[u8]) -> ! {
+        api::return_value(ReturnFlags::REVERT, msg)
+    }
+}
+
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+mod backend {
+    //! Host-side shim: a thread-local key-value map standing in for the
+    //! revive child trie. Thread-locality gives each test thread an isolated
+    //! storage universe.
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::vec::Vec;
+
+    std::thread_local! {
+        static STORAGE: RefCell<HashMap<[u8; 32], Vec<u8>>> = RefCell::new(HashMap::new());
+        static READS: RefCell<u64> = const { RefCell::new(0) };
+    }
+
+    pub fn storage_get(key: &[u8; 32], output: &mut &mut [u8]) -> Result<(), ()> {
+        READS.with(|r| *r.borrow_mut() += 1);
+        STORAGE.with(|s| match s.borrow().get(key) {
+            Some(value) => {
+                let n = core::cmp::min(value.len(), output.len());
+                output[..n].copy_from_slice(&value[..n]);
+                // Shrink the output slice to the written length, mirroring
+                // `pallet_revive_uapi::get_storage`.
+                let out = core::mem::take(output);
+                *output = &mut out[..n];
+                Ok(())
+            }
+            None => Err(()),
+        })
+    }
+
+    pub fn storage_set(key: &[u8; 32], value: &[u8]) {
+        STORAGE.with(|s| {
+            s.borrow_mut().insert(*key, value.to_vec());
+        });
+    }
+
+    pub fn hash_keccak_256(input: &[u8], output: &mut [u8; 32]) {
+        use tiny_keccak::{Hasher, Keccak};
+        let mut keccak = Keccak::v256();
+        keccak.update(input);
+        keccak.finalize(output);
+    }
+
+    /// Host stand-in for an on-chain revert: panic with the revert message so
+    /// tests can observe (or `#[should_panic]` on) the named failure.
+    pub fn revert(msg: &[u8]) -> ! {
+        panic!(
+            "contract revert: {}",
+            core::str::from_utf8(msg).unwrap_or("<non-utf8 revert message>")
+        );
+    }
+
+    /// Wipe the thread-local storage map (test isolation helper).
+    pub fn reset() {
+        STORAGE.with(|s| s.borrow_mut().clear());
+        READS.with(|r| *r.borrow_mut() = 0);
+    }
+
+    /// Total `storage_get` calls on this thread (test instrumentation).
+    pub fn read_count() -> u64 {
+        READS.with(|r| *r.borrow())
+    }
+}
+
+/// Clear the host-side storage shim. Only available off-target; intended for
+/// test setup when several storage fixtures share one thread.
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub fn host_storage_reset() {
+    backend::reset();
+}
+
+/// Total storage reads on this thread since the last reset. Only available
+/// off-target; intended for asserting asymptotic read costs in tests.
+#[cfg(not(any(target_arch = "riscv32", target_arch = "riscv64")))]
+pub fn host_storage_read_count() -> u64 {
+    backend::read_count()
+}
 
 /// Default buffer size for reading values from storage.
 const DEFAULT_READ_BUFFER_SIZE: usize = 512;
@@ -59,7 +177,7 @@ pub type StorageKey = [u8; 32];
 pub fn hash_key<T: Encode>(data: &T) -> StorageKey {
     let encoded = data.encode();
     let mut key = [0u8; 32];
-    api::hash_keccak_256(&encoded, &mut key);
+    backend::hash_keccak_256(&encoded, &mut key);
     key
 }
 
@@ -69,7 +187,7 @@ pub fn namespaced_key<K: Encode>(namespace: &[u8], key: &K) -> StorageKey {
     key.encode_to(&mut data);
 
     let mut result = [0u8; 32];
-    api::hash_keccak_256(&data, &mut result);
+    backend::hash_keccak_256(&data, &mut result);
     result
 }
 
@@ -101,7 +219,7 @@ pub fn get_with_buffer<T: Decode, const N: usize>(key: &StorageKey) -> Option<T>
     let mut buffer = [0u8; N];
     let mut output = buffer.as_mut_slice();
 
-    match api::get_storage(StorageFlags::empty(), key, &mut output) {
+    match backend::storage_get(key, &mut output) {
         Ok(_) => {
             let bytes_read = output.len();
             let _ = output;
@@ -115,7 +233,7 @@ pub fn get_with_buffer<T: Decode, const N: usize>(key: &StorageKey) -> Option<T>
 pub fn set<T: Encode>(key: &StorageKey, value: &T) {
     let encoded = value.encode();
     ensure_storage_value_size(encoded.len());
-    api::set_storage(StorageFlags::empty(), key, &encoded);
+    backend::storage_set(key, &encoded);
 }
 
 /// Remove a value from storage.
@@ -125,7 +243,7 @@ pub fn set<T: Encode>(key: &StorageKey, value: &T) {
 /// `set`/`get` use, while the latter targets the Ethereum-style fixed 32-byte
 /// SSTORE area. Mixing them silently leaves data behind.
 pub fn remove(key: &StorageKey) {
-    api::set_storage(StorageFlags::empty(), key, &[]);
+    backend::storage_set(key, &[]);
 }
 
 fn ensure_storage_value_size(len: usize) {
@@ -135,7 +253,7 @@ fn ensure_storage_value_size(len: usize) {
 }
 
 fn revert(msg: &[u8]) -> ! {
-    api::return_value(ReturnFlags::REVERT, msg)
+    backend::revert(msg)
 }
 
 /// Check if a key has a value stored at it.
@@ -151,7 +269,7 @@ fn revert(msg: &[u8]) -> ! {
 pub fn contains(key: &StorageKey) -> bool {
     let mut buffer = [0u8; 1];
     let mut output = buffer.as_mut_slice();
-    match api::get_storage(StorageFlags::empty(), key, &mut output) {
+    match backend::storage_get(key, &mut output) {
         Ok(()) => !output.is_empty(),
         Err(_) => false,
     }
@@ -262,7 +380,7 @@ impl<K: Encode, V> Mapping<K, V> {
         key.encode_to(&mut data);
 
         let mut result = [0u8; 32];
-        api::hash_keccak_256(&data, &mut result);
+        backend::hash_keccak_256(&data, &mut result);
         result
     }
 
