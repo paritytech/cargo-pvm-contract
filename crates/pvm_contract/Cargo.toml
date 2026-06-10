@@ -6,6 +6,12 @@ license.workspace = true
 repository.workspace = true
 description = "Runtime library for PVM smart contracts"
 
+[features]
+# Compile the `storage` module on the host, backed by a thread-local map
+# instead of `pallet_revive_uapi` host calls, so storage logic can be tested
+# off-chain. A no-op when compiling for the PolkaVM (riscv) target.
+host-test = []
+
 [dependencies]
 pvm-contract-macros = { path = "../pvm-contract-macros" }
 alloy-primitives = { version = "0.8", default-features = false }
