@@ -279,10 +279,10 @@ impl StorageKey {
     /// struct as computed by the `LayoutStep` walker.
     ///
     /// For a contract-field StorageKey produced by `from_slot(s)`, `add(N)`
-    /// equals `from_slot(s + N)` modulo 64-bit wrap of `s + N`. For a
-    /// derived key, `add` performs proper 256-bit big-endian addition that
-    /// is modular mod 2^256, matching EVM `uint256` semantics — a carry past
-    /// the top byte is dropped, which is exactly the EVM wrap. In practice
+    /// matches `from_slot(s + N)` as long as `s + N` fits in `u64`; if it
+    /// overflows `u64`, the carry propagates into the higher bytes (i.e. this
+    /// is full 256-bit modular addition, not `u64` wrapping).
+    /// For a derived key, `add` performs proper 256-bit big-endian addition that
     /// wrap is unreachable because derived keys are uniformly distributed in
     /// the 256-bit space, so no realistic struct/array depth approaches the
     /// wrap boundary.
