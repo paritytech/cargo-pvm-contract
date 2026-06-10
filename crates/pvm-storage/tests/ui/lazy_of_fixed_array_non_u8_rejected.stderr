@@ -1,9 +1,0 @@
-error[E0599]: the function or associated item `new` exists for struct `Lazy<[Uint<256, 4>; 3]>`, but its trait bounds were not satisfied
-  --> tests/ui/lazy_of_fixed_array_non_u8_rejected.rs:13:44
-   |
-13 |     let _bad = unsafe { Lazy::<[U256; 3]>::new(StorageKey::from_slot(0), 0, host) };
-   |                                            ^^^ function or associated item cannot be called on `Lazy<[Uint<256, 4>; 3]>` due to unsatisfied trait bounds
-   |
-   = note: the following trait bounds were not satisfied:
-           `[Uint<256, 4>; 3]: StorageEncode`
-           `[Uint<256, 4>; 3]: StorageDecode`

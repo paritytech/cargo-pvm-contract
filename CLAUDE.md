@@ -220,6 +220,10 @@ pub trait SolRevert {
 - `EmptyError` — zero-cost uninhabited type for contracts with no error paths.
 - `sol_revert_enum!` — generates error enum + `SolRevert` impl + `From` conversions, auto-injects `RevertString` and `Panic` variants.
 
+### Scaffolder type mapping
+
+The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (tuples, non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a non-tuple parameter shape.
+
 ### Type Support Matrix
 
 | Solidity Type | Rust Type | SolEncode | SolDecode | Trait Impl | Notes |
@@ -233,7 +237,7 @@ pub trait SolRevert {
 | `bytesN` | `[u8; N]` | yes | yes | blanket impl | SOL_NAME = `"bytesN"`, left-aligned encoding |
 | `string` | `String` | yes | yes | alloc feature | |
 | `string` (encode only) | `&str` | yes | no | core | Can't decode into a borrow |
-| `bytes` | `Vec<u8>` | yes | yes | alloc feature | |
+| `bytes` | `Bytes` | yes | yes | alloc feature | Newtype around `Vec<u8>`. `Vec<u8>` is reserved for `uint8[]` — same Rust shape, different on-chain layout. |
 | `T[]` | `Vec<T>` | yes | yes | alloc feature, blanket impl | |
 | `T[N]` (fixed array) | `[T; N]` | yes | yes | blanket impl, requires `T: SolArrayElement` | SOL_NAME = `"T[N]"` via `ConstStr` |
 | `(T1,T2,...)` (tuple) | `(T, U, ...)` | yes | yes | macro-generated, arities 1-12 | SOL_NAME = `"(T1,T2,...)"` via `ConstStr` |
@@ -276,16 +280,22 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 |------|-------------|
 | `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
 | `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
+| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` to avoid it |
 
 - Supports static values up to `MAX_STATIC_SLOTS` * 32 bytes (single-word and multi-word static structs/tuples) and dynamic values (`String`, `Bytes`, `#[derive(SolType, SolStorage)]` structs with dynamic fields) using solc's inline/spilled `bytes`/`string` layout
 - **Custom struct as storage value:** structs that live in `Lazy<S>` / `Mapping<_, S>` must derive **both** `SolType` (for ABI / field-layout signature) **and** `SolStorage` (for `StorageEncode`/`StorageDecode` + the `StaticStorageEncode`/`StaticStorageDecode` refinement when fully static). `SolType` alone is sufficient for ABI-only types (function parameter structs, event field structs). Deriving `SolStorage` on a struct with a non-storage-compatible field (e.g. `Vec<U256>`, nested SolType structs, tuples, fixed arrays of non-`u8`) emits a `compile_error!` at expansion time — visible to `cargo check` and `trybuild`
+- Fixed-size arrays `[T; N]` are supported as storage values (Solidity `T[N]`), striped across consecutive slots. The element `T` must be a static, non-dynamic-body type — enforced at compile time via the `StorageArrayElement` marker and a `!T::HAS_DYNAMIC_BODY` const-assert (so e.g. `[String; N]` is rejected; use `StorageVec<T>` for dynamic-length or dynamic-element collections)
 - `Vec<u8>` is rejected as a storage value — its ABI name is `"uint8[]"`, a different on-chain layout from Solidity `bytes`; use `Bytes` for `bytes`-shaped storage. `Vec<u8>` is still valid as an ABI parameter and as a mapping key
 - Solidity-compatible key derivation: `keccak256(pad32(key) ++ pad32(slot))`
 - `set(&mut self)` / `insert(&mut self)` / `entry(&mut self)` take `&mut self` for future view enforcement
 - `Mapping::entry()` returns a `Lazy<V>` handle for the derived slot, allowing read-then-write on the same key with a single keccak derivation instead of two
 - Nested mappings via chaining: `self.allowances.get(&owner).get(&spender)`
-- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). Hand-rolled storage components (e.g. a future `StorageVec<T>`) must implement both traits to participate in auto-numbered layouts and abi-gen output. `StorageComponent::PACKED_BYTES = 32` declares "always start a fresh slot" — mappings, multi-slot composites, and embedded `#[storage]` sub-structs all set this; sub-32-byte primitives propagate `T::PACKED_BYTES`
-- **Field-level packing:** adjacent sub-32-byte contract fields share a slot byte-for-byte with solc's layout — `Lazy<u128> a; Lazy<u128> b;` lands at `(slot=0, offset=16)` and `(slot=0, offset=0)`. The macro walker (`pvm_storage::layout_step`) is the const-fn computing each placement; the `storageLayout` JSON's `offset` field matches solc. Packed writes are read-modify-write (one SLOAD + one SSTORE), matching solc/Stylus gas profile
+- **Nested / composite collections.** Because an inner collection is a handle (not a `StorageEncode` value), the nested accessors hand out borrow guards rather than values, gating mutation through the parent borrow:
+  - `Mapping<K, StorageVec<T>>` (Solidity `mapping(K => T[])`): `get(&K) -> Ref<StorageVec<T>>` (read) / `entry(&K) -> RefMut<StorageVec<T>>` (write), then operate on the inner vec — `self.posts.entry(&author).push(&post)`
+  - `StorageVec<StorageVec<T>>` (Solidity `T[][]`): `len`/`get(i) -> Ref<…>`/`try_get`/`first`/`last`/`iter` for reads; `grow() -> RefMut<…>` appends an empty inner row, `entry(i) -> RefMut<…>` mutates an existing one, and `erase_last() -> bool` drops the last row (the inner vec can't be returned by value, so it's destroyed rather than popped)
+  - These shapes are supported via dedicated impls today; arbitrary nesting (3+ levels, `StorageVec<Mapping<…>>`) awaits the planned `StorageType` unification
+- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). The built-in leaf types — `Lazy<T>`, `Mapping<K, V>`, and `StorageVec<T>` — are recognized syntactically by the macro's layout resolver (`is_layout_leaf` / `sol_storage_type_name`, naming them directly: `StorageVec<T>` → `T[]`, `Mapping<K, V>` → `mapping(...)`), so they participate in abi-gen output through `StorageComponent` alone and do **not** implement `StorageLayoutEmit`. A genuinely hand-rolled composite component the resolver doesn't recognize must implement both traits to flatten its leaves. `StorageComponent::PACKED_BYTES = 32` declares "always start a fresh slot" — mappings, multi-slot composites, and embedded `#[storage]` sub-structs all set this; sub-32-byte primitives propagate `T::PACKED_BYTES`
+- **Field-level packing:** adjacent sub-32-byte contract fields share a slot byte-for-byte with solc's layout. For `Lazy<u128> a; Lazy<u128> b;`, `a` occupies the low-order 16 bytes and `b` the high-order 16 bytes (solc's lower-order-first packing). The macro walker (`pvm_storage::layout_step`) is the const-fn computing each placement; it tracks an internal big-endian offset (`a` → 16, `b` → 0) used as the read-modify-write window in `Lazy::set/get`. The `storageLayout` JSON converts this to solc's convention — `offset` counted from the least-significant byte — so the emitted layout matches solc exactly (`a` → offset 0, `b` → offset 16). Packed writes are read-modify-write (one SLOAD + one SSTORE), matching solc's gas profile
 - **`try_get` is full-slot only:** `Lazy::<T>::try_get` is rejected at compile time for sub-32-byte `T` (e.g. `Lazy<u128>`) with a const-assert message — a neighbour's write to the same slot would make `try_get` indistinguishable from `get`. For packed fields, use `.get()` and compare to the zero value of `T`
 - **Test-harness contract modules:** `#[contract(no_main)]` suppresses the abi-gen `fn main()` emission so a `#[contract]` can sit inside a `tests/` integration test or library crate without colliding with the test harness's own `main`. `__abi_json()` / `__storage_layout_json()` accessors are still emitted on the module
 

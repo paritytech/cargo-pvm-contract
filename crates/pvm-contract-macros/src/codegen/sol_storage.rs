@@ -242,9 +242,9 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             const SLOTS: u64 = #slots_expr;
 
             // Embedded `#[storage]` sub-structs always start a fresh slot and
-            // never pack with neighbouring contract fields. Matches Stylus
-            // (and solc) — packing applies inside the sub-struct, never
-            // across its outer boundary.
+            // never pack with neighbouring contract fields. Matches solc —
+            // packing applies inside the sub-struct, never across its outer
+            // boundary.
             const PACKED_BYTES: usize = 32;
 
             fn new_at(
@@ -704,6 +704,7 @@ fn generate_sol_storage_impls(
             impl ::pvm_contract_sdk::StorageEncode for #name {
                 const STORAGE_SLOTS: usize = Self::__STORAGE_LAYOUT.1;
                 const PACKED_BYTES: usize = 32;
+                const HAS_DYNAMIC_BODY: bool = true;
 
                 fn write_to_storage(
                     &self,
@@ -894,6 +895,14 @@ fn generate_sol_storage_impls(
                     #decode_construct
                 }
             }
+
+            // Auto-opt into `StorageArrayElement` for static structs so users
+            // can write `Lazy<[MyStruct; N]>` / `StorageVec<[MyStruct; N]>` /
+            // `Mapping<K, [MyStruct; N]>` without an extra manual impl. Only
+            // the static branch reaches here; dynamic-body structs (which
+            // can't satisfy the `StaticStorageEncode + StaticStorageDecode`
+            // supertrait bound) are excluded by construction.
+            impl ::pvm_contract_sdk::StorageArrayElement for #name {}
 
             // Storage-layout JSON type-name resolver. When this struct is
             // used as the value of a `Lazy<Self>` or `Mapping<_, Self>`,

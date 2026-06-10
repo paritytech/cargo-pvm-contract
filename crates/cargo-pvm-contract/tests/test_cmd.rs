@@ -713,3 +713,204 @@ fn rebuild_with_macro_keeps_abi_byte_stable() {
         "ABI bytes should be stable across a no-op rebuild"
     );
 }
+
+// `.sol` -> scaffold -> `cargo build` tests. The existing
+// `scaffold_example`/`scaffold_new_contract` tests don't exercise the
+// `init_from_solidity_file` path; per-type assertions live in the
+// `scaffold::tests` unit tests on `solidity_to_rust_type`.
+
+fn scaffold_from_sol_and_build(
+    temp_dir: &TempDir,
+    name: &str,
+    api_style: &str,
+    allocator: Option<&str>,
+    sol_content: &str,
+) -> PathBuf {
+    let sol_path = temp_dir.path().join(format!("{name}.sol"));
+    std::fs::write(&sol_path, sol_content).expect("write .sol fixture");
+
+    let project_dir = temp_dir.path().join(name);
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .env("CARGO_PVM_CONTRACT_PATH", workspace_path())
+        .arg("pvm-contract")
+        .arg("init")
+        .arg("--init-type")
+        .arg("new")
+        .arg("--api-style")
+        .arg(api_style)
+        .arg("--name")
+        .arg(name)
+        .arg("--sol-file")
+        .arg(&sol_path);
+    if let Some(alloc) = allocator {
+        cmd.arg("--allocator").arg(alloc);
+    }
+    cmd.assert().success();
+
+    build_project(&project_dir, "debug");
+    project_dir
+}
+
+fn sol_interface(name: &str, body: &str) -> String {
+    format!(
+        "// SPDX-License-Identifier: UNLICENSED\n\
+         pragma solidity ^0.8.20;\n\
+         interface {name} {{\n{body}\n}}\n"
+    )
+}
+
+#[test]
+fn scaffold_from_sol_macro_bump_dynamic_surface() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "MacroBumpSurface",
+        "    function transfer(address to, uint256 amount) external returns (bool);\n\
+         \x20   function setBytes(bytes calldata data) external returns (uint256);\n\
+         \x20   function setName(string memory name) external returns (uint256);\n\
+         \x20   function sum(uint256[3] calldata xs) external returns (uint256);\n\
+         \x20   function bag(bytes[] calldata items) external returns (uint256);",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "macro-bump-surface", "macro", Some("bump"), &sol);
+}
+
+#[test]
+fn scaffold_from_sol_macro_no_alloc_static_surface() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "MacroNoAllocSurface",
+        "    function transfer(address to, uint256 amount) external returns (bool);\n\
+         \x20   function sum(uint256[3] calldata xs) external returns (uint256);\n\
+         \x20   function double(uint256 x) external pure returns (uint256);",
+    );
+    scaffold_from_sol_and_build(
+        &temp_dir,
+        "macro-no-alloc-surface",
+        "macro",
+        Some("no-alloc"),
+        &sol,
+    );
+}
+
+#[test]
+fn scaffold_from_sol_dsl_single_dynamic() {
+    // Single-param dynamic input with no return is the only DSL shape that
+    // survives the `StaticEncodedLen` safety net; other dynamic-in-DSL shapes
+    // are rejected by the `scaffold_rejects_dsl_*` gate tests. The two
+    // compound-type params also regression-test the `<T>::decode_at` wrap.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "DslDynIface",
+        "    function setBytes(bytes calldata data) external;\n\
+         \x20   function setFixed(uint256[3] calldata xs) external;\n\
+         \x20   function setDyn(uint256[] calldata xs) external;",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "dsl-bytes-bump", "dsl", Some("bump"), &sol);
+}
+
+fn scaffold_init_with_dsl_dynamic(
+    temp_dir: &TempDir,
+    name: &str,
+    sol: &str,
+) -> std::process::Output {
+    let sol_path = temp_dir.path().join(format!("{name}.sol"));
+    std::fs::write(&sol_path, sol).expect("write .sol fixture");
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .env("CARGO_PVM_CONTRACT_PATH", workspace_path())
+        .arg("pvm-contract")
+        .arg("init")
+        .arg("--init-type")
+        .arg("new")
+        .arg("--api-style")
+        .arg("dsl")
+        .arg("--allocator")
+        .arg("bump")
+        .arg("--name")
+        .arg(name)
+        .arg("--sol-file")
+        .arg(&sol_path);
+    cmd.output().expect("run cargo pvm-contract init")
+}
+
+#[test]
+fn scaffold_rejects_dsl_dynamic_return() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "DynRet",
+        "    function name() external view returns (bytes memory);",
+    );
+    let output = scaffold_init_with_dsl_dynamic(&temp_dir, "dyn-ret", &sol);
+
+    assert!(
+        !output.status.success(),
+        "expected scaffold to fail with DSL + dynamic return"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dynamic return types"),
+        "expected dynamic-return error, got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn scaffold_rejects_dsl_multi_param_with_dynamic() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "MultiDyn",
+        "    function setMessage(bytes calldata data, uint256 nonce) external;",
+    );
+    let output = scaffold_init_with_dsl_dynamic(&temp_dir, "multi-dyn", &sol);
+
+    assert!(
+        !output.status.success(),
+        "expected scaffold to fail with DSL + multi-param dynamic"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("multi-parameter signatures"),
+        "expected multi-param-dynamic error, got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn scaffold_rejects_dynamic_types_in_no_alloc_mode() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol_path = temp_dir.path().join("Dyn.sol");
+    std::fs::write(
+        &sol_path,
+        sol_interface(
+            "Dyn",
+            "    function setBytes(bytes calldata data) external;",
+        ),
+    )
+    .expect("write .sol fixture");
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .env("CARGO_PVM_CONTRACT_PATH", workspace_path())
+        .arg("pvm-contract")
+        .arg("init")
+        .arg("--init-type")
+        .arg("new")
+        .arg("--api-style")
+        .arg("macro")
+        .arg("--allocator")
+        .arg("no-alloc")
+        .arg("--name")
+        .arg("dyn-no-alloc")
+        .arg("--sol-file")
+        .arg(&sol_path);
+
+    let output = cmd.output().expect("run cargo pvm-contract init");
+    assert!(
+        !output.status.success(),
+        "expected scaffold to fail with no-alloc + dynamic types"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("require an allocator"),
+        "expected actionable allocator error, got stderr: {stderr}"
+    );
+}

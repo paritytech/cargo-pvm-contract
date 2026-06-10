@@ -11,6 +11,18 @@ use alloy_core::sol_types::SolValue;
 use proptest::prelude::*;
 
 #[test]
+// failure to decode dynamic tuple types reported in an issue.
+// added as a regression test.
+fn decode_unchecked_failure_repro() {
+    let mut buf = [0; 256];
+    (10u32, [5u32, 10]).encode_to(&mut buf);
+    assert_eq!(
+        unsafe { <(u32, [u32; 2])>::decode_unchecked(&buf, 0) },
+        (10u32, [5u32, 10])
+    );
+}
+
+#[test]
 fn encode_decode_uint256_proptest() {
     proptest!(|(v: [u64; 4])| {
         let val = U256::from_limbs(v);
@@ -1507,6 +1519,60 @@ fn panic_division_by_zero_encoding() {
 fn panic_encoded_size_matches() {
     assert_eq!(Panic::Overflow.encoded_size(), 36);
     assert_eq!(Panic::DivisionByZero.encoded_size(), 36);
+}
+
+/// Build a 32-byte ABI word holding `v` in its low 8 bytes (big-endian),
+/// matching how offset/length pointers are read from calldata.
+fn word_with_u64(v: u64) -> [u8; 32] {
+    let mut word = [0u8; 32];
+    word[24..32].copy_from_slice(&v.to_be_bytes());
+    word
+}
+
+#[test]
+fn bytes_decode_rejects_overflowing_offset() {
+    // Single head word whose offset pointer is usize::MAX, so the tail read
+    // would compute `offset + 24` and wrap. Must fail closed, not panic/alias.
+    let input = word_with_u64(u64::MAX);
+    assert!(Bytes::decode_at(&input, 0).is_err());
+}
+
+#[test]
+fn string_decode_rejects_overflowing_offset() {
+    let input = word_with_u64(u64::MAX);
+    assert!(<alloc::string::String as SolDecode>::decode_at(&input, 0).is_err());
+}
+
+#[test]
+fn vec_decode_rejects_overflowing_offset() {
+    let input = word_with_u64(u64::MAX);
+    assert!(<Vec<U256> as SolDecode>::decode_at(&input, 0).is_err());
+}
+
+#[test]
+fn bytes_decode_tail_rejects_overflowing_length() {
+    // Valid offset, but the length word at the tail is usize::MAX so the data
+    // slice composes `offset + 32 + len` and wraps.
+    let mut input = Vec::new();
+    input.extend_from_slice(&word_with_u64(32)); // offset -> 32
+    input.extend_from_slice(&word_with_u64(u64::MAX)); // length -> usize::MAX
+    assert!(Bytes::decode_at(&input, 0).is_err());
+}
+
+#[test]
+fn tuple_decode_rejects_overflowing_dynamic_offset() {
+    let mut input = Vec::new();
+    input.extend_from_slice(&word_with_u64(0)); // static U256 head
+    input.extend_from_slice(&word_with_u64(u64::MAX)); // dynamic Bytes offset
+    assert!(<(U256, Bytes) as SolDecode>::decode_at(&input, 0).is_err());
+}
+
+#[test]
+fn fixed_array_decode_rejects_overflowing_dynamic_offset() {
+    let mut input = Vec::new();
+    input.extend_from_slice(&word_with_u64(u64::MAX)); // element 0 offset
+    input.extend_from_slice(&word_with_u64(0)); // element 1 offset
+    assert!(<[Bytes; 2] as SolDecode>::decode_at(&input, 0).is_err());
 }
 
 #[test]

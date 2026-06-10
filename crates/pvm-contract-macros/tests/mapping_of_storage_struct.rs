@@ -449,9 +449,10 @@ mod aliased_layout_contract {
 // they take the trait dispatch path rather than any syntactic leaf shortcut.
 // The trait must therefore carry the packed byte `offset` — a previous version
 // hardcoded `offset: 0` on the `Lazy<T>` impl, which silently flattened
-// aliased packed fields. solc layout for `{ uint32 a; bool b; }`:
-//   a (uint32) → slot 0, offset 28   (right-aligned, 4 bytes)
-//   b (bool)   → slot 0, offset 27   (packed directly below a)
+// aliased packed fields. solc layout for `{ uint32 a; bool b; }` (`offset`
+// counted from the least-significant byte):
+//   a (uint32) → slot 0, offset 0   (right-aligned, low 4 bytes)
+//   b (bool)   → slot 0, offset 4   (packed directly above a)
 #[cfg(feature = "abi-gen")]
 type PackedU32 = Lazy<u32>;
 #[cfg(feature = "abi-gen")]
@@ -480,8 +481,8 @@ fn aliased_sub_word_fields_carry_packed_offset_through_trait() {
         serde_json::from_str(&aliased_packed_contract::__storage_layout_json()).unwrap();
     let expected: serde_json::Value = serde_json::json!({
         "storage": [
-            { "label": "a", "offset": 28, "slot": "0", "type": "uint32" },
-            { "label": "b", "offset": 27, "slot": "0", "type": "bool" },
+            { "label": "a", "offset": 0, "slot": "0", "type": "uint32" },
+            { "label": "b", "offset": 4, "slot": "0", "type": "bool" },
         ]
     });
     assert_eq!(actual, expected);

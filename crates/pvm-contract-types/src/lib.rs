@@ -63,7 +63,8 @@ pub use i256::{I256, ParseI256Error};
 
 pub mod storage_codec;
 pub use storage_codec::{
-    StaticStorageDecode, StaticStorageEncode, StorageDecode, StorageEncode, StoragePackable,
+    StaticStorageDecode, StaticStorageEncode, StorageArrayElement, StorageDecode, StorageEncode,
+    StoragePackable,
 };
 
 #[doc(hidden)]
@@ -99,6 +100,35 @@ impl SolError for DecodeError {
             Ok(None)
         }
     }
+}
+
+/// Read the 32-byte ABI word at `offset` and interpret its low 8 bytes as a
+/// big-endian length/offset pointer.
+///
+/// The pointer value is attacker-controlled calldata, so the slot range is
+/// composed with checked arithmetic: an offset near `usize::MAX` fails closed
+/// with [`DecodeError`] instead of wrapping (silent under
+/// `overflow-checks = false`) or panicking.
+#[inline]
+pub fn read_word_offset(input: &[u8], offset: usize) -> Result<usize, DecodeError> {
+    let start = offset.checked_add(24).ok_or(DecodeError)?;
+    let end = offset.checked_add(32).ok_or(DecodeError)?;
+    input
+        .get(start..end)
+        .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
+        .map(u64::from_be_bytes)
+        .map(|v| v as usize)
+        .ok_or(DecodeError)
+}
+
+/// Sum a sequence of attacker-controlled offset components with checked
+/// arithmetic, returning [`DecodeError`] on overflow.
+#[inline]
+pub fn checked_sum(parts: impl IntoIterator<Item = usize>) -> Result<usize, DecodeError> {
+    parts
+        .into_iter()
+        .try_fold(0usize, |acc, p| acc.checked_add(p))
+        .ok_or(DecodeError)
 }
 
 /// Fixed-size buffer for compile-time string concatenation.
@@ -1396,15 +1426,11 @@ impl<T: SolArrayElement + SolDecode, const N: usize> SolDecode for [T; N] {
         for (i, item) in array.iter_mut().enumerate() {
             let res: Result<T, DecodeError> = (|| {
                 if T::IS_DYNAMIC {
-                    let ho = offset + i * T::SLOT_SIZE;
-                    let field_offset = input
-                        .get(ho + 24..ho + 32)
-                        .and_then(|x| x.try_into().ok())
-                        .map(u64::from_be_bytes)
-                        .ok_or(DecodeError)? as usize;
-                    T::decode_tail(input, offset + field_offset)
+                    let ho = checked_sum([offset, i * T::SLOT_SIZE])?;
+                    let field_offset = read_word_offset(input, ho)?;
+                    T::decode_tail(input, checked_sum([offset, field_offset])?)
                 } else {
-                    T::decode_at(input, offset + i * T::SLOT_SIZE)
+                    T::decode_at(input, checked_sum([offset, i * T::SLOT_SIZE])?)
                 }
             })();
 
@@ -1446,7 +1472,7 @@ impl<T: SolArrayElement + StaticDecode + StaticEncodedLen, const N: usize> Stati
                         as usize;
                     unsafe { T::decode_unchecked(input, offset + field_offset) }
                 } else {
-                    unsafe { T::decode_unchecked(input, i * T::SLOT_SIZE) }
+                    unsafe { T::decode_unchecked(input, offset + i * T::SLOT_SIZE) }
                 }
             };
 
@@ -1534,25 +1560,16 @@ macro_rules! impl_tuple_sol {
         impl<$($T: SolDecode),+> SolDecode for ($($T,)+) {
             fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
                 let mut __ho = offset;
-                fn fo(input: &[u8], offset: usize) -> Result<usize, DecodeError> {
-                    Ok(TryInto::<[u8; 8]>::try_into(
-                        input
-                            .get(offset + 24..offset + 32)
-                            .ok_or(DecodeError)?,
-                    )
-                    .map_err(|_| DecodeError)
-                    .map(u64::from_be_bytes)? as usize)
-                }
                 Ok(($(
                     {
                         let __val = if $T::IS_DYNAMIC {
-                            let __fo =  fo(&input, __ho)?;
+                            let __fo = $crate::read_word_offset(input, __ho)?;
 
-                            $T::decode_tail(input, offset + __fo)?
+                            $T::decode_tail(input, $crate::checked_sum([offset, __fo])?)?
                         } else {
                             $T::decode_at(input, __ho)?
                         };
-                        __ho += $T::SLOT_SIZE;
+                        __ho = $crate::checked_sum([__ho, $T::SLOT_SIZE])?;
                         __val
                     },
                 )+))

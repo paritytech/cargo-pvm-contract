@@ -438,6 +438,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// extern crate alloc;
 /// use alloc::vec;
 /// use alloc::vec::Vec;
+/// use alloc::string::String;
 ///
 /// #[global_allocator]
 /// static mut ALLOC: picoalloc::Mutex<
@@ -469,6 +470,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// extern crate alloc;
 /// use alloc::vec;
 /// use alloc::vec::Vec;
+/// use alloc::string::String;
 ///
 /// #[global_allocator]
 /// static ALLOC: pvm_bump_allocator::BumpAllocator<1024> =

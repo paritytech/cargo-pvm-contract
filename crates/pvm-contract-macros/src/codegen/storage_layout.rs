@@ -150,11 +150,33 @@ pub(super) fn generate_layout_emit(
 ) -> TokenStream {
     // Caller is expected to have a `&mut Vec<StorageLayoutEntry>` binding in
     // scope named `entries`; passing it straight into the trait call
-    // auto-reborrows.
+    // auto-reborrows. Every storage field — `Lazy<T>`, `Mapping<K, V>`,
+    // `StorageVec<T>`, and embedded `#[storage]` sub-structs — implements
+    // `StorageLayoutEmit`, so there is no syntactic type-name special-casing:
+    // the trait is the single source of truth for both the entry's `type`
+    // string and its layout.
+    //
+    // The walker tracks `offset` as the big-endian start index of the field's
+    // bytes (distance from the most-significant byte). solc's `storageLayout`
+    // counts `offset` from the least-significant byte, so convert here —
+    // `solc_offset = 32 - high - size`, where `size` is the field's packed
+    // width (`StorageComponent::PACKED_BYTES`). Right-alignment holds for every
+    // value type in solc storage (integers, bool, address, `bytesN`), and
+    // full-slot leaves (`PACKED_BYTES == 32`, `high == 0`) map to `0`
+    // unchanged, so this one formula covers every leaf. The leaf `emit_entries`
+    // impls then push the already-converted offset verbatim. The internal RMW
+    // window in `Lazy::set/get` keeps using the unconverted big-endian offset.
+    let solc_offset = quote! {
+        {
+            let __high: u8 = #offset_expr;
+            32u8 - __high
+                - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES as u8
+        }
+    };
     quote! {
         <#ty as ::pvm_contract_sdk::StorageLayoutEmit>::emit_entries(
             #slot_expr,
-            #offset_expr,
+            #solc_offset,
             &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
             entries,
         );

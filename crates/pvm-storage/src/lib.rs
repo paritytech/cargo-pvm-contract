@@ -1,8 +1,9 @@
 //! Typed storage helpers for PVM smart contracts with Solidity-compatible slot layout.
 //!
-//! Provides [`Lazy<T>`] for single-value storage and [`Mapping<K, V>`] for key-value
-//! storage, both using Solidity-compatible key derivation so tools like `cast storage`
-//! and `cast index` work out of the box.
+//! Provides [`Lazy<T>`] for single-value storage, [`Mapping<K, V>`] for
+//! key-value storage, and [`StorageVec<T>`] for dynamic arrays (Solidity's
+//! `T[]`). All three use Solidity-compatible key/index derivation so tools
+//! like `cast storage` and `cast index` work out of the box.
 //!
 //! [`Lazy<T>`] and [`Mapping<K, V>`] bind `T`/`V` to
 //! [`StorageEncode`](pvm_contract_types::StorageEncode) +
@@ -38,7 +39,7 @@
 //! ([`layout_step`]) is the const-fn that decides each field's placement.
 //!
 //! Packed writes are read-modify-write (one SLOAD + one SSTORE), matching
-//! solc/Stylus. Full-slot writes are a single SSTORE — no overhead from the
+//! solc. Full-slot writes are a single SSTORE — no overhead from the
 //! packing infrastructure.
 //!
 //! Multi-slot composites (`Lazy<(U256, U256)>`, multi-slot
@@ -157,11 +158,10 @@ fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
     output
 }
 
-/// Increment a 32-byte big-endian integer in-place. Used by test code that
-/// walks consecutive slots; the production paths now delegate slot-walking
-/// to the per-type `write_to_storage` / `read_from_storage` impls in
-/// `pvm_contract_types::storage_codec`.
-#[cfg(test)]
+/// Increment a 32-byte big-endian integer in-place. Used to walk consecutive
+/// slots in `clear_n_slots` and `StorageVec`'s bulk clear; value codecs
+/// delegate their own slot-walking to the per-type `write_to_storage` /
+/// `read_from_storage` impls in `pvm_contract_types::storage_codec`.
 pub(crate) fn inc_slot(slot: &mut [u8; 32]) {
     for byte in slot.iter_mut().rev() {
         let (next, carry) = byte.overflowing_add(1);
@@ -183,6 +183,65 @@ pub(crate) fn inc_slot(slot: &mut [u8; 32]) {
 /// = 13 slots) — that's the hard cap the runtime enforces per storage value,
 /// so any larger buffer here would fail at host-call time on chain.
 pub const MAX_STATIC_SLOTS: usize = 8;
+
+/// Clear `n` consecutive slots starting at `key`.
+fn clear_n_slots(host: &Host, key: &[u8; 32], n: usize) {
+    let mut k = *key;
+    for _ in 0..n {
+        host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
+        inc_slot(&mut k);
+    }
+}
+// Body-base derivation for a dynamic array (`StorageVec<T>`):
+// `keccak256(pad32(slot))`. Element `i` of a full-slot single-slot `T` array
+// lives at `body_base + i`; multi-slot/packed shapes scale this stride. The
+// formula has no key component — unlike `Mapping`, the array's elements are
+// addressed by index, not by hashed key. Matches Solidity's `T[]` layout.
+fn storage_derive_body_base(host: &Host, slot_key: &[u8; 32]) -> [u8; 32] {
+    let mut output = [0u8; 32];
+    host.hash_keccak_256(slot_key, &mut output);
+    output
+}
+
+/// Add `n` to a 32-byte big-endian integer in-place, propagating carries
+/// up through all 32 bytes. Used by `StorageVec` to address element `i`
+/// at `body_base + i` without iterating `inc_slot` `i` times.
+fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
+    let mut carry: u64 = n;
+    for byte in slot.iter_mut().rev() {
+        if carry == 0 {
+            return;
+        }
+        let sum = *byte as u64 + (carry & 0xff);
+        *byte = sum as u8;
+        carry = (carry >> 8) + (sum >> 8);
+    }
+}
+
+/// Read a u64 length from a storage slot's lower 8 bytes (big-endian).
+/// Solidity stores array lengths as `uint256`; we cap support at `u64::MAX`
+/// elements (more than enough for any real-world contract) and panic if the
+/// upper 24 bytes are non-zero, which would indicate either corrupted state
+/// or a length set via raw uAPI that exceeds our supported range.
+fn read_len_u64(host: &Host, slot_key: &[u8; 32]) -> u64 {
+    let buf = storage_get_32(host, slot_key);
+    assert!(
+        buf[..24].iter().all(|&b| b == 0),
+        "StorageVec length exceeds u64::MAX"
+    );
+    u64::from_be_bytes([
+        buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+    ])
+}
+
+/// Write a u64 length to a storage slot as a big-endian `uint256` (upper 24
+/// bytes zero). When `n == 0` the host's `set_storage_or_clear` deletes the
+/// slot, matching Solidity's `delete arr.length` behaviour.
+fn write_len_u64(host: &Host, slot_key: &[u8; 32], n: u64) {
+    let mut buf = [0u8; 32];
+    buf[24..32].copy_from_slice(&n.to_be_bytes());
+    storage_set_32(host, slot_key, &buf);
+}
 
 // ---------------------------------------------------------------------------
 // StorageKey
@@ -735,13 +794,13 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// matching Solidity's default-to-zero semantics.
     ///
     /// **Lossy decode for `T = String`:** Rust's `String` must hold valid
-    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD
-    /// (matching Stylus's `StorageString::get_string`). A Solidity contract
-    /// reading the same slot sees the raw bytes verbatim — `string` in solc
-    /// is just `bytes` with a UTF-8 hint and has no decode step. If you need
-    /// byte-exact roundtrips (e.g. on-chain `keccak256` matching an off-chain
-    /// hash), use [`Lazy<Bytes>`] instead — it preserves every byte. See
-    /// also `Mapping::get` for the same caveat on `V = String`.
+    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD.
+    /// A Solidity contract reading the same slot sees the raw bytes verbatim
+    /// — `string` in solc is just `bytes` with a UTF-8 hint and has no
+    /// decode step. If you need byte-exact roundtrips (e.g. on-chain
+    /// `keccak256` matching an off-chain hash), use [`Lazy<Bytes>`] instead
+    /// — it preserves every byte. See also `Mapping::get` for the same
+    /// caveat on `V = String`.
     ///
     /// [`Lazy<Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self) -> T {
@@ -799,9 +858,9 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         // try_get is only meaningful for full-slot types. For sub-slot packed
         // fields, "is this written?" cannot be answered honestly — a neighbor
         // writing to the same slot makes our `try_get` return Some(zero) even
-        // if we never wrote. Solidity has the same conflation; Stylus avoids
-        // it by not exposing try_get at all. We keep it for full-slot and
-        // reject it for packed with a clear compile-time message.
+        // if we never wrote. Solidity has the same conflation. We keep
+        // `try_get` for full-slot and reject it for packed with a clear
+        // compile-time message.
         const {
             assert!(
                 T::PACKED_BYTES == 32,
@@ -848,7 +907,12 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
         } else if T::PACKED_BYTES < 32 {
             // Packed sub-slot RMW: load slot, zero our window, write our
-            // bytes back via the polymorphic dispatch hook, store.
+            // bytes back via the polymorphic dispatch hook, store. One extra
+            // SLOAD on each write vs. the full-slot path — same gas profile
+            // as solc for adjacent sub-32-byte fields sharing a slot.
+            // `__pack_into_dispatched` delegates to
+            // `<T as StoragePackable>::pack_into` for packable T; full-slot T
+            // never reaches this branch.
             let mut buf = storage_get_32(&self.host, self.key.as_bytes());
             let off = self.offset as usize;
             buf[off..off + T::PACKED_BYTES].fill(0);
@@ -1197,12 +1261,12 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// Returns the zero value if the key was never written.
     ///
     /// **Lossy decode for `V = String`:** Rust's `String` must hold valid
-    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD
-    /// (matching Stylus's `StorageString::get_string`). A Solidity contract
-    /// reading the same slot sees the raw bytes verbatim — `string` in solc
-    /// is just `bytes` with a UTF-8 hint and has no decode step. If you need
-    /// byte-exact roundtrips (e.g. on-chain `keccak256` matching an off-chain
-    /// hash), use [`Mapping<K, Bytes>`] instead — it preserves every byte.
+    /// UTF-8, so invalid byte sequences in storage are replaced with U+FFFD.
+    /// A Solidity contract reading the same slot sees the raw bytes verbatim
+    /// — `string` in solc is just `bytes` with a UTF-8 hint and has no
+    /// decode step. If you need byte-exact roundtrips (e.g. on-chain
+    /// `keccak256` matching an off-chain hash), use [`Mapping<K, Bytes>`]
+    /// instead — it preserves every byte.
     ///
     /// [`Mapping<K, Bytes>`]: pvm_contract_types::Bytes
     pub fn get(&self, key: &K) -> V {
@@ -1338,6 +1402,881 @@ impl<K, V: StorageComponent> Mapping<K, V> {
         <V as StorageComponent>::clear(&mut handle);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mapping<K, StorageVec<T>> — `mapping(K => T[])` in Solidity.
+// ---------------------------------------------------------------------------
+
+/// Solidity supports `mapping(K => T[])` directly: the mapping derives a
+/// slot `keccak256(pad32(K) ++ pad32(slot))` that holds the array length,
+/// with elements at `keccak256(<derived>) + i * stride` (the same layout
+/// `StorageVec<T>` produces at a top-level slot). `StorageVec<T>` is a
+/// handle rather than a value, so it can't satisfy the `V: StorageEncode +
+/// StorageDecode` bound on the generic `Mapping<K, V>` impl — this
+/// dedicated impl gives `Mapping<K, StorageVec<T>>` the same get/entry
+/// pair the nested-`Mapping` impl provides, returning a `Ref`/`RefMut`
+/// guard over an inner `StorageVec<T>` rooted at the derived key.
+impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>> {
+    /// Read path: derive the inner `StorageVec`'s root slot and return a
+    /// [`Ref`] so the inner vec inherits the caller's `&self` borrow. Only
+    /// `&self` methods on `StorageVec<T>` (e.g. `len`, `get`, `try_get`)
+    /// are reachable through it; `push`/`pop`/`set` would require `&mut
+    /// self` and are blocked at compile time.
+    pub fn get(&self, key: &K) -> Ref<'_, StorageVec<T>> {
+        // SAFETY: the inner `StorageVec` is immediately wrapped in `Ref<'_,
+        // _>`, which only exposes `&self` methods. No bypass surface is
+        // widened by producing the inner handle via the `unsafe`
+        // constructor here.
+        Ref::new(unsafe {
+            StorageVec::<T>::new(self.root.derive(&self.host, key), self.host.clone())
+        })
+    }
+
+    /// Write path: derive the inner `StorageVec`'s root slot and return a
+    /// [`RefMut`] tied to the caller's `&mut self` borrow. The full
+    /// mutating API on `StorageVec<T>` (`push`, `pop`, `set`, `clear`) is
+    /// reachable through the returned guard.
+    pub fn entry(&mut self, key: &K) -> RefMut<'_, StorageVec<T>> {
+        // SAFETY: `entry` requires `&mut self`. The caller already holds
+        // mutating access through the parent borrow; the inner handle just
+        // forwards that capability.
+        RefMut::new(unsafe {
+            StorageVec::<T>::new(self.root.derive(&self.host, key), self.host.clone())
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StorageVec<T> — dynamic array with Solidity-compatible storage layout.
+// ---------------------------------------------------------------------------
+
+/// A dynamic array backed by on-chain storage, matching Solidity's `T[]`
+/// storage layout byte-for-byte.
+///
+/// The element count lives at the root slot encoded as `uint256`
+/// (big-endian). Element `i`'s slot is `keccak256(pad32(slot)) + stride(i)`,
+/// where the stride depends on `T`'s shape:
+/// - sub-word `T` (`PACKED_BYTES < 32`): `stride(i) = i / per_slot`, where
+///   `per_slot = 32 / PACKED_BYTES` (multiple elements share a slot).
+/// - single-slot `T` (`PACKED_BYTES == 32, STORAGE_SLOTS == 1`):
+///   `stride(i) = i` (one slot per element).
+/// - multi-slot static `T` (`STORAGE_SLOTS > 1`):
+///   `stride(i) = i * STORAGE_SLOTS` (each element walks `STORAGE_SLOTS`
+///   consecutive slots).
+///
+/// `StorageVec<u8>` corresponds to Solidity's `uint8[]` (one byte per
+/// element, 32 elements per slot) — **distinct from**
+/// [`Bytes`](pvm_contract_types::Bytes), which models Solidity's `bytes` type
+/// (inline header or spilled body). Use `Bytes` when you need `bytes`-shaped
+/// storage; use `StorageVec<u8>` when you need a `uint8[]` array.
+///
+/// # API summary
+///
+/// - **Read:** `len` / `is_empty`, `get(i)` (panics OOB) / `try_get(i)`
+///   (`Option`), `first` / `last`, and [`iter`](Self::iter) (reads the
+///   length once, then streams elements — cheaper than a manual
+///   `0..len`/`get` loop). All take `&self`, so they work in `view` methods.
+/// - **Write:** `push`, `pop`, `set(i, &value)` (direct-write — no
+///   per-element handle on flat `StorageVec<T>`), and `clear`. All take
+///   `&mut self`.
+///
+/// # Notable design choices
+///
+/// - `get(i)` / `pop()` return `T` by value.
+/// - Per-element handles only appear on the nested impl
+///   (`StorageVec<StorageVec<T>>`), where `entry(i)` / `grow()` return
+///   a `RefMut<'_, StorageVec<T>>`.
+/// - `pop()` zeros the freed slot only when the freed element was the first
+///   packed element in its slot — the gas-optimal policy that matches solc.
+///   For full-slot elements, every pop frees a full slot.
+/// - Out-of-bounds `get`/`set` revert via a plain trap with a static message
+///   (no `core::fmt` in the bytecode), **not** solc's ABI-encoded
+///   `Panic(0x32)` — off-chain callers won't see the `0x32` code. Use
+///   `try_get` to avoid the trap.
+///
+/// # Element shapes supported
+///
+/// All `T: StorageEncode + StorageDecode` with `T::STORAGE_SLOTS <=
+/// MAX_STATIC_SLOTS`. The implementation dispatches on `T`'s properties:
+///
+/// - **Sub-word multi-pack** (`T::PACKED_BYTES < 32`): elements share a
+///   32-byte slot, `per_slot = 32 / PACKED_BYTES` elements per slot, packed
+///   right-aligned (solc-compatible). Covers `uint8`..`uint128`,
+///   `int8`..`int128`, `bool`, `Address` (`per_slot = 1`), and `[u8; N]` for
+///   `N < 32`. `set` does read-modify-write to preserve neighbours; `pop`
+///   clears the whole slot only when the freed element was the first one in
+///   its slot.
+/// - **Single-slot full-word** (`STORAGE_SLOTS == 1, PACKED_BYTES == 32`):
+///   one slot per element, fast path with no RMW. Covers `U256`, `I256`,
+///   `[u8; 32]` (i.e. `bytes32`), `[T; N]` whose total bytes fit in one
+///   slot, and single-slot derived structs.
+/// - **Multi-slot static** (`STORAGE_SLOTS > 1, !HAS_DYNAMIC_BODY`):
+///   stride of `STORAGE_SLOTS` slots per element. Covers tuples, fixed
+///   arrays `[T; N]` that span >1 slot (e.g. `[U256; 3]`, `[u32; 9]`), and
+///   derived structs that span 2..=8 slots.
+/// - **Dynamic-body** (`HAS_DYNAMIC_BODY`): each element gets its own
+///   inline/spilled layout — header lives in the element's slot, spilled
+///   body at `keccak256(header_slot) + i`. Covers `String` and `Bytes`.
+///
+/// Nested arrays (`StorageVec<StorageVec<T>>`, i.e. Solidity's `T[][]`)
+/// are supported via the dedicated nested impl block below.
+pub struct StorageVec<T> {
+    root: StorageKey,
+    base: core::cell::OnceCell<[u8; 32]>,
+    host: Host,
+    _marker: PhantomData<T>,
+}
+
+impl<T: StorageEncode + StorageDecode> StorageVec<T> {
+    /// Compile-time shape validation. Referencing `_SHAPE_CHECK` in every
+    /// public method forces the const evaluator to run the check at each
+    /// monomorphization — same pattern as `Lazy::_SIZE_CHECK`.
+    const _SHAPE_CHECK: () = {
+        assert!(
+            T::STORAGE_SLOTS >= 1,
+            "StorageVec<T>: T::STORAGE_SLOTS must be positive"
+        );
+        assert!(
+            T::STORAGE_SLOTS <= MAX_STATIC_SLOTS,
+            "StorageVec<T>: T::STORAGE_SLOTS exceeds MAX_STATIC_SLOTS. \
+             Raise MAX_STATIC_SLOTS or use a dynamic-body type (String, Bytes)."
+        );
+        // Sub-word multi-pack types always occupy a single slot. solc has no
+        // notion of "multi-slot sub-word" — every sub-word value claims at
+        // most one slot. Guard against malformed `StorageEncode` impls that
+        // mix the two.
+        assert!(
+            T::PACKED_BYTES == 32 || T::STORAGE_SLOTS == 1,
+            "StorageVec<T>: sub-word T (PACKED_BYTES < 32) must satisfy STORAGE_SLOTS == 1"
+        );
+    };
+
+    /// Create a new `StorageVec` rooted at the given storage key.
+    ///
+    /// # Safety
+    ///
+    /// Same safety contract as [`Lazy::new`] and [`Mapping::new`]. Direct
+    /// construction outside macro-generated code lets a `&self` (view)
+    /// method reconstruct a writable handle and bypass the borrow-check
+    /// view gate. Use [`StorageComponent::new_at`] from macro expansion;
+    /// reach for this constructor only when an arbitrary `StorageKey` is
+    /// required. Contract crates that want belt-and-braces enforcement
+    /// should add `#![forbid(unsafe_code)]` at the crate root.
+    pub unsafe fn new(root: StorageKey, host: Host) -> Self {
+        let () = Self::_SHAPE_CHECK;
+        StorageVec {
+            root,
+            base: core::cell::OnceCell::new(),
+            host,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Lazily compute and cache the body base `keccak256(pad32(slot))`.
+    /// View methods that touch only the length (`len`, `is_empty`) skip
+    /// this — only element accessors trigger the keccak.
+    fn body_base(&self) -> &[u8; 32] {
+        self.base
+            .get_or_init(|| storage_derive_body_base(&self.host, self.root.as_bytes()))
+    }
+
+    /// Elements per storage slot for sub-word packing. Always `1` for
+    /// full-slot `T` (`PACKED_BYTES == 32`); for sub-word `T` returns
+    /// `32 / PACKED_BYTES` (e.g. `4` for `u64`, `8` for `u32`, `32` for `u8`).
+    const fn per_slot() -> u64 {
+        if T::PACKED_BYTES == 32 {
+            1
+        } else {
+            (32 / T::PACKED_BYTES) as u64
+        }
+    }
+
+    /// Slot index (offset from `body_base`) for element `i`.
+    /// - Sub-word: `i / per_slot` (multiple elements share a slot)
+    /// - Multi-slot static: `i * STORAGE_SLOTS` (stride)
+    /// - Single-slot full-word / dynamic-body header: `i`
+    fn slot_index_for(i: u64) -> u64 {
+        if T::PACKED_BYTES < 32 {
+            i / Self::per_slot()
+        } else if T::STORAGE_SLOTS > 1 {
+            // Multi-slot static. Dynamic-body always has STORAGE_SLOTS == 1
+            // (one header slot per element; bodies derive elsewhere).
+            // `checked_mul` so a corrupted length / pathologically large `i`
+            // surfaces as a clean panic rather than silently wrapping into
+            // the wrong slot. Physically unreachable in any real contract
+            // (would require `i > u64::MAX / STORAGE_SLOTS`), defensive.
+            i.checked_mul(T::STORAGE_SLOTS as u64)
+                .expect("StorageVec: element-stride overflow")
+        } else {
+            i
+        }
+    }
+
+    /// Byte offset within slot for sub-word element `i`. Solc places the
+    /// element at index 0 right-aligned (lowest within the slot), so:
+    /// `offset = 32 - PACKED_BYTES * (within + 1)`.
+    ///
+    /// Only meaningful when `T::PACKED_BYTES < 32`.
+    fn within_slot_offset(i: u64) -> usize {
+        let within = (i % Self::per_slot()) as usize;
+        32 - T::PACKED_BYTES * (within + 1)
+    }
+
+    /// Storage key for element `i`'s base slot (the element's slot for
+    /// sub-word/single-slot/dynamic-header, or the first of N slots for
+    /// multi-slot static).
+    fn element_slot(&self, i: u64) -> [u8; 32] {
+        let mut key = *self.body_base();
+        inc_slot_by(&mut key, Self::slot_index_for(i));
+        key
+    }
+
+    /// Return the number of elements.
+    pub fn len(&self) -> u64 {
+        let () = Self::_SHAPE_CHECK;
+        read_len_u64(&self.host, self.root.as_bytes())
+    }
+
+    /// Return `true` if the array contains no elements.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Read the element at `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics (reverts) if `index >= len()`, mirroring Solidity's
+    /// out-of-bounds behaviour. Note: the SDK reverts via a plain trap, not
+    /// the ABI-encoded `Panic(0x32)` selector solc emits — an off-chain
+    /// caller decoding revert data won't see the `0x32` code. Use
+    /// [`try_get`](Self::try_get) for a non-panicking read. The message is a
+    /// static string (no `{}` interpolation) to keep `core::fmt` out of the
+    /// bytecode.
+    pub fn get(&self, index: u64) -> T {
+        let () = Self::_SHAPE_CHECK;
+        assert!(index < self.len(), "StorageVec::get: index out of bounds");
+        self.read_at(index)
+    }
+
+    /// Read the element at `index`, returning `None` if out of bounds.
+    pub fn try_get(&self, index: u64) -> Option<T> {
+        let () = Self::_SHAPE_CHECK;
+        if index >= self.len() {
+            return None;
+        }
+        Some(self.read_at(index))
+    }
+
+    /// Read the first element, or `None` if the array is empty.
+    pub fn first(&self) -> Option<T> {
+        self.try_get(0)
+    }
+
+    /// Read the last element, or `None` if the array is empty.
+    ///
+    /// Reads the length once and skips the per-access bounds check, so it's
+    /// one SLOAD cheaper than `try_get(len - 1)` for full-slot `T`.
+    pub fn last(&self) -> Option<T> {
+        let () = Self::_SHAPE_CHECK;
+        let len = self.len();
+        if len == 0 {
+            None
+        } else {
+            Some(self.read_at(len - 1))
+        }
+    }
+
+    /// Iterate over the elements by value, front to back.
+    ///
+    /// The length is read **once** when the iterator is created; each step
+    /// then reads an element directly with no per-element bounds re-check.
+    /// This is both more ergonomic and cheaper than
+    /// `for i in 0..v.len() { v.get(i) }`, where every `get` re-reads the
+    /// length slot.
+    ///
+    /// The iterator borrows the vec immutably (`&self`), so it can be used
+    /// from `view` methods. Mutating the vec while iterating is rejected by
+    /// the borrow checker.
+    pub fn iter(&self) -> StorageVecIter<'_, T> {
+        let () = Self::_SHAPE_CHECK;
+        StorageVecIter {
+            vec: self,
+            pos: 0,
+            len: self.len(),
+        }
+    }
+
+    /// Element read, dispatched on `T`'s shape. Caller is responsible for
+    /// the bounds check.
+    fn read_at(&self, i: u64) -> T {
+        let key = self.element_slot(i);
+        if T::PACKED_BYTES < 32 {
+            // Sub-word multi-pack: many elements share one slot, so read the
+            // whole slot and unpack at this element's byte offset. The uniform
+            // `read_from_storage` path can't be used here — it unpacks at the
+            // type's *canonical* offset, not the per-element one.
+            let slot = storage_get_32(&self.host, &key);
+            T::__unpack_from_dispatched(&slot, Self::within_slot_offset(i))
+        } else {
+            // Full-slot, multi-slot static, or dynamic-body element. Each
+            // element owns `T::STORAGE_SLOTS` consecutive slots starting at
+            // `key`, so `read_from_storage` (which delegates to
+            // `read_from_storage_static` for static `T`, or reads the
+            // header + spilled body chunks for dynamic `T`) does the right
+            // thing for every non-sub-word shape.
+            T::read_from_storage(&self.host, &key)
+        }
+    }
+
+    /// Write the element at `index`.
+    ///
+    /// # Panics
+    ///
+    /// Panics (reverts) if `index >= len()`. Use [`push`](Self::push) to
+    /// extend the array. Like [`get`](Self::get), the revert is a plain trap
+    /// rather than solc's ABI-encoded `Panic(0x32)`.
+    pub fn set(&mut self, index: u64, value: &T) {
+        let () = Self::_SHAPE_CHECK;
+        assert!(index < self.len(), "StorageVec::set: index out of bounds");
+        self.write_at(index, value);
+    }
+
+    /// Element write, dispatched on `T`'s shape. `&mut self` so the
+    /// borrow-checker enforces that mutation flows through a `&mut` view
+    /// of the vec (defence-in-depth — the public callers already require
+    /// `&mut self`).
+    fn write_at(&mut self, i: u64, value: &T) {
+        let key = self.element_slot(i);
+        if T::PACKED_BYTES < 32 {
+            // Sub-word: read-modify-write to preserve sibling elements in the
+            // same slot. Even when `i % per_slot == 0` (a fresh slot from
+            // push's perspective), RMW is safe and avoids a fast-path that
+            // could leak stale data if external state ever pre-existed. The
+            // uniform `write_to_storage` path packs at the canonical offset,
+            // not this element's, so it can't be used here.
+            let mut buf = storage_get_32(&self.host, &key);
+            let offset = Self::within_slot_offset(i);
+            buf[offset..offset + T::PACKED_BYTES].fill(0);
+            value.__pack_into_dispatched(&mut buf, offset);
+            storage_set_32(&self.host, &key, &buf);
+        } else {
+            // Full-slot, multi-slot static, or dynamic-body element.
+            // `write_to_storage` owns the access pattern: a single SSTORE,
+            // `STORAGE_SLOTS` consecutive SSTOREs (via
+            // `write_to_storage_static` for static `T`), or header + spilled
+            // body chunks for dynamic `T`.
+            value.write_to_storage(&self.host, &key);
+        }
+    }
+
+    /// Append an element. Writes the value at the tail position, then
+    /// increments the length.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the length would overflow `u64::MAX` (practically
+    /// unreachable — the storage budget is exhausted long before).
+    pub fn push(&mut self, value: &T) {
+        let () = Self::_SHAPE_CHECK;
+        let len = self.len();
+        let new_len = len
+            .checked_add(1)
+            .expect("StorageVec::push: length overflow");
+        self.write_at(len, value);
+        write_len_u64(&self.host, self.root.as_bytes(), new_len);
+    }
+
+    /// Remove and return the last element, or `None` if the array is empty.
+    ///
+    /// The freed slot(s) are cleared (zero write through
+    /// `set_storage_or_clear`) so the SSTORE-to-zero gas refund applies —
+    /// matching Solidity's `pop()`.
+    ///
+    /// For **sub-word** elements the whole slot is cleared only when the
+    /// freed element was the first one packed in its slot (`within == 0`);
+    /// otherwise a read-modify-write zeros just that element's byte range,
+    /// preserving the remaining packed siblings. For **multi-slot static**
+    /// `T` every pop clears `STORAGE_SLOTS` slots. For **dynamic-body** T
+    /// the header slot and any spilled body chunks are cleared via
+    /// `T::clear_storage`.
+    pub fn pop(&mut self) -> Option<T> {
+        let () = Self::_SHAPE_CHECK;
+        let len = self.len();
+        if len == 0 {
+            return None;
+        }
+        let new_len = len - 1;
+        let value = self.read_at(new_len);
+        self.clear_at(new_len);
+        write_len_u64(&self.host, self.root.as_bytes(), new_len);
+        Some(value)
+    }
+
+    /// Clear the storage occupied by element `i`. Dispatches on shape; see
+    /// [`pop`](Self::pop) for the gas-refund policy. `&mut self` so a
+    /// future `&self` method can't accidentally invoke this private
+    /// mutating helper.
+    fn clear_at(&mut self, i: u64) {
+        let key = self.element_slot(i);
+        if T::HAS_DYNAMIC_BODY {
+            // Tears down inline header + any spilled body chunks.
+            <T as StorageEncode>::clear_storage(&self.host, &key);
+        } else if T::PACKED_BYTES < 32 {
+            // First element in a slot has no surviving siblings (the higher
+            // within indices were popped first), so clear the whole slot.
+            // Otherwise RMW zero only this element's bytes.
+            let within = i % Self::per_slot();
+            if within == 0 {
+                storage_set_32(&self.host, &key, &[0u8; 32]);
+            } else {
+                let mut buf = storage_get_32(&self.host, &key);
+                let offset = Self::within_slot_offset(i);
+                buf[offset..offset + T::PACKED_BYTES].fill(0);
+                storage_set_32(&self.host, &key, &buf);
+            }
+        } else if T::STORAGE_SLOTS == 1 {
+            storage_set_32(&self.host, &key, &[0u8; 32]);
+        } else {
+            clear_n_slots(&self.host, &key, T::STORAGE_SLOTS);
+        }
+    }
+
+    /// Remove every element and reset length to zero.
+    ///
+    /// **O(n) gas** — every element's storage is cleared. For arrays with
+    /// many entries, consider draining via repeated `pop()` across multiple
+    /// transactions instead. Matches solc's `delete arr` for dynamic arrays.
+    pub fn clear(&mut self) {
+        let () = Self::_SHAPE_CHECK;
+        let len = self.len();
+        if len > 0 {
+            if T::HAS_DYNAMIC_BODY {
+                // Each element may have spilled body chunks; delegate per-element.
+                for i in 0..len {
+                    self.clear_at(i);
+                }
+            } else if T::PACKED_BYTES < 32 {
+                // Clear every body slot the array touched: ceil(len / per_slot).
+                let per = Self::per_slot();
+                let total_slots = len.div_ceil(per);
+                let mut key = *self.body_base();
+                for _ in 0..total_slots {
+                    storage_set_32(&self.host, &key, &[0u8; 32]);
+                    inc_slot(&mut key);
+                }
+            } else {
+                // Single-slot full-word or multi-slot static: clear
+                // `len * STORAGE_SLOTS` consecutive slots. `checked_mul` so a
+                // corrupted length can't silently wrap and clear an
+                // unintended slot range — physically unreachable for
+                // honest writers, defensive against external corruption.
+                let total_slots = len
+                    .checked_mul(T::STORAGE_SLOTS as u64)
+                    .expect("StorageVec::clear: total-slots overflow");
+                let mut key = *self.body_base();
+                for _ in 0..total_slots {
+                    storage_set_32(&self.host, &key, &[0u8; 32]);
+                    inc_slot(&mut key);
+                }
+            }
+        }
+        storage_set_32(&self.host, self.root.as_bytes(), &[0u8; 32]);
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<T> {
+    /// One root slot for the length header. Elements live at
+    /// `keccak256(slot) + i` and consume no additional contract-layout slots.
+    const SLOTS: u64 = 1;
+
+    /// Never packs with neighbours — the length header always claims a full
+    /// slot. Matches `Mapping`'s `PACKED_BYTES = 32` and solc's storage
+    /// layout for dynamic arrays.
+    const PACKED_BYTES: usize = 32;
+
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
+        debug_assert_eq!(
+            offset, 0,
+            "StorageVec<T> always full-slot; offset must be 0"
+        );
+        // Full-slot component: the length header always owns its slot and
+        // elements live at derived keys, so `offset` / `alone` are irrelevant.
+        let _ = (offset, alone);
+        // SAFETY: macro-only safe entry point. See `Lazy::new_at` for the
+        // full justification — bypass would require direct user calls to
+        // `StorageVec::new`, which is what the `unsafe` keyword marks.
+        // Turbofish disambiguates from the nested `StorageVec<StorageVec<T>>::new`.
+        unsafe { StorageVec::<T>::new(key, host) }
+    }
+
+    /// Remove every element and reset the length header to zero — solc's
+    /// `delete arr`. O(n) in the element count; see [`StorageVec::clear`].
+    fn clear(&mut self) {
+        // Inherent `clear` (resolves before the trait method of the same name).
+        StorageVec::<T>::clear(self)
+    }
+}
+
+/// `StorageVec<T>` is Solidity's `T[]`; in layout JSON it's named `<T>[]`.
+/// Recursing on the element name lets `StorageVec<StorageVec<U256>>` resolve
+/// to `uint256[][]` and `Mapping<K, StorageVec<T>>` (whose `name()` calls
+/// `V::name()`) nest to `mapping(K,T[])`.
+#[cfg(feature = "abi-gen")]
+impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for StorageVec<T> {
+    fn name() -> alloc::string::String {
+        alloc::format!("{}[]", <T as pvm_contract_types::StorageTypeName>::name())
+    }
+}
+
+/// `StorageVec<T>` as a layout-emit leaf — a single `T[]` entry. The length
+/// header always claims a fresh slot (`PACKED_BYTES == 32`), so `offset` is
+/// always `0`; it is threaded through for signature uniformity. The generic
+/// `T` covers the nested `StorageVec<StorageVec<U256>>` shape too, since the
+/// inner `StorageVec<U256>` itself implements `StorageTypeName` above.
+#[cfg(feature = "abi-gen")]
+impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T> {
+    fn emit_entries(
+        base: u64,
+        offset: u8,
+        name_prefix: &str,
+        out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+    ) {
+        out.push(pvm_contract_types::StorageLayoutEntry {
+            label: String::from(name_prefix),
+            slot: alloc::format!("{}", base),
+            offset,
+            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+        });
+    }
+}
+
+/// By-value iterator over a [`StorageVec<T>`], produced by
+/// [`StorageVec::iter`].
+///
+/// Captures the length at construction and yields elements `0..len` by
+/// reading each directly (no per-element bounds re-check). Holds an
+/// immutable borrow of the vec, so it composes with `view` methods.
+pub struct StorageVecIter<'a, T> {
+    vec: &'a StorageVec<T>,
+    pos: u64,
+    len: u64,
+}
+
+impl<T: StorageEncode + StorageDecode> Iterator for StorageVecIter<'_, T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        if self.pos >= self.len {
+            return None;
+        }
+        let value = self.vec.read_at(self.pos);
+        self.pos += 1;
+        Some(value)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.len - self.pos) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> DoubleEndedIterator for StorageVecIter<'_, T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.pos >= self.len {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.vec.read_at(self.len))
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> ExactSizeIterator for StorageVecIter<'_, T> {}
+
+// ---------------------------------------------------------------------------
+// StorageVec<StorageVec<T>> — `T[][]` in Solidity.
+// ---------------------------------------------------------------------------
+
+/// Solidity's `T[][]` lays out the outer length at the parent slot, each
+/// inner array's "root" (length slot) at `keccak256(parent_root) + i`, and
+/// then the inner body at `keccak256(inner_root) + j`.
+///
+/// `StorageVec<T>` is a handle (not a `StorageEncode` value), so the
+/// generic `StorageVec<T>::new` won't construct a `StorageVec<StorageVec<T>>`
+/// — its bound requires the inner type to be a value. This block provides
+/// a dedicated `new` constructor plus structural accessors (`len`, `get`, `entry`, `clear`).
+///
+/// **Handle-not-value constraint:** an inner `StorageVec` cannot be
+/// materialized in memory by value, so the API hands out reference handles
+/// ([`Ref`] / [`RefMut`]) rather than the inner vec itself:
+/// * `get`, `try_get`, `first`, `last`, `iter` return `Ref<'_, StorageVec<T>>`.
+/// * [`grow`](Self::grow) appends an empty inner array and returns a `RefMut`
+///   handle to populate it.
+/// * [`erase_last`](Self::erase_last) removes the last inner array and returns
+///   `bool` (whether one was removed) — the inner vec is destroyed, not returned.
+impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
+    /// Construct a nested storage vec rooted at `root`.
+    ///
+    /// This is the `StorageVec<StorageVec<T>>` counterpart to the flat
+    /// [`StorageVec::new`]; it lives on a separate impl because the inner
+    /// `StorageVec<T>` is a handle, not a `StorageEncode` value, so the flat
+    /// `new`'s `T: StorageEncode + StorageDecode` bound excludes this shape.
+    ///
+    /// # Safety
+    /// Same safety contract as [`StorageVec::new`]. Direct construction
+    /// outside macro-generated code lets a `&self` (view) method reconstruct
+    /// a writable handle and bypass the borrow-check view gate.
+    pub unsafe fn new(root: StorageKey, host: Host) -> Self {
+        StorageVec {
+            root,
+            base: core::cell::OnceCell::new(),
+            host,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Number of inner arrays appended.
+    pub fn len(&self) -> u64 {
+        read_len_u64(&self.host, self.root.as_bytes())
+    }
+
+    /// `true` if no inner arrays have been appended.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Read-only view of the inner array at index `i`. The returned [`Ref`]
+    /// only exposes `&self` methods on `StorageVec<T>`.
+    ///
+    /// # Panics
+    ///
+    /// Panics (reverts) if `i >= len()`, consistent with flat
+    /// [`StorageVec::get`]. As there, the revert is a plain trap rather than
+    /// solc's ABI-encoded `Panic(0x32)`.
+    pub fn get(&self, i: u64) -> Ref<'_, StorageVec<T>> {
+        assert!(i < self.len(), "StorageVec::get: index out of bounds");
+        // SAFETY: the inner handle is immediately wrapped in `Ref<'_, _>`,
+        // which forwards only `&self` methods. The parent `&self` borrow
+        // gates mutation: `grow`/`erase_last`/`set` require `&mut self` and
+        // are unreachable through a `Ref`.
+        Ref::new(self.inner_handle(i))
+    }
+
+    /// Read-only view of the inner array at `index`, returning `None` if out of bounds.
+    pub fn try_get(&self, i: u64) -> Option<Ref<'_, StorageVec<T>>> {
+        if i >= self.len() {
+            return None;
+        }
+        // SAFETY: see `get` — read-only `Ref` gates mutation.
+        Some(Ref::new(self.inner_handle(i)))
+    }
+
+    /// Read-only view of the first inner array, or `None` if empty.
+    pub fn first(&self) -> Option<Ref<'_, StorageVec<T>>> {
+        self.try_get(0)
+    }
+
+    /// Read-only view of the last inner array, or `None` if empty.
+    pub fn last(&self) -> Option<Ref<'_, StorageVec<T>>> {
+        let len = self.len();
+        if len == 0 {
+            None
+        } else {
+            self.try_get(len - 1)
+        }
+    }
+
+    /// Returns an iterator over read-only views of the inner arrays.
+    pub fn iter(&self) -> NestedStorageVecIter<'_, T> {
+        NestedStorageVecIter {
+            vec: self,
+            pos: 0,
+            len: self.len(),
+        }
+    }
+
+    /// Mutable handle to the inner array at index `i`. Permits the full
+    /// mutating API on `StorageVec<T>` (`push`, `pop`, `set`, `clear`).
+    ///
+    /// # Panics
+    ///
+    /// Panics (reverts) if `i >= len()`. Append a new inner first via
+    /// [`grow`](Self::grow). As with flat [`StorageVec::set`], the revert is
+    /// a plain trap rather than solc's ABI-encoded `Panic(0x32)`.
+    pub fn entry(&mut self, i: u64) -> RefMut<'_, StorageVec<T>> {
+        assert!(i < self.len(), "StorageVec::entry: index out of bounds");
+        // SAFETY: `&mut self` proves mutating access through the parent
+        // borrow; the inner handle just forwards that capability.
+        RefMut::new(self.inner_handle(i))
+    }
+
+    /// Append a new empty inner array and return a [`RefMut`] handle to it,
+    /// ready to be populated in one step. This is the nested analogue of flat
+    /// [`StorageVec::push`]: because an inner vec cannot be passed by value,
+    /// you grow the outer and write through the returned handle.
+    ///
+    /// ```ignore
+    /// let mut row = matrix.grow();
+    /// row.push(&a);
+    /// row.push(&b);
+    /// ```
+    ///
+    /// # Panics
+    /// Panics if the outer length would overflow `u64::MAX`.
+    pub fn grow(&mut self) -> RefMut<'_, StorageVec<T>> {
+        let len = self.len();
+        let new_len = len
+            .checked_add(1)
+            .expect("StorageVec::grow: length overflow");
+        write_len_u64(&self.host, self.root.as_bytes(), new_len);
+        // SAFETY: `&mut self` proves mutating access through the parent
+        // borrow; the freshly appended inner array is exclusively ours.
+        RefMut::new(self.inner_handle(len))
+    }
+
+    /// Remove the last inner array, recursively clearing its storage.
+    ///
+    /// Matches solc's `T[][].pop()`, which destroys the popped inner array
+    /// (its length slot and every element slot are zeroed, allowing the
+    /// SSTORE-to-zero gas refund). Returns `true` if an inner array was
+    /// removed, `false` if the outer was already empty.
+    ///
+    /// Note: Unlike the flat [`StorageVec::pop`], this method does not return
+    /// the removed element by value (an inner `StorageVec` cannot be materialized
+    /// in memory). It is named `erase_last` rather than `pop` to clarify this distinction.
+    ///
+    /// **O(inner_len) gas** — every element of the popped inner is cleared.
+    pub fn erase_last(&mut self) -> bool {
+        let len = self.len();
+        if len == 0 {
+            return false;
+        }
+        let new_len = len - 1;
+        // SAFETY: short-lived handle used purely to dispatch `clear()` over
+        // the inner array's body slots. Same justification as `entry`: the
+        // parent `&mut self` borrow gates the operation.
+        let mut inner = self.inner_handle(new_len);
+        inner.clear();
+        write_len_u64(&self.host, self.root.as_bytes(), new_len);
+        true
+    }
+
+    /// Remove every inner array and reset outer length to zero.
+    ///
+    /// Matches solc's `delete matrix` on a `T[][]`: recursively clears each
+    /// inner array's length slot and body slots, then zeroes the outer
+    /// length slot.
+    ///
+    /// **O(total elements) gas** — every element across every inner is
+    /// cleared. For large matrices, drain via repeated `erase_last()` across
+    /// multiple transactions instead.
+    pub fn clear(&mut self) {
+        let len = self.len();
+        for i in 0..len {
+            // SAFETY: see `erase_last` — short-lived handle, parent borrow
+            // gates the mutation.
+            let mut inner = self.inner_handle(i);
+            inner.clear();
+        }
+        storage_set_32(&self.host, self.root.as_bytes(), &[0u8; 32]);
+    }
+
+    fn inner_root(&self, i: u64) -> [u8; 32] {
+        let body = self
+            .base
+            .get_or_init(|| storage_derive_body_base(&self.host, self.root.as_bytes()));
+        let mut key = *body;
+        inc_slot_by(&mut key, i);
+        key
+    }
+
+    /// Raw (unguarded) handle to the inner array at index `i`. Callers wrap
+    /// it in [`Ref`] / [`RefMut`] (per their borrow) or use it directly for
+    /// internal mutation; the bounds check, if any, is the caller's
+    /// responsibility.
+    fn inner_handle(&self, i: u64) -> StorageVec<T> {
+        let inner_root = self.inner_root(i);
+        // SAFETY: every caller either gates the resulting handle behind a
+        // `Ref`/`RefMut` matching the parent borrow, or (for `clear` /
+        // `erase_last`) holds `&mut self`, so the view gate is preserved.
+        unsafe { StorageVec::<T>::new(StorageKey(inner_root), self.host.clone()) }
+    }
+}
+
+/// `StorageComponent` for the nested case so `#[storage]` / `#[contract]`
+/// can place a `StorageVec<StorageVec<T>>` field on a contract struct
+/// without users having to opt into `unsafe`. Mirrors the flat
+/// `StorageVec<T>` impl (one root slot, full-slot, never packs).
+impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<StorageVec<T>> {
+    const SLOTS: u64 = 1;
+    const PACKED_BYTES: usize = 32;
+
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
+        debug_assert_eq!(
+            offset, 0,
+            "StorageVec<StorageVec<T>> always full-slot; offset must be 0"
+        );
+        // Full-slot component: `offset` / `alone` are irrelevant.
+        let _ = (offset, alone);
+        // SAFETY: macro-only safe entry point. Same justification as the flat
+        // `StorageVec<T>` `new_at` — bypass would require direct user calls
+        // to `StorageVec::<StorageVec<T>>::new`, which is marked `unsafe`.
+        // Turbofish disambiguates from the flat `StorageVec<T>::new`.
+        unsafe { StorageVec::<StorageVec<T>>::new(key, host) }
+    }
+
+    /// Recursively clear every inner array and reset the outer length —
+    /// solc's `delete matrix`. See [`StorageVec::clear`] (nested impl).
+    fn clear(&mut self) {
+        // Inherent `clear` (resolves before the trait method of the same name).
+        StorageVec::<StorageVec<T>>::clear(self)
+    }
+}
+
+/// Read-only iterator over a [`StorageVec<StorageVec<T>>`], produced by its
+/// [`iter`](StorageVec::iter) method.
+///
+/// Captures the outer length at construction and yields each inner array as a
+/// [`Ref<'_, StorageVec<T>>`](Ref). Holds an immutable borrow of the outer
+/// vec, so it composes with `view` methods; the yielded `Ref`s own their inner
+/// handle and forward only `&self` methods.
+pub struct NestedStorageVecIter<'a, T> {
+    vec: &'a StorageVec<StorageVec<T>>,
+    pos: u64,
+    len: u64,
+}
+
+impl<'a, T: StorageEncode + StorageDecode> Iterator for NestedStorageVecIter<'a, T> {
+    type Item = Ref<'a, StorageVec<T>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.len {
+            return None;
+        }
+        // SAFETY: read-only `Ref` gates mutation; the borrow of the outer vec
+        // (`'a`) outlives each yielded handle.
+        let handle = self.vec.inner_handle(self.pos);
+        self.pos += 1;
+        Some(Ref::new(handle))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.len - self.pos) as usize;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a, T: StorageEncode + StorageDecode> DoubleEndedIterator for NestedStorageVecIter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.len {
+            return None;
+        }
+        self.len -= 1;
+        Some(Ref::new(self.vec.inner_handle(self.len)))
+    }
+}
+
+impl<T: StorageEncode + StorageDecode> ExactSizeIterator for NestedStorageVecIter<'_, T> {}
 
 // ---------------------------------------------------------------------------
 // Tests

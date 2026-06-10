@@ -636,8 +636,8 @@ impl HostApi for PolkaVmHost {
 // Concrete `Host` wrapper — cfg-gated internals, uniform surface
 // ---------------------------------------------------------------------------
 //
-// Mirrors Stylus's `VM`: contracts always hold a concrete `Host`; the field
-// type swaps under cfg. On riscv64, `Host { inner: PolkaVmHost }` is zero-sized
+// Contracts always hold a concrete `Host`; the field type swaps under cfg.
+// On riscv64, `Host { inner: PolkaVmHost }` is zero-sized
 // and method calls inline to `HostFnImpl::*` — byte-equivalent to the previous
 // `<H: HostApi>` monomorphization. On host targets, `Host { inner: Rc<dyn
 // HostApi> }` enables test harnesses to inject a shared `MockHost` without

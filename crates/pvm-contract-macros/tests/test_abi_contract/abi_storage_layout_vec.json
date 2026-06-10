@@ -34,40 +34,40 @@
   "storageLayout": {
     "storage": [
       {
-        "label": "erc20.total_supply",
+        "label": "numbers",
         "offset": 0,
         "slot": "0",
-        "type": "uint256"
+        "type": "uint256[]"
       },
       {
-        "label": "erc20.balances",
+        "label": "accounts",
         "offset": 0,
         "slot": "1",
-        "type": "mapping(address,uint256)"
+        "type": "address[]"
       },
       {
-        "label": "erc20.allowances",
+        "label": "matrix",
         "offset": 0,
         "slot": "2",
-        "type": "mapping(address,mapping(address,uint256))"
+        "type": "uint256[][]"
       },
       {
-        "label": "metadata.name",
+        "label": "buckets",
         "offset": 0,
         "slot": "3",
-        "type": "string"
+        "type": "mapping(address,uint256[])"
       },
       {
-        "label": "metadata.symbol",
+        "label": "pool.owner",
         "offset": 0,
         "slot": "4",
-        "type": "string"
+        "type": "address"
       },
       {
-        "label": "paused",
+        "label": "pool.entries",
         "offset": 0,
         "slot": "5",
-        "type": "bool"
+        "type": "uint256[]"
       }
     ]
   }

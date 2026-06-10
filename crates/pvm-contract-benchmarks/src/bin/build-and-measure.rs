@@ -8,7 +8,6 @@ enum Variant {
     NoAlloc,
     WithAlloc,
     BuilderDsl,
-    Storage,
 }
 
 impl Variant {
@@ -17,13 +16,12 @@ impl Variant {
             Variant::NoAlloc => "no-alloc",
             Variant::WithAlloc => "with-alloc",
             Variant::BuilderDsl => "builder-dsl",
-            Variant::Storage => "storage",
         }
     }
 
     fn cargo_toml(&self, contract: &str, base_path: &Path) -> String {
         match self {
-            Variant::NoAlloc | Variant::Storage => cargo_toml_no_alloc(contract, base_path),
+            Variant::NoAlloc => cargo_toml_no_alloc(contract, base_path),
             Variant::WithAlloc => cargo_toml_with_alloc(contract, base_path),
             Variant::BuilderDsl => cargo_toml_builder_dsl(contract, base_path),
         }
@@ -154,7 +152,6 @@ fn get_source_file(contract: &str, variant: Variant, base_path: &Path) -> Result
     let source_file = match variant {
         Variant::NoAlloc => format!("{contract}_no_alloc.rs"),
         Variant::WithAlloc => format!("{contract}_with_alloc.rs"),
-        Variant::Storage => format!("{contract}_storage.rs"),
         Variant::BuilderDsl => unreachable!(),
     };
 
@@ -251,11 +248,21 @@ fn build_variant(
 }
 
 fn variants_for_contract(contract: &str) -> Vec<Variant> {
-    let mut variants = vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl];
-    if contract == "mytoken" {
-        variants.push(Variant::Storage);
+    // Storage-focused contracts (typed-helper API surface). Each gets both
+    // no-alloc and with-alloc variants so the bench shows how adding a
+    // runtime allocator interacts with typed-storage code generation. No
+    // builder-DSL variant — these patterns ride on the `#[contract]` macro.
+    //   - `mytoken_storage`: ERC20-style contract using `Lazy<U256>` +
+    //     `Mapping<Address, U256>` typed storage helpers.
+    //   - `amm_reserves`: Uniswap V2-style packed pool reserves
+    //     (`Lazy<u128>` × 2 landing in one slot). Exercises the macro's
+    //     auto-numbered slot walker for sub-word siblings.
+    //   - `allowlist`: address allowlist backed by `StorageVec<Address>`
+    //     (push/pop/swap-remove/linear scan).
+    if contract == "mytoken_storage" || contract == "amm_reserves" || contract == "allowlist" {
+        return vec![Variant::NoAlloc, Variant::WithAlloc];
     }
-    variants
+    vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl]
 }
 
 fn main() -> Result<()> {
@@ -270,7 +277,14 @@ fn main() -> Result<()> {
     let artifacts_dir = PathBuf::from("target/benchmark-artifacts");
     fs::create_dir_all(&artifacts_dir).context("Failed to create artifacts directory")?;
 
-    let contracts = vec!["fibonacci", "mytoken", "multi"];
+    let contracts = vec![
+        "fibonacci",
+        "mytoken",
+        "mytoken_storage",
+        "multi",
+        "amm_reserves",
+        "allowlist",
+    ];
     let profiles = vec!["debug", "release"];
 
     let total: usize = contracts

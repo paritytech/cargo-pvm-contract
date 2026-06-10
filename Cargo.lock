@@ -1240,6 +1240,7 @@ dependencies = [
  "polkavm-linker",
  "pvm-contract-types",
  "serde_json",
+ "syn 2.0.117",
  "tempfile",
  "toml_edit 0.22.27",
 ]
