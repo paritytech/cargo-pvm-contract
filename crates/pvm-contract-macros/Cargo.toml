@@ -12,6 +12,11 @@ proc-macro = true
 [features]
 default = []
 abi-gen = []
+# Differential storage-layout tests that shell out to `solc --standard-json`
+# and assert our emitted layout matches solc's. Requires `solc` on PATH; gated
+# so the default `cargo test` stays solc-free. Implies `abi-gen` because the
+# tests call the macro-emitted `__storage_layout_json()` accessor.
+solc-tests = ["abi-gen"]
 
 [dependencies]
 proc-macro2 = "1.0"

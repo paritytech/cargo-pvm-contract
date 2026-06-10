@@ -283,7 +283,7 @@ mod tests {
                     label: "balances".into(),
                     slot: "1".into(),
                     offset: 0,
-                    ty: "mapping(address,uint256)".into(),
+                    ty: "mapping(address => uint256)".into(),
                 },
             ],
         };
@@ -291,7 +291,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"storage":[{"label":"total_supply","slot":"0","offset":0,"type":"uint256"},{"label":"balances","slot":"1","offset":0,"type":"mapping(address,uint256)"}]}"#
+            r#"{"storage":[{"label":"total_supply","slot":"0","offset":0,"type":"uint256"},{"label":"balances","slot":"1","offset":0,"type":"mapping(address => uint256)"}]}"#
         );
 
         // Roundtrip.
@@ -308,7 +308,7 @@ mod tests {
         let legacy = r#"{
             "storage": [
                 {"label": "total_supply", "slot": "0", "type": "uint256"},
-                {"label": "balances", "slot": "1", "type": "mapping(address,uint256)"}
+                {"label": "balances", "slot": "1", "type": "mapping(address => uint256)"}
             ]
         }"#;
         let parsed: StorageLayout = serde_json::from_str(legacy).unwrap();
