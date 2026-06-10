@@ -114,7 +114,7 @@ fn lazy_multi_slot_writes_consecutive_keys() {
 
     let slot0 = storage_get_32(&host, &base);
     let mut next = base;
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
     let slot1 = storage_get_32(&host, &next);
 
     assert_eq!(slot0[31], 0xAA, "first U256 at base slot: {slot0:?}");
@@ -130,7 +130,7 @@ fn lazy_multi_slot_try_get_some_when_only_second_word_set() {
     let mut second = [0u8; 32];
     second[31] = 0x42;
     let mut next = *key.as_bytes();
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
     storage_set_32(&host, &next, &second);
 
     let lazy = unsafe { Lazy::<(U256, U256)>::new(key, 0, host) };
@@ -156,7 +156,7 @@ fn lazy_multi_slot_clear_removes_all_words() {
 
     let mut next = base;
     assert_eq!(storage_try_get_32(&host, &next), None, "word 0 not cleared");
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
     assert_eq!(storage_try_get_32(&host, &next), None, "word 1 not cleared");
 }
 
@@ -167,7 +167,7 @@ fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
     let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
     let host = lazy.host.clone();
     let mut next = *lazy.key.as_bytes();
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
 
     lazy.set(&(U256::from(5u64), U256::from(5u64)));
     lazy.set(&(U256::from(5u64), U256::ZERO));
@@ -253,7 +253,7 @@ fn mapping_multi_slot_remove_clears_all_words() {
 
     let mut k = derived;
     assert_eq!(storage_try_get_32(&host, &k), None, "word 0 not removed");
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     assert_eq!(storage_try_get_32(&host, &k), None, "word 1 not removed");
     assert_eq!(m.try_get(&addr), None);
 }
@@ -266,7 +266,7 @@ fn mapping_multi_slot_overwrite_smaller_clears_stale_word() {
     let host = m.host.clone();
     let addr = Address([0xEF; 20]);
     let mut next = *m.slot_of(&addr).as_bytes();
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
 
     m.insert(&addr, &(U256::from(1u64), U256::from(2u64)));
     m.insert(&addr, &(U256::from(1u64), U256::ZERO));
@@ -426,7 +426,7 @@ fn lazy_string_overwrite_smaller() {
             None,
             "stale body chunk not cleared"
         );
-        inc_slot(&mut body_slot);
+        inc_be_32(&mut body_slot);
     }
 }
 
@@ -612,7 +612,7 @@ fn lazy_string_long_spill_layout() {
     let chunk0 = storage_get_32(&host, &body_slot);
     assert_eq!(&chunk0[..32], &s.as_bytes()[..32]);
 
-    inc_slot(&mut body_slot);
+    inc_be_32(&mut body_slot);
     let chunk1 = storage_get_32(&host, &body_slot);
     assert_eq!(&chunk1[..8], &s.as_bytes()[32..40]);
     assert!(chunk1[8..].iter().all(|&b| b == 0), "trailing chunk pad");
@@ -654,7 +654,7 @@ fn lazy_string_shrink_long_to_short_clears_chunks() {
             None,
             "body chunk {chunk_idx} not cleared after shrink"
         );
-        inc_slot(&mut body_slot);
+        inc_be_32(&mut body_slot);
     }
 }
 
@@ -679,7 +679,7 @@ fn lazy_string_clear_after_long_deletes_chunks() {
             None,
             "body chunk {chunk_idx} survived clear()"
         );
-        inc_slot(&mut body_slot);
+        inc_be_32(&mut body_slot);
     }
     assert_eq!(lazy.try_get(), None);
     assert_eq!(lazy.get(), "");
@@ -2004,7 +2004,7 @@ fn lazy_string_native_clear_removes_header_and_body() {
     let mut body = dynamic_data_root(&host, key.as_bytes());
     for _ in 0..3 {
         assert_eq!(storage_try_get_32(&host, &body), None);
-        inc_slot(&mut body);
+        inc_be_32(&mut body);
     }
 }
 
@@ -2201,7 +2201,7 @@ fn storage_vec_clear_resets_everything() {
     let mut k = body;
     for _ in 0..3 {
         assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
-        inc_slot(&mut k);
+        inc_be_32(&mut k);
     }
 }
 
@@ -2252,10 +2252,10 @@ fn storage_vec_layout_matches_solidity_uint256_array() {
     let e0 = storage_get_32(&host, &body);
     assert_eq!(e0[31], 0xAA);
     let mut k = body;
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e1 = storage_get_32(&host, &k);
     assert_eq!(e1[31], 0xBB);
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e2 = storage_get_32(&host, &k);
     assert_eq!(e2[31], 0xCC);
 }
@@ -2352,7 +2352,7 @@ fn storage_vec_subword_u32_layout_matches_solc() {
 
     // Slot 1 of body holds elements 8..10.
     let mut s1_key = body;
-    inc_slot(&mut s1_key);
+    inc_be_32(&mut s1_key);
     let s1 = storage_get_32(&host, &s1_key);
     // Element 8 lives at within=0 (bytes 28..32).
     assert_eq!(
@@ -2407,7 +2407,7 @@ fn storage_vec_subword_pop_clears_slot_when_freeing_first_in_slot() {
     }
     let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
     let mut slot1_key = body;
-    inc_slot(&mut slot1_key);
+    inc_be_32(&mut slot1_key);
     // Before pop: slot 1 has element 8 at bytes 28..32.
     let before = storage_get_32(&host, &slot1_key);
     assert_eq!(
@@ -2442,7 +2442,7 @@ fn storage_vec_subword_clear_resets_all_body_slots() {
     let mut key = body;
     for _ in 0..3 {
         assert_eq!(storage_get_32(&host, &key), [0u8; 32]);
-        inc_slot(&mut key);
+        inc_be_32(&mut key);
     }
 }
 
@@ -2489,16 +2489,16 @@ fn storage_vec_multislot_layout_uses_stride() {
     // Element 0 occupies slots body+0, body+1.
     let e0_s0 = storage_get_32(&host, &body);
     let mut k = body;
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e0_s1 = storage_get_32(&host, &k);
     // Tuple `(a, b)` encoding: a at slot 0, b at slot 1 (both right-aligned U256s).
     assert_eq!(U256::from_be_bytes(e0_s0), U256::from(0x1111u64));
     assert_eq!(U256::from_be_bytes(e0_s1), U256::from(0x2222u64));
 
     // Element 1 occupies slots body+2, body+3.
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e1_s0 = storage_get_32(&host, &k);
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e1_s1 = storage_get_32(&host, &k);
     assert_eq!(U256::from_be_bytes(e1_s0), U256::from(0x3333u64));
     assert_eq!(U256::from_be_bytes(e1_s1), U256::from(0x4444u64));
@@ -2529,7 +2529,7 @@ fn storage_vec_multislot_pop_clears_all_slots() {
     let mut k = body;
     inc_slot_by(&mut k, 2); // element 1 starts at body + 2
     assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
 }
 
@@ -2572,7 +2572,7 @@ fn storage_vec_fixed_array_u32_boundary_crossing() {
     );
 
     let mut slot1_key = body;
-    inc_slot(&mut slot1_key);
+    inc_be_32(&mut slot1_key);
     let slot1 = storage_get_32(&host, &slot1_key);
     // element 8 right-aligned in slot 1
     assert_eq!(
@@ -2620,7 +2620,7 @@ fn storage_vec_fixed_array_address_no_packing() {
         let slot = storage_get_32(&host, &k);
         assert_eq!(&slot[..12], &[0u8; 12]);
         assert_eq!(&slot[12..32], &expected.0);
-        inc_slot(&mut k);
+        inc_be_32(&mut k);
     }
 }
 
@@ -2653,7 +2653,7 @@ fn storage_vec_fixed_array_pop_clears_all_slots() {
 
     let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
     let mut slot1 = body;
-    inc_slot(&mut slot1);
+    inc_be_32(&mut slot1);
     assert_ne!(storage_get_32(&host, &body), [0u8; 32]);
     assert_ne!(storage_get_32(&host, &slot1), [0u8; 32]);
 
@@ -2787,7 +2787,7 @@ fn storage_vec_dynamic_clear_zeros_spilled_bodies() {
     let mut header_key = body;
     for _ in 0..3 {
         assert_eq!(storage_get_32(&host, &header_key), [0u8; 32]);
-        inc_slot(&mut header_key);
+        inc_be_32(&mut header_key);
     }
 
     // The previously-non-zero spilled chunk of element 0 is now zero.
@@ -2866,7 +2866,7 @@ fn mapping_of_storage_vec_matches_solc_layout() {
     assert_eq!(U256::from_be_bytes(e0), U256::from(0xDEADu64));
 
     let mut e1_key = body_base;
-    inc_slot(&mut e1_key);
+    inc_be_32(&mut e1_key);
     let e1 = storage_get_32(&host, &e1_key);
     assert_eq!(U256::from_be_bytes(e1), U256::from(0xBEEFu64));
 }
@@ -3009,7 +3009,7 @@ fn nested_storage_vec_matches_solc_layout() {
     assert_eq!(U256::from_be_bytes(inner2_e0), U256::from(0x2222u64));
 
     let mut inner2_e1_key = inner2_body;
-    inc_slot(&mut inner2_e1_key);
+    inc_be_32(&mut inner2_e1_key);
     let inner2_e1 = storage_get_32(&host, &inner2_e1_key);
     assert_eq!(U256::from_be_bytes(inner2_e1), U256::from(0x3333u64));
 }
@@ -3145,7 +3145,7 @@ fn nested_storage_vec_erase_last_recursively_clears_inner() {
     assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner1_body), [0u8; 32]);
     let mut inner1_body_next = inner1_body;
-    inc_slot(&mut inner1_body_next);
+    inc_be_32(&mut inner1_body_next);
     assert_eq!(storage_get_32(&host, &inner1_body_next), [0u8; 32]);
 
     // Surviving inner row is untouched.
@@ -3174,7 +3174,7 @@ fn nested_storage_vec_clear_recursively_clears_all_inners() {
     let outer_body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
     let inner0_root = outer_body;
     let mut inner1_root = outer_body;
-    inc_slot(&mut inner1_root);
+    inc_be_32(&mut inner1_root);
     let inner0_body = storage_derive_body_base(&host, &inner0_root);
     let inner1_body = storage_derive_body_base(&host, &inner1_root);
 
@@ -3197,7 +3197,7 @@ fn nested_storage_vec_clear_recursively_clears_all_inners() {
     assert_eq!(storage_get_32(&host, &inner0_root), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner0_body), [0u8; 32]);
     let mut inner0_body_next = inner0_body;
-    inc_slot(&mut inner0_body_next);
+    inc_be_32(&mut inner0_body_next);
     assert_eq!(storage_get_32(&host, &inner0_body_next), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner1_body), [0u8; 32]);

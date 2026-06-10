@@ -598,12 +598,13 @@ fn generate_sol_storage_impls(
         #[doc(hidden)]
         const _: () = {
             assert!(
-                <#name as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS <= 8,
+                <#name as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS
+                    <= ::pvm_contract_sdk::MAX_STATIC_SLOTS,
                 concat!(
                     "`#[derive(SolStorage)]` on `",
                     stringify!(#name),
-                    "`: structs with dynamic fields cannot exceed 8 storage slots ",
-                    "(MAX_STATIC_SLOTS). Reduce the static-field count.",
+                    "`: structs with dynamic fields cannot exceed MAX_STATIC_SLOTS ",
+                    "storage slots. Reduce the static-field count.",
                 ),
             );
         };
@@ -625,7 +626,7 @@ fn generate_sol_storage_impls(
                     {
                         let (s, _) = Self::__STORAGE_LAYOUT.0[#i];
                         let mut sub_key = *base_key;
-                        for _ in 0..s { __pvm_inc_be_32(&mut sub_key); }
+                        for _ in 0..s { ::pvm_contract_sdk::__private::inc_be_32(&mut sub_key); }
                         <#field_ty as ::pvm_contract_sdk::StorageEncode>::write_to_storage(
                             &#field_access, host, &sub_key,
                         );
@@ -635,7 +636,7 @@ fn generate_sol_storage_impls(
                     {
                         let (s, _) = Self::__STORAGE_LAYOUT.0[#i];
                         let mut sub_key = *base_key;
-                        for _ in 0..s { __pvm_inc_be_32(&mut sub_key); }
+                        for _ in 0..s { ::pvm_contract_sdk::__private::inc_be_32(&mut sub_key); }
                         <#field_ty as ::pvm_contract_sdk::StorageEncode>::clear_storage(
                             host, &sub_key,
                         );
@@ -657,7 +658,7 @@ fn generate_sol_storage_impls(
                     {
                         let (s, _) = Self::__STORAGE_LAYOUT.0[#i];
                         let mut sub_key = *base_key;
-                        for _ in 0..s { __pvm_inc_be_32(&mut sub_key); }
+                        for _ in 0..s { ::pvm_contract_sdk::__private::inc_be_32(&mut sub_key); }
                         <#field_ty as ::pvm_contract_sdk::StorageDecode>::read_from_storage(
                             host, &sub_key,
                         )
@@ -711,26 +712,18 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) {
-                    #[inline]
-                    fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
-                        for byte in slot.iter_mut().rev() {
-                            let (next, carry) = byte.overflowing_add(1);
-                            *byte = next;
-                            if !carry { return; }
-                        }
-                    }
-                    use ::pvm_contract_sdk::{HostApi, StorageFlags};
-
                     let dynamic_mask = Self::__STORAGE_LAYOUT.2;
-                    let mut __k = *base_key;
-                    for __i in 0..<Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS {
+                    let __n = <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS;
+                    debug_assert!(__n <= ::pvm_contract_sdk::MAX_STATIC_SLOTS);
+                    let mut __slots = [[0u8; 32]; ::pvm_contract_sdk::MAX_STATIC_SLOTS];
+                    for __i in 0..__n {
                         if dynamic_mask & (1u64 << __i) == 0 {
-                            let mut __buf = [0u8; 32];
-                            Self::__encode_static_slot(self, __i, &mut __buf);
-                            host.set_storage_or_clear(StorageFlags::empty(), &__k, &__buf);
+                            Self::__encode_static_slot(self, __i, &mut __slots[__i]);
                         }
-                        __pvm_inc_be_32(&mut __k);
                     }
+                    ::pvm_contract_sdk::__private::write_static_slots(
+                        host, base_key, &__slots[..__n], dynamic_mask,
+                    );
                     #(#write_calls)*
                 }
 
@@ -738,24 +731,11 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) {
-                    #[inline]
-                    fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
-                        for byte in slot.iter_mut().rev() {
-                            let (next, carry) = byte.overflowing_add(1);
-                            *byte = next;
-                            if !carry { return; }
-                        }
-                    }
-                    use ::pvm_contract_sdk::{HostApi, StorageFlags};
-
                     let dynamic_mask = Self::__STORAGE_LAYOUT.2;
-                    let mut __k = *base_key;
-                    for __i in 0..<Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS {
-                        if dynamic_mask & (1u64 << __i) == 0 {
-                            host.set_storage_or_clear(StorageFlags::empty(), &__k, &[0u8; 32]);
-                        }
-                        __pvm_inc_be_32(&mut __k);
-                    }
+                    let __n = <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS;
+                    ::pvm_contract_sdk::__private::clear_static_slots(
+                        host, base_key, __n, dynamic_mask,
+                    );
                     #(#clear_calls)*
                 }
             }
@@ -765,27 +745,13 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) -> Self {
-                    #[inline]
-                    fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
-                        for byte in slot.iter_mut().rev() {
-                            let (next, carry) = byte.overflowing_add(1);
-                            *byte = next;
-                            if !carry { return; }
-                        }
-                    }
-                    use ::pvm_contract_sdk::{HostApi, StorageFlags};
-
                     let dynamic_mask = Self::__STORAGE_LAYOUT.2;
-                    let mut __slots = [[0u8; 32]; 8];
-                    let mut __k = *base_key;
                     let __n = <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS;
-                    debug_assert!(__n <= 8);
-                    for __i in 0..__n {
-                        if dynamic_mask & (1u64 << __i) == 0 {
-                            host.get_storage_or_zero(StorageFlags::empty(), &__k, &mut __slots[__i]);
-                        }
-                        __pvm_inc_be_32(&mut __k);
-                    }
+                    debug_assert!(__n <= ::pvm_contract_sdk::MAX_STATIC_SLOTS);
+                    let mut __slots = [[0u8; 32]; ::pvm_contract_sdk::MAX_STATIC_SLOTS];
+                    ::pvm_contract_sdk::__private::load_static_slots(
+                        host, base_key, __n, dynamic_mask, &mut __slots,
+                    );
 
                     #(#read_field_lets)*
 
@@ -796,31 +762,22 @@ fn generate_sol_storage_impls(
                     host: &::pvm_contract_sdk::Host,
                     base_key: &[u8; 32],
                 ) -> Option<Self> {
-                    #[inline]
-                    fn __pvm_inc_be_32(slot: &mut [u8; 32]) {
-                        for byte in slot.iter_mut().rev() {
-                            let (next, carry) = byte.overflowing_add(1);
-                            *byte = next;
-                            if !carry { return; }
-                        }
-                    }
-                    use ::pvm_contract_sdk::{HostApi, StorageFlags};
-
-                    let mut __any = false;
-                    let mut __k = *base_key;
+                    let dynamic_mask = Self::__STORAGE_LAYOUT.2;
                     let __n = <Self as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS;
-                    for _ in 0..__n {
-                        let mut __buf = [0u8; 32];
-                        host.get_storage_or_zero(StorageFlags::empty(), &__k, &mut __buf);
-                        if __buf != [0u8; 32] {
-                            __any = true;
-                        }
-                        __pvm_inc_be_32(&mut __k);
-                    }
+                    debug_assert!(__n <= ::pvm_contract_sdk::MAX_STATIC_SLOTS);
+                    let mut __slots = [[0u8; 32]; ::pvm_contract_sdk::MAX_STATIC_SLOTS];
+                    // Single SLOAD pass: presence check across all slots +
+                    // static-slot load reused by `#read_field_lets` below.
+                    let __any = ::pvm_contract_sdk::__private::try_load_static_slots(
+                        host, base_key, __n, dynamic_mask, &mut __slots,
+                    );
                     if !__any {
                         return None;
                     }
-                    Some(<Self as ::pvm_contract_sdk::StorageDecode>::read_from_storage(host, base_key))
+
+                    #(#read_field_lets)*
+
+                    Some(#read_construct)
                 }
             }
 

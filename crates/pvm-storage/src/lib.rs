@@ -89,6 +89,7 @@ extern crate alloc;
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
+pub(crate) use pvm_contract_types::storage_codec::inc_be_32;
 use pvm_contract_types::{Host, HostApi, SolEncode, StorageDecode, StorageEncode, StorageFlags};
 
 // ---------------------------------------------------------------------------
@@ -158,38 +159,14 @@ fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
     output
 }
 
-/// Increment a 32-byte big-endian integer in-place. Used to walk consecutive
-/// slots in `clear_n_slots` and `StorageVec`'s bulk clear; value codecs
-/// delegate their own slot-walking to the per-type `write_to_storage` /
-/// `read_from_storage` impls in `pvm_contract_types::storage_codec`.
-pub(crate) fn inc_slot(slot: &mut [u8; 32]) {
-    for byte in slot.iter_mut().rev() {
-        let (next, carry) = byte.overflowing_add(1);
-        *byte = next;
-        if !carry {
-            return;
-        }
-    }
-}
-
-/// Maximum number of 32-byte slots a single static `Lazy<T>` / `Mapping<K, V>`
-/// value can occupy. 8 slots = 256 bytes is enough for typical record types
-/// (e.g. `(Address, U256, U256)`) without allocating heap or requiring
-/// `feature(generic_const_exprs)` to size the stack buffer by
-/// `T::STORAGE_SLOTS`.
-///
-/// Increase this if a contract needs larger inline static values, but never
-/// raise it beyond `pallet-revive`'s `STORAGE_BYTES` limit (currently 416 bytes
-/// = 13 slots) — that's the hard cap the runtime enforces per storage value,
-/// so any larger buffer here would fail at host-call time on chain.
-pub const MAX_STATIC_SLOTS: usize = 8;
+pub use pvm_contract_types::MAX_STATIC_SLOTS;
 
 /// Clear `n` consecutive slots starting at `key`.
 fn clear_n_slots(host: &Host, key: &[u8; 32], n: usize) {
     let mut k = *key;
     for _ in 0..n {
         host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
-        inc_slot(&mut k);
+        inc_be_32(&mut k);
     }
 }
 // Body-base derivation for a dynamic array (`StorageVec<T>`):
@@ -205,7 +182,7 @@ fn storage_derive_body_base(host: &Host, slot_key: &[u8; 32]) -> [u8; 32] {
 
 /// Add `n` to a 32-byte big-endian integer in-place, propagating carries
 /// up through all 32 bytes. Used by `StorageVec` to address element `i`
-/// at `body_base + i` without iterating `inc_slot` `i` times.
+/// at `body_base + i` without iterating `inc_be_32` `i` times.
 fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
     let mut carry: u64 = n;
     for byte in slot.iter_mut().rev() {
@@ -476,72 +453,11 @@ const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 // StorageComponent: how a typed storage object claims root slots.
 // ---------------------------------------------------------------------------
 
-/// One step in the const-folded contract-field layout walker.
-///
-/// Used by the `#[contract]` and `#[storage]` macros to compute each field's
-/// placement at compile time. The walker carries the chain state as a
-/// `LayoutStep`: the placement of the current field plus the entry conditions
-/// for the next one. See [`layout_step`] for the algorithm.
-#[derive(Copy, Clone)]
-pub struct LayoutStep {
-    /// Slot the current field starts at.
-    pub slot: u64,
-    /// Byte offset within `slot` where the current field begins.
-    pub offset: u8,
-    /// Slot the next field's chain step should start from.
-    pub next_slot: u64,
-    /// Bytes remaining in `next_slot` (32 if `next_slot` is fresh, 0 if
-    /// the current field consumed the slot to its end).
-    pub next_space: u8,
-}
-
-impl LayoutStep {
-    /// Sentinel value used to seed the chain for the first field.
-    pub const FIRST: LayoutStep = LayoutStep {
-        slot: 0,
-        offset: 0,
-        next_slot: 0,
-        next_space: 32,
-    };
-}
-
-/// Compute one step of the contract-field layout walker, given the chain
-/// state from the previous step and this field's `PACKED_BYTES` + `SLOTS`.
-///
-/// Mirrors solc's layout rule: a field starts on the current slot if it has
-/// enough remaining bytes, else advances to the next fresh slot. Multi-slot
-/// composites (`SLOTS > 1`) always claim from the start of a fresh slot and
-/// consume to its end.
-///
-/// This is the SHARED const-fn used by every walker site so the
-/// contract-field chain (`contract.rs`), the `#[storage]` sub-struct chain
-/// (`sol_storage.rs`), and the SolType-derive struct walker (`sol_type.rs`)
-/// agree on layout byte-for-byte.
-pub const fn layout_step(prev: LayoutStep, packed_bytes: usize, slots: u64) -> LayoutStep {
-    let bytes = packed_bytes as u8;
-    // Decide whether the current field fits in `prev.next_slot` or must
-    // advance to a fresh slot.
-    let (slot, space) = if prev.next_space < bytes {
-        (prev.next_slot + 1, 32u8)
-    } else {
-        (prev.next_slot, prev.next_space)
-    };
-    let space_after = space - bytes;
-    let offset = space_after;
-    // Multi-slot composites: this field occupies `slots` consecutive slots
-    // starting at `slot`, consuming the last one to its end.
-    let (next_slot, next_space) = if slots > 1 {
-        (slot + slots - 1, 0u8)
-    } else {
-        (slot, space_after)
-    };
-    LayoutStep {
-        slot,
-        offset,
-        next_slot,
-        next_space,
-    }
-}
+// The layout walker (`LayoutStep` + `layout_step`) lives in `pvm-contract-types`
+// so the tuple `StorageEncode` impls there consume the same algorithm rather
+// than hand-rolling a shadow copy. Re-exported here so existing
+// `pvm_storage::{LayoutStep, layout_step}` paths keep resolving.
+pub use pvm_contract_types::{LayoutStep, layout_step};
 
 /// A typed storage helper that occupies one or more contiguous root slots.
 ///
@@ -1863,7 +1779,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
                 let mut key = *self.body_base();
                 for _ in 0..total_slots {
                     storage_set_32(&self.host, &key, &[0u8; 32]);
-                    inc_slot(&mut key);
+                    inc_be_32(&mut key);
                 }
             } else {
                 // Single-slot full-word or multi-slot static: clear
@@ -1877,7 +1793,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
                 let mut key = *self.body_base();
                 for _ in 0..total_slots {
                     storage_set_32(&self.host, &key, &[0u8; 32]);
-                    inc_slot(&mut key);
+                    inc_be_32(&mut key);
                 }
             }
         }

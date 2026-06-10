@@ -135,8 +135,8 @@ pub use pvm_contract_core::call::{
 // different on-chain layout). `StorageComponent` is the trait typed
 // storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
-    AsStorageKey, LayoutStep, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey, StorageVec,
-    layout_step,
+    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, StorageComponent,
+    StorageKey, StorageVec, layout_step,
 };
 
 #[cfg(feature = "abi-gen")]
