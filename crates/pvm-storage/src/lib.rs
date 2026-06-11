@@ -293,15 +293,7 @@ impl StorageKey {
     #[allow(clippy::should_implement_trait)]
     pub fn add(self, n: u64) -> StorageKey {
         let mut out = self.0;
-        // Add `n` into the low 8 bytes (bytes 24..32) with carry up.
-        let mut carry: u64 = n;
-        let mut i = 31i32;
-        while i >= 0 && carry > 0 {
-            let sum = out[i as usize] as u64 + (carry & 0xff);
-            out[i as usize] = sum as u8;
-            carry = (carry >> 8) + (sum >> 8);
-            i -= 1;
-        }
+        inc_slot_by(&mut out, n);
         StorageKey(out)
     }
 }
