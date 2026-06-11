@@ -170,6 +170,12 @@ pub fn try_load_static_slots(
 /// `Lazy<T>`. Required methods are host-aware — each type owns its own
 /// access pattern (single-slot primitives do one SLOAD; multi-slot tuples
 /// loop; dynamic types like `String` write a header + body chunks).
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be stored in `Lazy<{Self}>` or `Mapping<_, {Self}>`",
+    label = "`{Self}` does not implement `StorageEncode`",
+    note = "add `#[derive(SolStorage)]` to `{Self}` — only types deriving `SolStorage` can be `Lazy<T>` / `Mapping<_, T>` values",
+    note = "if `{Self}` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage"
+)]
 pub trait StorageEncode {
     /// Total number of slots this type occupies when stored at the top of a
     /// layout. Always >= 1.
@@ -256,6 +262,12 @@ pub trait StorageEncode {
 }
 
 /// Top-level storage decoder. Symmetric with [`StorageEncode`].
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` cannot be read from `Lazy<{Self}>` or `Mapping<_, {Self}>`",
+    label = "`{Self}` does not implement `StorageDecode`",
+    note = "add `#[derive(SolStorage)]` to `{Self}` — only types deriving `SolStorage` can be `Lazy<T>` / `Mapping<_, T>` values",
+    note = "if `{Self}` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage"
+)]
 pub trait StorageDecode: StorageEncode + Sized {
     /// Read self from storage at `base_key`. Required.
     ///
