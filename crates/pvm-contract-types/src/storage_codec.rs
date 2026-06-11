@@ -27,8 +27,11 @@
 //!
 //! `StorageEncode` / `StorageDecode` also carry hidden polymorphic dispatch
 //! hooks (`__pack_into_dispatched` / `__unpack_from_dispatched`) used by
-//! `Lazy<T>`'s packed-path. Those hooks panic by default; in-tree packable
-//! impls override them to delegate to `StoragePackable`. Downstream code
+//! `Lazy<T>`'s packed-path. Their defaults are a `const { assert!(PACKED_BYTES
+//! == 32) }` that fails the build for a sub-word type lacking a
+//! `StoragePackable` override (and is inert for full-slot types, whose packed
+//! branch is statically dead); in-tree packable impls override them to
+//! delegate to `StoragePackable`. Downstream code
 //! should impl `StoragePackable` (which compile-checks the operations) and
 //! mirror the delegation pattern in its `StorageEncode` / `StorageDecode`
 //! impls so `Lazy<T>` works.

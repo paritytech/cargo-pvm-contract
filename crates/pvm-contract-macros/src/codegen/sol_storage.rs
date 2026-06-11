@@ -30,24 +30,52 @@
 //!         + <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS;
 //!
 //!     fn new_at(base: StorageKey, offset: u8, alone: bool, host: ::pvm_contract_sdk::Host) -> Self {
-//!         const __OFF_total_supply: u64 = 0;
-//!         const __OFF_balances: u64 =
-//!             __OFF_total_supply + <Lazy<U256> as StorageComponent>::SLOTS;
-//!         const __OFF_allowances: u64 =
-//!             __OFF_balances + <Mapping<Address, U256> as StorageComponent>::SLOTS;
+//!         // Per-field placement chain: each `LayoutStep` is computed by the
+//!         // shared `layout_step` walker from the previous step plus this
+//!         // field's PACKED_BYTES + SLOTS, so sub-word siblings pack solc-style.
+//!         const __pvm_storage_offset_total_supply: ::pvm_contract_sdk::LayoutStep =
+//!             ::pvm_contract_sdk::layout_step(
+//!                 ::pvm_contract_sdk::LayoutStep::FIRST,
+//!                 <Lazy<U256> as StorageComponent>::PACKED_BYTES,
+//!                 <Lazy<U256> as StorageComponent>::SLOTS);
+//!         const __pvm_storage_offset_balances: ::pvm_contract_sdk::LayoutStep =
+//!             ::pvm_contract_sdk::layout_step(
+//!                 __pvm_storage_offset_total_supply,
+//!                 <Mapping<Address, U256> as StorageComponent>::PACKED_BYTES,
+//!                 <Mapping<Address, U256> as StorageComponent>::SLOTS);
+//!         const __pvm_storage_offset_allowances: ::pvm_contract_sdk::LayoutStep =
+//!             ::pvm_contract_sdk::layout_step(
+//!                 __pvm_storage_offset_balances,
+//!                 <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::PACKED_BYTES,
+//!                 <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS);
+//!         // Per-field `alone` flag: true iff no neighbour shares the slot.
+//!         const __pvm_storage_alone_total_supply: bool =
+//!             true && __pvm_storage_offset_total_supply.slot != __pvm_storage_offset_balances.slot;
+//!         const __pvm_storage_alone_balances: bool =
+//!             __pvm_storage_offset_balances.slot != __pvm_storage_offset_total_supply.slot
+//!             && __pvm_storage_offset_balances.slot != __pvm_storage_offset_allowances.slot;
+//!         const __pvm_storage_alone_allowances: bool =
+//!             __pvm_storage_offset_allowances.slot != __pvm_storage_offset_balances.slot && true;
 //!         Erc20 {
 //!             total_supply: <Lazy<U256> as StorageComponent>::new_at(
-//!                 base.add(__OFF_total_supply), 0, true, host.clone()),
+//!                 base.add(__pvm_storage_offset_total_supply.slot),
+//!                 __pvm_storage_offset_total_supply.offset,
+//!                 __pvm_storage_alone_total_supply, host.clone()),
 //!             balances: <_ as StorageComponent>::new_at(
-//!                 base.add(__OFF_balances), 0, true, host.clone()),
+//!                 base.add(__pvm_storage_offset_balances.slot),
+//!                 __pvm_storage_offset_balances.offset,
+//!                 __pvm_storage_alone_balances, host.clone()),
 //!             allowances: <_ as StorageComponent>::new_at(
-//!                 base.add(__OFF_allowances), 0, true, host.clone()),
+//!                 base.add(__pvm_storage_offset_allowances.slot),
+//!                 __pvm_storage_offset_allowances.offset,
+//!                 __pvm_storage_alone_allowances, host.clone()),
 //!         }
 //!         // Every field — including the last — receives `host.clone()`.
 //!         // `Host` is a ZST on riscv64 and a cheap `Rc` clone on host
 //!         // targets, so cloning per-field has no measurable cost.
-//!         // `alone = true` is derived by the macro's layout walker from
-//!         // each field's position (uniquely-keyed slots can't collide).
+//!         // For this all-full-slot Erc20, each field lands on its own slot
+//!         // (0, 1, 2) at offset 0 with `alone = true`; sub-word fields would
+//!         // pack into shared slots with non-zero offsets and `alone = false`.
 //!     }
 //! }
 //! ```

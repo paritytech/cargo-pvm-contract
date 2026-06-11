@@ -3,10 +3,12 @@ use quote::{format_ident, quote};
 
 /// One field that participates in an auto-numbered storage slot chain.
 ///
-/// Used by [`slot_chain_consts`] to emit a sequence of compile-time consts
-/// whose values walk `prev + <PrevTy as StorageComponent>::SLOTS`. The first
-/// const evaluates to `0`; downstream code adds an explicit base (e.g.
-/// `base + #const_ident`) when the chain is relative to a runtime offset.
+/// Used by [`slot_chain_consts`] to emit a chain of `LayoutStep` consts, each
+/// computed by `layout_step` from the previous step plus the field's
+/// `PACKED_BYTES` and `SLOTS`, so sub-word siblings pack solc-style. The first
+/// seeds from `LayoutStep::FIRST`. Callers read `.slot`/`.offset` from each
+/// step (e.g. `base.add(#const_ident.slot)`) to place the field relative to a
+/// runtime base.
 pub(super) struct ChainField<'a> {
     pub name: &'a syn::Ident,
     pub ty: &'a syn::Type,
