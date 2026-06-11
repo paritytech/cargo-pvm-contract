@@ -266,7 +266,7 @@ pub trait StorageEncode {
         const {
             assert!(
                 <Self as StorageEncode>::PACKED_BYTES == 32,
-                "StorageEncode type with PACKED_BYTES < 32 must implement StoragePackable",
+                "StorageEncode type with PACKED_BYTES < 32 must implement StoragePackable AND override `fn __pack_into_dispatched`",
             )
         }
         unreachable!(
@@ -313,7 +313,7 @@ pub trait StorageDecode: StorageEncode + Sized {
         const {
             assert!(
                 <Self as StorageEncode>::PACKED_BYTES == 32,
-                "StorageEncode type with PACKED_BYTES < 32 must implement StoragePackable",
+                "StorageEncode type with PACKED_BYTES < 32 must implement StoragePackable AND override `fn __unpack_from_dispatched`",
             )
         }
         unreachable!(

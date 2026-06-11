@@ -1,4 +1,4 @@
-error[E0080]: evaluation panicked: `#[derive(SolStorage)]` on `TooManySlotsWithDynamic`: structs with dynamic fields cannot exceed MAX_STATIC_SLOTS storage slots. Reduce the static-field count.
+error[E0080]: evaluation panicked: `#[derive(SolStorage)]` on `TooManySlotsWithDynamic`: a storage struct cannot exceed MAX_STATIC_SLOTS storage slots. Reduce the field count.
   --> tests/ui/derive_too_many_slots_with_dynamic.rs:21:19
    |
 21 | #[derive(SolType, SolStorage)]

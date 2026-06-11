@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error trait (`SolError`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -210,9 +210,9 @@ pub trait SolError: Sized {
 }
 ```
 
-- `SolError` — one unified trait, derived with `#[derive(SolError)]` on both error structs and error enums (there is no separate `SolRevert` trait and no `sol_revert_enum!` macro).
+- `SolError` — one unified trait, derived with `#[derive(SolError)]` on both error structs and error enums.
   - On a **struct**: single selector, `encode_to` writes selector + fields, `decode_at` is the inverse.
-  - On an **enum** whose variants each wrap one `SolError` struct: the derive emits `From` conversions and dispatches `encode_to`/`decode_at`/`error_signatures` to the active variant. The enum's own `SELECTOR` is zeroed and `SIGNATURE` empty — the wire selector is the inner error's. Add explicit `RevertString` / `Panic` variants to surface require-style messages or arithmetic panics.
+  - On an **enum** whose variants each wrap one `SolError` struct: the derive emits a `From<Inner>` impl for each variant's inner error type (so `Err(InsufficientBalance { .. }.into())` works), and dispatches `encode_to`/`decode_at`/`error_signatures` to whichever variant the value currently holds. The enum's own `SELECTOR` is zeroed and `SIGNATURE` empty — the wire selector is always the held inner error's. To surface require-style messages or arithmetic panics, add `RevertString` / `Panic` as explicit variants of your enum.
 - `RevertString` — encodes `Error(string)` with truncation for buffer safety.
 - `Panic` — encodes `Panic(uint256)` for overflow/division-by-zero.
 - `EmptyError` — zero-cost uninhabited type for contracts with no error paths.

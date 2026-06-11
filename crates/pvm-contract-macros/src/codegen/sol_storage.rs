@@ -647,8 +647,8 @@ fn generate_sol_storage_impls(
                 concat!(
                     "`#[derive(SolStorage)]` on `",
                     stringify!(#name),
-                    "`: structs with dynamic fields cannot exceed MAX_STATIC_SLOTS ",
-                    "storage slots. Reduce the static-field count.",
+                    "`: a storage struct cannot exceed MAX_STATIC_SLOTS ",
+                    "storage slots. Reduce the field count.",
                 ),
             );
         };
@@ -840,6 +840,11 @@ fn generate_sol_storage_impls(
         // Static struct: universal trait methods delegate to shared helpers;
         // encode_slot + from_slots live on Static* refinement.
         Ok(quote! {
+            // Eager type-check-time slot-count guard, same as the dynamic
+            // branch — fires under `cargo check` instead of only when a trait
+            // method is monomorphized.
+            #slot_count_assert_item
+
             impl #name {
                 #layout_const
             }
