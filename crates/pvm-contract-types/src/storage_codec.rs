@@ -51,6 +51,17 @@
 //! [`clear_storage`]: StorageEncode::clear_storage
 
 use crate::{Address, Host, HostApi, I256, StorageFlags, U256};
+use crate::{LayoutStep, layout_step};
+
+/// `StorageEncode`-family wrapper over [`layout_step`]: reads the field type's
+/// `PACKED_BYTES` + `STORAGE_SLOTS` so call sites pass only the type — not the
+/// two consts separately, not the `as u64` cast, and with no way to mix two
+/// different types' consts. Used by the tuple `StorageEncode` impls and the
+/// `#[derive(SolStorage)]` static-field walker. The trait-agnostic
+/// [`layout_step`] stays the primitive underneath.
+pub const fn layout_step_encode<T: StorageEncode>(prev: LayoutStep) -> LayoutStep {
+    layout_step(prev, T::PACKED_BYTES, T::STORAGE_SLOTS as u64)
+}
 
 /// Increment a 32-byte big-endian integer in-place. Used to walk consecutive
 /// storage slots for multi-slot values.
@@ -1129,11 +1140,7 @@ macro_rules! impl_storage_tuple {
                 const STORAGE_SLOTS: usize = {
                     let mut step = crate::LayoutStep::FIRST;
                     $(
-                        step = crate::layout_step(
-                            step,
-                            <$T as StorageEncode>::PACKED_BYTES,
-                            <$T as StorageEncode>::STORAGE_SLOTS as u64,
-                        );
+                        step = crate::layout_step_encode::<$T>(step);
                     )+
                     step.next_slot as usize + 1
                 };
@@ -1167,11 +1174,7 @@ macro_rules! impl_storage_tuple {
                     *buf = [0u8; 32];
                     let mut step = crate::LayoutStep::FIRST;
                     $(
-                        step = crate::layout_step(
-                            step,
-                            <$T as StorageEncode>::PACKED_BYTES,
-                            <$T as StorageEncode>::STORAGE_SLOTS as u64,
-                        );
+                        step = crate::layout_step_encode::<$T>(step);
                         if step.slot as usize == slot_idx {
                             <$T as StoragePackable>::pack_into(
                                 &self.$idx, buf, step.offset as usize,
@@ -1187,11 +1190,7 @@ macro_rules! impl_storage_tuple {
                     (
                         $(
                             {
-                                step = crate::layout_step(
-                                    step,
-                                    <$T as StorageEncode>::PACKED_BYTES,
-                                    <$T as StorageEncode>::STORAGE_SLOTS as u64,
-                                );
+                                step = crate::layout_step_encode::<$T>(step);
                                 <$T as StoragePackable>::unpack_from(
                                     &slots[step.slot as usize], step.offset as usize,
                                 )

@@ -451,6 +451,15 @@ const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 // `pvm_storage::{LayoutStep, layout_step}` paths keep resolving.
 pub use pvm_contract_types::{LayoutStep, layout_step};
 
+/// `StorageComponent`-family wrapper over [`layout_step`]: reads the component
+/// type's `PACKED_BYTES` + `SLOTS` so call sites (the `#[contract]` /
+/// `#[storage]` field-layout chains) pass only the type. Mirrors
+/// [`pvm_contract_types::layout_step_encode`] for the `StorageEncode` family;
+/// both forward to the one trait-agnostic [`layout_step`] primitive.
+pub const fn layout_step_component<T: StorageComponent>(prev: LayoutStep) -> LayoutStep {
+    layout_step(prev, T::PACKED_BYTES, T::SLOTS)
+}
+
 /// A typed storage helper that occupies one or more contiguous root slots.
 ///
 /// Implementations:

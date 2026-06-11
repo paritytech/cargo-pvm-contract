@@ -3294,7 +3294,7 @@ mod tests {
         // The first auto-numbered field seeds from LayoutStep::FIRST.
         assert!(
             output.contains(
-                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Lazy < U256 > > (:: pvm_contract_sdk :: LayoutStep :: FIRST)"
             ),
             "First auto-numbered field should seed from LayoutStep::FIRST.\n\
              Expanded output:\n{output}"
@@ -3302,14 +3302,14 @@ mod tests {
         // Each subsequent field chains off the previous step via `layout_step`.
         assert!(
             output.contains(
-                "const __pvm_storage_slot_balances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (__pvm_storage_slot_counter ,"
+                "const __pvm_storage_slot_balances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Mapping < Address , U256 > > (__pvm_storage_slot_counter)"
             ),
             "Second field should chain off the first via layout_step.\n\
              Expanded output:\n{output}"
         );
         assert!(
             output.contains(
-                "const __pvm_storage_slot_allowances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (__pvm_storage_slot_balances ,"
+                "const __pvm_storage_slot_allowances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Mapping < Address , Mapping < Address , U256 > > > (__pvm_storage_slot_balances)"
             ),
             "Third field should chain off the second.\n\
              Expanded output:\n{output}"
@@ -3554,7 +3554,7 @@ mod tests {
             .to_string();
         assert!(
             output.contains(
-                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Lazy < U256 > > (:: pvm_contract_sdk :: LayoutStep :: FIRST)"
             ),
             "Single unannotated field should auto-number to slot 0 via layout_step seed.\n\
              Expanded output:\n{output}"

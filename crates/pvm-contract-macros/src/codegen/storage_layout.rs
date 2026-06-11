@@ -111,11 +111,7 @@ pub(super) fn slot_chain_consts(
                 #(#cfgs)*
                 #[allow(non_upper_case_globals)]
                 const #const_ident: ::pvm_contract_sdk::LayoutStep =
-                    ::pvm_contract_sdk::layout_step(
-                        #prev_expr,
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES,
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::SLOTS,
-                    );
+                    ::pvm_contract_sdk::layout_step_component::<#ty>(#prev_expr);
             }
         })
         .collect();

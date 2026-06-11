@@ -74,7 +74,7 @@ pub use layout::{LayoutStep, MAX_STATIC_SLOTS, layout_step};
 pub mod storage_codec;
 pub use storage_codec::{
     StaticStorageDecode, StaticStorageEncode, StorageArrayElement, StorageDecode, StorageEncode,
-    StoragePackable,
+    StoragePackable, layout_step_encode,
 };
 
 #[doc(hidden)]

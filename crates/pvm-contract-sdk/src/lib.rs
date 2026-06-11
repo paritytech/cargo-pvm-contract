@@ -111,6 +111,8 @@ pub use pvm_contract_types::{
     // Framework errors
     framework_errors,
     keccak256,
+    // Storage-layout walker wrapper (StorageEncode family) used by codegen
+    layout_step_encode,
     read_word_offset,
     value_transferred_is_nonzero,
 };
@@ -136,7 +138,7 @@ pub use pvm_contract_core::call::{
 // storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
     AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, StorageComponent,
-    StorageKey, StorageVec, layout_step,
+    StorageKey, StorageVec, layout_step, layout_step_component,
 };
 
 #[cfg(feature = "abi-gen")]

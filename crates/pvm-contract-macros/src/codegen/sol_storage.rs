@@ -31,23 +31,19 @@
 //!
 //!     fn new_at(base: StorageKey, offset: u8, alone: bool, host: ::pvm_contract_sdk::Host) -> Self {
 //!         // Per-field placement chain: each `LayoutStep` is computed by the
-//!         // shared `layout_step` walker from the previous step plus this
-//!         // field's PACKED_BYTES + SLOTS, so sub-word siblings pack solc-style.
+//!         // shared walker from the previous step plus this field's
+//!         // PACKED_BYTES + SLOTS, so sub-word siblings pack solc-style.
+//!         // `layout_step_component::<Ty>` is the StorageComponent-family
+//!         // wrapper over the trait-agnostic `layout_step` primitive.
 //!         const __pvm_storage_offset_total_supply: ::pvm_contract_sdk::LayoutStep =
-//!             ::pvm_contract_sdk::layout_step(
-//!                 ::pvm_contract_sdk::LayoutStep::FIRST,
-//!                 <Lazy<U256> as StorageComponent>::PACKED_BYTES,
-//!                 <Lazy<U256> as StorageComponent>::SLOTS);
+//!             ::pvm_contract_sdk::layout_step_component::<Lazy<U256>>(
+//!                 ::pvm_contract_sdk::LayoutStep::FIRST);
 //!         const __pvm_storage_offset_balances: ::pvm_contract_sdk::LayoutStep =
-//!             ::pvm_contract_sdk::layout_step(
-//!                 __pvm_storage_offset_total_supply,
-//!                 <Mapping<Address, U256> as StorageComponent>::PACKED_BYTES,
-//!                 <Mapping<Address, U256> as StorageComponent>::SLOTS);
+//!             ::pvm_contract_sdk::layout_step_component::<Mapping<Address, U256>>(
+//!                 __pvm_storage_offset_total_supply);
 //!         const __pvm_storage_offset_allowances: ::pvm_contract_sdk::LayoutStep =
-//!             ::pvm_contract_sdk::layout_step(
-//!                 __pvm_storage_offset_balances,
-//!                 <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::PACKED_BYTES,
-//!                 <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS);
+//!             ::pvm_contract_sdk::layout_step_component::<Mapping<Address, Mapping<Address, U256>>>(
+//!                 __pvm_storage_offset_balances);
 //!         // Per-field `alone` flag: true iff no neighbour shares the slot.
 //!         const __pvm_storage_alone_total_supply: bool =
 //!             true && __pvm_storage_offset_total_supply.slot != __pvm_storage_offset_balances.slot;
@@ -411,9 +407,13 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         | SolType::Int(_)
         | SolType::Bytes(_) => StorageFieldKind::Packable,
         SolType::String | SolType::DynBytes => StorageFieldKind::Dynamic,
-        // Custom types (nested SolType structs): we can't determine at macro
-        // expansion time whether the referenced type implements
-        // `StorageEncode`. A future phase may add an explicit opt-in.
+        // Custom types (nested structs) are not yet supported as a *packed
+        // value* field of a `SolStorage` struct — that would need atomic
+        // multi-field packed codegen which isn't implemented. This is an
+        // optimization gap, NOT a solc-parity gap: a nested struct in storage
+        // already works today (with byte-identical solc layout) via the
+        // `#[storage]` attribute + `.view()/.view_mut()` composition path. The
+        // rejection hint in `generate_sol_storage_impls` points users there.
         //
         // `Array<T>` (T != u8), `FixedArray`, `Tuple` in struct fields: deferred.
         SolType::Custom(_) | SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
@@ -462,28 +462,48 @@ fn generate_sol_storage_impls(
     // Real compile error at derive expansion — visible to `cargo check` and
     // `trybuild`. Replaces the prior const-panic stub used when this code
     // lived inside `#[derive(SolType)]`.
-    if let Some((field_idx, field_ty, unsupported_ty)) =
+    if let Some((field_idx, field_ty, unsupported_ty, is_nested_struct)) =
         field_info.iter().enumerate().find_map(|(idx, (_, ty))| {
-            matches!(classify_storage_field(ty), StorageFieldKind::Unsupported)
-                .then(|| (idx, get_field_types(fields)[idx], ty.canonical_name()))
+            matches!(classify_storage_field(ty), StorageFieldKind::Unsupported).then(|| {
+                (
+                    idx,
+                    get_field_types(fields)[idx],
+                    ty.canonical_name(),
+                    matches!(ty, SolType::Custom(_)),
+                )
+            })
         })
     {
         let field_label = match &field_info[field_idx].0 {
             Some(ident) => format!("field `{ident}`"),
             None => format!("field {field_idx}"),
         };
+        // A nested struct *can* live in storage today — just not as a packed
+        // value field. Point the user at the `#[storage]` + `.view()` path,
+        // which yields the identical solc layout. Other unsupported kinds
+        // (`Vec<T>`, tuples, fixed arrays) have no such workaround.
+        let hint = if is_nested_struct {
+            "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
+             struct. To store a nested struct, make BOTH structs \
+             `#[pvm_contract_sdk::storage]` and access them through a field handle \
+             or `Mapping<_, T>` with `.view()` / `.view_mut()` — this produces the \
+             identical solc storage layout. (`#[derive(SolType)]` alone remains \
+             correct if you only need ABI for calldata / events.)"
+        } else {
+            "Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \
+             you only need ABI (calldata / events)."
+        };
         let msg = format!(
             "`{name}` cannot derive `SolStorage`: {field_label} has type \
              `{unsupported_ty}` (Rust: `{field_ty_str}`), which is not yet \
              supported as a `StorageEncode` field. Only fixed-size primitives \
              (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, and `bytes` \
-             (Rust `Bytes`) are supported today. \
-             Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \
-             you only need ABI (calldata / events).",
+             (Rust `Bytes`) are supported today. {hint}",
             name = name,
             field_label = field_label,
             unsupported_ty = unsupported_ty,
             field_ty_str = quote!(#field_ty),
+            hint = hint,
         );
         return Err(syn::Error::new_spanned(field_ty, msg));
     }
@@ -498,11 +518,7 @@ fn generate_sol_storage_impls(
         .map(|(idx, ty)| {
             quote! {
                 {
-                    step = ::pvm_contract_sdk::layout_step(
-                        step,
-                        <#ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES,
-                        <#ty as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS as u64,
-                    );
+                    step = ::pvm_contract_sdk::layout_step_encode::<#ty>(step);
                     placements[#idx] = (step.slot as usize, step.offset as usize);
                 }
             }
@@ -942,7 +958,7 @@ mod tests {
         // First field seeds from LayoutStep::FIRST via layout_step.
         assert!(
             output.contains(
-                "const __pvm_storage_offset_total_supply : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+                "const __pvm_storage_offset_total_supply : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Lazy < U256 > > (:: pvm_contract_sdk :: LayoutStep :: FIRST)"
             ),
             "first offset should seed from LayoutStep::FIRST: {output}"
         );
