@@ -96,7 +96,7 @@ call()    — called on every subsequent interaction
 2. If calldata is empty and a `#[receive]` handler is present, dispatches there
 3. Otherwise extracts the 4-byte selector from `calldata[0..4]`, matches a registered method, decodes parameters via `SolDecode`, calls the user function, and encodes the return via `SolEncode`
 4. If the selector matches no method (or calldata is 1..=3 bytes), falls through to `#[fallback]` if present, else reverts
-5. If the user function returns `Err(e)`, the error is encoded via `SolRevert::revert_data` and returned with `REVERT` flags
+5. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags
 
 ## Method, Constructor, Fallback, Receive
 
@@ -247,30 +247,28 @@ These bypass the typed-storage view enforcement; the host's STATICCALL boundary 
 
 ## Error Handling
 
-The SDK splits error encoding into two traits:
+Error encoding is handled by a single trait, `SolError`, derived with `#[derive(SolError)]`:
 
-- `SolError` — implemented per error struct. Carries a 4-byte selector (`keccak256` of the canonical signature) and ABI-encodes its fields.
-- `SolRevert` — the dispatch-boundary trait. Has a blanket impl for any `T: SolError`; for error enums, use `sol_revert_enum!` to generate the enum plus the `SolRevert` impl with auto-injected `RevertString` and `Panic` variants.
+- On a **struct**, the derive computes the 4-byte selector (`keccak256` of the canonical signature derived from the struct name and fields) and emits `encode_to` (selector + ABI-encoded fields), `encoded_size`, and `decode_at`.
+- On an **enum** whose variants each wrap a single `SolError` struct, the derive emits `From` conversions plus an `encode_to` / `decode_at` / `error_signatures` impl that dispatches to the active variant's inner error. The enum's own `SELECTOR` is zeroed and `SIGNATURE` is empty — the wire selector is always the inner error's. Add explicit `RevertString` / `Panic` variants if you want `require`-style messages or arithmetic panics in the same enum.
 
 ```rust,ignore
-use pvm_contract_sdk::{sol_revert_enum, SolError};
+use pvm_contract_sdk::SolError;
 
 #[derive(SolError)]
-#[sol_error(name = "InsufficientBalance")]
 pub struct InsufficientBalance {
     pub required: U256,
     pub available: U256,
 }
 
-sol_revert_enum! {
-    pub enum TokenError {
-        InsufficientBalance(InsufficientBalance),
-    }
+#[derive(SolError)]
+pub enum TokenError {
+    InsufficientBalance(InsufficientBalance),
 }
 
 #[pvm_contract_sdk::method]
 pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-    // returning `Err(TokenError::InsufficientBalance { ... })` reverts with the
+    // returning `Err(InsufficientBalance { .. }.into())` reverts with the
     // ABI-encoded `InsufficientBalance(uint256,uint256)` payload that solc and
     // viem decode automatically.
 }

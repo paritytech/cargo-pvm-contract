@@ -11,7 +11,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
 | `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]` |
-| `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error traits (`SolError`, `SolRevert`) — `no_std` compatible |
+| `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error trait (`SolError`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
@@ -89,7 +89,7 @@ The `#[contract]` macro generates two PolkaVM entry points:
 - **`deploy()`** — calls the `#[constructor]` function
 - **`call()`** — reads calldata, extracts 4-byte selector, dispatches to matching `#[method]`. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
 
-Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolRevert::revert_data` and returned with `REVERT` flags.
+Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags.
 
 Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time.
 
@@ -199,26 +199,23 @@ pub trait StaticEncodedLen: SolEncode {
 ### Error Traits (`pvm-contract-types`)
 
 ```rust
-pub trait SolError {
-    const SELECTOR: [u8; 4];       // keccak256 of canonical signature, first 4 bytes
-    const SIGNATURE: &'static str; // e.g. "InsufficientBalance(address,uint256,uint256)"
-    fn encode_params(&self, buf: &mut [u8]) -> usize;  // ABI-encode fields after selector
-    fn encoded_size(&self) -> usize;                    // 4 + encoded params size
-}
-
-pub trait SolRevert {
-    fn revert_data(&self, buf: &mut [u8]) -> usize;    // selector + encode_params
-    fn revert_data_len(&self) -> usize;                 // total revert data size
-    fn error_signatures() -> impl Iterator<Item = &'static &'static str>;   // for ABI JSON generation
+pub trait SolError: Sized {
+    const SELECTOR: [u8; 4];       // keccak256 of canonical signature, first 4 bytes (zeroed for enums)
+    const SIGNATURE: &'static str; // e.g. "InsufficientBalance(address,uint256,uint256)" (empty for enums)
+    fn encoded_size(&self) -> usize;                   // 4 + encoded params size
+    fn encode_to(&self, buf: &mut [u8]) -> usize;      // selector + ABI-encoded fields; returns bytes written
+    fn decode_at(input: &[u8], offset: usize) -> Result<Option<Self>, DecodeError>; // symmetric decoder
+    // #[cfg(feature = "abi-gen")]
+    fn error_signatures() -> impl Iterator<Item = &'static &'static str>; // all signatures, for ABI JSON
 }
 ```
 
-- `SolError` — implemented per error struct (single selector). Use `#[derive(SolError)]`.
-- `SolRevert` — dispatch boundary trait. Blanket impl for `T: SolError`. Manual impl for error enums via `sol_revert_enum!`.
+- `SolError` — one unified trait, derived with `#[derive(SolError)]` on both error structs and error enums (there is no separate `SolRevert` trait and no `sol_revert_enum!` macro).
+  - On a **struct**: single selector, `encode_to` writes selector + fields, `decode_at` is the inverse.
+  - On an **enum** whose variants each wrap one `SolError` struct: the derive emits `From` conversions and dispatches `encode_to`/`decode_at`/`error_signatures` to the active variant. The enum's own `SELECTOR` is zeroed and `SIGNATURE` empty — the wire selector is the inner error's. Add explicit `RevertString` / `Panic` variants to surface require-style messages or arithmetic panics.
 - `RevertString` — encodes `Error(string)` with truncation for buffer safety.
 - `Panic` — encodes `Panic(uint256)` for overflow/division-by-zero.
 - `EmptyError` — zero-cost uninhabited type for contracts with no error paths.
-- `sol_revert_enum!` — generates error enum + `SolRevert` impl + `From` conversions, auto-injects `RevertString` and `Panic` variants.
 
 ### Scaffolder type mapping
 
@@ -502,7 +499,7 @@ Multi-binary project with 9+ contracts for E2E integration tests:
 - `CompositeTypes` — fixed arrays, tuples
 - `ConstructorArgs` — constructor with parameters
 - `CallerCheck` — `api::caller()` access
-- `ErrorHandling` — `SolError` + `sol_revert_enum!` ABI-encoded revert flow
+- `ErrorHandling` — `#[derive(SolError)]` (struct + enum) ABI-encoded revert flow
 
 ### Building examples
 

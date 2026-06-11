@@ -184,9 +184,10 @@ pub trait StorageEncode {
     /// [`StoragePackable`].** `Lazy<T>::set` / `Lazy<T>::get` take a
     /// read-modify-write path for sub-word values and dispatch through
     /// [`__pack_into_dispatched`](Self::__pack_into_dispatched) /
-    /// [`StorageDecode::__unpack_from_dispatched`], whose default impls
-    /// panic at runtime; the `StoragePackable` impl is what supplies a
-    /// non-panicking override.
+    /// [`StorageDecode::__unpack_from_dispatched`]. Their default impls
+    /// `const`-assert `PACKED_BYTES == 32`, so a sub-word type that omits the
+    /// `StoragePackable` impl **fails to compile** (rather than panicking at
+    /// runtime); the `StoragePackable` impl is what supplies the override.
     const PACKED_BYTES: usize = 32;
 
     /// `true` for types whose value spills outside their slot range — i.e.
