@@ -12,6 +12,7 @@
 //! `__storage_layout_json()` accessors are still emitted under
 //! `#[cfg(feature = "abi-gen")]` and exercised by
 //! `composed_contract_emits_storage_layout_under_abi_gen` below.
+#![allow(unexpected_cfgs)]
 
 use pvm_contract_sdk::{Lazy, Mapping, StorageComponent, StorageKey};
 use pvm_contract_types::{Address, Host, MockHostBuilder};

@@ -18,7 +18,7 @@
 //! contract: a mismatch between the `layout_step` chain and the literal
 //! `(slot, offset)` we pass to `new_at` from the test would either fail the
 //! macro's runtime asserts or be caught by Test 9's `storageLayout` JSON.
-
+#![allow(unexpected_cfgs)]
 extern crate alloc;
 
 use pvm_contract_sdk::{Address, Lazy, Mapping, U256};
