@@ -1328,6 +1328,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let host = ::pvm_contract_sdk::Host::from_dyn(
                     ::std::rc::Rc::new(backend),
                 );
+                #(#auto_slot_consts)*
                 Self {
                     #(#slot_field_inits,)*
                     host,
