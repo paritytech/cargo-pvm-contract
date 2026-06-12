@@ -1,5 +1,6 @@
 // Constructors must take `&mut self`. A no-receiver constructor is incoherent
 // for the same reason as a `&self` constructor: it cannot write storage.
+#![allow(unexpected_cfgs)]
 
 #[pvm_contract_macros::contract]
 mod c {

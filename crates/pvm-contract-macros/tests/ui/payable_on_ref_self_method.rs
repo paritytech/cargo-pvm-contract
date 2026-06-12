@@ -1,5 +1,6 @@
 // `#[payable]` requires `&mut self`. A `&self` receiver implies `view`,
 // and view methods cannot mutate storage to record the received value.
+#![allow(unexpected_cfgs)]
 
 #[pvm_contract_macros::contract]
 mod c {

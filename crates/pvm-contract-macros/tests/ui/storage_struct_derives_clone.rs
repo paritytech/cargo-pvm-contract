@@ -1,6 +1,7 @@
 // The contract storage struct must not derive `Clone`. The mutation gate
 // (`&self` vs `&mut self`) relies on `Storage: !Clone` so that a view method
 // cannot smuggle out a `&mut Storage` via cloning.
+#![allow(unexpected_cfgs)]
 
 #[pvm_contract_macros::contract]
 mod c {

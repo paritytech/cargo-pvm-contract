@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 #[pvm_contract_macros::contract]
 mod c {
     pub struct C;

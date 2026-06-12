@@ -2,6 +2,7 @@
 // explicit mode, while solc places `bool` right-aligned at byte 31. To
 // avoid the silent non-solc layout, the macro emits a const-assert that
 // rejects sub-word types (`PACKED_BYTES < 32`) on explicit-slot fields.
+#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 

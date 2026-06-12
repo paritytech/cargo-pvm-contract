@@ -1,5 +1,6 @@
 // Constructors must take `&mut self` — they always initialize storage. A
 // `&self` constructor cannot mutate, so it would be a useless entry point.
+#![allow(unexpected_cfgs)]
 
 #[pvm_contract_macros::contract]
 mod c {
