@@ -41,6 +41,7 @@ url = { version = "2.5" }
 
 [dev-dependencies]
 assert_cmd = "2.0"
+expect-test = { version = "1.5.1" }
 predicates = "3.1"
 tempfile = "3.10"
 toml_edit = { workspace = true }

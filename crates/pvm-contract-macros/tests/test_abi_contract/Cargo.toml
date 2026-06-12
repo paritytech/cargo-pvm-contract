@@ -39,6 +39,18 @@ path = "src/dynamic_custom_return.rs"
 name = "host-api-calls"
 path = "src/host_api_calls.rs"
 
+[[bin]]
+name = "storage-layout-mixed"
+path = "src/storage_layout_mixed.rs"
+
+[[bin]]
+name = "storage-layout-composed"
+path = "src/storage_layout_composed.rs"
+
+[[bin]]
+name = "storage-layout-vec"
+path = "src/storage_layout_vec.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-sdk = { path = "../../../pvm-contract-sdk", features = ["alloc"] }

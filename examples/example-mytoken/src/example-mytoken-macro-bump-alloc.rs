@@ -20,10 +20,10 @@ mod my_token {
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
 
-    pvm_contract_sdk::sol_revert_enum! {
-        pub enum TokenError {
-            InsufficientBalance(InsufficientBalance),
-        }
+    #[derive(Debug, pvm_contract_sdk::SolError)]
+    pub enum TokenError {
+        InsufficientBalance(InsufficientBalance),
+        SolDefaultError(pvm_contract_sdk::SolDefaultError),
     }
 
     pub struct MyToken;

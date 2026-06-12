@@ -199,32 +199,130 @@ fn run_abi_gen_binary(
     Ok(Some(trimmed.to_string()))
 }
 
-/// Detect whether the source uses the `#[contract]` attribute macro. Matches
-/// both `::contract]` (no args) and `::contract(` (with args). Used to skip
-/// ABI generation for DSL-based contracts that don't use the macro.
-pub(crate) fn has_contract_macro(source: &str) -> bool {
-    source.contains("::contract]") || source.contains("::contract(")
+/// Locate the `#[contract]` attribute in the source, if present, and return
+/// a reference for further inspection. Used to gate ABI generation, which
+/// runs only when the macro is actually present (DSL contracts skip it).
+/// Matches every form the user might write: `#[contract]`, `#[contract(...)]`,
+/// `#[pvm_contract_sdk::contract]`, `#[pvm_contract_sdk::contract(...)]`,
+/// `#[pvm_contract_macros::contract]`, `#[pvm_contract_macros::contract(...)]`.
+fn find_contract_attr(items: &[syn::Item]) -> Option<&syn::Attribute> {
+    for item in items {
+        for attr in item_attrs(item) {
+            if attr
+                .path()
+                .segments
+                .last()
+                .is_some_and(|s| s.ident == "contract")
+            {
+                return Some(attr);
+            }
+        }
+        if let syn::Item::Mod(m) = item
+            && let Some((_, nested)) = &m.content
+            && let Some(found) = find_contract_attr(nested)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
-/// Detect whether the source contains `#[slot(` which indicates storage
-/// fields on the contract struct. Simple string check — no AST parsing needed.
+/// Return the attributes attached to any top-level Rust item (`struct`, `fn`,
+/// `mod`, `impl`, etc.). The `_ => &[]` arm handles `syn::Item`'s
+/// `#[non_exhaustive]` declaration so future variants don't break the build.
+fn item_attrs(item: &syn::Item) -> &[syn::Attribute] {
+    match item {
+        syn::Item::Const(i) => &i.attrs,
+        syn::Item::Enum(i) => &i.attrs,
+        syn::Item::ExternCrate(i) => &i.attrs,
+        syn::Item::Fn(i) => &i.attrs,
+        syn::Item::ForeignMod(i) => &i.attrs,
+        syn::Item::Impl(i) => &i.attrs,
+        syn::Item::Macro(i) => &i.attrs,
+        syn::Item::Mod(i) => &i.attrs,
+        syn::Item::Static(i) => &i.attrs,
+        syn::Item::Struct(i) => &i.attrs,
+        syn::Item::Trait(i) => &i.attrs,
+        syn::Item::TraitAlias(i) => &i.attrs,
+        syn::Item::Type(i) => &i.attrs,
+        syn::Item::Union(i) => &i.attrs,
+        syn::Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
+}
+
+/// Detect whether the source uses the `#[contract]` attribute macro. Used to
+/// skip ABI generation for DSL-based contracts that don't use the macro.
+///
+/// Parses the source via `syn` so that `#[contract]`-shaped text in comments
+/// or string literals doesn't trip detection.
+pub(crate) fn has_contract_macro(source: &str) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    find_contract_attr(&file.items).is_some()
+}
+
+/// Walk for any struct field carrying a `#[slot(...)]` attribute, recursing
+/// into `mod` contents.
+fn any_struct_field_has_slot_attr(items: &[syn::Item]) -> bool {
+    for item in items {
+        match item {
+            syn::Item::Struct(s) => {
+                if let syn::Fields::Named(named) = &s.fields
+                    && named
+                        .named
+                        .iter()
+                        .any(|f| f.attrs.iter().any(|a| a.path().is_ident("slot")))
+                {
+                    return true;
+                }
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, nested)) = &m.content
+                    && any_struct_field_has_slot_attr(nested)
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Detect whether the source contains a `#[slot(...)]` attribute on a struct
+/// field, which indicates storage fields on the contract struct.
+///
+/// Parses the source via `syn` so that `#[slot(...)]`-shaped text in comments
+/// or string literals doesn't trip detection.
 fn has_slot_fields(source: &str) -> bool {
-    source.contains("#[slot(")
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    any_struct_field_has_slot_attr(&file.items)
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
-    // Find "contract(" then skip optional whitespace before the opening quote.
-    // This tolerates formatting like #[contract( "Foo.sol" )] which syn accepts.
-    let marker = "contract(";
-    if let Some(start) = source.find(marker) {
-        let after_paren = &source[start + marker.len()..];
-        let trimmed = after_paren.trim_start();
-        if let Some(rest) = trimmed.strip_prefix('"')
-            && let Some(end) = rest.find('"')
+    let file = syn::parse_file(source).ok()?;
+    let attr = find_contract_attr(&file.items)?;
+
+    // `#[contract]` with no args is `Meta::Path` (no Sol arg).
+    // `#[contract(...)]` is `Meta::List`; parse the comma-separated args
+    // and return the first literal string ending in `.sol`.
+    let args = attr
+        .parse_args_with(syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated)
+        .ok()?;
+
+    for expr in &args {
+        if let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(s),
+            ..
+        }) = expr
         {
-            let path = &rest[..end];
+            let path = s.value();
             if path.ends_with(".sol") {
-                return Some(path.to_string());
+                return Some(path);
             }
         }
     }
@@ -583,7 +681,10 @@ mod tests {
 
     #[test]
     fn extract_sol_path_valid() {
-        let source = r#"#[pvm_contract_macros::contract("MyToken.sol", buffer = 256)]"#;
+        let source = r#"
+            #[pvm_contract_macros::contract("MyToken.sol", buffer = 256)]
+            mod c {}
+        "#;
         assert_eq!(
             extract_sol_path_from_source(source),
             Some("MyToken.sol".to_string())
@@ -592,7 +693,10 @@ mod tests {
 
     #[test]
     fn extract_sol_path_with_directory() {
-        let source = r#"#[contract("interfaces/IToken.sol")]"#;
+        let source = r#"
+            #[contract("interfaces/IToken.sol")]
+            mod c {}
+        "#;
         assert_eq!(
             extract_sol_path_from_source(source),
             Some("interfaces/IToken.sol".to_string())
@@ -606,13 +710,19 @@ mod tests {
 
     #[test]
     fn extract_sol_path_non_sol_extension() {
-        let source = r#"#[contract("MyToken.json")]"#;
+        let source = r#"
+            #[contract("MyToken.json")]
+            mod c {}
+        "#;
         assert_eq!(extract_sol_path_from_source(source), None);
     }
 
     #[test]
     fn extract_sol_path_with_whitespace_after_paren() {
-        let source = r#"#[contract( "MyToken.sol" )]"#;
+        let source = r#"
+            #[contract( "MyToken.sol" )]
+            mod c {}
+        "#;
         assert_eq!(
             extract_sol_path_from_source(source),
             Some("MyToken.sol".to_string())
@@ -621,7 +731,10 @@ mod tests {
 
     #[test]
     fn extract_sol_path_with_newline_formatting() {
-        let source = "#[contract(\n    \"MyToken.sol\"\n)]";
+        let source = "
+            #[contract(\n    \"MyToken.sol\"\n)]
+            mod c {}
+        ";
         assert_eq!(
             extract_sol_path_from_source(source),
             Some("MyToken.sol".to_string())
@@ -630,10 +743,33 @@ mod tests {
 
     #[test]
     fn extract_sol_path_missing_closing_quote() {
+        // Syntactically broken source: `syn::parse_file` returns Err and the
+        // function returns the conservative `None` rather than guessing.
         let source = r#"#[contract("MyToken.sol)]"#;
-        // No closing quote before ) so find('"') finds the one before MyToken
-        // Actually "contract(\"" consumes up to the quote, then after_quote starts at MyToken.sol)
-        // find('"') returns None since there's no second quote
+        assert_eq!(extract_sol_path_from_source(source), None);
+    }
+
+    #[test]
+    fn extract_sol_path_ignores_comment_before_real_attribute() {
+        // The commented-out attribute must not shadow the real one below it.
+        let source = r#"
+            // #[pvm_contract_sdk::contract("Wrong.sol")]
+            #[pvm_contract_sdk::contract("Right.sol")]
+            mod c {}
+        "#;
+        assert_eq!(
+            extract_sol_path_from_source(source),
+            Some("Right.sol".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_sol_path_with_allocator_only() {
+        // `#[contract(allocator = "pico")]` has no .sol arg, must return None.
+        let source = r#"
+            #[pvm_contract_sdk::contract(allocator = "pico")]
+            mod c {}
+        "#;
         assert_eq!(extract_sol_path_from_source(source), None);
     }
 
@@ -641,19 +777,28 @@ mod tests {
 
     #[test]
     fn has_contract_macro_with_args() {
-        let source = r#"#[pvm_contract_macros::contract(allocator = "pico")]"#;
+        let source = r#"
+            #[pvm_contract_macros::contract(allocator = "pico")]
+            mod c {}
+        "#;
         assert!(has_contract_macro(source));
     }
 
     #[test]
     fn has_contract_macro_with_sol_path() {
-        let source = r#"#[pvm_contract_macros::contract("MyToken.sol")]"#;
+        let source = r#"
+            #[pvm_contract_macros::contract("MyToken.sol")]
+            mod c {}
+        "#;
         assert!(has_contract_macro(source));
     }
 
     #[test]
     fn has_contract_macro_no_args() {
-        let source = r#"#[pvm_contract_macros::contract]"#;
+        let source = r#"
+            #[pvm_contract_macros::contract]
+            mod c {}
+        "#;
         assert!(has_contract_macro(source));
     }
 
@@ -661,6 +806,93 @@ mod tests {
     fn has_contract_macro_dsl_binary() {
         let source = r#"use pvm_contract_builder_dsl::{ContractBuilder, solidity_selector};"#;
         assert!(!has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_ignores_comment() {
+        // A `#[contract(...)]`-shape inside a comment is not a real attribute.
+        let source = r#"
+            // #[pvm_contract_sdk::contract("Foo.sol")]
+            fn main() {}
+        "#;
+        assert!(!has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_handles_bare_path_form() {
+        // `#[contract]` (no `::`-prefix) must still match.
+        let source = r#"
+            use pvm_contract_sdk::contract;
+            #[contract]
+            mod c {}
+        "#;
+        assert!(has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_returns_false_on_syntax_error() {
+        // Source that doesn't parse: function returns the conservative default.
+        let source = r#"#[contract(unclosed"#;
+        assert!(!has_contract_macro(source));
+    }
+
+    #[test]
+    fn has_contract_macro_finds_attribute_inside_nested_mod() {
+        let source = r#"
+            mod outer {
+                #[pvm_contract_sdk::contract("Foo.sol")]
+                pub mod inner {}
+            }
+        "#;
+        assert!(has_contract_macro(source));
+    }
+
+    // --- has_slot_fields ---
+
+    #[test]
+    fn has_slot_fields_detects_real_attribute() {
+        let source = r#"
+            struct S {
+                #[slot(0)]
+                x: u32,
+            }
+        "#;
+        assert!(has_slot_fields(source));
+    }
+
+    #[test]
+    fn has_slot_fields_ignores_comment() {
+        // a `#[slot(...)]` shape inside a comment must not trip detection.
+        let source = r#"
+            struct S {
+                // #[slot(0)]
+                x: u32,
+            }
+        "#;
+        assert!(!has_slot_fields(source));
+    }
+
+    #[test]
+    fn has_slot_fields_finds_attribute_inside_nested_mod() {
+        let source = r#"
+            mod contract {
+                pub struct S {
+                    #[slot(0)]
+                    total: u32,
+                }
+            }
+        "#;
+        assert!(has_slot_fields(source));
+    }
+
+    #[test]
+    fn has_slot_fields_returns_false_when_absent() {
+        let source = r#"
+            struct S {
+                x: u32,
+            }
+        "#;
+        assert!(!has_slot_fields(source));
     }
 
     // --- parse_sol_params ---

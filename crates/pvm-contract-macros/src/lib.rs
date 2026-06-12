@@ -212,6 +212,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// ```ignore
 /// mod my_token {
 ///     #[derive(Debug, pvm_contract_macros::SolError)]
+///     pub struct Unauthorized;
+///     #[derive(Debug, pvm_contract_macros::SolError)]
 ///     pub struct InsufficientBalance;
 ///
 ///     pub struct MyToken;
@@ -220,13 +222,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> { ... }
 ///     }
 ///
-///     // Multiple errors: wrap with sol_revert_enum!
-///     // pvm_contract_sdk::sol_revert_enum! {
-///     //     pub enum TokenError {
-///     //         InsufficientBalance(InsufficientBalance),
-///     //         Unauthorized(Unauthorized),
-///     //     }
-///     // }
+///     #[derive(Debug, pvm_contract_macros::SolError)]
+///     pub enum TokenError {
+///         InsufficientBalance(InsufficientBalance),
+///         Unauthorized(Unauthorized),
+///     }
 /// }
 /// ```
 ///
@@ -328,7 +328,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     Err(e) => {
 ///                         let mut __revert_buf = [0u8; 256];
 ///                         let __revert_len =
-///                             ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+///                             e.encode_to(&mut __revert_buf);
 ///                         this.host().return_value(
 ///                             ::pvm_contract_sdk::ReturnFlags::REVERT,
 ///                             &__revert_buf[..__revert_len]);
@@ -443,6 +443,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// extern crate alloc;
 /// use alloc::vec;
 /// use alloc::vec::Vec;
+/// use alloc::string::String;
 ///
 /// #[global_allocator]
 /// static mut ALLOC: picoalloc::Mutex<
@@ -474,6 +475,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// extern crate alloc;
 /// use alloc::vec;
 /// use alloc::vec::Vec;
+/// use alloc::string::String;
 ///
 /// #[global_allocator]
 /// static ALLOC: pvm_bump_allocator::BumpAllocator<1024> =
@@ -502,6 +504,61 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemMod);
 
     match codegen::expand_contract(args, input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derives [`StorageComponent`] for a struct so it can be embedded as a field
+/// inside another `#[storage]` struct or directly inside the `#[contract]`
+/// storage struct.
+///
+/// Field slots are auto-numbered in declaration order; the embedded struct's
+/// `SLOTS` is the sum of its fields' `SLOTS`. The contract struct's
+/// auto-numbering uses these `SLOTS` constants to assign contiguous ranges,
+/// so embedding nests cleanly without manual slot math.
+///
+/// # Example
+///
+/// ```ignore
+/// #[pvm_contract_sdk::storage]
+/// pub struct Erc20 {
+///     total_supply: Lazy<U256>,
+///     balances: Mapping<Address, U256>,
+///     allowances: Mapping<Address, Mapping<Address, U256>>,
+/// }
+///
+/// #[pvm_contract_sdk::contract]
+/// mod my_contract {
+///     pub struct MyContract {
+///         erc20: super::Erc20,           // claims 3 slots
+///         additional_state: Lazy<u32>,   // claims slot 3
+///     }
+/// }
+/// ```
+///
+/// # Constraints
+///
+/// - Only named-field structs are supported (unit/tuple structs rejected).
+/// - All fields must implement `StorageComponent` (which `Lazy`/`Mapping` and
+///   other `#[storage]` structs do).
+/// - `#[slot(N)]` pinning inside a `#[storage]` struct is *not* supported.
+///   Use auto-numbering, or write the leaf fields directly on the contract
+///   struct if you need explicit slots.
+/// - On the contract struct, `#[slot(N)]` accepts only full-slot types
+///   (`PACKED_BYTES == 32`): `Mapping`, `Lazy<U256>`, `Lazy<String>`,
+///   `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and
+///   `#[storage]` sub-structs. Sub-word types (`Lazy<bool>`, `Lazy<u32>`,
+///   `Lazy<Address>`, etc.) are rejected at compile time — explicit-mode
+///   would place them at byte 0 of the slot while solc places them
+///   right-aligned, producing a non-solc layout. Sub-word packing is the
+///   auto-numbered walker's job (it packs siblings per solc via
+///   `layout_step`); wrap the field in a `#[storage]` sub-struct if you
+///   need to pin the group at a specific slot.
+#[proc_macro_attribute]
+pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as syn::ItemStruct);
+    match codegen::expand_storage_struct(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

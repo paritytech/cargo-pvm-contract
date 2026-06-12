@@ -2,10 +2,10 @@
 #![no_std]
 
 use pvm_contract_builder_dsl::{
-    ContractBuilder, HandlerResult, assert_non_payable_deploy, solidity_selector,
+    assert_non_payable_deploy, solidity_selector, ContractBuilder, HandlerResult,
 };
 use pvm_contract_sdk::{
-    Address, Host, HostApi, SolDecode, SolEncode, SolRevert, StaticEncodedLen, StorageFlags, U256,
+    Address, Host, HostApi, SolDecode, SolEncode, SolError, StaticEncodedLen, StorageFlags, U256,
 };
 
 #[global_allocator]
@@ -47,10 +47,10 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 #[derive(Debug, pvm_contract_sdk::SolError)]
 pub struct InsufficientBalance;
 
-pvm_contract_sdk::sol_revert_enum! {
-    pub enum TokenError {
-        InsufficientBalance(InsufficientBalance),
-    }
+#[derive(Debug, pvm_contract_sdk::SolError)]
+pub enum TokenError {
+    InsufficientBalance(InsufficientBalance),
+    SolDefaultError(pvm_contract_sdk::SolDefaultError),
 }
 
 #[unsafe(no_mangle)]
@@ -118,7 +118,7 @@ fn transfer_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResu
     };
 
     if sender_balance < amount {
-        let n = SolRevert::revert_data(&InsufficientBalance, output);
+        let n = SolError::encode_to(&InsufficientBalance, output);
         return HandlerResult::Revert(n);
     }
 

@@ -1112,9 +1112,9 @@ mod tests {
 
     #[test]
     fn clone_shares_state() {
-        // Stylus-style pattern: the test keeps one handle, the contract gets
-        // a clone via `Host::from_dyn(Box::new(mock.clone()))`. Both must
-        // observe the same storage/events/return-data.
+        // The test keeps one handle, the contract gets a clone via
+        // `Host::from_dyn(Box::new(mock.clone()))`. Both must observe the
+        // same storage/events/return-data.
         let host = MockHostBuilder::new().build();
         let clone = host.clone();
         clone.set_storage(StorageFlags::empty(), &[1u8; 32], &[42u8; 32]);

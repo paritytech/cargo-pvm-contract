@@ -1,0 +1,13 @@
+error[E0080]: evaluation panicked: `#[derive(SolType)]`: dynamic field at slot >= 64 exceeds the u64 `dynamic_mask` bitmask. Reduce the struct's static-field count or remove the dynamic field.
+  --> tests/ui/derive_too_many_slots_with_dynamic.rs:16:10
+   |
+16 | #[derive(SolType)]
+   |          ^^^^^^^ evaluation of `TooManySlotsWithDynamic::__STORAGE_LAYOUT` failed here
+
+note: erroneous constant encountered
+  --> tests/ui/derive_too_many_slots_with_dynamic.rs:16:10
+   |
+16 | #[derive(SolType)]
+   |          ^^^^^^^
+   |
+   = note: this note originates in the derive macro `SolType` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -30,6 +30,7 @@ pub use instantiate::{
 pub use map_account::{MapAccountCommandBuilder, MapAccountExec, MapAccountExecResult};
 pub use remove::{RemoveCommandBuilder, RemoveExec};
 pub use rpc::{RawParams, RpcRequest};
+pub use sp_runtime::DispatchError;
 pub use upload::{UploadCommandBuilder, UploadExec, UploadResult};
 
 use scale::{Decode, Encode};

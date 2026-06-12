@@ -1,3 +1,11 @@
+error[E0133]: call to unsafe function `Mapping::<K, V>::new` is unsafe and requires unsafe block
+ --> tests/ui/mapping_entry_requires_mut.rs:8:13
+  |
+8 |     let m = Mapping::<Address, U256>::new(StorageKey::from_slot(0), host);
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+  |
+  = note: consult the function's documentation for information on how to avoid undefined behavior
+
 error[E0596]: cannot borrow `m` as mutable, as it is not declared as mutable
  --> tests/ui/mapping_entry_requires_mut.rs:9:17
   |

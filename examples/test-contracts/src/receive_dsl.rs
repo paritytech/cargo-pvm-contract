@@ -1,10 +1,13 @@
-#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
+#![no_main]
+#![no_std]
 
+// `HostApi` is needed so the `host.get_storage(...)` / `set_storage(...)` /
+// `value_transferred(...)` method calls below resolve through the trait.
 use pvm_contract_builder_dsl::pvm_contract_types::{
-    Host, HostApi, PolkaVmHost, SolEncode, StaticEncodedLen, StorageFlags,
+    Host, HostApi, SolEncode, StaticEncodedLen, StorageFlags,
 };
 use pvm_contract_builder_dsl::ruint::aliases::U256;
-use pvm_contract_builder_dsl::{solidity_selector, ContractBuilder, HandlerResult};
+use pvm_contract_builder_dsl::{ContractBuilder, HandlerResult, solidity_selector};
 
 #[global_allocator]
 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<1024>>> = {
@@ -33,7 +36,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-fn read_u256<H: HostApi>(host: &H, key: &[u8; 32]) -> U256 {
+fn read_u256(host: &Host, key: &[u8; 32]) -> U256 {
     let mut buf = [0u8; 32];
     let mut out = &mut buf[..];
     match host.get_storage(StorageFlags::empty(), key, &mut out) {
@@ -42,11 +45,11 @@ fn read_u256<H: HostApi>(host: &H, key: &[u8; 32]) -> U256 {
     }
 }
 
-fn write_u256<H: HostApi>(host: &H, key: &[u8; 32], value: U256) {
+fn write_u256(host: &Host, key: &[u8; 32], value: U256) {
     host.set_storage(StorageFlags::empty(), key, &value.to_be_bytes::<32>());
 }
 
-fn receive_handler<H: HostApi>(host: &H, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
+fn receive_handler(host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
     let mut value_buf = [0u8; 32];
     host.value_transferred(&mut value_buf);
     let value = U256::from_le_bytes(value_buf);
@@ -60,14 +63,14 @@ fn receive_handler<H: HostApi>(host: &H, _input: &[u8], _output: &mut [u8]) -> H
     HandlerResult::Ok(0)
 }
 
-fn total_received_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+fn total_received_handler(host: &Host, _input: &[u8], output: &mut [u8]) -> HandlerResult {
     let total = read_u256(host, &TOTAL_KEY);
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     total.encode_to(&mut output[..len]);
     HandlerResult::Ok(len)
 }
 
-fn receive_count_handler<H: HostApi>(host: &H, _input: &[u8], output: &mut [u8]) -> HandlerResult {
+fn receive_count_handler(host: &Host, _input: &[u8], output: &mut [u8]) -> HandlerResult {
     let count = read_u256(host, &COUNT_KEY);
     let len = <U256 as StaticEncodedLen>::ENCODED_SIZE;
     count.encode_to(&mut output[..len]);

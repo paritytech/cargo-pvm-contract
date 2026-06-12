@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use cargo_pvm_contract_extrinsics::{
-    CallCommandBuilder, Code, ContractBinary, ExtrinsicOptsBuilder, InstantiateCommandBuilder,
-    MapAccountCommandBuilder, RemoveCommandBuilder, UploadCommandBuilder,
+    CallCommandBuilder, Code, ContractBinary, DispatchError, ErrorVariant, ExtrinsicOptsBuilder,
+    InstantiateCommandBuilder, MapAccountCommandBuilder, RemoveCommandBuilder,
+    UploadCommandBuilder,
 };
 use sp_core::H160;
 use subxt_signer::sr25519::Keypair;
@@ -43,6 +44,24 @@ fn build_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Runtime::new().expect("Failed to create tokio runtime")
 }
 
+fn format_dry_run_failure(
+    prefix: &str,
+    err: &DispatchError,
+    decoded: &anyhow::Result<ErrorVariant>,
+) -> String {
+    match decoded {
+        Ok(decoded) => format!("{prefix} dry-run failed: {decoded}"),
+        Err(decode_err) => {
+            format!("{prefix} dry-run failed: {err:?} (failed to decode: {decode_err})")
+        }
+    }
+}
+
+fn print_dry_run_failure(prefix: &str, err: &DispatchError, metadata: &subxt::Metadata) {
+    let decoded = ErrorVariant::from_dispatch_error(err, metadata);
+    println!("{}", format_dry_run_failure(prefix, err, &decoded));
+}
+
 pub fn upload_command(args: UploadArgs) -> Result<()> {
     let code = std::fs::read(&args.code)
         .with_context(|| format!("Failed to read contract binary: {}", args.code.display()))?;
@@ -55,10 +74,16 @@ pub fn upload_command(args: UploadArgs) -> Result<()> {
             .await?;
 
         if args.dry_run {
-            let _result = exec.upload_code_rpc().await?;
-            let code_hash = ContractBinary(code).code_hash();
-            println!("Upload dry-run succeeded");
-            println!("  Code hash: 0x{}", hex::encode(code_hash));
+            let dry_run = exec.upload_code_rpc().await?;
+            match dry_run {
+                Ok(value) => {
+                    println!("Upload dry-run succeeded");
+                    println!("  Code hash: 0x{}", hex::encode(value.code_hash));
+                }
+                Err(ref err) => {
+                    print_dry_run_failure("Upload", err, &exec.client().metadata());
+                }
+            }
         } else {
             let _result = exec
                 .upload_code()
@@ -93,22 +118,21 @@ pub fn instantiate_command(args: CliInstantiateArgs) -> Result<()> {
         let exec = builder.done().await?;
 
         if args.dry_run {
-            let result = exec.instantiate_dry_run().await?;
-            let weight = result.weight_required;
-            println!("Instantiate dry-run succeeded");
-            println!(
-                "  Result: {}",
-                if result.result.is_ok() {
-                    "success"
-                } else {
-                    "failed"
-                }
-            );
+            let dry_run = exec.instantiate_dry_run().await?;
+            let weight = dry_run.weight_required;
             println!(
                 "  Gas required: ref_time={}, proof_size={}",
                 weight.ref_time(),
                 weight.proof_size()
             );
+            match dry_run.result {
+                Ok(_) => {
+                    println!("Instantiate dry-run succeeded");
+                }
+                Err(ref err) => {
+                    print_dry_run_failure("Instantiate", err, &exec.client().metadata());
+                }
+            }
         } else {
             let result = exec
                 .instantiate(None, None)
@@ -147,7 +171,7 @@ pub fn call_command(args: CallArgs) -> Result<()> {
                     );
                 }
                 Err(ref err) => {
-                    println!("Call dry-run failed: {err:?}");
+                    print_dry_run_failure("Call", err, &exec.client().metadata());
                 }
             }
         } else {
@@ -326,4 +350,34 @@ pub fn account_command(args: AccountArgs) -> Result<()> {
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cargo_pvm_contract_extrinsics::GenericError;
+
+    #[test]
+    fn format_dry_run_failure_uses_decoded_variant_when_decode_succeeds() {
+        let err = DispatchError::BadOrigin;
+        let decoded = Ok(ErrorVariant::Generic(GenericError::from_message(
+            "boom".into(),
+        )));
+        assert_eq!(
+            format_dry_run_failure("Upload", &err, &decoded),
+            "Upload dry-run failed: boom",
+        );
+    }
+
+    #[test]
+    fn format_dry_run_failure_falls_back_to_raw_dispatch_error_on_decode_failure() {
+        let err = DispatchError::BadOrigin;
+        let decoded = Err(anyhow::anyhow!("metadata mismatch"));
+        let out = format_dry_run_failure("Call", &err, &decoded);
+        assert!(out.starts_with("Call dry-run failed: BadOrigin"), "{out}");
+        assert!(
+            out.contains("(failed to decode: metadata mismatch)"),
+            "{out}"
+        );
+    }
 }

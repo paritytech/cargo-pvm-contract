@@ -1,0 +1,80 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidCalldata",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "CalldataTooLarge",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnknownSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NonPayableValueReceived",
+      "type": "error"
+    }
+  ],
+  "storageLayout": {
+    "storage": [
+      {
+        "label": "total_supply",
+        "offset": 0,
+        "slot": "0",
+        "type": "uint256"
+      },
+      {
+        "label": "name",
+        "offset": 0,
+        "slot": "1",
+        "type": "string"
+      },
+      {
+        "label": "blob",
+        "offset": 0,
+        "slot": "2",
+        "type": "bytes"
+      },
+      {
+        "label": "balances",
+        "offset": 0,
+        "slot": "3",
+        "type": "mapping(address,uint256)"
+      },
+      {
+        "label": "bios",
+        "offset": 0,
+        "slot": "4",
+        "type": "mapping(address,string)"
+      },
+      {
+        "label": "attachments",
+        "offset": 0,
+        "slot": "5",
+        "type": "mapping(uint256,bytes)"
+      },
+      {
+        "label": "nested",
+        "offset": 0,
+        "slot": "6",
+        "type": "mapping(address,mapping(address,uint256))"
+      }
+    ]
+  }
+}

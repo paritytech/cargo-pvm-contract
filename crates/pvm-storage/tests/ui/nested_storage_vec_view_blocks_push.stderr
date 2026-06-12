@@ -1,0 +1,17 @@
+warning: variable does not need to be mutable
+  --> tests/ui/nested_storage_vec_view_blocks_push.rs:21:13
+   |
+21 |         let mut inner = self.matrix.get(0);
+   |             ----^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+error[E0596]: cannot borrow data in dereference of `pvm_storage::Ref<'_, StorageVec<Uint<256, 4>>>` as mutable
+  --> tests/ui/nested_storage_vec_view_blocks_push.rs:22:9
+   |
+22 |         inner.push(&U256::from(9999));
+   |         ^^^^^ cannot borrow as mutable
+   |
+   = help: trait `DerefMut` is required to modify through a dereference, but it is not implemented for `pvm_storage::Ref<'_, StorageVec<Uint<256, 4>>>`

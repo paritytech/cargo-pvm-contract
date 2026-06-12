@@ -2,3 +2,4 @@ target
 .opencode
 examples/*/target/
 *.polkavm
+.worktrees

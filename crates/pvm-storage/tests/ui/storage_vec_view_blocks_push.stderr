@@ -1,0 +1,10 @@
+error[E0596]: cannot borrow `self.entries` as mutable, as it is behind a `&` reference
+  --> tests/ui/storage_vec_view_blocks_push.rs:20:9
+   |
+20 |         self.entries.push(&U256::from(42));
+   |         ^^^^^^^^^^^^ `self` is a `&` reference, so the data it refers to cannot be borrowed as mutable
+   |
+help: consider changing this to be a mutable reference
+   |
+17 |     fn try_push_from_view(&mut self) {
+   |                            +++

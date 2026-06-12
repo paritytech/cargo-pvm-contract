@@ -9,7 +9,7 @@ description = "Builder pattern DSL for PVM smart contracts (no proc macros)"
 [dependencies]
 pvm-contract-types = { path = "../pvm-contract-types" }
 pallet-revive-uapi = { workspace = true, default-features = false }
-polkavm-derive = { version = "0.31.0" }
+polkavm-derive = { workspace = true }
 ruint = { version = "1.17", default-features = false }
 
 [features]

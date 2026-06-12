@@ -11,6 +11,7 @@ publish = true
 anyhow = { workspace = true }
 polkavm-linker = { workspace = true }
 pvm-contract-types = { path = "../pvm-contract-types", default-features = false, features = ["abi-gen"] }
+syn = { workspace = true }
 toml_edit = { workspace = true }
 serde_json = { workspace = true }
 

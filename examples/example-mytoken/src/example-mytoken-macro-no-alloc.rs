@@ -28,11 +28,10 @@ mod my_token {
 
     #[derive(Debug, pvm_contract_sdk::SolError)]
     pub struct InsufficientBalance;
-
-    pvm_contract_sdk::sol_revert_enum! {
-        pub enum TokenError {
-            InsufficientBalance(InsufficientBalance),
-        }
+    #[derive(Debug, pvm_contract_sdk::SolError)]
+    pub enum TokenError {
+        InsufficientBalance(InsufficientBalance),
+        SolDefaultError(pvm_contract_sdk::SolDefaultError),
     }
 
     pub struct MyToken;
@@ -49,7 +48,10 @@ mod my_token {
             let mut supply_bytes = [0u8; 32];
             let mut supply_slice = &mut supply_bytes[..];
 
-            match self.host().get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &key, &mut supply_slice)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
                 Err(_) => U256::ZERO,
             }
@@ -62,7 +64,10 @@ mod my_token {
             let mut balance_bytes = [0u8; 32];
             let mut balance_slice = &mut balance_bytes[..];
 
-            match self.host().get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &key, &mut balance_slice)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(balance_bytes),
                 Err(_) => U256::ZERO,
             }

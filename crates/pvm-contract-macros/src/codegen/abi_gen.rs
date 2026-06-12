@@ -3,7 +3,7 @@ use quote::quote;
 
 use super::contract::{ParsedContract, SlotField};
 use super::dispatch::{MethodInfo, StateMutability};
-use super::sol_storage::{generate_layout_entry, layout_json_from_entries};
+use super::storage_layout::generate_layout_emit;
 
 /// Generate both the in-module ABI helper and the top-level `main()`.
 ///
@@ -13,10 +13,16 @@ use super::sol_storage::{generate_layout_entry, layout_json_from_entries};
 /// When a `.sol` file is provided, the builder derives the ABI from the Solidity
 /// interface at build time. However, `storageLayout` is always Rust-side, so
 /// `main()` is still generated when `#[slot]` fields exist.
+///
+/// `no_main` suppresses the `fn main()` emission entirely — used when the
+/// caller (e.g. an integration test or a library crate) supplies its own
+/// `main` / test harness and just needs the `__abi_json()` /
+/// `__storage_layout_json()` accessors.
 pub fn generate_abi_gen(
     parsed: &ParsedContract,
     has_sol_path: bool,
     slot_fields: &[SlotField],
+    no_main: bool,
 ) -> (TokenStream, TokenStream) {
     if has_sol_path && slot_fields.is_empty() {
         // .sol path, no storage: builder gets everything from the .sol file.
@@ -28,17 +34,21 @@ pub fn generate_abi_gen(
         // main() to output storage layout from the Rust side.
         let mod_name = &parsed.mod_name;
         let helper = storage_layout_helper(slot_fields);
-        let main_fn = quote! {
-            #[cfg(feature = "abi-gen")]
-            fn main() {
-                ::std::println!("{}", #mod_name::__storage_layout_json());
+        let main_fn = if no_main {
+            quote! {}
+        } else {
+            quote! {
+                #[cfg(feature = "abi-gen")]
+                fn main() {
+                    ::std::println!("{}", #mod_name::__storage_layout_json());
+                }
             }
         };
         return (helper, main_fn);
     }
 
     // Non-.sol path: generate both ABI and optional storage layout.
-    match generate_abi_gen_impl(parsed, slot_fields) {
+    match generate_abi_gen_impl(parsed, slot_fields, no_main) {
         Ok((helper, main_fn)) => (helper, main_fn),
         Err(err) => {
             let err = err.to_compile_error();
@@ -48,28 +58,64 @@ pub fn generate_abi_gen(
 }
 
 /// Generate a module-level `__storage_layout_json()` function that builds the
-/// JSON layout from the `#[slot(N)]` fields on the contract struct.
+/// JSON layout from the storage fields on the contract struct.
+///
+/// Auto-numbered slots reference a chain of `__pvm_storage_slot_*` const items
+/// declared inside the helper fn (mirroring the chain produced for the
+/// `this` construction in `deploy()`/`call()`). This way the slot value is
+/// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
+/// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
+/// fields run through [`generate_layout_emit`] with an empty prefix —
+/// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
+/// `#[storage]` sub-structs dispatch through `StorageLayoutEmit::emit_entries`
+/// to recursively flatten their leaves with dotted labels.
 fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
-    let layout_pushes: Vec<TokenStream> = slot_fields
+    use super::contract::Slot;
+
+    let auto_slot_consts = super::contract::auto_slot_consts(slot_fields);
+
+    let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
         .map(|sf| {
-            let entry = generate_layout_entry(&sf.name.to_string(), &sf.ty, sf.slot);
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
+                Slot::Auto => {
+                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", &sf.name);
+                    (quote! { #const_ident.slot }, quote! { #const_ident.offset })
+                }
+            };
+            let emit = generate_layout_emit(
+                &sf.name.to_string(),
+                &sf.ty,
+                slot_expr,
+                offset_expr,
+                quote! { "" },
+            );
             let cfgs = &sf.cfg_attrs;
             quote! {
                 #(#cfgs)*
-                entries.push(#entry);
+                {
+                    #emit
+                }
             }
         })
         .collect();
-    let json_assembly = layout_json_from_entries();
 
+    // `storage` owns the Vec. `entries` is a `&mut Vec` alias used by the
+    // generated `layout_emits` so leaf pushes (`entries.push(...)`) and trait
+    // recursions (`StorageLayoutEmit::emit_entries(..., entries)`) compile
+    // identically inside both this function and the per-`#[storage]` impl.
     quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
         pub fn __storage_layout_json() -> ::std::string::String {
-            let mut entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> = ::std::vec::Vec::new();
-            #(#layout_pushes)*
-            #json_assembly
+            #(#auto_slot_consts)*
+            let mut storage: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                ::std::vec::Vec::new();
+            let entries = &mut storage;
+            #(#layout_emits)*
+            let layout = ::pvm_contract_sdk::StorageLayout { storage };
+            ::pvm_contract_sdk::storage_layout_to_json(&layout)
         }
     }
 }
@@ -77,6 +123,7 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
 fn generate_abi_gen_impl(
     parsed: &ParsedContract,
     slot_fields: &[SlotField],
+    no_main: bool,
 ) -> syn::Result<(TokenStream, TokenStream)> {
     let constructor_entry = if parsed.has_constructor {
         let ctor_params: Vec<TokenStream> = parsed
@@ -131,7 +178,7 @@ fn generate_abi_gen_impl(
         .iter()
         .map(|err_ty| {
             quote! {
-                for __sig in <#err_ty as ::pvm_contract_sdk::SolRevert>::error_signatures() {
+                for __sig in <#err_ty as ::pvm_contract_sdk::SolError>::error_signatures() {
                     let Some(__paren) = __sig.find('(') else { continue; };
                     if !__sig.ends_with(')') { continue; }
                     if __seen_errors.contains(__sig) {
@@ -250,7 +297,9 @@ fn generate_abi_gen_impl(
         quote! { #helper #sh }
     };
 
-    let main_fn = if slot_fields.is_empty() {
+    let main_fn = if no_main {
+        quote! {}
+    } else if slot_fields.is_empty() {
         quote! {
             #[cfg(feature = "abi-gen")]
             fn main() {
@@ -340,7 +389,7 @@ mod tests {
             event_idents: vec![],
         };
 
-        let (helper, main_fn) = generate_abi_gen(&parsed, true, &[]);
+        let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
         assert!(helper.is_empty());
         assert!(main_fn.is_empty());
     }
@@ -464,7 +513,7 @@ mod tests {
             precomputed_selector: None,
         };
         let parsed = parsed_contract_with_method(method);
-        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
+        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
         let s = helper.to_string();
         assert!(
             s.contains(&mutability_token("view")),
@@ -485,7 +534,7 @@ mod tests {
             precomputed_selector: None,
         };
         let parsed = parsed_contract_with_method(method);
-        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[]);
+        let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
         let s = helper.to_string();
         assert!(
             s.contains(&mutability_token("pure")),
@@ -546,10 +595,10 @@ mod tests {
         let slot_fields = vec![SlotField {
             name: syn::parse_str("total_supply").unwrap(),
             ty: syn::parse_str("Lazy<U256>").unwrap(),
-            slot: 0,
+            slot: crate::codegen::contract::Slot::Explicit(0),
             cfg_attrs: vec![],
         }];
-        let (helper, main_fn) = generate_abi_gen(&parsed, true, &slot_fields);
+        let (helper, main_fn) = generate_abi_gen(&parsed, true, &slot_fields, false);
         // Helper contains the __storage_layout_json wrapper; main() calls it.
         assert!(
             !helper.is_empty(),
@@ -593,7 +642,7 @@ mod tests {
             event_idents: vec![],
         };
 
-        let (helper, main_fn) = generate_abi_gen(&parsed, false, &[]);
+        let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
         let helper_str = helper.to_string();
         let main_str = main_fn.to_string();
         assert!(
@@ -639,10 +688,10 @@ mod tests {
         let slot_fields = vec![SlotField {
             name: syn::parse_str("balances").unwrap(),
             ty: syn::parse_str("Mapping<Address, U256>").unwrap(),
-            slot: 1,
+            slot: crate::codegen::contract::Slot::Explicit(1),
             cfg_attrs: vec![],
         }];
-        let (helper, main_fn) = generate_abi_gen(&parsed, false, &slot_fields);
+        let (helper, main_fn) = generate_abi_gen(&parsed, false, &slot_fields, false);
         let helper_str = helper.to_string();
         let main_str = main_fn.to_string();
         assert!(
@@ -665,7 +714,7 @@ mod tests {
         let slot_fields = vec![SlotField {
             name: syn::parse_str("data").unwrap(),
             ty: syn::parse_str("Lazy<U256>").unwrap(),
-            slot: 0,
+            slot: crate::codegen::contract::Slot::Explicit(0),
             cfg_attrs: vec![cfg_attr],
         }];
         let helper = storage_layout_helper(&slot_fields);

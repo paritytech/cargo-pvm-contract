@@ -1,0 +1,74 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidCalldata",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "CalldataTooLarge",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnknownSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NonPayableValueReceived",
+      "type": "error"
+    }
+  ],
+  "storageLayout": {
+    "storage": [
+      {
+        "label": "erc20.total_supply",
+        "offset": 0,
+        "slot": "0",
+        "type": "uint256"
+      },
+      {
+        "label": "erc20.balances",
+        "offset": 0,
+        "slot": "1",
+        "type": "mapping(address,uint256)"
+      },
+      {
+        "label": "erc20.allowances",
+        "offset": 0,
+        "slot": "2",
+        "type": "mapping(address,mapping(address,uint256))"
+      },
+      {
+        "label": "metadata.name",
+        "offset": 0,
+        "slot": "3",
+        "type": "string"
+      },
+      {
+        "label": "metadata.symbol",
+        "offset": 0,
+        "slot": "4",
+        "type": "string"
+      },
+      {
+        "label": "paused",
+        "offset": 0,
+        "slot": "5",
+        "type": "bool"
+      }
+    ]
+  }
+}

@@ -15,7 +15,7 @@
 //! ```toml
 //! [dependencies]
 //! pvm-contract-sdk = "0.3"
-//! polkavm-derive = "0.31"
+//! polkavm-derive = "0.34"
 //! ```
 //!
 //! ```ignore
@@ -44,7 +44,7 @@ extern crate self as pvm_contract_sdk;
 
 pub use pvm_contract_macros::{
     SolError, SolEvent, SolType, abi_import, constructor, contract, fallback, method, payable,
-    receive,
+    receive, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -94,17 +94,22 @@ pub use pvm_contract_types::{
     SolEncode,
     SolError,
     SolEvent,
-    SolRevert,
     StaticDecode,
     StaticEncodedLen,
+    StorageArrayElement,
+    StorageDecode,
+    StorageEncode,
     StorageFlags,
+    StoragePackable,
     U256,
+    // Checked decode-offset helpers (used by `#[derive(SolType)]` codegen)
+    checked_sum,
     const_keccak256,
     const_selector,
     // Framework errors
     framework_errors,
     keccak256,
-    sol_revert_enum,
+    read_word_offset,
     value_transferred_is_nonzero,
 };
 
@@ -119,12 +124,21 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
-// Typed storage helpers. `Lazy`/`Mapping` are the declarable field types for
-// `#[slot(N)]` fields on the contract struct.
-pub use pvm_storage::{AsStorageKey, Lazy, Mapping, StorageKey};
+// Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
+// 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones
+// (`String`, `Bytes`, structs with dynamic fields) through their
+// `StorageEncode`/`StorageDecode` impls. `StorageVec<T>` models Solidity's
+// `T[]` dynamic arrays. `Vec<u8>` is intentionally not a storage value —
+// use `Bytes` for `bytes`-shaped storage (`Vec<u8>` is ABI `uint8[]`, a
+// different on-chain layout). `StorageComponent` is the trait typed
+// storage helpers implement to participate in auto-numbered slot layout.
+pub use pvm_storage::{
+    AsStorageKey, LayoutStep, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey, StorageVec,
+    layout_step,
+};
 
 #[cfg(feature = "abi-gen")]
-pub use pvm_storage::StorageLayoutType;
+pub use pvm_storage::{StorageLayoutEmit, join_label};
 
 #[cfg(feature = "alloc")]
 pub use pvm_contract_types::Bytes;
@@ -188,9 +202,62 @@ pub mod prelude {
         SolEncode,
         // Error traits
         SolError,
-        SolRevert,
         StaticEncodedLen,
         StorageFlags,
         U256,
     };
+}
+
+#[cfg(test)]
+#[cfg(feature = "alloc")]
+mod test {
+    extern crate alloc;
+    use super::*;
+    fn assert_decode_at_handles_offset<T: SolError + core::fmt::Debug + PartialEq>(value: T) {
+        let needed = value.encoded_size();
+        const PREFIX: usize = 16;
+        let mut buf = alloc::vec![0xAAu8; PREFIX + needed];
+        let written = value.encode_to(&mut buf[PREFIX..]);
+        assert_eq!(
+            written, needed,
+            "encode_to length disagrees with encoded_size"
+        );
+
+        let decoded = T::decode_at(&buf, PREFIX)
+            .expect("decode_at returned DecodeError")
+            .expect("selector did not match at offset");
+        assert_eq!(decoded, value, "decode_at(input, offset) did not roundtrip");
+    }
+
+    #[test]
+    fn panic_offset() {
+        assert_decode_at_handles_offset(Panic::Overflow);
+    }
+    #[test]
+    fn call_error_offset() {
+        assert_decode_at_handles_offset(CallError::TransferFailed);
+    }
+    #[test]
+    fn decode_error_offset() {
+        assert_decode_at_handles_offset(DecodeError);
+    }
+    #[test]
+    fn revert_string_offset() {
+        assert_decode_at_handles_offset(RevertString("msg".into()));
+    }
+    #[test]
+    fn custom_struct_offset() {
+        #[derive(Debug, PartialEq, SolError)]
+        pub struct InsufficientBalance {
+            account: Address,
+            required: U256,
+            available: U256,
+        }
+
+        assert_decode_at_handles_offset(InsufficientBalance {
+            account: Address([0x42; 20]),
+            required: U256::from(1000u64),
+            available: U256::from(500u64),
+        });
+    }
 }

@@ -1,0 +1,14 @@
+error[E0599]: the function or associated item `new` exists for struct `Lazy<Vec<Uint<256, 4>>>`, but its trait bounds were not satisfied
+  --> tests/ui/lazy_of_vec_non_u8_rejected.rs:12:44
+   |
+12 |     let _bad = unsafe { Lazy::<Vec<U256>>::new(StorageKey::from_slot(0), 0, host) };
+   |                                            ^^^ function or associated item cannot be called on `Lazy<Vec<Uint<256, 4>>>` due to unsatisfied trait bounds
+   |
+  ::: $RUST/alloc/src/vec/mod.rs
+   |
+   | pub struct Vec<T, #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator = Global> {
+   | ------------------------------------------------------------------------------------------------ doesn't satisfy `Vec<Uint<256, 4>>: StorageDecode` or `Vec<Uint<256, 4>>: StorageEncode`
+   |
+   = note: the following trait bounds were not satisfied:
+           `Vec<Uint<256, 4>>: StorageEncode`
+           `Vec<Uint<256, 4>>: StorageDecode`

@@ -1,3 +1,11 @@
+error[E0133]: call to unsafe function `Lazy::<T>::new` is unsafe and requires unsafe block
+ --> tests/ui/lazy_set_requires_mut.rs:8:16
+  |
+8 |     let lazy = Lazy::<U256>::new(StorageKey::from_slot(0), 0, host);
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+  |
+  = note: consult the function's documentation for information on how to avoid undefined behavior
+
 error[E0596]: cannot borrow `lazy` as mutable, as it is not declared as mutable
  --> tests/ui/lazy_set_requires_mut.rs:9:5
   |
@@ -6,5 +14,5 @@ error[E0596]: cannot borrow `lazy` as mutable, as it is not declared as mutable
   |
 help: consider changing this to be mutable
   |
-8 |     let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), host);
+8 |     let mut lazy = Lazy::<U256>::new(StorageKey::from_slot(0), 0, host);
   |         +++

@@ -9,16 +9,18 @@ use super::decode::{calculate_min_input_size, generate_decode_params};
 pub(super) fn generate_revert_encoding_boundary(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
-            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data_len(&e);
+            use ::pvm_contract_sdk::SolError;
+            let __revert_len = e.encoded_size();
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
-            ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            e.encode_to(&mut __revert_buf);
             ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
                 ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf);
         }
     } else {
         quote! {
+            use ::pvm_contract_sdk::SolError;
             let mut __revert_buf = [0u8; 256];
-            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            let __revert_len = e.encode_to(&mut __revert_buf);
             ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
                 ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
         }
@@ -33,9 +35,10 @@ pub(super) fn generate_revert_encoding_boundary(use_alloc: bool) -> TokenStream 
 fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
-            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data_len(&e);
+            use ::pvm_contract_sdk::SolError;
+            let __revert_len = e.encoded_size();
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
-            ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            e.encode_to(&mut __revert_buf);
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
                 ::pvm_contract_sdk::ReturnFlags::REVERT,
@@ -46,8 +49,9 @@ fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
         }
     } else {
         quote! {
+            use ::pvm_contract_sdk::SolError;
             let mut __revert_buf = [0u8; 256];
-            let __revert_len = ::pvm_contract_sdk::SolRevert::revert_data(&e, &mut __revert_buf);
+            let __revert_len = e.encode_to(&mut __revert_buf);
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
                 ::pvm_contract_sdk::ReturnFlags::REVERT,

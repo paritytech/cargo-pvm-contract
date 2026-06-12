@@ -1,7 +1,5 @@
 #![cfg_attr(all(not(feature = "abi-gen"), not(test)), no_main, no_std)]
 
-use pvm_contract_sdk::U256;
-
 {% if let Some(sol_file_name) = sol_file_name %}
 {% if use_alloc -%}
 #[pvm_contract_sdk::contract("{{ sol_file_name }}", allocator = "bump")]
@@ -17,7 +15,11 @@ use pvm_contract_sdk::U256;
 {% endif %}
 mod contract {
     use super::*;
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::prelude::*;
+    {% if use_alloc -%}
+    use pvm_contract_sdk::Bytes;
+    use alloc::{string::String, vec::Vec};
+    {% endif -%}
 
     pub struct Contract;
 
@@ -35,8 +37,8 @@ mod contract {
 {% if let Some(sol_file_name) = sol_file_name %}
          // TODO: Implement the following methods from {{ sol_file_name }}:
 {% for func in functions %}
-         #[pvm_contract_sdk::method]
-         pub fn {{ func.name_snake }}(&self, {{ func.params }}) -> {{ func.return_type }} {
+         {{ func.payable_attr }}#[pvm_contract_sdk::method]
+         pub fn {{ func.name_snake }}({% if !func.receiver.is_empty() %}{{ func.receiver }}{% if !func.params.is_empty() %}, {% endif %}{% endif %}{{ func.params }}) -> {{ func.return_type }} {
              todo!()
          }
 {% endfor %}

@@ -33,7 +33,7 @@ All values are encoded as 32-byte words, big-endian, right-aligned (for integers
 | `int128`            | `i128`                                 | Two's complement                                         |
 | `int256` / `int`    | `I256`                                 | Two's complement                                         |
 | `bytes1`..`bytes32` | `[u8; N]`                              | Left-aligned, zero-padded                                |
-| `bytes`             | `Vec<u8>` (alloc) / `&[u8]` (no_alloc) | Dynamic                                                  |
+| `bytes`             | `Bytes` (alloc) / `&[u8]` (no_alloc)   | Dynamic. `Vec<u8>` is reserved for `uint8[]` — same Rust shape, different on-chain layout. |
 | `string`            | `String` (alloc) / `&str` (no_alloc)   | Dynamic, UTF-8                                           |
 | `T[]`               | `Vec<T>`                               | Dynamic array (alloc only)                               |
 | `T[N]`              | `[T; N]`                               | Fixed-size array                                         |
