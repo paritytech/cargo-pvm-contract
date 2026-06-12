@@ -1,3 +1,5 @@
+#![doc = include_str!("../proc-macros.md")]
+
 extern crate proc_macro2;
 
 mod abi_import;
