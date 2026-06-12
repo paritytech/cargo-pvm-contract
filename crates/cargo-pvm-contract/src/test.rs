@@ -45,9 +45,12 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
         .arg(&host_target)
         .env_remove("CARGO_BUILD_TARGET");
 
+    let mut features = vec!["test".to_owned()];
+
     if !args.features.is_empty() {
-        cmd.arg("--features").arg(args.features.join(","));
+        features = features.into_iter().chain(args.features).collect();
     }
+    cmd.arg("--features").arg(features.join(","));
 
     if !args.extra.is_empty() {
         cmd.arg("--").args(&args.extra);

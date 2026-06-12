@@ -1118,16 +1118,16 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         Some(AllocatorKind::Pico) => {
             let allocator_size = args.allocator_size;
             quote! {
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 extern crate alloc;
 
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 use alloc::vec;
 
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 use alloc::vec::Vec;
 
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 #[global_allocator]
                 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
                     static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
@@ -1141,16 +1141,16 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         Some(AllocatorKind::Bump) => {
             let allocator_size = args.allocator_size;
             quote! {
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 extern crate alloc;
 
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 use alloc::vec;
 
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 use alloc::vec::Vec;
 
-                #[cfg(not(feature = "abi-gen"))]
+                #[cfg(all(not(feature = "abi-gen"), not(feature = "test")))]
                 #[global_allocator]
                 static ALLOC: pvm_bump_allocator::BumpAllocator<#allocator_size> =
                     pvm_bump_allocator::BumpAllocator::new();
@@ -1161,7 +1161,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let panic_handler = quote! {
         #[cfg(all(
-            not(feature = "abi-gen"),
+            all(not(feature = "abi-gen"), not(feature = "test")),
             any(target_arch = "riscv32", target_arch = "riscv64")
         ))]
         #[panic_handler]
