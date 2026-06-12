@@ -667,6 +667,24 @@ impl SolError for Panic {
     }
 }
 
+/// Encode `code` as a Solidity `Panic(uint256)` and revert with it.
+///
+/// Diverges on both targets: on `riscv64` it is the `return_value` syscall
+/// with [`ReturnFlags::REVERT`]; on host targets it records the bytes on the
+/// mock and diverges via [`HostApi::revert`]. This is the single shared
+/// encoder for storage-layer panics so the on-chain bytes and
+/// [`Panic::decode_at`] stay in lock-step.
+///
+/// `#[cold]`/`#[inline(never)]` keep one out-of-line copy across all call
+/// sites, minimizing bytecode duplication.
+#[cold]
+#[inline(never)]
+pub fn panic_revert(host: &Host, code: Panic) -> ! {
+    let mut buf = [0u8; 36];
+    let n = code.encode_to(&mut buf);
+    host.revert(ReturnFlags::REVERT, &buf[..n])
+}
+
 /// Pre-built error enum for methods that only use standard Solidity errors.
 ///
 /// Wraps [`Panic`] (overflow, div-by-zero) and [`RevertString`] (require-style messages).

@@ -1281,10 +1281,20 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         ))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
-            unsafe {
-                core::arch::asm!("unimp");
-                core::hint::unreachable_unchecked()
-            }
+            // Revert with a generic Solidity `Panic(0x00)` so off-chain callers
+            // get decodable revert data instead of a bare trap. This is the
+            // catch-all for Rust panics not already routed through an explicit
+            // `panic_revert` (e.g. storage bounds checks emit specific codes).
+            // `panic_revert` issues the `return_value` syscall and diverges.
+            //
+            // NOTE: with `-Cpanic=immediate-abort` the toolchain may lower
+            // panics directly to a trap without invoking this handler; in that
+            // case this path is inert. The explicit `panic_revert` call sites
+            // (storage) do not depend on the handler and always emit ABI data.
+            ::pvm_contract_sdk::panic_revert(
+                &::pvm_contract_sdk::Host::new(),
+                ::pvm_contract_sdk::Panic::Generic,
+            )
         }
     };
 

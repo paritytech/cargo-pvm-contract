@@ -113,6 +113,8 @@ pub use pvm_contract_types::{
     keccak256,
     // Storage-layout walker wrapper (StorageEncode family) used by codegen
     layout_step_encode,
+    // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
+    panic_revert,
     read_word_offset,
     value_transferred_is_nonzero,
 };

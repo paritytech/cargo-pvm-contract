@@ -10,13 +10,23 @@ use alloc::vec::Vec;
 use pvm_contract_types::Address;
 #[cfg(feature = "alloc")]
 use pvm_contract_types::Bytes;
-use pvm_contract_types::MockHostBuilder;
+use pvm_contract_types::{MockHost, MockHostBuilder};
 use ruint::aliases::U256;
 
 /// Fresh isolated `Host` backed by a new `MockHost` in an `Rc`.
 /// Clone the returned handle to share storage state between cells.
 fn h() -> Host {
     Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
+}
+
+/// Like [`h`], but also returns the concrete [`MockHost`] handle so the test
+/// can assert on reverts (`expect_panic`/`expect_revert`) or seed/read raw
+/// storage. The `MockHost` shares state with the `Host` (both wrap the same
+/// `Rc<RefCell<_>>`), so writes through the contract are visible on the handle.
+fn host_and_mock() -> (Host, MockHost) {
+    let mock = MockHostBuilder::new().build();
+    let host = Host::from_dyn(Rc::new(mock.clone()));
+    (host, mock)
 }
 
 // --- Lazy roundtrips ---
@@ -2164,17 +2174,62 @@ fn storage_vec_iter_reverse() {
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn storage_vec_get_oob_panics() {
-    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
-    let _ = v.get(0);
+fn storage_vec_get_oob_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    assert_eq!(
+        mock.expect_panic(|| {
+            let _ = v.get(0);
+        }),
+        Panic::OutOfBoundsAccess
+    );
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn storage_vec_set_oob_panics() {
-    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
-    v.set(0, &U256::from(1u64));
+fn storage_vec_set_oob_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    assert_eq!(
+        mock.expect_panic(|| {
+            v.set(0, &U256::from(1u64));
+        }),
+        Panic::OutOfBoundsAccess
+    );
+}
+
+#[test]
+fn storage_vec_len_corrupt_high_byte_reverts_panic_0x41() {
+    // Seed the length slot with a value whose upper 24 bytes are non-zero —
+    // i.e. a length > u64::MAX, only reachable via foreign/raw writes or a
+    // layout collision. `len()` must revert with Panic(0x41) rather than
+    // silently truncating or bricking.
+    let (host, mock) = host_and_mock();
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    let mut corrupt = [0u8; 32];
+    corrupt[0] = 1; // non-zero in the high 24 bytes
+    mock.set_raw_storage(v.root.as_bytes().to_vec(), corrupt.to_vec());
+    assert_eq!(
+        mock.expect_panic(|| {
+            let _ = v.len();
+        }),
+        Panic::OOM
+    );
+}
+
+#[test]
+fn storage_vec_push_at_max_len_reverts_panic_0x41() {
+    // Seed the length slot to u64::MAX so the next push's `len + 1` overflows.
+    let (host, mock) = host_and_mock();
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    let mut max_len = [0u8; 32];
+    max_len[24..32].copy_from_slice(&u64::MAX.to_be_bytes());
+    mock.set_raw_storage(v.root.as_bytes().to_vec(), max_len.to_vec());
+    assert_eq!(
+        mock.expect_panic(|| {
+            v.push(&U256::from(1u64));
+        }),
+        Panic::OOM
+    );
 }
 
 #[test]
@@ -3204,20 +3259,30 @@ fn nested_storage_vec_clear_recursively_clears_all_inners() {
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn nested_storage_vec_get_panics_on_oob() {
-    let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), h()) };
+fn nested_storage_vec_get_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
     // len == 0: any index is OOB.
-    let _ = outer.get(0);
+    assert_eq!(
+        mock.expect_panic(|| {
+            let _ = outer.get(0);
+        }),
+        Panic::OutOfBoundsAccess
+    );
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn nested_storage_vec_entry_panics_on_oob() {
-    let mut outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), h()) };
+fn nested_storage_vec_entry_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let mut outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
     outer.grow();
     // len == 1: index 1 is OOB.
-    let _ = outer.entry(1);
+    assert_eq!(
+        mock.expect_panic(|| {
+            let _ = outer.entry(1);
+        }),
+        Panic::OutOfBoundsAccess
+    );
 }
 
 #[test]

@@ -93,6 +93,11 @@ pub enum Halt {
     Terminate { beneficiary: [u8; 20] },
     /// Contract called [`HostApi::consume_all_gas`].
     ConsumeAllGas,
+    /// Contract called [`HostApi::revert`]. The `(flags, data)` payload is
+    /// recorded into the mock's [`ReturnValue`] (read it via
+    /// [`MockHost::take_return_value`]); this variant is just the typed marker
+    /// that distinguishes a revert from the other halts.
+    Revert,
 }
 
 /// Typed panic payload used by [`MockHost`] to halt execution on host targets.
@@ -238,6 +243,48 @@ impl MockHost {
                 Err(other) => resume_unwind(other),
             },
         }
+    }
+
+    /// Run `f`, asserting it reverted via [`HostApi::revert`], and return the
+    /// captured [`ReturnValue`] (the ABI-encoded revert `(flags, data)`).
+    ///
+    /// Panics the test with a clear message if `f` returned normally or halted
+    /// some other way (terminate / consume-all-gas). Genuine bug panics from
+    /// `f` still propagate (via [`Self::run_until_halt`]). Built on
+    /// `run_until_halt`, so an expected revert prints a panic line to stderr —
+    /// same as the other halts; this is benign test noise.
+    ///
+    /// Use this for custom-error / `RevertString` reverts you decode yourself;
+    /// for the standard `Panic(uint256)` case prefer [`Self::expect_panic`].
+    pub fn expect_revert<F: FnOnce()>(&self, f: F) -> ReturnValue {
+        match self.run_until_halt(f) {
+            Some(Halt::Revert) => self
+                .take_return_value()
+                .expect("revert should have recorded a ReturnValue"),
+            Some(other) => panic!("expected a revert, but the closure halted via {other:?}"),
+            None => panic!("expected a revert, but the closure returned normally"),
+        }
+    }
+
+    /// Run `f`, asserting it reverted with Solidity `Panic(uint256)` data, and
+    /// return the decoded [`Panic`](crate::Panic) variant. Assert on the
+    /// variant, e.g. `assert_eq!(mock.expect_panic(|| v.get(0)),
+    /// Panic::OutOfBoundsAccess)`.
+    ///
+    /// Panics the test if `f` did not revert (see [`Self::expect_revert`]), if
+    /// the revert flag is missing, or if the data is not a decodable
+    /// `Panic(uint256)`.
+    pub fn expect_panic<F: FnOnce()>(&self, f: F) -> crate::Panic {
+        use crate::SolError;
+        let rv = self.expect_revert(f);
+        assert!(
+            rv.flags.contains(ReturnFlags::REVERT),
+            "revert flags missing REVERT: {:?}",
+            rv.flags
+        );
+        crate::Panic::decode_at(&rv.data, 0)
+            .expect("malformed Panic(uint256) data")
+            .expect("revert data was not a Panic(uint256) selector")
     }
 }
 
@@ -634,6 +681,19 @@ impl HostApi for MockHost {
         std::panic::panic_any(HaltPanic(Halt::Terminate {
             beneficiary: *beneficiary,
         }))
+    }
+
+    fn revert(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+        // Record the payload first so `take_return_value()` can assert the
+        // exact ABI bytes — same recording `return_value` does. The
+        // `borrow_mut` is a statement-scoped temporary, dropped at the `;`
+        // before `panic_any` unwinds, so no `MockState` borrow is held across
+        // the unwind.
+        self.state.borrow_mut().return_value = Some(ReturnValue {
+            flags,
+            data: data.to_vec(),
+        });
+        std::panic::panic_any(HaltPanic(Halt::Revert))
     }
 }
 
@@ -1271,5 +1331,34 @@ mod tests {
             outer.is_err(),
             "non-halt panic must propagate out of run_until_halt"
         );
+    }
+
+    #[test]
+    fn expect_panic_decodes_panic_code() {
+        let mock = MockHostBuilder::new().build();
+        let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
+        let got = mock.expect_panic(|| crate::panic_revert(&host, crate::Panic::Overflow));
+        assert_eq!(got, crate::Panic::Overflow);
+    }
+
+    #[test]
+    fn expect_revert_returns_abi_bytes() {
+        let mock = MockHostBuilder::new().build();
+        let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
+        let rv = mock.expect_revert(|| {
+            crate::panic_revert(&host, crate::Panic::OutOfBoundsAccess)
+        });
+        assert!(rv.flags.contains(ReturnFlags::REVERT));
+        // Panic(uint256) selector + code byte.
+        assert_eq!(&rv.data[0..4], &[0x4e, 0x48, 0x7b, 0x71]);
+        assert_eq!(rv.data[35], 0x32);
+        assert_eq!(rv.data.len(), 36);
+    }
+
+    #[test]
+    #[should_panic(expected = "expected a revert")]
+    fn expect_revert_panics_when_closure_returns_normally() {
+        let mock = MockHostBuilder::new().build();
+        mock.expect_revert(|| { /* no revert */ });
     }
 }

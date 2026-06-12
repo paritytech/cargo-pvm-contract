@@ -215,6 +215,19 @@ pub trait HostApi {
     ///
     /// Same divergence semantics as [`Self::consume_all_gas`].
     fn terminate(&self, beneficiary: &[u8; 20]) -> !;
+
+    /// Revert with ABI-encoded return `data`, mid-frame. Unlike
+    /// [`Self::return_value`], this **diverges on both targets** so it can be
+    /// called from inside a value-returning method (e.g. a storage getter)
+    /// that has no value to return on the error path.
+    ///
+    /// On `riscv64` this is the `return_value` syscall with the
+    /// [`ReturnFlags::REVERT`] flag and never returns. On host targets the mock
+    /// records the `(flags, data)` pair (so the test can inspect the exact ABI
+    /// bytes via [`MockHost::take_return_value`](super::MockHost::take_return_value))
+    /// and then diverges via a typed panic that
+    /// [`MockHost::run_until_halt`](super::MockHost::run_until_halt) catches.
+    fn revert(&self, flags: ReturnFlags, data: &[u8]) -> !;
 }
 
 /// Real host backend for PolkaVM contracts.
@@ -458,6 +471,10 @@ impl HostApi for PolkaVmHost {
     fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
         pallet_revive_uapi::HostFnImpl::terminate(beneficiary)
     }
+    #[inline(always)]
+    fn revert(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+        pallet_revive_uapi::HostFnImpl::return_value(flags, data)
+    }
 }
 
 #[cfg(not(target_arch = "riscv64"))]
@@ -629,6 +646,9 @@ impl HostApi for PolkaVmHost {
     }
     fn terminate(&self, _beneficiary: &[u8; 20]) -> ! {
         unimplemented!("PolkaVmHost::terminate is only available on PolkaVM")
+    }
+    fn revert(&self, _flags: ReturnFlags, _data: &[u8]) -> ! {
+        unimplemented!("PolkaVmHost::revert is only available on PolkaVM")
     }
 }
 
@@ -942,6 +962,10 @@ impl HostApi for Host {
     fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
         self.inner.terminate(beneficiary)
     }
+    #[inline(always)]
+    fn revert(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+        self.inner.revert(flags, data)
+    }
 }
 
 // `Host` on a non-riscv64 target without `alloc` is uninhabited — every
@@ -1116,6 +1140,9 @@ impl HostApi for Host {
         match self._never {}
     }
     fn terminate(&self, _beneficiary: &[u8; 20]) -> ! {
+        match self._never {}
+    }
+    fn revert(&self, _flags: ReturnFlags, _data: &[u8]) -> ! {
         match self._never {}
     }
 }
