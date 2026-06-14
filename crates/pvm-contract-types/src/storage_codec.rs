@@ -1242,7 +1242,9 @@ pub(crate) const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 /// Upper bound on the decoded length of a dynamic storage value, in bytes.
 ///
 /// `pallet-revive` caps a single storage value at 416 bytes (13 × 32-byte
-/// slots — see `pvm_storage::MAX_STATIC_SLOTS` docs), so a dynamic value's
+/// slots — its `STORAGE_BYTES` limit; note this is a distinct, larger cap
+/// than `pvm_storage::MAX_STATIC_SLOTS`, which is 8 slots / 256 bytes), so a
+/// dynamic value's
 /// self-reported header length can never legitimately exceed this. The
 /// spilled-form decoder in [`decode_dyn_header`] clamps to this value: a
 /// corrupt or hostile co-located writer claiming a huge length (e.g. `2^50`)
@@ -1344,6 +1346,15 @@ fn clear_dyn_body_range(host: &Host, slot: &[u8; 32], start_chunk: usize, count:
 #[cfg(feature = "alloc")]
 pub(crate) fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
     let new_len = data.len();
+    // Fail loudly rather than silently store a value the decoder will clamp.
+    // `decode_dyn_header` caps reads at `MAX_STORAGE_BYTES`, so writing past it
+    // would produce a value that reads back truncated with no error — an
+    // encoder/decoder asymmetry. Assert symmetric with the static-slot caps in
+    // `Lazy`/`StorageVec`.
+    assert!(
+        new_len <= MAX_STORAGE_BYTES,
+        "dynamic storage value exceeds MAX_STORAGE_BYTES (416)"
+    );
     let new_chunks = if new_len < 32 {
         0
     } else {
@@ -1689,6 +1700,31 @@ mod tests {
         let data: alloc::vec::Vec<u8> = (0..200u32).map(|i| i as u8).collect();
         write_dynamic_bytes(&host, &slot, &data);
         assert_eq!(read_dynamic_bytes(&host, &slot), data);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn dynamic_bytes_at_cap_roundtrips() {
+        // Exactly MAX_STORAGE_BYTES is the largest legitimate value and must
+        // roundtrip without tripping the write-side guard.
+        let host = mock_host();
+        let slot = [11u8; 32];
+        let data: alloc::vec::Vec<u8> = (0..MAX_STORAGE_BYTES).map(|i| i as u8).collect();
+        write_dynamic_bytes(&host, &slot, &data);
+        assert_eq!(read_dynamic_bytes(&host, &slot), data);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    #[should_panic(expected = "dynamic storage value exceeds MAX_STORAGE_BYTES")]
+    fn write_dynamic_bytes_rejects_oversized() {
+        // Writing past the cap must fail loudly rather than silently store a
+        // value the decoder would clamp on read back (encoder/decoder
+        // asymmetry).
+        let host = mock_host();
+        let slot = [13u8; 32];
+        let data = alloc::vec![0u8; MAX_STORAGE_BYTES + 1];
+        write_dynamic_bytes(&host, &slot, &data);
     }
 
     #[test]

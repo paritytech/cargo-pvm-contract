@@ -638,6 +638,10 @@ fn generate_sol_storage_impls(
     // without needing a use site to force monomorphization. Each dynamic
     // struct emits exactly one of these; the inline trait-method bodies
     // no longer carry their own per-method copy.
+    // Embed the concrete limit in the message (read from the source of truth
+    // so it can't drift) alongside the symbolic `MAX_STATIC_SLOTS` name.
+    let max_static_slots =
+        proc_macro2::Literal::usize_unsuffixed(::pvm_contract_types::MAX_STATIC_SLOTS);
     let slot_count_assert_item = quote! {
         #[doc(hidden)]
         const _: () = {
@@ -647,8 +651,9 @@ fn generate_sol_storage_impls(
                 concat!(
                     "`#[derive(SolStorage)]` on `",
                     stringify!(#name),
-                    "`: a storage struct cannot exceed MAX_STATIC_SLOTS ",
-                    "storage slots. Reduce the field count.",
+                    "`: a storage struct cannot exceed ",
+                    stringify!(#max_static_slots),
+                    " storage slots (MAX_STATIC_SLOTS). Reduce the field count.",
                 ),
             );
         };

@@ -74,14 +74,13 @@ pub const fn layout_step(prev: LayoutStep, packed_bytes: usize, slots: u64) -> L
     } else {
         (prev.next_slot, prev.next_space)
     };
-    let space_after = space - bytes;
-    let offset = space_after;
+    let offset = space - bytes;
     // Multi-slot composites: this field occupies `slots` consecutive slots
     // starting at `slot`, consuming the last one to its end.
     let (next_slot, next_space) = if slots > 1 {
         (slot + slots - 1, 0u8)
     } else {
-        (slot, space_after)
+        (slot, offset)
     };
     LayoutStep {
         slot,

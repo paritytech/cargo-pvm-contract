@@ -1,7 +1,7 @@
 //! A struct used as a `Lazy<T>` / `Mapping<_, T>` value must implement
 //! `StorageEncode` + `StorageDecode` (in practice: `#[derive(SolStorage)]`).
-//! A type that only derives `SolType` (modelled here as a plain struct with no
-//! storage impls) is rejected.
+//! A type that lacks those impls is rejected. It is modelled here as a plain
+//! struct (the derive macros aren't a dependency of this UI test crate).
 //!
 //! This pins the `#[diagnostic::on_unimplemented]` message so the error stays
 //! actionable ("add `#[derive(SolStorage)]`") instead of a bare "trait bound
@@ -12,8 +12,8 @@
 //! path (a direct `Lazy::new` call surfaces an E0599 instead and is unaffected).
 use pvm_contract_types::{StorageDecode, StorageEncode};
 
-// Represents a struct that derives only `SolType` (ABI), not `SolStorage`.
-struct OnlyAbi {
+// A plain struct with no storage impls — it never got `#[derive(SolStorage)]`.
+struct MissingSolStorage {
     _a: u128,
     _b: u128,
 }
@@ -21,5 +21,5 @@ struct OnlyAbi {
 fn store_as_lazy_value<T: StorageEncode + StorageDecode>() {}
 
 fn main() {
-    store_as_lazy_value::<OnlyAbi>();
+    store_as_lazy_value::<MissingSolStorage>();
 }
