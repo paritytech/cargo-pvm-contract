@@ -181,24 +181,32 @@ impl<
         self.entries.len() as u64 + self.child_counts.iter().sum::<u64>()
     }
 
+    // On-wire node layout (BE throughout, capacities enforced by the `T <= 128`
+    // assert in `new`):
+    //   header     : 1B flags | 1B entries_len | 1B children_len        = 3B
+    //   per entry  : 8B nonce | 1B k_len | k_body | 1B v_len | v_body  (k_body, v_body ≤ 255B)
+    //   per child  : 4B node_id | 4B subtree_count | 1B own_entry_count = 9B
+    //                (max 2^32-1 nodes, max 2^32-1 subtree entries, max 255 entries/node)
     fn encode(&self) -> Vec<u8> {
         let mut entries_byte_len = 0usize;
         for e in &self.entries {
             entries_byte_len = entries_byte_len
                 .checked_add(8)
-                .and_then(|n| n.checked_add(2))
+                .and_then(|n| n.checked_add(1))
                 .and_then(|n| n.checked_add(e.key.compact_encoded_len()))
-                .and_then(|n| n.checked_add(2))
+                .and_then(|n| n.checked_add(1))
                 .and_then(|n| n.checked_add(e.value.compact_encoded_len()))
                 .expect("Node::encode: entry sizes overflow");
         }
-        let header_len = 1usize + 2 + 2;
-        let entries_len = self.entries.len() as u16;
-        let children_len = self.children.len() as u16;
+        let header_len = 1usize + 1 + 1;
+        let entries_len =
+            u8::try_from(self.entries.len()).expect("Node::encode: entries_len > 255 (T>128)");
+        let children_len =
+            u8::try_from(self.children.len()).expect("Node::encode: children_len > 255 (T>128)");
         let children_byte_len = self
             .children
             .len()
-            .checked_mul(20)
+            .checked_mul(9)
             .expect("Node::encode: child sizes overflow");
         let total = header_len
             .checked_add(entries_byte_len)
@@ -214,34 +222,47 @@ impl<
         let mut out = Vec::with_capacity(total);
         let flags: u8 = if self.is_leaf() { 0x01 } else { 0x00 };
         out.push(flags);
-        out.extend_from_slice(&entries_len.to_be_bytes());
-        out.extend_from_slice(&children_len.to_be_bytes());
+        out.push(entries_len);
+        out.push(children_len);
         for e in &self.entries {
             out.extend_from_slice(&e.nonce.to_be_bytes());
-            let k_len = e.key.compact_encoded_len() as u16;
-            out.extend_from_slice(&k_len.to_be_bytes());
+            let k_len = u8::try_from(e.key.compact_encoded_len())
+                .expect("Node::encode: key body > 255 bytes");
+            out.push(k_len);
             self.encode_k(&e.key, &mut out);
-            let v_len = e.value.compact_encoded_len() as u16;
-            out.extend_from_slice(&v_len.to_be_bytes());
+            let v_len = u8::try_from(e.value.compact_encoded_len())
+                .expect("Node::encode: value body > 255 bytes");
+            out.push(v_len);
             self.encode_v(&e.value, &mut out);
         }
         for i in 0..self.children.len() {
-            out.extend_from_slice(&self.children[i].0.to_be_bytes());
-            out.extend_from_slice(&self.child_counts[i].to_be_bytes());
-            out.extend_from_slice(&self.child_entry_counts[i].to_be_bytes());
+            // u64 → u32: capacity limit is ~4.3B nodes per B-tree.
+            out.extend_from_slice(
+                &u32::try_from(self.children[i].0)
+                    .expect("Node::encode: node_id > u32::MAX (~4.3B nodes)")
+                    .to_be_bytes(),
+            );
+            out.extend_from_slice(
+                &u32::try_from(self.child_counts[i])
+                    .expect("Node::encode: subtree_count > u32::MAX")
+                    .to_be_bytes(),
+            );
+            // u32 → u8: invariant held by the T<=128 cap on entries (2T-1<=255).
+            out.push(u8::try_from(self.child_entry_counts[i])
+                .expect("Node::encode: own_entry_count > 255 (T>128)"));
         }
         out
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        const HEADER_LEN: usize = 1 + 2 + 2;
+        const HEADER_LEN: usize = 1 + 1 + 1;
         if bytes.len() < HEADER_LEN {
             return None;
         }
         let flags = bytes[0];
         let is_leaf = (flags & 0x01) != 0;
-        let entries_len = u16::from_be_bytes([bytes[1], bytes[2]]) as usize;
-        let children_len = u16::from_be_bytes([bytes[3], bytes[4]]) as usize;
+        let entries_len = bytes[1] as usize;
+        let children_len = bytes[2] as usize;
         if is_leaf {
             if children_len != 0 {
                 return None;
@@ -258,22 +279,22 @@ impl<
             }
             let nonce = u64::from_be_bytes(bytes[cursor..cursor + 8].try_into().ok()?);
             cursor += 8;
-            if cursor.checked_add(2)? > bytes.len() {
+            if cursor.checked_add(1)? > bytes.len() {
                 return None;
             }
-            let k_len = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
-            cursor += 2;
+            let k_len = bytes[cursor] as usize;
+            cursor += 1;
             if cursor.checked_add(k_len)? > bytes.len() {
                 return None;
             }
             let mut body: &[u8] = &bytes[cursor..cursor + k_len];
             let key = K::compact_decode_from(&mut body).ok()?;
             cursor += k_len;
-            if cursor.checked_add(2)? > bytes.len() {
+            if cursor.checked_add(1)? > bytes.len() {
                 return None;
             }
-            let v_len = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
-            cursor += 2;
+            let v_len = bytes[cursor] as usize;
+            cursor += 1;
             if cursor.checked_add(v_len)? > bytes.len() {
                 return None;
             }
@@ -287,20 +308,21 @@ impl<
         let mut child_counts: Vec<u64> = Vec::with_capacity(children_len);
         let mut child_entry_counts: Vec<u32> = Vec::with_capacity(children_len);
         for _ in 0..children_len {
-            for needed in [8usize, 8, 4] {
+            for needed in [4usize, 4, 1] {
                 if cursor.checked_add(needed)? > bytes.len() {
                     return None;
                 }
             }
-            let node_id = u64::from_be_bytes(bytes[cursor..cursor + 8].try_into().ok()?);
-            cursor += 8;
-            let subtree_count = u64::from_be_bytes(bytes[cursor..cursor + 8].try_into().ok()?);
-            cursor += 8;
-            let own_entry_count = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
+            // u32 → u64 widening is a free zero-extension.
+            let node_id = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
             cursor += 4;
-            children.push(NodeId(node_id));
-            child_counts.push(subtree_count);
-            child_entry_counts.push(own_entry_count);
+            let subtree_count = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
+            cursor += 4;
+            let own_entry_count = bytes[cursor];
+            cursor += 1;
+            children.push(NodeId(u64::from(node_id)));
+            child_counts.push(u64::from(subtree_count));
+            child_entry_counts.push(u32::from(own_entry_count));
         }
 
         if cursor != bytes.len() {
@@ -335,9 +357,11 @@ pub struct OrderedIndex<K, V, const T: usize = 2> {
 impl<K, V, const T: usize> OrderedIndex<K, V, T> {
     pub fn new(namespace: &'static [u8], _host: Host) -> Self {
         assert!(T >= 2, "OrderedIndex: minimum degree T must be >= 2");
+        // On-wire capacity limits: `own_entry_count` and `entries_len` are u8,
+        // so a node holds at most 255 entries → 2T-1 ≤ 255 → T ≤ 128.
         assert!(
-            T <= (u32::MAX as usize).div_ceil(2),
-            "OrderedIndex: T too large for mirrored child_entry_counts"
+            T <= 128,
+            "OrderedIndex: T > 128 exceeds u8 entries_len capacity (2T-1 > 255)"
         );
         let root_key = StorageKey(pvm_contract_types::keccak256(namespace));
         let root_cell_key = derive_cell_key(namespace, b"root");
