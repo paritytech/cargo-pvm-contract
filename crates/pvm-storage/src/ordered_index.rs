@@ -148,14 +148,6 @@ impl<
         V: SolEncode + SolDecode + Clone + CompactCodec,
     > Node<K, V>
 {
-    fn encode_k(&self, k: &K, out: &mut Vec<u8>) {
-        let body_len = k.compact_encoded_len();
-        let start = out.len();
-        out.resize(start + body_len, 0);
-        let mut cursor: &mut [u8] = &mut out[start..start + body_len];
-        k.compact_encode_to(&mut cursor);
-    }
-
     fn encode_v(&self, v: &V, out: &mut Vec<u8>) {
         let body_len = v.compact_encoded_len();
         let start = out.len();
@@ -177,35 +169,56 @@ impl<
         self.children.is_empty()
     }
 
-    /// Total real entries in this subtree. In a B+tree, internal nodes hold
-    /// separator *copies* (routing only), not real entries — only leaves
-    /// contribute their own entries to the count.
     fn subtree_count(&self) -> u64 {
-        let own = if self.is_leaf() { self.entries.len() as u64 } else { 0 };
-        own + self.child_counts.iter().sum::<u64>()
+        self.entries.len() as u64 + self.child_counts.iter().sum::<u64>()
     }
 
-    // On-wire node layout (BE throughout, capacities enforced by the `T <= 128`
-    // assert in `new`):
-    //   header     : 1B flags | 1B entries_len | 1B children_len        = 3B
-    //   per entry  : 8B nonce | 1B k_len | k_body | 1B v_len | v_body  (k_body, v_body ≤ 255B)
+    // On-wire node layout with per-node key prefix compression (BE throughout,
+    // capacities enforced by the `T <= 128` assert in `new`):
+    //   header     : 1B flags | 1B entries_len | 1B children_len | 1B prefix_len = 4B
+    //   prefix     : [prefix_len bytes] — common prefix shared by ALL entry keys in this node
+    //   per entry  : 8B nonce | 1B k_suffix_len | k_suffix | 1B v_len | v_body
     //   per child  : 4B node_id | 4B subtree_count | 1B own_entry_count = 9B
-    //                (max 2^32-1 nodes, max 2^32-1 subtree entries, max 255 entries/node)
+    //
+    // The common prefix of sorted keys equals the common prefix of the FIRST and
+    // LAST key only — O(1) to compute. Each entry stores only the key suffix
+    // (key minus the shared prefix), so sorted username corpora
+    // ("user0000".."user9999") pay ~4-7B prefix once per node and ~3-6B suffix
+    // per entry instead of ~10B for the full key, enabling higher T (fanout).
     fn encode(&self) -> Vec<u8> {
+        // Prefix compression only helps with 2+ entries; for 0-1 entries it
+        // adds header overhead with zero savings.
+        let prefix: Vec<u8> = match (self.entries.first(), self.entries.last()) {
+            (Some(first), Some(last)) if self.entries.len() >= 2 => {
+                let fb = encode_codec_bytes(&first.key);
+                let lb = encode_codec_bytes(&last.key);
+                let plen = fb
+                    .iter()
+                    .zip(lb.iter())
+                    .take_while(|(a, b)| a == b)
+                    .count()
+                    .min(255);
+                fb[..plen].to_vec()
+            }
+            _ => Vec::new(),
+        };
+        let prefix_len = prefix.len();
+
         let mut entries_byte_len = 0usize;
         for e in &self.entries {
+            let suffix_len = e.key.compact_encoded_len().saturating_sub(prefix_len);
             entries_byte_len = entries_byte_len
-                .checked_add(8)
-                .and_then(|n| n.checked_add(1))
-                .and_then(|n| n.checked_add(e.key.compact_encoded_len()))
-                .and_then(|n| n.checked_add(1))
-                .and_then(|n| n.checked_add(e.value.compact_encoded_len()))
+                .checked_add(8) // nonce
+                .and_then(|n| n.checked_add(1)) // k_suffix_len
+                .and_then(|n| n.checked_add(suffix_len)) // k_suffix body
+                .and_then(|n| n.checked_add(1)) // v_len
+                .and_then(|n| n.checked_add(e.value.compact_encoded_len())) // v body
                 .expect("Node::encode: entry sizes overflow");
         }
-        let header_len = 1usize + 1 + 1;
-        let entries_len =
+        let header_len = 1usize + 1 + 1 + 1; // flags + entries_len + children_len + prefix_len
+        let entries_len_field =
             u8::try_from(self.entries.len()).expect("Node::encode: entries_len > 255 (T>128)");
-        let children_len =
+        let children_len_field =
             u8::try_from(self.children.len()).expect("Node::encode: children_len > 255 (T>128)");
         let children_byte_len = self
             .children
@@ -213,7 +226,8 @@ impl<
             .checked_mul(9)
             .expect("Node::encode: child sizes overflow");
         let total = header_len
-            .checked_add(entries_byte_len)
+            .checked_add(prefix_len)
+            .and_then(|n| n.checked_add(entries_byte_len))
             .and_then(|n| n.checked_add(children_byte_len))
             .expect("Node::encode: total size overflow");
         assert!(
@@ -226,21 +240,25 @@ impl<
         let mut out = Vec::with_capacity(total);
         let flags: u8 = if self.is_leaf() { 0x01 } else { 0x00 };
         out.push(flags);
-        out.push(entries_len);
-        out.push(children_len);
+        out.push(entries_len_field);
+        out.push(children_len_field);
+        out.push(u8::try_from(prefix_len).expect("prefix_len <= 255 (capped above)"));
+        out.extend_from_slice(&prefix);
+
         for e in &self.entries {
             out.extend_from_slice(&e.nonce.to_be_bytes());
-            let k_len = u8::try_from(e.key.compact_encoded_len())
-                .expect("Node::encode: key body > 255 bytes");
-            out.push(k_len);
-            self.encode_k(&e.key, &mut out);
+            let key_bytes = encode_codec_bytes(&e.key);
+            let suffix = &key_bytes[prefix_len..];
+            let k_suffix_len = u8::try_from(suffix.len())
+                .expect("Node::encode: key suffix > 255 bytes");
+            out.push(k_suffix_len);
+            out.extend_from_slice(suffix);
             let v_len = u8::try_from(e.value.compact_encoded_len())
                 .expect("Node::encode: value body > 255 bytes");
             out.push(v_len);
             self.encode_v(&e.value, &mut out);
         }
         for i in 0..self.children.len() {
-            // u64 → u32: capacity limit is ~4.3B nodes per B-tree.
             out.extend_from_slice(
                 &u32::try_from(self.children[i].0)
                     .expect("Node::encode: node_id > u32::MAX (~4.3B nodes)")
@@ -251,7 +269,6 @@ impl<
                     .expect("Node::encode: subtree_count > u32::MAX")
                     .to_be_bytes(),
             );
-            // u32 → u8: invariant held by the T<=128 cap on entries (2T-1<=255).
             out.push(u8::try_from(self.child_entry_counts[i])
                 .expect("Node::encode: own_entry_count > 255 (T>128)"));
         }
@@ -259,7 +276,7 @@ impl<
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        const HEADER_LEN: usize = 1 + 1 + 1;
+        const HEADER_LEN: usize = 1 + 1 + 1 + 1; // flags + entries_len + children_len + prefix_len
         if bytes.len() < HEADER_LEN {
             return None;
         }
@@ -267,6 +284,7 @@ impl<
         let is_leaf = (flags & 0x01) != 0;
         let entries_len = bytes[1] as usize;
         let children_len = bytes[2] as usize;
+        let prefix_len = bytes[3] as usize;
         if is_leaf {
             if children_len != 0 {
                 return None;
@@ -275,8 +293,14 @@ impl<
             return None;
         }
 
-        let mut entries: Vec<Entry<K, V>> = Vec::with_capacity(entries_len);
         let mut cursor = HEADER_LEN;
+        if cursor.checked_add(prefix_len)? > bytes.len() {
+            return None;
+        }
+        let prefix = &bytes[cursor..cursor + prefix_len];
+        cursor += prefix_len;
+
+        let mut entries: Vec<Entry<K, V>> = Vec::with_capacity(entries_len);
         for _ in 0..entries_len {
             if cursor.checked_add(8)? > bytes.len() {
                 return None;
@@ -286,14 +310,22 @@ impl<
             if cursor.checked_add(1)? > bytes.len() {
                 return None;
             }
-            let k_len = bytes[cursor] as usize;
+            let k_suffix_len = bytes[cursor] as usize;
             cursor += 1;
-            if cursor.checked_add(k_len)? > bytes.len() {
+            if cursor.checked_add(k_suffix_len)? > bytes.len() {
                 return None;
             }
-            let mut body: &[u8] = &bytes[cursor..cursor + k_len];
+            // Reconstruct full key = shared prefix ++ per-entry suffix.
+            let full_key_len = prefix_len.checked_add(k_suffix_len)?;
+            let mut full_key = Vec::with_capacity(full_key_len);
+            full_key.extend_from_slice(prefix);
+            full_key.extend_from_slice(&bytes[cursor..cursor + k_suffix_len]);
+            cursor += k_suffix_len;
+            let mut body: &[u8] = &full_key;
             let key = K::compact_decode_from(&mut body).ok()?;
-            cursor += k_len;
+            if !body.is_empty() {
+                return None;
+            }
             if cursor.checked_add(1)? > bytes.len() {
                 return None;
             }
@@ -317,7 +349,6 @@ impl<
                     return None;
                 }
             }
-            // u32 → u64 widening is a free zero-extension.
             let node_id = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
             cursor += 4;
             let subtree_count = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
@@ -340,6 +371,14 @@ impl<
             child_entry_counts,
         })
     }
+}
+
+fn encode_codec_bytes<T: CompactCodec>(v: &T) -> Vec<u8> {
+    let len = v.compact_encoded_len();
+    let mut buf = alloc::vec![0u8; len];
+    let mut cursor: &mut [u8] = &mut buf;
+    v.compact_encode_to(&mut cursor);
+    buf
 }
 
 fn derive_cell_key(namespace: &[u8], suffix: &[u8]) -> StorageKey {
@@ -559,39 +598,19 @@ where
     }
 
     pub fn get_first(&self, host: &Host, key: &K) -> Option<V> {
-        let id = self.root_id(host)?;
-        self.get_first_in_subtree(host, id, key)
-    }
-
-    /// B+tree point-lookup of the smallest-nonce entry for `key`. When the
-    /// separator key matches, the entry may be in either child: left (nonce
-    /// < separator nonce) or right (nonce >= separator nonce). We descend left
-    /// first; if not found and the separator matches, descend right. For
-    /// unique keys this is a single O(log n) path; for duplicates it is at
-    /// most 2·O(log n).
-    fn get_first_in_subtree(
-        &self,
-        host: &Host,
-        node_id: NodeId,
-        key: &K,
-    ) -> Option<V> {
-        let node = self.load_node(host, node_id);
-        let pos = node.lower_bound_key(key);
-        if node.is_leaf() {
-            return if pos < node.entries.len() && node.entries[pos].key == *key {
-                Some(node.entries[pos].value.clone())
-            } else {
-                None
-            };
+        let mut id = self.root_id(host)?;
+        let mut candidate: Option<V> = None;
+        loop {
+            let node = self.load_node(host, id);
+            let pos = node.lower_bound_key(key);
+            if pos < node.entries.len() && node.entries[pos].key == *key {
+                candidate = Some(node.entries[pos].value.clone());
+            }
+            if node.is_leaf() {
+                return candidate;
+            }
+            id = node.children[pos];
         }
-        let left = self.get_first_in_subtree(host, node.children[pos], key);
-        if left.is_some() {
-            return left;
-        }
-        if pos < node.entries.len() && node.entries[pos].key == *key {
-            return self.get_first_in_subtree(host, node.children[pos + 1], key);
-        }
-        None
     }
 
     pub fn remove_by_nonce(&self, host: &Host, key: &K, nonce: u64) -> Option<V> {
@@ -647,6 +666,11 @@ where
                     break;
                 }
                 rank -= c;
+                if rank == 0 {
+                    let e = &node.entries[i];
+                    return Some((e.key.clone(), e.value.clone()));
+                }
+                rank -= 1;
                 i += 1;
             }
         }
@@ -666,6 +690,7 @@ where
             }
             for i in 0..pos {
                 rank += node.child_counts[i];
+                rank += 1;
             }
             id = node.children[pos];
         }
@@ -723,27 +748,27 @@ where
         let left_id = parent.children[i];
         let mut left = self.load_node(host, left_id);
 
-        // B+tree split: leaf splits COPY the median up (the real entry stays
-        // in the right leaf); internal splits MOVE the median up (the median
-        // becomes a routing separator in the parent, same as a regular B-tree).
-        let (middle, right) = if left.is_leaf() {
-            let median = left.entries[T - 1].clone();
-            let right_entries = left.entries.split_off(T - 1);
-            let mut right = Node::leaf();
-            right.entries = right_entries;
-            (median, right)
+        let right_entries: Vec<Entry<K, V>> = left.entries.drain(T..).collect();
+        let middle = match left.entries.pop() {
+            Some(entry) => entry,
+            None => panic!("OrderedIndexMissingMedian"),
+        };
+
+        let (right_children, right_child_counts, right_child_entry_counts) = if left.is_leaf() {
+            (Vec::new(), Vec::new(), Vec::new())
         } else {
-            let right_entries: Vec<Entry<K, V>> = left.entries.drain(T..).collect();
-            let median = match left.entries.pop() {
-                Some(entry) => entry,
-                None => panic!("OrderedIndexMissingMedian"),
-            };
-            let mut right = Node::leaf();
-            right.entries = right_entries;
-            right.children = left.children.drain(T..).collect();
-            right.child_counts = left.child_counts.drain(T..).collect();
-            right.child_entry_counts = left.child_entry_counts.drain(T..).collect();
-            (median, right)
+            (
+                left.children.drain(T..).collect::<Vec<_>>(),
+                left.child_counts.drain(T..).collect::<Vec<_>>(),
+                left.child_entry_counts.drain(T..).collect::<Vec<_>>(),
+            )
+        };
+
+        let right = Node {
+            entries: right_entries,
+            children: right_children,
+            child_counts: right_child_counts,
+            child_entry_counts: right_child_entry_counts,
         };
 
         let left_count = left.subtree_count();
@@ -769,21 +794,41 @@ where
             && node.entries[pos].key == *k
             && node.entries[pos].nonce == nonce;
 
-        if node.is_leaf() {
-            if at_pos {
+        if at_pos {
+            if node.is_leaf() {
                 let removed = node.entries.remove(pos).value;
                 self.store_node(host, node_id, &node);
                 return Some(removed);
             }
-            return None;
+            let original = node.entries[pos].value.clone();
+
+            if node.child_entry_counts[pos] >= T as u32 {
+                let pred = self.find_max(host, node.children[pos]);
+                self.remove_from(host, node.children[pos], &pred.key, pred.nonce);
+                node.entries[pos] = pred;
+                self.refresh_child_mirrors(host, &mut node, pos);
+                self.store_node(host, node_id, &node);
+            } else if node.child_entry_counts[pos + 1] >= T as u32 {
+                let succ = self.find_min(host, node.children[pos + 1]);
+                self.remove_from(host, node.children[pos + 1], &succ.key, succ.nonce);
+                node.entries[pos] = succ;
+                self.refresh_child_mirrors(host, &mut node, pos + 1);
+                self.store_node(host, node_id, &node);
+            } else {
+                self.merge_children(host, &mut node, pos);
+                let merged_id = node.children[pos];
+                self.store_node(host, node_id, &node);
+                let _ = self.remove_from(host, merged_id, k, nonce);
+                self.refresh_child_mirrors(host, &mut node, pos);
+                self.store_node(host, node_id, &node);
+            }
+            return Some(original);
         }
 
-        // B+tree internal node: the real entry is in a leaf — always descend.
-        // If the separator matches (k, nonce), the entry lives in the right
-        // child (pos+1); otherwise descend the left child (pos). The separator
-        // copy may go stale after removal but remains a valid routing key.
-        let child_idx = if at_pos { pos + 1 } else { pos };
-        let descend = self.descend_prepared(host, &mut node, child_idx);
+        if node.is_leaf() {
+            return None;
+        }
+        let descend = self.descend_prepared(host, &mut node, pos);
         let child_id = node.children[descend];
         self.store_node(host, node_id, &node);
         let result = self.remove_from(host, child_id, k, nonce);
@@ -822,24 +867,15 @@ where
         let mut left = self.load_node(host, left_id);
         let mut child = self.load_node(host, child_id);
 
-        if child.is_leaf() {
-            // B+tree leaf: move real entry from left to child, update separator.
-            let moved = match left.entries.pop() {
-                Some(entry) => entry,
-                None => panic!("OrderedIndexBorrowLeftEmpty"),
-            };
-            child.entries.insert(0, moved);
-            node.entries[pos - 1] = child.entries[0].clone();
-        } else {
-            // Internal: rotate separator (old goes down, left's last goes up).
-            let separator = node.entries[pos - 1].clone();
-            let new_separator = match left.entries.pop() {
-                Some(entry) => entry,
-                None => panic!("OrderedIndexBorrowLeftEmpty"),
-            };
-            child.entries.insert(0, separator);
-            node.entries[pos - 1] = new_separator;
+        let separator = node.entries[pos - 1].clone();
+        let new_separator = match left.entries.pop() {
+            Some(entry) => entry,
+            None => panic!("OrderedIndexBorrowLeftEmpty"),
+        };
+        child.entries.insert(0, separator);
+        node.entries[pos - 1] = new_separator;
 
+        if !left.is_leaf() {
             let moved_child = match left.children.pop() {
                 Some(value) => value,
                 None => panic!("OrderedIndexMissingLeftChild"),
@@ -872,18 +908,12 @@ where
         let mut child = self.load_node(host, child_id);
         let mut right = self.load_node(host, right_id);
 
-        if child.is_leaf() {
-            // B+tree leaf: move real entry from right to child, update separator.
-            let moved = right.entries.remove(0);
-            child.entries.push(moved);
-            node.entries[pos] = right.entries[0].clone();
-        } else {
-            // Internal: rotate separator (old goes down, right's first goes up).
-            let separator = node.entries[pos].clone();
-            let new_separator = right.entries.remove(0);
-            child.entries.push(separator);
-            node.entries[pos] = new_separator;
+        let separator = node.entries[pos].clone();
+        let new_separator = right.entries.remove(0);
+        child.entries.push(separator);
+        node.entries[pos] = new_separator;
 
+        if !right.is_leaf() {
             let moved_child = right.children.remove(0);
             let moved_count = right.child_counts.remove(0);
             let moved_entry_count = right.child_entry_counts.remove(0);
@@ -908,11 +938,7 @@ where
         let right = self.load_node(host, right_id);
 
         let separator = node.entries.remove(pos);
-        // B+tree: leaf merges DISCARD the separator (it was a copy); internal
-        // merges push the separator down as a routing key (same as B-tree).
-        if !left.is_leaf() {
-            left.entries.push(separator);
-        }
+        left.entries.push(separator);
         left.entries.extend(right.entries);
         if !left.is_leaf() {
             left.children.extend(right.children);
@@ -930,34 +956,49 @@ where
         self.free_node(host, right_id);
     }
 
-    fn find_first_nonce(&self, host: &Host, k: &K) -> Option<u64> {
-        let id = self.root_id(host)?;
-        self.find_first_nonce_in_subtree(host, id, k)
-    }
-
-    fn find_first_nonce_in_subtree(
-        &self,
-        host: &Host,
-        node_id: NodeId,
-        k: &K,
-    ) -> Option<u64> {
-        let node = self.load_node(host, node_id);
-        let pos = node.lower_bound_key(k);
-        if node.is_leaf() {
-            return if pos < node.entries.len() && node.entries[pos].key == *k {
-                Some(node.entries[pos].nonce)
-            } else {
-                None
+    fn find_max(&self, host: &Host, mut id: NodeId) -> Entry<K, V> {
+        loop {
+            let node = self.load_node(host, id);
+            if node.is_leaf() {
+                return match node.entries.last() {
+                    Some(entry) => entry.clone(),
+                    None => panic!("OrderedIndexEmptyMaxLeaf"),
+                };
+            }
+            id = match node.children.last() {
+                Some(child_id) => *child_id,
+                None => panic!("OrderedIndexMissingMaxChild"),
             };
         }
-        let left = self.find_first_nonce_in_subtree(host, node.children[pos], k);
-        if left.is_some() {
-            return left;
+    }
+
+    fn find_min(&self, host: &Host, mut id: NodeId) -> Entry<K, V> {
+        loop {
+            let node = self.load_node(host, id);
+            if node.is_leaf() {
+                return match node.entries.first() {
+                    Some(entry) => entry.clone(),
+                    None => panic!("OrderedIndexEmptyMinLeaf"),
+                };
+            }
+            id = node.children[0];
         }
-        if pos < node.entries.len() && node.entries[pos].key == *k {
-            return self.find_first_nonce_in_subtree(host, node.children[pos + 1], k);
+    }
+
+    fn find_first_nonce(&self, host: &Host, k: &K) -> Option<u64> {
+        let mut id = self.root_id(host)?;
+        let mut candidate: Option<u64> = None;
+        loop {
+            let node = self.load_node(host, id);
+            let pos = node.lower_bound_key(k);
+            if pos < node.entries.len() && node.entries[pos].key == *k {
+                candidate = Some(node.entries[pos].nonce);
+            }
+            if node.is_leaf() {
+                return candidate;
+            }
+            id = node.children[pos];
         }
-        None
     }
 
     fn find_nonce_for(&self, host: &Host, k: &K, v: &V) -> Option<u64>
@@ -999,6 +1040,11 @@ where
                     break;
                 }
                 rank -= c;
+                if rank == 0 {
+                    let e = &node.entries[i];
+                    return Some((e.key.clone(), e.nonce, e.value.clone()));
+                }
+                rank -= 1;
                 i += 1;
             }
         }
@@ -1027,34 +1073,14 @@ where
             Bound::Excluded(k) => node.upper_bound_key(k),
         };
 
-        if node.is_leaf() {
-            for i in start..node.entries.len() {
-                let e = &node.entries[i];
-                let above = match to {
-                    Bound::Unbounded => false,
-                    Bound::Included(k) => e.key > *k,
-                    Bound::Excluded(k) => e.key >= *k,
-                };
-                if above {
-                    return true;
-                }
-                if *skipped < offset {
-                    *skipped += 1;
-                } else {
-                    out.push((e.key.clone(), e.value.clone()));
-                    if out.len() as u64 == limit {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
-        // B+tree internal: descend into overlapping children only — no entries
-        // are emitted here (all real entries live in leaves).
         for i in start..=node.entries.len() {
-            if node.child_interval_overlaps(i, from, to) {
-                if self.range_walk(
+            // Subtree-overlap prune: skip children whose key interval does
+            // not overlap [from, to). The entry-emission check below must
+            // still run even when the child is skipped — internal nodes
+            // hold real entries in this B-tree, not separator keys.
+            let descend = !node.is_leaf() && node.child_interval_overlaps(i, from, to);
+            if descend
+                && self.range_walk(
                     host,
                     node.children[i],
                     from,
@@ -1063,9 +1089,39 @@ where
                     limit,
                     skipped,
                     out,
-                ) {
-                    return true;
-                }
+                )
+            {
+                return true;
+            }
+            if out.len() as u64 == limit {
+                return true;
+            }
+            if i == node.entries.len() {
+                break;
+            }
+
+            let e = &node.entries[i];
+            let above = match to {
+                Bound::Unbounded => false,
+                Bound::Included(k) => e.key > *k,
+                Bound::Excluded(k) => e.key >= *k,
+            };
+            if above {
+                return true;
+            }
+            let below = match from {
+                Bound::Unbounded => false,
+                Bound::Included(k) => e.key < *k,
+                Bound::Excluded(k) => e.key <= *k,
+            };
+            if below {
+                continue;
+            }
+
+            if *skipped < offset {
+                *skipped += 1;
+            } else {
+                out.push((e.key.clone(), e.value.clone()));
                 if out.len() as u64 == limit {
                     return true;
                 }
