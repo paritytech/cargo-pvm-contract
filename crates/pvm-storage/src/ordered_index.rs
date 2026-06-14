@@ -246,11 +246,13 @@ impl<
             u8::try_from(self.entries.len()).expect("Node::encode: entries_len > 255 (T>128)");
         let children_len_field =
             u8::try_from(self.children.len()).expect("Node::encode: children_len > 255 (T>128)");
-        let children_byte_len = self
-            .children
-            .len()
-            .checked_mul(9)
-            .expect("Node::encode: child sizes overflow");
+        let children_byte_len: usize = (0..self.children.len())
+            .map(|i| {
+                self.children[i].0.compact_encoded_len()
+                    + self.child_counts[i].compact_encoded_len()
+                    + 1
+            })
+            .sum();
         let total = header_len
             .checked_add(prefix_len)
             .and_then(|n| n.checked_add(entries_byte_len))
@@ -289,16 +291,18 @@ impl<
             self.encode_v(&e.value, &mut out);
         }
         for i in 0..self.children.len() {
-            out.extend_from_slice(
-                &u32::try_from(self.children[i].0)
-                    .expect("Node::encode: node_id > u32::MAX (~4.3B nodes)")
-                    .to_be_bytes(),
-            );
-            out.extend_from_slice(
-                &u32::try_from(self.child_counts[i])
-                    .expect("Node::encode: subtree_count > u32::MAX")
-                    .to_be_bytes(),
-            );
+            let nid = self.children[i].0;
+            let nid_len = nid.compact_encoded_len();
+            let start = out.len();
+            out.resize(start + nid_len, 0);
+            let mut cursor: &mut [u8] = &mut out[start..start + nid_len];
+            nid.compact_encode_to(&mut cursor);
+            let sc = self.child_counts[i];
+            let sc_len = sc.compact_encoded_len();
+            let start = out.len();
+            out.resize(start + sc_len, 0);
+            let mut cursor: &mut [u8] = &mut out[start..start + sc_len];
+            sc.compact_encode_to(&mut cursor);
             out.push(u8::try_from(self.child_entry_counts[i])
                 .expect("Node::encode: own_entry_count > 255 (T>128)"));
         }
@@ -376,19 +380,23 @@ impl<
         let mut child_counts: Vec<u64> = Vec::with_capacity(children_len);
         let mut child_entry_counts: Vec<u32> = Vec::with_capacity(children_len);
         for _ in 0..children_len {
-            for needed in [4usize, 4, 1] {
-                if cursor.checked_add(needed)? > bytes.len() {
-                    return None;
-                }
+            let remaining_before = bytes.len() - cursor;
+            let mut input: &[u8] = &bytes[cursor..];
+            let node_id = u64::compact_decode_from(&mut input).ok()?;
+            cursor += remaining_before - input.len();
+
+            let remaining_before = bytes.len() - cursor;
+            let mut input: &[u8] = &bytes[cursor..];
+            let subtree_count = u64::compact_decode_from(&mut input).ok()?;
+            cursor += remaining_before - input.len();
+
+            if cursor >= bytes.len() {
+                return None;
             }
-            let node_id = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
-            cursor += 4;
-            let subtree_count = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?);
-            cursor += 4;
             let own_entry_count = bytes[cursor];
             cursor += 1;
-            children.push(NodeId(u64::from(node_id)));
-            child_counts.push(u64::from(subtree_count));
+            children.push(NodeId(node_id));
+            child_counts.push(subtree_count);
             child_entry_counts.push(u32::from(own_entry_count));
         }
 
