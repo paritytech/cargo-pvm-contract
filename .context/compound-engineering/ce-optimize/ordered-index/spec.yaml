@@ -1,0 +1,63 @@
+name: ordered-index-prefix-search
+description: >
+  Minimize storage SLOADs per prefix-range query on the OrderedIndex (a
+  persistent sorted B-tree multimap in pvm-storage), ported from Charles's
+  SCALE reference to SolType. Bar = real identity-backend Postgres
+  searchUsernames query (composite display-key btree index). Baseline (T=2,
+  SolType ABI-body codec) is at parity with PG (~24 ops/query); a purpose-built
+  covering index should beat PG by compacting the codec (raise T) + B+tree
+  leaf-linking (range = O(result-leaves), not O(depth × leaves)).
+
+metric:
+  primary:
+    type: hard
+    name: slot_reads_per_query
+    direction: minimize
+    baseline: 102.84
+    target: 15.0
+  degenerate_gates:
+    - name: correctness
+      check: "== true"
+      description: "Range-query results must match the BTreeMap oracle (limit-aware) at N=1M — no silent data loss."
+  diagnostics:
+    - name: insert_writes
+    - name: insert_clears
+    - name: range_p50_ns
+    - name: range_p99_ns
+    - name: t
+
+measurement:
+  command: "BENCH_N=1000000 cargo run --release --bin measure-ordered-index --features alloc 2>/dev/null"
+  working_directory: "."
+  timeout_seconds: 300
+  output_format: json
+  stability:
+    mode: stable
+
+scope:
+  mutable:
+    - "crates/pvm-storage/src/ordered_index.rs"
+  immutable:
+    - "crates/pvm-storage/src/lib.rs"
+    - "crates/pvm-storage/src/bin/measure-ordered-index.rs"
+    - "crates/pvm-storage/benches/counting_host.rs"
+    - "crates/pvm-storage/Cargo.toml"
+
+execution:
+  mode: serial
+  backend: worktree
+  max_concurrent: 1
+
+constraints:
+  - "NO parity_scale_codec (SCALE) anywhere — the port's reason for existing."
+  - "Every Node encode MUST stay <= MAX_STORAGE_VALUE_BYTES (416); the assert_node_size gate enforces it (panic = degenerate)."
+  - "Keep the public OrderedIndex API stable (new/insert/get_first/remove_first/remove/remove_by_nonce/select/rank_of_key/range) so the measure binary + tests keep working."
+  - "All 7 property tests must pass (BTreeMap oracle independence)."
+  - "Decode never casts — Node::decode returns Option/Result, fails closed."
+  - "Document unsafe blocks (none expected in experiments; codec changes are safe code)."
+
+stopping:
+  max_iterations: 30
+  max_hours: 6
+  plateau_iterations: 6
+  target_reached: true
