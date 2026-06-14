@@ -32,15 +32,6 @@ pub trait CompactCodec: Sized {
     /// Read the body bytes from `input`, advancing the cursor. Fails
     /// closed on truncation or invalid bytes — never panics on bad input.
     fn compact_decode_from(input: &mut &[u8]) -> Result<Self, DecodeError>;
-
-    /// Whether `compact_decode_from` consumes exactly its own bytes from the
-    /// stream without needing an external length prefix. LEB128 varint returns
-    /// `true` (the continuation bit delimits the value); raw String body
-    /// returns `false` (the node codec supplies a 1-byte `v_len`). When `true`,
-    /// the node codec omits the 1-byte `v_len` prefix, saving 1B per entry.
-    fn is_self_delimiting() -> bool {
-        false
-    }
 }
 
 impl CompactCodec for String {
@@ -69,10 +60,6 @@ impl CompactCodec for String {
 }
 
 impl CompactCodec for u64 {
-    fn is_self_delimiting() -> bool {
-        true
-    }
-
     fn compact_encoded_len(&self) -> usize {
         let mut v = *self;
         let mut len = 1;
@@ -212,16 +199,21 @@ impl<
         self.entries.len() as u64 + self.child_counts.iter().sum::<u64>()
     }
 
-    // On-wire node layout (capacities enforced by the `T <= 128` assert in `new`):
-    //   header     : 1B (prefix_len << 1 | is_leaf) | 1B entries_len = 2B
-    //   prefix     : [prefix_len bytes] — common prefix shared by ALL entry keys
-    //   per entry  : varint nonce | 1B k_suffix_len | k_suffix | [1B v_len]? | v_body
-    //   per child  : varint node_id | varint subtree_count | 1B own_entry_count
+    // On-wire node layout with per-node key prefix compression (BE throughout,
+    // capacities enforced by the `T <= 128` assert in `new`):
+    //   header     : 1B flags | 1B entries_len | 1B children_len | 1B prefix_len = 4B
+    //   prefix     : [prefix_len bytes] — common prefix shared by ALL entry keys in this node
+    //   per entry  : 8B nonce | 1B k_suffix_len | k_suffix | 1B v_len | v_body
+    //   per child  : 4B node_id | 4B subtree_count | 1B own_entry_count = 9B
     //
-    // `children_len` is derived: 0 for leaf, entries_len+1 for internal (B-tree
-    // invariant). `prefix_len` ≤ 127 (packed into high 7 bits of byte 0). The
-    // optional `v_len` is omitted when `V::is_self_delimiting()` (LEB128 varint).
+    // The common prefix of sorted keys equals the common prefix of the FIRST and
+    // LAST key only — O(1) to compute. Each entry stores only the key suffix
+    // (key minus the shared prefix), so sorted username corpora
+    // ("user0000".."user9999") pay ~4-7B prefix once per node and ~3-6B suffix
+    // per entry instead of ~10B for the full key, enabling higher T (fanout).
     fn encode(&self) -> Vec<u8> {
+        // Prefix compression only helps with 2+ entries; for 0-1 entries it
+        // adds header overhead with zero savings.
         let prefix: Vec<u8> = match (self.entries.first(), self.entries.last()) {
             (Some(first), Some(last)) if self.entries.len() >= 2 => {
                 let fb = encode_codec_bytes(&first.key);
@@ -231,15 +223,13 @@ impl<
                     .zip(lb.iter())
                     .take_while(|(a, b)| a == b)
                     .count()
-                    .min(127);
+                    .min(255);
                 fb[..plen].to_vec()
             }
             _ => Vec::new(),
         };
         let prefix_len = prefix.len();
-        assert!(prefix_len <= 127, "Node::encode: prefix_len > 127 exceeds 7-bit field");
 
-        let v_len_overhead = if V::is_self_delimiting() { 0 } else { 1 };
         let mut entries_byte_len = 0usize;
         for e in &self.entries {
             let suffix_len = e.key.compact_encoded_len().saturating_sub(prefix_len);
@@ -247,13 +237,15 @@ impl<
                 .checked_add(e.nonce.compact_encoded_len())
                 .and_then(|n| n.checked_add(1)) // k_suffix_len
                 .and_then(|n| n.checked_add(suffix_len)) // k_suffix body
-                .and_then(|n| n.checked_add(v_len_overhead))
+                .and_then(|n| n.checked_add(1)) // v_len
                 .and_then(|n| n.checked_add(e.value.compact_encoded_len())) // v body
                 .expect("Node::encode: entry sizes overflow");
         }
-        let header_len = 2usize;
+        let header_len = 1usize + 1 + 1 + 1; // flags + entries_len + children_len + prefix_len
         let entries_len_field =
             u8::try_from(self.entries.len()).expect("Node::encode: entries_len > 255 (T>128)");
+        let children_len_field =
+            u8::try_from(self.children.len()).expect("Node::encode: children_len > 255 (T>128)");
         let children_byte_len: usize = (0..self.children.len())
             .map(|i| {
                 self.children[i].0.compact_encoded_len()
@@ -274,9 +266,11 @@ impl<
         );
 
         let mut out = Vec::with_capacity(total);
-        let packed: u8 = ((prefix_len as u8) << 1) | u8::from(self.is_leaf());
-        out.push(packed);
+        let flags: u8 = if self.is_leaf() { 0x01 } else { 0x00 };
+        out.push(flags);
         out.push(entries_len_field);
+        out.push(children_len_field);
+        out.push(u8::try_from(prefix_len).expect("prefix_len <= 255 (capped above)"));
         out.extend_from_slice(&prefix);
 
         for e in &self.entries {
@@ -291,11 +285,9 @@ impl<
                 .expect("Node::encode: key suffix > 255 bytes");
             out.push(k_suffix_len);
             out.extend_from_slice(suffix);
-            if !V::is_self_delimiting() {
-                let v_len = u8::try_from(e.value.compact_encoded_len())
-                    .expect("Node::encode: value body > 255 bytes");
-                out.push(v_len);
-            }
+            let v_len = u8::try_from(e.value.compact_encoded_len())
+                .expect("Node::encode: value body > 255 bytes");
+            out.push(v_len);
             self.encode_v(&e.value, &mut out);
         }
         for i in 0..self.children.len() {
@@ -318,15 +310,22 @@ impl<
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
-        const HEADER_LEN: usize = 2;
+        const HEADER_LEN: usize = 1 + 1 + 1 + 1; // flags + entries_len + children_len + prefix_len
         if bytes.len() < HEADER_LEN {
             return None;
         }
-        let packed = bytes[0];
-        let is_leaf = (packed & 0x01) != 0;
-        let prefix_len = (packed >> 1) as usize;
+        let flags = bytes[0];
+        let is_leaf = (flags & 0x01) != 0;
         let entries_len = bytes[1] as usize;
-        let children_len = if is_leaf { 0 } else { entries_len + 1 };
+        let children_len = bytes[2] as usize;
+        let prefix_len = bytes[3] as usize;
+        if is_leaf {
+            if children_len != 0 {
+                return None;
+            }
+        } else if children_len != entries_len + 1 {
+            return None;
+        }
 
         let mut cursor = HEADER_LEN;
         if cursor.checked_add(prefix_len)? > bytes.len() {
@@ -352,6 +351,7 @@ impl<
             if cursor.checked_add(k_suffix_len)? > bytes.len() {
                 return None;
             }
+            // Reconstruct full key = shared prefix ++ per-entry suffix.
             let full_key_len = prefix_len.checked_add(k_suffix_len)?;
             let mut full_key = Vec::with_capacity(full_key_len);
             full_key.extend_from_slice(prefix);
@@ -362,26 +362,17 @@ impl<
             if !body.is_empty() {
                 return None;
             }
-            let value = if V::is_self_delimiting() {
-                let remaining_before = bytes.len() - cursor;
-                let mut v_input: &[u8] = &bytes[cursor..];
-                let v = V::compact_decode_from(&mut v_input).ok()?;
-                cursor += remaining_before - v_input.len();
-                v
-            } else {
-                if cursor.checked_add(1)? > bytes.len() {
-                    return None;
-                }
-                let v_len = bytes[cursor] as usize;
-                cursor += 1;
-                if cursor.checked_add(v_len)? > bytes.len() {
-                    return None;
-                }
-                let mut body: &[u8] = &bytes[cursor..cursor + v_len];
-                let v = V::compact_decode_from(&mut body).ok()?;
-                cursor += v_len;
-                v
-            };
+            if cursor.checked_add(1)? > bytes.len() {
+                return None;
+            }
+            let v_len = bytes[cursor] as usize;
+            cursor += 1;
+            if cursor.checked_add(v_len)? > bytes.len() {
+                return None;
+            }
+            let mut body: &[u8] = &bytes[cursor..cursor + v_len];
+            let value = V::compact_decode_from(&mut body).ok()?;
+            cursor += v_len;
             entries.push(Entry { key, nonce, value });
         }
 
