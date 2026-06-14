@@ -274,6 +274,59 @@ fn write_len_u64(host: &Host, slot_key: &[u8; 32], n: u64) {
 }
 
 // ---------------------------------------------------------------------------
+// Variable-length raw values (≤ MAX_STORAGE_VALUE_BYTES per key, one host op)
+// ---------------------------------------------------------------------------
+
+/// pallet-revive's per-value `STORAGE_BYTES` cap: the most a single
+/// `set_storage` / `get_storage` call will transfer for one key.
+pub const MAX_STORAGE_VALUE_BYTES: usize = 416;
+
+/// Stored in place of an empty payload so `storage_get_bytes` can tell a
+/// stored-empty value (`Some(Vec::new())`) from a never-written key (`None`);
+/// the non-zero byte also survives `set_storage_or_clear`'s zero-deletion.
+#[cfg(feature = "alloc")]
+const EMPTY_VALUE_SENTINEL: u8 = 0x01;
+
+/// Read the value at `key` in one host `get_storage` call.
+///
+/// `None` = never written or cleared; `Some(Vec::new())` = stored empty.
+#[cfg(feature = "alloc")]
+pub(crate) fn storage_get_bytes(host: &Host, key: &[u8; 32]) -> Option<alloc::vec::Vec<u8>> {
+    let mut buf = [0u8; MAX_STORAGE_VALUE_BYTES];
+    let mut filled: &mut [u8] = &mut buf;
+    match host.get_storage(StorageFlags::empty(), key.as_slice(), &mut filled) {
+        Ok(()) if filled.len() == 1 && filled[0] == EMPTY_VALUE_SENTINEL => {
+            Some(alloc::vec::Vec::new())
+        }
+        Ok(()) => Some(filled.to_vec()),
+        Err(_) => None,
+    }
+}
+
+/// Write `value` at `key` in one host `set_storage` call, materializing an
+/// empty payload as `EMPTY_VALUE_SENTINEL`. Panics past `MAX_STORAGE_VALUE_BYTES`.
+#[cfg(feature = "alloc")]
+pub(crate) fn storage_set_bytes(host: &Host, key: &[u8; 32], value: &[u8]) {
+    assert!(
+        value.len() <= MAX_STORAGE_VALUE_BYTES,
+        "storage_set_bytes: {} bytes exceeds MAX_STORAGE_VALUE_BYTES ({})",
+        value.len(),
+        MAX_STORAGE_VALUE_BYTES,
+    );
+    let payload: &[u8] = if value.is_empty() {
+        &[EMPTY_VALUE_SENTINEL]
+    } else {
+        value
+    };
+    host.set_storage(StorageFlags::empty(), key.as_slice(), payload);
+}
+
+#[cfg(feature = "alloc")]
+pub(crate) fn storage_clear_value(host: &Host, key: &[u8; 32]) {
+    host.set_storage_or_clear(StorageFlags::empty(), key, &[0u8; 32]);
+}
+
+// ---------------------------------------------------------------------------
 // StorageKey
 // ---------------------------------------------------------------------------
 
@@ -2027,6 +2080,9 @@ impl<'a, T: StorageEncode + StorageDecode> DoubleEndedIterator for NestedStorage
 }
 
 impl<T: StorageEncode + StorageDecode> ExactSizeIterator for NestedStorageVecIter<'_, T> {}
+
+#[cfg(feature = "alloc")]
+pub mod ordered_index;
 
 // ---------------------------------------------------------------------------
 // Tests
