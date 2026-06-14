@@ -1,5 +1,3 @@
-#![allow(unexpected_cfgs)]
-
 #[pvm_contract_macros::contract("tests/ui/fixtures/PayableMismatch.sol")]
 mod c {
     pub struct C;

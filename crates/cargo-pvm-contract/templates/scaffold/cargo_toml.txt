@@ -39,7 +39,6 @@ pvm-bump-allocator = "{{ builder_version }}"
 {% if !use_dsl -%}
 [features]
 abi-gen = ["pvm-contract-sdk/abi-gen"]
-test = ["pvm-contract-sdk/std"]
 
 {% endif -%}
 [profile.release]

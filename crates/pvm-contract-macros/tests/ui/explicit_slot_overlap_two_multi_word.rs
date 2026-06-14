@@ -1,7 +1,6 @@
 // Two `Lazy<(U256, U256)>` fields each consume two consecutive slots.
 // foo @ slot 0 occupies 0..2; bar @ slot 1 occupies 1..3 — overlap on slot 1.
 // Pre-fix this compiled silently; post-fix it's rejected at const-eval.
-#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 

@@ -1,6 +1,5 @@
 // `#[payable]` requires `&mut self`. An associated function (no receiver)
 // is `pure` — it has no host access, so accepting value is incoherent.
-#![allow(unexpected_cfgs)]
 
 #[pvm_contract_macros::contract]
 mod c {

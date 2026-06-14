@@ -4,7 +4,6 @@
 // `Lazy::new` / `Mapping::new` forces any such bypass attempt to opt in
 // to `unsafe` explicitly, so a contract crate with
 // `#![forbid(unsafe_code)]` cannot compile this code at all.
-#![allow(unexpected_cfgs)]
 
 #[pvm_contract_macros::contract]
 mod c {

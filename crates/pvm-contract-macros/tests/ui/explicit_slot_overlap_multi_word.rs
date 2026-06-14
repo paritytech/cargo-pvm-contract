@@ -3,7 +3,6 @@
 // Pre-fix, the proc-macro pairwise check only compared literal slot numbers
 // (0 != 1) and silently accepted this layout, producing on-chain corruption.
 // Post-fix, a const-eval overlap check fires at compile time.
-#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 

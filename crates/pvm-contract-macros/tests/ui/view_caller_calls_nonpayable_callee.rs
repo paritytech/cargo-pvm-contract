@@ -1,7 +1,6 @@
 // A `view` (`&self`) method must not be able to invoke a `nonpayable`
 // callee through the typed cross-contract API. The borrow check rejects
 // passing `&self` where `&mut impl ContractContext` is required.
-#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 

@@ -5,7 +5,6 @@
 // with the mask sized as `u64` it can index at most 64 slots, and the runtime
 // `1u64 << __i` shift in the generated `write_to_storage` / `clear_storage`
 // would otherwise be UB in release builds at slot >= 64.
-#![allow(unexpected_cfgs)]
 
 extern crate alloc;
 

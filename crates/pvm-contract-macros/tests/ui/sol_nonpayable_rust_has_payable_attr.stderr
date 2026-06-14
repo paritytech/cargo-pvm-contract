@@ -1,9 +1,9 @@
 error: method `transfer` mutability mismatch: `.sol` declares `nonpayable`, Rust signature is `payable`. remove `#[payable]`.
-  --> tests/ui/sol_nonpayable_rust_has_payable_attr.rs:8:9
+  --> tests/ui/sol_nonpayable_rust_has_payable_attr.rs:6:9
    |
- 8 | /         #[pvm_contract_macros::method]
- 9 | |         #[pvm_contract_macros::payable]
-10 | |         pub fn transfer(&mut self, to: pvm_contract_types::Address) {
-11 | |             let _ = to;
-12 | |         }
+ 6 | /         #[pvm_contract_macros::method]
+ 7 | |         #[pvm_contract_macros::payable]
+ 8 | |         pub fn transfer(&mut self, to: pvm_contract_types::Address) {
+ 9 | |             let _ = to;
+10 | |         }
    | |_________^
