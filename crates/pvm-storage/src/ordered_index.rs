@@ -61,28 +61,54 @@ impl CompactCodec for String {
 
 impl CompactCodec for u64 {
     fn compact_encoded_len(&self) -> usize {
-        8
+        let mut v = *self;
+        let mut len = 1;
+        while v >= 0x80 {
+            len += 1;
+            v >>= 7;
+        }
+        len
     }
 
     fn compact_encode_to<'a>(&self, out: &'a mut &'a mut [u8]) {
-        assert!(
-            out.len() >= 8,
-            "CompactCodec<u64>::compact_encode_to: buffer too small (need 8, have {})",
-            out.len(),
-        );
-        out[..8].copy_from_slice(&self.to_le_bytes());
-        let (_, rest) = out.split_at_mut(8);
-        *out = rest;
+        let mut v = *self;
+        loop {
+            assert!(
+                !out.is_empty(),
+                "CompactCodec<u64>::compact_encode_to: buffer too small",
+            );
+            let byte = (v & 0x7F) as u8;
+            v >>= 7;
+            if v == 0 {
+                out[0] = byte;
+                let (_, rest) = out.split_at_mut(1);
+                *out = rest;
+                return;
+            }
+            out[0] = byte | 0x80;
+            let (_, rest) = out.split_at_mut(1);
+            *out = rest;
+        }
     }
 
     fn compact_decode_from(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        if input.len() < 8 {
-            return Err(DecodeError);
+        let mut result: u64 = 0;
+        let mut shift: u32 = 0;
+        loop {
+            if input.is_empty() {
+                return Err(DecodeError);
+            }
+            let byte = input[0];
+            *input = &input[1..];
+            result |= u64::from(byte & 0x7F).wrapping_shl(shift);
+            if byte & 0x80 == 0 {
+                return Ok(result);
+            }
+            shift += 7;
+            if shift >= 70 {
+                return Err(DecodeError);
+            }
         }
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&input[..8]);
-        *input = &input[8..];
-        Ok(u64::from_le_bytes(buf))
     }
 }
 
@@ -208,7 +234,7 @@ impl<
         for e in &self.entries {
             let suffix_len = e.key.compact_encoded_len().saturating_sub(prefix_len);
             entries_byte_len = entries_byte_len
-                .checked_add(4) // nonce (u32 on wire, widened to u64 in memory)
+                .checked_add(e.nonce.compact_encoded_len())
                 .and_then(|n| n.checked_add(1)) // k_suffix_len
                 .and_then(|n| n.checked_add(suffix_len)) // k_suffix body
                 .and_then(|n| n.checked_add(1)) // v_len
@@ -246,11 +272,11 @@ impl<
         out.extend_from_slice(&prefix);
 
         for e in &self.entries {
-            out.extend_from_slice(
-                &u32::try_from(e.nonce)
-                    .expect("Node::encode: nonce > u32::MAX (>4.3B inserts)")
-                    .to_be_bytes(),
-            );
+            let nonce_len = e.nonce.compact_encoded_len();
+            let start = out.len();
+            out.resize(start + nonce_len, 0);
+            let mut cursor: &mut [u8] = &mut out[start..start + nonce_len];
+            e.nonce.compact_encode_to(&mut cursor);
             let key_bytes = encode_codec_bytes(&e.key);
             let suffix = &key_bytes[prefix_len..];
             let k_suffix_len = u8::try_from(suffix.len())
@@ -306,11 +332,13 @@ impl<
 
         let mut entries: Vec<Entry<K, V>> = Vec::with_capacity(entries_len);
         for _ in 0..entries_len {
-            if cursor.checked_add(4)? > bytes.len() {
+            if cursor >= bytes.len() {
                 return None;
             }
-            let nonce = u64::from(u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?));
-            cursor += 4;
+            let remaining_before = bytes.len() - cursor;
+            let mut nonce_input: &[u8] = &bytes[cursor..];
+            let nonce = u64::compact_decode_from(&mut nonce_input).ok()?;
+            cursor += remaining_before - nonce_input.len();
             if cursor.checked_add(1)? > bytes.len() {
                 return None;
             }
