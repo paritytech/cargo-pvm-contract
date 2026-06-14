@@ -208,7 +208,7 @@ impl<
         for e in &self.entries {
             let suffix_len = e.key.compact_encoded_len().saturating_sub(prefix_len);
             entries_byte_len = entries_byte_len
-                .checked_add(8) // nonce
+                .checked_add(4) // nonce (u32 on wire, widened to u64 in memory)
                 .and_then(|n| n.checked_add(1)) // k_suffix_len
                 .and_then(|n| n.checked_add(suffix_len)) // k_suffix body
                 .and_then(|n| n.checked_add(1)) // v_len
@@ -246,7 +246,11 @@ impl<
         out.extend_from_slice(&prefix);
 
         for e in &self.entries {
-            out.extend_from_slice(&e.nonce.to_be_bytes());
+            out.extend_from_slice(
+                &u32::try_from(e.nonce)
+                    .expect("Node::encode: nonce > u32::MAX (>4.3B inserts)")
+                    .to_be_bytes(),
+            );
             let key_bytes = encode_codec_bytes(&e.key);
             let suffix = &key_bytes[prefix_len..];
             let k_suffix_len = u8::try_from(suffix.len())
@@ -302,11 +306,11 @@ impl<
 
         let mut entries: Vec<Entry<K, V>> = Vec::with_capacity(entries_len);
         for _ in 0..entries_len {
-            if cursor.checked_add(8)? > bytes.len() {
+            if cursor.checked_add(4)? > bytes.len() {
                 return None;
             }
-            let nonce = u64::from_be_bytes(bytes[cursor..cursor + 8].try_into().ok()?);
-            cursor += 8;
+            let nonce = u64::from(u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().ok()?));
+            cursor += 4;
             if cursor.checked_add(1)? > bytes.len() {
                 return None;
             }
