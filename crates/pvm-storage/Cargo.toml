@@ -9,10 +9,20 @@ description = "Typed storage helpers for PVM smart contracts with Solidity-compa
 [dependencies]
 pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
 
+# Target-gated: the bench binary's `MockHost` is `std`-only and unavailable on riscv64.
+[target.'cfg(not(target_arch = "riscv64"))'.dependencies]
+pvm-contract-types = { path = "../pvm-contract-types", default-features = false, features = ["std", "alloc"] }
+
 [dev-dependencies]
 pvm-contract-types = { path = "../pvm-contract-types", features = ["std"] }
+proptest = "1"
 ruint = { workspace = true }
 trybuild = { workspace = true }
+
+[[bin]]
+name = "measure-ordered-index"
+path = "src/bin/measure-ordered-index.rs"
+required-features = ["alloc"]
 
 [features]
 default = []

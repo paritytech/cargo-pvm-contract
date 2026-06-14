@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1e7647e9514c12f6e52b2e595d08f16bae67cd56a0b826a58a36a913938d8468 # shrinks to ops = [("a", 0)]
+cc a419979cbfaab1e4a334098f71b3f665ec9d68b06d570648749425f4f8144160 # shrinks to ops = [("a", 0)]
+cc 15561e405f7e9fa9c8bdb08e607fc6cf63fd5e77a47d24294db413681eeee2a3 # shrinks to ops = [("a", 0), ("b", 0)]
+cc 4c86c7c0821ce99ef77f9620b850dfdb137828b5c870068a5f4dfb7b13c6185e # shrinks to ops = [("a", 0)]
+cc d8bf46593a6c5b6bd04a0997b013e9b8aedac78eaf3cbea476f11d5bab44004e # shrinks to ops = [("t", 0), ("t", 0), ("a", 0), ("a", 0)]
+cc 405d814706928516421078ed9d4aab7167b6491df69fc5882ba3d3e8eaccc449 # shrinks to ops = [("z", 0), ("a", 0), ("a", 0), ("a", 0), ("a", 0), ("a", 0)]
