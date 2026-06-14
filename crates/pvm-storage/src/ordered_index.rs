@@ -1031,8 +1031,13 @@ where
         };
 
         for i in start..=node.entries.len() {
-            if !node.is_leaf() {
-                if self.range_walk(
+            // Subtree-overlap prune: skip children whose key interval does
+            // not overlap [from, to). The entry-emission check below must
+            // still run even when the child is skipped — internal nodes
+            // hold real entries in this B-tree, not separator keys.
+            let descend = !node.is_leaf() && node.child_interval_overlaps(i, from, to);
+            if descend
+                && self.range_walk(
                     host,
                     node.children[i],
                     from,
@@ -1041,12 +1046,12 @@ where
                     limit,
                     skipped,
                     out,
-                ) {
-                    return true;
-                }
-                if out.len() as u64 == limit {
-                    return true;
-                }
+                )
+            {
+                return true;
+            }
+            if out.len() as u64 == limit {
+                return true;
             }
             if i == node.entries.len() {
                 break;
@@ -1115,6 +1120,41 @@ impl<
     fn lower_bound_entry(&self, k: &K, nonce: u64) -> usize {
         self.entries
             .partition_point(|e| e.key < *k || (e.key == *k && e.nonce < nonce))
+    }
+
+    /// Returns true iff the key interval of `children[child_idx]` — the open
+    /// interval `(lo, hi)` with sentinels at the ends — may contain at least
+    /// one key in `[from, to)`. Conservative: may return `true` for a child
+    /// that ultimately contributes no in-range entries (e.g., empty range
+    /// spanning `k`); the deeper recursion then finds nothing — wasted read,
+    /// not a correctness issue. Strict inequalities handle Included/Excluded
+    /// uniformly: a child with `hi = k` holds no keys for `from = Excluded(k)`
+    /// (want `> k`); a child with `lo = k` holds no keys for
+    /// `to = Excluded(k)` (want `< k`).
+    fn child_interval_overlaps(
+        &self,
+        child_idx: usize,
+        from: Bound<&K>,
+        to: Bound<&K>,
+    ) -> bool {
+        // Child C_i holds (key, nonce) tuples strictly between
+        // (entries[i-1].key, entries[i-1].nonce) and (entries[i].key, entries[i].nonce).
+        // Duplicate keys straddle node boundaries: when entries[i].key == k, C_i can
+        // still hold entries with key == k (and a smaller nonce), and C_{i+1} can hold
+        // entries with key == k (and a larger nonce). An Included(k) bound must
+        // therefore use >= / <= so those duplicate-bearing children are not pruned;
+        // Excluded(k) stays strict because == k is out of range by definition.
+        let from_ok = match from {
+            Bound::Unbounded => true,
+            Bound::Included(k) => child_idx >= self.entries.len() || self.entries[child_idx].key >= *k,
+            Bound::Excluded(k) => child_idx >= self.entries.len() || self.entries[child_idx].key > *k,
+        };
+        let to_ok = match to {
+            Bound::Unbounded => true,
+            Bound::Included(k) => child_idx == 0 || self.entries[child_idx - 1].key <= *k,
+            Bound::Excluded(k) => child_idx == 0 || self.entries[child_idx - 1].key < *k,
+        };
+        from_ok && to_ok
     }
 }
 
