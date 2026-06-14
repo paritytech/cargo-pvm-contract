@@ -177,8 +177,12 @@ impl<
         self.children.is_empty()
     }
 
+    /// Total real entries in this subtree. In a B+tree, internal nodes hold
+    /// separator *copies* (routing only), not real entries — only leaves
+    /// contribute their own entries to the count.
     fn subtree_count(&self) -> u64 {
-        self.entries.len() as u64 + self.child_counts.iter().sum::<u64>()
+        let own = if self.is_leaf() { self.entries.len() as u64 } else { 0 };
+        own + self.child_counts.iter().sum::<u64>()
     }
 
     // On-wire node layout (BE throughout, capacities enforced by the `T <= 128`
@@ -555,19 +559,39 @@ where
     }
 
     pub fn get_first(&self, host: &Host, key: &K) -> Option<V> {
-        let mut id = self.root_id(host)?;
-        let mut candidate: Option<V> = None;
-        loop {
-            let node = self.load_node(host, id);
-            let pos = node.lower_bound_key(key);
-            if pos < node.entries.len() && node.entries[pos].key == *key {
-                candidate = Some(node.entries[pos].value.clone());
-            }
-            if node.is_leaf() {
-                return candidate;
-            }
-            id = node.children[pos];
+        let id = self.root_id(host)?;
+        self.get_first_in_subtree(host, id, key)
+    }
+
+    /// B+tree point-lookup of the smallest-nonce entry for `key`. When the
+    /// separator key matches, the entry may be in either child: left (nonce
+    /// < separator nonce) or right (nonce >= separator nonce). We descend left
+    /// first; if not found and the separator matches, descend right. For
+    /// unique keys this is a single O(log n) path; for duplicates it is at
+    /// most 2·O(log n).
+    fn get_first_in_subtree(
+        &self,
+        host: &Host,
+        node_id: NodeId,
+        key: &K,
+    ) -> Option<V> {
+        let node = self.load_node(host, node_id);
+        let pos = node.lower_bound_key(key);
+        if node.is_leaf() {
+            return if pos < node.entries.len() && node.entries[pos].key == *key {
+                Some(node.entries[pos].value.clone())
+            } else {
+                None
+            };
         }
+        let left = self.get_first_in_subtree(host, node.children[pos], key);
+        if left.is_some() {
+            return left;
+        }
+        if pos < node.entries.len() && node.entries[pos].key == *key {
+            return self.get_first_in_subtree(host, node.children[pos + 1], key);
+        }
+        None
     }
 
     pub fn remove_by_nonce(&self, host: &Host, key: &K, nonce: u64) -> Option<V> {
@@ -623,11 +647,6 @@ where
                     break;
                 }
                 rank -= c;
-                if rank == 0 {
-                    let e = &node.entries[i];
-                    return Some((e.key.clone(), e.value.clone()));
-                }
-                rank -= 1;
                 i += 1;
             }
         }
@@ -647,7 +666,6 @@ where
             }
             for i in 0..pos {
                 rank += node.child_counts[i];
-                rank += 1;
             }
             id = node.children[pos];
         }
@@ -705,27 +723,27 @@ where
         let left_id = parent.children[i];
         let mut left = self.load_node(host, left_id);
 
-        let right_entries: Vec<Entry<K, V>> = left.entries.drain(T..).collect();
-        let middle = match left.entries.pop() {
-            Some(entry) => entry,
-            None => panic!("OrderedIndexMissingMedian"),
-        };
-
-        let (right_children, right_child_counts, right_child_entry_counts) = if left.is_leaf() {
-            (Vec::new(), Vec::new(), Vec::new())
+        // B+tree split: leaf splits COPY the median up (the real entry stays
+        // in the right leaf); internal splits MOVE the median up (the median
+        // becomes a routing separator in the parent, same as a regular B-tree).
+        let (middle, right) = if left.is_leaf() {
+            let median = left.entries[T - 1].clone();
+            let right_entries = left.entries.split_off(T - 1);
+            let mut right = Node::leaf();
+            right.entries = right_entries;
+            (median, right)
         } else {
-            (
-                left.children.drain(T..).collect::<Vec<_>>(),
-                left.child_counts.drain(T..).collect::<Vec<_>>(),
-                left.child_entry_counts.drain(T..).collect::<Vec<_>>(),
-            )
-        };
-
-        let right = Node {
-            entries: right_entries,
-            children: right_children,
-            child_counts: right_child_counts,
-            child_entry_counts: right_child_entry_counts,
+            let right_entries: Vec<Entry<K, V>> = left.entries.drain(T..).collect();
+            let median = match left.entries.pop() {
+                Some(entry) => entry,
+                None => panic!("OrderedIndexMissingMedian"),
+            };
+            let mut right = Node::leaf();
+            right.entries = right_entries;
+            right.children = left.children.drain(T..).collect();
+            right.child_counts = left.child_counts.drain(T..).collect();
+            right.child_entry_counts = left.child_entry_counts.drain(T..).collect();
+            (median, right)
         };
 
         let left_count = left.subtree_count();
@@ -751,41 +769,21 @@ where
             && node.entries[pos].key == *k
             && node.entries[pos].nonce == nonce;
 
-        if at_pos {
-            if node.is_leaf() {
+        if node.is_leaf() {
+            if at_pos {
                 let removed = node.entries.remove(pos).value;
                 self.store_node(host, node_id, &node);
                 return Some(removed);
             }
-            let original = node.entries[pos].value.clone();
-
-            if node.child_entry_counts[pos] >= T as u32 {
-                let pred = self.find_max(host, node.children[pos]);
-                self.remove_from(host, node.children[pos], &pred.key, pred.nonce);
-                node.entries[pos] = pred;
-                self.refresh_child_mirrors(host, &mut node, pos);
-                self.store_node(host, node_id, &node);
-            } else if node.child_entry_counts[pos + 1] >= T as u32 {
-                let succ = self.find_min(host, node.children[pos + 1]);
-                self.remove_from(host, node.children[pos + 1], &succ.key, succ.nonce);
-                node.entries[pos] = succ;
-                self.refresh_child_mirrors(host, &mut node, pos + 1);
-                self.store_node(host, node_id, &node);
-            } else {
-                self.merge_children(host, &mut node, pos);
-                let merged_id = node.children[pos];
-                self.store_node(host, node_id, &node);
-                let _ = self.remove_from(host, merged_id, k, nonce);
-                self.refresh_child_mirrors(host, &mut node, pos);
-                self.store_node(host, node_id, &node);
-            }
-            return Some(original);
-        }
-
-        if node.is_leaf() {
             return None;
         }
-        let descend = self.descend_prepared(host, &mut node, pos);
+
+        // B+tree internal node: the real entry is in a leaf — always descend.
+        // If the separator matches (k, nonce), the entry lives in the right
+        // child (pos+1); otherwise descend the left child (pos). The separator
+        // copy may go stale after removal but remains a valid routing key.
+        let child_idx = if at_pos { pos + 1 } else { pos };
+        let descend = self.descend_prepared(host, &mut node, child_idx);
         let child_id = node.children[descend];
         self.store_node(host, node_id, &node);
         let result = self.remove_from(host, child_id, k, nonce);
@@ -824,15 +822,24 @@ where
         let mut left = self.load_node(host, left_id);
         let mut child = self.load_node(host, child_id);
 
-        let separator = node.entries[pos - 1].clone();
-        let new_separator = match left.entries.pop() {
-            Some(entry) => entry,
-            None => panic!("OrderedIndexBorrowLeftEmpty"),
-        };
-        child.entries.insert(0, separator);
-        node.entries[pos - 1] = new_separator;
+        if child.is_leaf() {
+            // B+tree leaf: move real entry from left to child, update separator.
+            let moved = match left.entries.pop() {
+                Some(entry) => entry,
+                None => panic!("OrderedIndexBorrowLeftEmpty"),
+            };
+            child.entries.insert(0, moved);
+            node.entries[pos - 1] = child.entries[0].clone();
+        } else {
+            // Internal: rotate separator (old goes down, left's last goes up).
+            let separator = node.entries[pos - 1].clone();
+            let new_separator = match left.entries.pop() {
+                Some(entry) => entry,
+                None => panic!("OrderedIndexBorrowLeftEmpty"),
+            };
+            child.entries.insert(0, separator);
+            node.entries[pos - 1] = new_separator;
 
-        if !left.is_leaf() {
             let moved_child = match left.children.pop() {
                 Some(value) => value,
                 None => panic!("OrderedIndexMissingLeftChild"),
@@ -865,12 +872,18 @@ where
         let mut child = self.load_node(host, child_id);
         let mut right = self.load_node(host, right_id);
 
-        let separator = node.entries[pos].clone();
-        let new_separator = right.entries.remove(0);
-        child.entries.push(separator);
-        node.entries[pos] = new_separator;
+        if child.is_leaf() {
+            // B+tree leaf: move real entry from right to child, update separator.
+            let moved = right.entries.remove(0);
+            child.entries.push(moved);
+            node.entries[pos] = right.entries[0].clone();
+        } else {
+            // Internal: rotate separator (old goes down, right's first goes up).
+            let separator = node.entries[pos].clone();
+            let new_separator = right.entries.remove(0);
+            child.entries.push(separator);
+            node.entries[pos] = new_separator;
 
-        if !right.is_leaf() {
             let moved_child = right.children.remove(0);
             let moved_count = right.child_counts.remove(0);
             let moved_entry_count = right.child_entry_counts.remove(0);
@@ -895,7 +908,11 @@ where
         let right = self.load_node(host, right_id);
 
         let separator = node.entries.remove(pos);
-        left.entries.push(separator);
+        // B+tree: leaf merges DISCARD the separator (it was a copy); internal
+        // merges push the separator down as a routing key (same as B-tree).
+        if !left.is_leaf() {
+            left.entries.push(separator);
+        }
         left.entries.extend(right.entries);
         if !left.is_leaf() {
             left.children.extend(right.children);
@@ -913,49 +930,34 @@ where
         self.free_node(host, right_id);
     }
 
-    fn find_max(&self, host: &Host, mut id: NodeId) -> Entry<K, V> {
-        loop {
-            let node = self.load_node(host, id);
-            if node.is_leaf() {
-                return match node.entries.last() {
-                    Some(entry) => entry.clone(),
-                    None => panic!("OrderedIndexEmptyMaxLeaf"),
-                };
-            }
-            id = match node.children.last() {
-                Some(child_id) => *child_id,
-                None => panic!("OrderedIndexMissingMaxChild"),
+    fn find_first_nonce(&self, host: &Host, k: &K) -> Option<u64> {
+        let id = self.root_id(host)?;
+        self.find_first_nonce_in_subtree(host, id, k)
+    }
+
+    fn find_first_nonce_in_subtree(
+        &self,
+        host: &Host,
+        node_id: NodeId,
+        k: &K,
+    ) -> Option<u64> {
+        let node = self.load_node(host, node_id);
+        let pos = node.lower_bound_key(k);
+        if node.is_leaf() {
+            return if pos < node.entries.len() && node.entries[pos].key == *k {
+                Some(node.entries[pos].nonce)
+            } else {
+                None
             };
         }
-    }
-
-    fn find_min(&self, host: &Host, mut id: NodeId) -> Entry<K, V> {
-        loop {
-            let node = self.load_node(host, id);
-            if node.is_leaf() {
-                return match node.entries.first() {
-                    Some(entry) => entry.clone(),
-                    None => panic!("OrderedIndexEmptyMinLeaf"),
-                };
-            }
-            id = node.children[0];
+        let left = self.find_first_nonce_in_subtree(host, node.children[pos], k);
+        if left.is_some() {
+            return left;
         }
-    }
-
-    fn find_first_nonce(&self, host: &Host, k: &K) -> Option<u64> {
-        let mut id = self.root_id(host)?;
-        let mut candidate: Option<u64> = None;
-        loop {
-            let node = self.load_node(host, id);
-            let pos = node.lower_bound_key(k);
-            if pos < node.entries.len() && node.entries[pos].key == *k {
-                candidate = Some(node.entries[pos].nonce);
-            }
-            if node.is_leaf() {
-                return candidate;
-            }
-            id = node.children[pos];
+        if pos < node.entries.len() && node.entries[pos].key == *k {
+            return self.find_first_nonce_in_subtree(host, node.children[pos + 1], k);
         }
+        None
     }
 
     fn find_nonce_for(&self, host: &Host, k: &K, v: &V) -> Option<u64>
@@ -997,11 +999,6 @@ where
                     break;
                 }
                 rank -= c;
-                if rank == 0 {
-                    let e = &node.entries[i];
-                    return Some((e.key.clone(), e.nonce, e.value.clone()));
-                }
-                rank -= 1;
                 i += 1;
             }
         }
@@ -1030,14 +1027,34 @@ where
             Bound::Excluded(k) => node.upper_bound_key(k),
         };
 
+        if node.is_leaf() {
+            for i in start..node.entries.len() {
+                let e = &node.entries[i];
+                let above = match to {
+                    Bound::Unbounded => false,
+                    Bound::Included(k) => e.key > *k,
+                    Bound::Excluded(k) => e.key >= *k,
+                };
+                if above {
+                    return true;
+                }
+                if *skipped < offset {
+                    *skipped += 1;
+                } else {
+                    out.push((e.key.clone(), e.value.clone()));
+                    if out.len() as u64 == limit {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // B+tree internal: descend into overlapping children only — no entries
+        // are emitted here (all real entries live in leaves).
         for i in start..=node.entries.len() {
-            // Subtree-overlap prune: skip children whose key interval does
-            // not overlap [from, to). The entry-emission check below must
-            // still run even when the child is skipped — internal nodes
-            // hold real entries in this B-tree, not separator keys.
-            let descend = !node.is_leaf() && node.child_interval_overlaps(i, from, to);
-            if descend
-                && self.range_walk(
+            if node.child_interval_overlaps(i, from, to) {
+                if self.range_walk(
                     host,
                     node.children[i],
                     from,
@@ -1046,39 +1063,9 @@ where
                     limit,
                     skipped,
                     out,
-                )
-            {
-                return true;
-            }
-            if out.len() as u64 == limit {
-                return true;
-            }
-            if i == node.entries.len() {
-                break;
-            }
-
-            let e = &node.entries[i];
-            let above = match to {
-                Bound::Unbounded => false,
-                Bound::Included(k) => e.key > *k,
-                Bound::Excluded(k) => e.key >= *k,
-            };
-            if above {
-                return true;
-            }
-            let below = match from {
-                Bound::Unbounded => false,
-                Bound::Included(k) => e.key < *k,
-                Bound::Excluded(k) => e.key <= *k,
-            };
-            if below {
-                continue;
-            }
-
-            if *skipped < offset {
-                *skipped += 1;
-            } else {
-                out.push((e.key.clone(), e.value.clone()));
+                ) {
+                    return true;
+                }
                 if out.len() as u64 == limit {
                     return true;
                 }
