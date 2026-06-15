@@ -8,8 +8,8 @@ use core::ops::Bound;
 use pvm_contract_types::{DecodeError, Host, SolDecode, SolEncode};
 
 use crate::{
-    storage_clear_value, storage_get_bytes, storage_set_bytes, AsStorageKey, Lazy, StorageKey,
-    MAX_STORAGE_VALUE_BYTES,
+    AsStorageKey, Lazy, MAX_STORAGE_VALUE_BYTES, StorageKey, storage_clear_value,
+    storage_get_bytes, storage_set_bytes,
 };
 
 /// Compact raw-byte body encoding for the OrderedIndex B-tree node's
@@ -138,9 +138,9 @@ struct Entry<
 }
 
 impl<
-        K: SolEncode + SolDecode + Clone + CompactCodec,
-        V: SolEncode + SolDecode + Clone + CompactCodec,
-    > Clone for Entry<K, V>
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+> Clone for Entry<K, V>
 {
     fn clone(&self) -> Self {
         Self {
@@ -162,9 +162,9 @@ struct Node<
 }
 
 impl<
-        K: SolEncode + SolDecode + Clone + CompactCodec,
-        V: SolEncode + SolDecode + Clone + CompactCodec,
-    > Clone for Node<K, V>
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+> Clone for Node<K, V>
 {
     fn clone(&self) -> Self {
         Self {
@@ -177,9 +177,9 @@ impl<
 }
 
 impl<
-        K: SolEncode + SolDecode + Clone + CompactCodec,
-        V: SolEncode + SolDecode + Clone + CompactCodec,
-    > Node<K, V>
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+> Node<K, V>
 {
     fn encode_v(&self, v: &V, out: &mut Vec<u8>) {
         let body_len = v.compact_encoded_len();
@@ -288,8 +288,8 @@ impl<
             e.nonce.compact_encode_to(&mut cursor);
             let key_bytes = encode_codec_bytes(&e.key);
             let suffix = &key_bytes[prefix_len..];
-            let k_suffix_len = u8::try_from(suffix.len())
-                .expect("Node::encode: key suffix > 255 bytes");
+            let k_suffix_len =
+                u8::try_from(suffix.len()).expect("Node::encode: key suffix > 255 bytes");
             out.push(k_suffix_len);
             out.extend_from_slice(suffix);
             let v_len = u8::try_from(e.value.compact_encoded_len())
@@ -310,8 +310,10 @@ impl<
             out.resize(start + sc_len, 0);
             let mut cursor: &mut [u8] = &mut out[start..start + sc_len];
             sc.compact_encode_to(&mut cursor);
-            out.push(u8::try_from(self.child_entry_counts[i])
-                .expect("Node::encode: own_entry_count > 255 (T>128)"));
+            out.push(
+                u8::try_from(self.child_entry_counts[i])
+                    .expect("Node::encode: own_entry_count > 255 (T>128)"),
+            );
         }
         out
     }
@@ -545,11 +547,7 @@ where
 
     fn root_id(&self, host: &Host) -> Option<NodeId> {
         let v = self.root_cell_lazy(host).get();
-        if v == 0 {
-            None
-        } else {
-            Some(NodeId(v))
-        }
+        if v == 0 { None } else { Some(NodeId(v)) }
     }
 
     fn set_root_id(&self, host: &Host, id: NodeId) {
@@ -777,8 +775,7 @@ where
         if child.entries.len() == Self::max_keys() {
             self.split_child(host, &mut node, child_idx);
             let sep = &node.entries[child_idx];
-            let goes_right = (entry.key.cmp(&sep.key))
-                .then(entry.nonce.cmp(&sep.nonce))
+            let goes_right = (entry.key.cmp(&sep.key)).then(entry.nonce.cmp(&sep.nonce))
                 == core::cmp::Ordering::Greater;
             if goes_right {
                 child_idx += 1;
@@ -1195,9 +1192,9 @@ where
 }
 
 impl<
-        K: SolEncode + SolDecode + Clone + CompactCodec + Ord,
-        V: SolEncode + SolDecode + Clone + CompactCodec,
-    > Node<K, V>
+    K: SolEncode + SolDecode + Clone + CompactCodec + Ord,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+> Node<K, V>
 {
     fn lower_bound_key(&self, k: &K) -> usize {
         self.entries.partition_point(|e| e.key < *k)
@@ -1221,12 +1218,7 @@ impl<
     /// uniformly: a child with `hi = k` holds no keys for `from = Excluded(k)`
     /// (want `> k`); a child with `lo = k` holds no keys for
     /// `to = Excluded(k)` (want `< k`).
-    fn child_interval_overlaps(
-        &self,
-        child_idx: usize,
-        from: Bound<&K>,
-        to: Bound<&K>,
-    ) -> bool {
+    fn child_interval_overlaps(&self, child_idx: usize, from: Bound<&K>, to: Bound<&K>) -> bool {
         // Child C_i holds (key, nonce) tuples strictly between
         // (entries[i-1].key, entries[i-1].nonce) and (entries[i].key, entries[i].nonce).
         // Duplicate keys straddle node boundaries: when entries[i].key == k, C_i can
@@ -1236,8 +1228,12 @@ impl<
         // Excluded(k) stays strict because == k is out of range by definition.
         let from_ok = match from {
             Bound::Unbounded => true,
-            Bound::Included(k) => child_idx >= self.entries.len() || self.entries[child_idx].key >= *k,
-            Bound::Excluded(k) => child_idx >= self.entries.len() || self.entries[child_idx].key > *k,
+            Bound::Included(k) => {
+                child_idx >= self.entries.len() || self.entries[child_idx].key >= *k
+            }
+            Bound::Excluded(k) => {
+                child_idx >= self.entries.len() || self.entries[child_idx].key > *k
+            }
         };
         let to_ok = match to {
             Bound::Unbounded => true,
@@ -1256,10 +1252,10 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
     use core::ops::Bound;
-    use pvm_contract_types::{Host, MockHostBuilder};
     use proptest::prelude::*;
+    use pvm_contract_types::{Host, MockHostBuilder};
 
-    use super::{Node, NodeId, OrderedIndex, MAX_STORAGE_VALUE_BYTES};
+    use super::{MAX_STORAGE_VALUE_BYTES, Node, NodeId, OrderedIndex};
 
     fn host() -> Host {
         Host::from_dyn(Rc::new(MockHostBuilder::new().build()))

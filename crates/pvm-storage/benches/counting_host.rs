@@ -40,9 +40,7 @@ extern crate alloc;
 use core::cell::Cell;
 use std::rc::Rc;
 
-use pvm_contract_types::{
-    CallFlags, HostApi, HostResult, MockHost, ReturnFlags, StorageFlags,
-};
+use pvm_contract_types::{CallFlags, HostApi, HostResult, MockHost, ReturnFlags, StorageFlags};
 
 /// `Copy` snapshot of the three storage counters. Returned by
 /// [`CountingHost::snapshot`].
@@ -165,8 +163,16 @@ impl HostApi for CountingHost {
         input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.inner
-            .call(flags, callee, ref_time_limit, proof_size_limit, deposit, value, input_data, output)
+        self.inner.call(
+            flags,
+            callee,
+            ref_time_limit,
+            proof_size_limit,
+            deposit,
+            value,
+            input_data,
+            output,
+        )
     }
 
     #[inline]
@@ -179,7 +185,8 @@ impl HostApi for CountingHost {
         input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.inner.call_evm(flags, callee, gas, value, input_data, output)
+        self.inner
+            .call_evm(flags, callee, gas, value, input_data, output)
     }
 
     #[inline]
@@ -233,7 +240,8 @@ impl HostApi for CountingHost {
         input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.inner.delegate_call_evm(flags, address, gas, input_data, output)
+        self.inner
+            .delegate_call_evm(flags, address, gas, input_data, output)
     }
 
     #[inline]
@@ -242,12 +250,7 @@ impl HostApi for CountingHost {
     }
 
     #[inline]
-    fn get_storage(
-        &self,
-        flags: StorageFlags,
-        key: &[u8],
-        output: &mut &mut [u8],
-    ) -> HostResult {
+    fn get_storage(&self, flags: StorageFlags, key: &[u8], output: &mut &mut [u8]) -> HostResult {
         // Read: a storage SLOAD. Dominant gas cost in the workload.
         self.reads.set(self.reads.get() + 1);
         self.inner.get_storage(flags, key, output)

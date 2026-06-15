@@ -9,6 +9,7 @@ use std::time::Instant;
 use pvm_contract_types::{Host, MockHostBuilder};
 use pvm_storage::ordered_index::OrderedIndex;
 
+#[allow(dead_code)]
 #[path = "../../benches/counting_host.rs"]
 mod counting_host;
 use counting_host::CountingHost;
@@ -37,11 +38,10 @@ fn uniform_key(state: &mut u32) -> String {
 
 fn zipf_key(state: &mut u32, i: usize) -> String {
     const NAMES: &[&str] = &[
-        "alice", "bob", "charlie", "dave", "eve", "frank", "grace", "heidi",
-        "ivan", "judy", "karl", "leo", "mallory", "nancy", "oscar", "peggy",
-        "quinn", "ruth", "sam", "trent", "victor", "walter", "xavier", "yara",
-        "zara", "oliver", "emma", "liam", "ava", "noah", "mia", "lucas",
-        "sofia", "ethan", "isla", "mason", "luna", "logan", "zoe", "max",
+        "alice", "bob", "charlie", "dave", "eve", "frank", "grace", "heidi", "ivan", "judy",
+        "karl", "leo", "mallory", "nancy", "oscar", "peggy", "quinn", "ruth", "sam", "trent",
+        "victor", "walter", "xavier", "yara", "zara", "oliver", "emma", "liam", "ava", "noah",
+        "mia", "lucas", "sofia", "ethan", "isla", "mason", "luna", "logan", "zoe", "max",
     ];
     let r = (xorshift32(state) as f64 / u32::MAX as f64) * (NAMES.len() as f64) * 2.0;
     let idx = (r as usize).min(NAMES.len() - 1);
@@ -113,9 +113,8 @@ fn run_profile<const T: usize>(profile: &str, n: usize, q: usize) {
 
     latencies.sort_unstable();
     let p50 = latencies.get(latencies.len() / 2).copied().unwrap_or(0);
-    let p99 = latencies[
-        ((latencies.len() as f64 * 0.99) as usize).min(latencies.len().saturating_sub(1))
-    ];
+    let p99 = latencies
+        [((latencies.len() as f64 * 0.99) as usize).min(latencies.len().saturating_sub(1))];
 
     let avg_reads = (total_reads as f64 / q as f64 * 100.0).round() / 100.0;
     println!(
@@ -125,9 +124,18 @@ fn run_profile<const T: usize>(profile: &str, n: usize, q: usize) {
 }
 
 fn main() {
-    let n: usize = env::var("VAL_N").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
-    let q: usize = env::var("VAL_Q").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000);
-    let t: usize = env::var("VAL_T").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let n: usize = env::var("VAL_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1_000_000);
+    let q: usize = env::var("VAL_Q")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1_000);
+    let t: usize = env::var("VAL_T")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8);
 
     eprintln!("[validate] n={} q={} t={}", n, q, t);
 

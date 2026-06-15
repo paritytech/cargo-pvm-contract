@@ -39,7 +39,10 @@ fn parse_env(name: &str, default: u64) -> u64 {
         Ok(s) => match s.parse() {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[bench] {}={:?} is not a valid u64: {}; using default {}", name, s, e, default);
+                eprintln!(
+                    "[bench] {}={:?} is not a valid u64: {}; using default {}",
+                    name, s, e, default
+                );
                 default
             }
         },
@@ -82,13 +85,7 @@ fn run_for_t<const T: usize>(n: u64, q: u64) -> ExitCode {
         };
 
         let start = Instant::now();
-        let actual = idx.range(
-            &host,
-            Bound::Included(&p),
-            Bound::Excluded(&upper),
-            0,
-            100,
-        );
+        let actual = idx.range(&host, Bound::Included(&p), Bound::Excluded(&upper), 0, 100);
         let elapsed_ns = start.elapsed().as_nanos() as u64;
         latencies_ns.push(elapsed_ns);
 
