@@ -100,7 +100,14 @@ impl CompactCodec for u64 {
             }
             let byte = input[0];
             *input = &input[1..];
-            result |= u64::from(byte & 0x7F).wrapping_shl(shift);
+            // LEB128 overflow guard: on the final possible byte (shift=63),
+            // only bit 0 of the payload is valid. Bits 1-6 would land above
+            // bit 63 and silently wrap. Reject them as malformed input.
+            let bits = u64::from(byte & 0x7F);
+            if shift + 7 > 64 && bits >> (64 - shift) != 0 {
+                return Err(DecodeError);
+            }
+            result |= bits << shift;
             if byte & 0x80 == 0 {
                 return Ok(result);
             }
@@ -1519,6 +1526,12 @@ mod tests {
         depths: &mut Vec<usize>,
     ) {
         let node = idx.load_node(host, id);
+        if depth > 0 {
+            assert!(
+                !node.entries.is_empty(),
+                "non-root node violates min-degree: 0 entries (need >= T-1 = 1)",
+            );
+        }
         if node.is_leaf() {
             depths.push(depth);
         } else {

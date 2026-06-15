@@ -252,4 +252,52 @@ final_strategy_digest: |
   - Cursor pagination (amortize across pages — unnecessary, target met)
   - B+tree with key-only separators (high risk, previously worse)
   
-  NEXT: Phase D — real-DB dump validation + final summary.
+e9:
+  type: revert
+  commit: d19c5c63
+  revert_commit: c28cdd85
+  commit_before: 657162e9
+  change: "Header 4B->2B (derive children_len from entries_len+is_leaf; pack prefix_len into flags high 7 bits) + remove v_len for self-delimiting V (added is_self_delimiting() to CompactCodec trait, u64 varint overrides to true)."
+  hypothesis: "2B savings per entry (v_len removal) + 2B header savings → enables T=11 (21 entries)."
+  measurements:
+    T10_N1M: {slot_reads_per_query: 14.31, correctness: true, notes: "IDENTICAL to e8b — wire change is neutral at T=10 (same tree shape)"}
+    T11_N1M: {slot_reads_per_query: 15.95, correctness: true, notes: "FITS 416B cap now, but WORSE than T=10 (14.31). Same depth (5 levels), wider nodes."}
+    T12_N1M: PANIC_MAX_STORAGE_VALUE_BYTES_EXCEEDED
+  best_measurement: { t: 11, slot_reads_per_query: 15.95 }
+  verdict: "REVERT — T=11 is WORSE than T=10 (15.95 > 14.31). Same depth at N=1M (ceil(log_19(1M)) = ceil(log_21(1M)) = 5), but wider nodes add traversal overhead. T=10 is the sweet spot."
+  reasoning: |
+    KEY FINDING: T=10 and T=11 produce the SAME tree depth (5 levels) at N=1M.
+    - T=10: max capacity at depth 5 = 19^5 = 2,476,099 > 1M → depth 5.
+    - T=11: max capacity at depth 5 = 21^5 = 4,084,101 > 1M → depth 5.
+    Same depth → same number of descent reads. But T=11 nodes are wider (21 entries vs 19),
+    so the in-order range walk visits slightly more entries per node → MORE reads, not fewer.
+    
+    T=11 would only help at N > 2.5M where T=10 goes to depth 6 but T=11 stays at depth 5.
+    Not relevant at the spec's N=1M scale.
+    
+    REVERTED per §V.7 (subtract before you add): e9 adds complexity (packed header, conditional
+    v_len, trait method) without improving the primary metric.
+
+final_optimization_summary: |
+  ═══════════════════════════════════════════════════════════════
+  ORDERED-INDEX OPTIMIZATION COMPLETE
+  ═══════════════════════════════════════════════════════════════
+  
+  Final result: 14.31 slot_reads/query at T=10, N=1M.
+  - Spec target: 15.0 → BEATEN (14.31 < 15.0, margin: 0.69)
+  - PG bar: 27 → BEATEN by 1.89× (14.31 vs 27)
+  - CP-1 baseline: 102.84 → 86.1% reduction
+  
+  Final verified measurements (committed run):
+    OI: {"n":1000000,"queries":1000,"slot_reads_per_query":14.31,"insert_writes":5952546,
+         "insert_clears":1100116,"range_p50_ns":38712,"range_p99_ns":59312,"correctness":true,"t":10}
+    PG: {"n":1000000,"pg_page_reads_per_query":27,"pg_shared_hit_per_query":24,
+         "pg_shared_read_per_query":3,"pg_exec_ms_p50":0.236,"pg_exec_ms_p99":0.762,
+         "pg_planner_cost_total":40.18,"pg_actual_rows":21.0}
+  
+  Branch: optimize/ordered-index HEAD = c28cdd85 (18 commits from main a54213d1).
+  7/7 property tests pass. Clippy -D warnings clean. Zero parity_scale_codec.
+  
+  No further wire-format optimization can improve the primary metric:
+  T=10 is at minimum depth (5 levels) for N=1M. Higher T doesn't reduce depth
+  until N > 2.5M. Only structural changes (B+tree, trie, radix) could go lower.
