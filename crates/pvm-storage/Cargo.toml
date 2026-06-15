@@ -24,6 +24,11 @@ name = "measure-ordered-index"
 path = "src/bin/measure-ordered-index.rs"
 required-features = ["alloc"]
 
+[[bin]]
+name = "validate-realistic"
+path = "src/bin/validate-realistic.rs"
+required-features = ["alloc"]
+
 [features]
 default = []
 alloc = ["pvm-contract-types/alloc"]
