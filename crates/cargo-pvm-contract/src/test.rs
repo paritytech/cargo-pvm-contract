@@ -45,8 +45,12 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
         .arg(&host_target)
         .env_remove("CARGO_BUILD_TARGET");
 
-    if !args.extra.is_empty() {
+    if !args.features.is_empty() {
         cmd.arg("--features").arg(args.features.join(","));
+    }
+
+    if !args.extra.is_empty() {
+        cmd.arg("--").args(&args.extra);
     }
 
     let status = cmd.status().with_context(|| {
