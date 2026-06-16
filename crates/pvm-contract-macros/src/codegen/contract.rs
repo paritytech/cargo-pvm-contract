@@ -1832,14 +1832,15 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
             continue;
         };
         if ident == "host" {
-            if extract_optional_slot_attr(field)?.is_some() {
-                return Err(syn::Error::new_spanned(
-                    field,
-                    "`host` is a reserved field name injected by the #[contract] macro. \
-                     Rename this storage field.",
-                ));
-            }
-            continue;
+            // Reject regardless of `#[slot]` presence: in auto-numbering mode a
+            // `host` field would otherwise be silently dropped (filtered out by
+            // `rewrite_storage_struct`) and replaced by the injected handle,
+            // losing the user's intended storage field with no diagnostic.
+            return Err(syn::Error::new_spanned(
+                field,
+                "`host` is a reserved field name injected by the #[contract] macro. \
+                 Rename this storage field.",
+            ));
         }
         let explicit = extract_optional_slot_attr(field)?;
         let cfg_attrs: Vec<syn::Attribute> = field
@@ -3568,6 +3569,34 @@ mod tests {
             mod my_contract {
                 pub struct MyContract {
                     #[slot(0)]
+                    host: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`host` is a reserved field name"),
+            "Expected reserved-host validation. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn host_field_without_slot_attr_is_rejected() {
+        // Auto-numbering mode (no `#[slot]`): a `host` field must be rejected
+        // with the same diagnostic as the explicit path, not silently dropped.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
                     host: Lazy<U256>,
                 }
                 impl MyContract {
