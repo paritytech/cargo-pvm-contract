@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ops::Bound;
 
+use parity_scale_codec::{Compact, Decode, Encode};
 use pvm_contract_types::{DecodeError, Host, SolDecode, SolEncode};
 
 use crate::{
@@ -61,61 +62,20 @@ impl CompactCodec for String {
 
 impl CompactCodec for u64 {
     fn compact_encoded_len(&self) -> usize {
-        let mut v = *self;
-        let mut len = 1;
-        while v >= 0x80 {
-            len += 1;
-            v >>= 7;
-        }
-        len
+        Compact(*self).encoded_size()
     }
 
     fn compact_encode_to<'a>(&self, out: &'a mut &'a mut [u8]) {
-        let mut v = *self;
-        loop {
-            assert!(
-                !out.is_empty(),
-                "CompactCodec<u64>::compact_encode_to: buffer too small",
-            );
-            let byte = (v & 0x7F) as u8;
-            v >>= 7;
-            if v == 0 {
-                out[0] = byte;
-                let (_, rest) = out.split_at_mut(1);
-                *out = rest;
-                return;
-            }
-            out[0] = byte | 0x80;
-            let (_, rest) = out.split_at_mut(1);
-            *out = rest;
-        }
+        let encoded = Compact(*self).encode();
+        let n = encoded.len();
+        out[..n].copy_from_slice(&encoded);
+        let (_, rest) = out.split_at_mut(n);
+        *out = rest;
     }
 
     fn compact_decode_from(input: &mut &[u8]) -> Result<Self, DecodeError> {
-        let mut result: u64 = 0;
-        let mut shift: u32 = 0;
-        loop {
-            if input.is_empty() {
-                return Err(DecodeError);
-            }
-            let byte = input[0];
-            *input = &input[1..];
-            // LEB128 overflow guard: on the final possible byte (shift=63),
-            // only bit 0 of the payload is valid. Bits 1-6 would land above
-            // bit 63 and silently wrap. Reject them as malformed input.
-            let bits = u64::from(byte & 0x7F);
-            if shift + 7 > 64 && bits >> (64 - shift) != 0 {
-                return Err(DecodeError);
-            }
-            result |= bits << shift;
-            if byte & 0x80 == 0 {
-                return Ok(result);
-            }
-            shift += 7;
-            if shift >= 70 {
-                return Err(DecodeError);
-            }
-        }
+        let Compact(value) = Compact::<u64>::decode(input).map_err(|_| DecodeError)?;
+        Ok(value)
     }
 }
 

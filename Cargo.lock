@@ -4443,6 +4443,7 @@ dependencies = [
 name = "pvm-storage"
 version = "0.3.0"
 dependencies = [
+ "parity-scale-codec",
  "proptest",
  "pvm-contract-types",
  "ruint",

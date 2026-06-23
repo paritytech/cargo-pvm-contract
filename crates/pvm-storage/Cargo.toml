@@ -8,6 +8,7 @@ description = "Typed storage helpers for PVM smart contracts with Solidity-compa
 
 [dependencies]
 pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+parity-scale-codec = { version = "3.7", default-features = false }
 
 # Target-gated: the bench binary's `MockHost` is `std`-only and unavailable on riscv64.
 [target.'cfg(not(target_arch = "riscv64"))'.dependencies]
