@@ -562,3 +562,4 @@ specs/
 ## Documentation
 
 - The proc macro doc comments in `crates/pvm-contract-macros/src/lib.rs` include `# Generated Code` sections showing what the macros expand to. When changing codegen, always update these examples to match the actual generated output.
+- `docs/solutions/` — documented solutions to past problems (design patterns, bug fixes, workflow learnings), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in a documented area.
