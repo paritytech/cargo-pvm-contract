@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "ordered-index-bench"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+
+[[bin]]
+name = "ordered-index-bench"
+path = "src/ordered-index-bench.rs"
+
+[dependencies]
+pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk" }
+pvm-storage = { path = "../../crates/pvm-storage", features = ["alloc"] }
+polkavm-derive = "0.34.0"
+picoalloc = { version = "5", default-features = false }
+
+[features]
+abi-gen = ["pvm-contract-sdk/abi-gen"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "z"
+panic = "abort"
+overflow-checks = false

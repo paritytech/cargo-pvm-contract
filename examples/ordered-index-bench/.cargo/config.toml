@@ -1,0 +1,9 @@
+[build]
+ target = "riscv64emac-unknown-none-polkavm.json"
+
+[unstable]
+ build-std = ["core", "alloc"]
+ json-target-spec = true
+
+[env]
+ RUSTC_BOOTSTRAP = "1"
