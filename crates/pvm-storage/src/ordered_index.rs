@@ -1826,7 +1826,7 @@ mod tests {
     use proptest::prelude::*;
     use pvm_contract_types::{Host, MockHostBuilder};
 
-    use super::{MAX_STORAGE_VALUE_BYTES, Node, NodeId, OrderedIndex, StorageKey};
+    use super::{MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, OrderedIndex, StorageKey};
 
     fn host() -> Host {
         Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
@@ -1905,6 +1905,51 @@ mod tests {
             node7.0,
             crate::storage_derive_key(&host, root, &padded_id),
             "node key must match the cast-validated storage_derive_key helper"
+        );
+    }
+
+    #[test]
+    fn node_decode_distinguishes_failure_variants() {
+        let host = host();
+        let idx = index(&host);
+        for i in 0..120u64 {
+            idx.insert(&host, &alloc::format!("user{i:04}"), &i);
+        }
+        let internal = idx.load_root(&host).expect("non-empty root");
+        assert!(
+            !internal.is_leaf(),
+            "120 inserts at T=2 must yield an internal root"
+        );
+        let leaf = idx.load_node(&host, internal.children()[0].id);
+        assert!(leaf.is_leaf());
+
+        for node in [&internal, &leaf] {
+            let bytes = node.encode();
+            assert!(
+                Node::<String, u64>::decode(&bytes).is_ok(),
+                "roundtrip must decode"
+            );
+
+            let mut trailing = bytes.clone();
+            trailing.push(0);
+            assert_eq!(
+                Node::<String, u64>::decode(&trailing).err(),
+                Some(NodeDecodeError::TrailingBytes),
+                "a byte past the encoded node is TrailingBytes",
+            );
+
+            for cut in 0..bytes.len() {
+                assert!(
+                    Node::<String, u64>::decode(&bytes[..cut]).is_err(),
+                    "every truncation (len {cut}) must be rejected, not silently decoded",
+                );
+            }
+        }
+
+        assert_eq!(
+            Node::<String, u64>::decode(&[]).err(),
+            Some(NodeDecodeError::Truncated),
+            "an empty buffer is Truncated",
         );
     }
 
