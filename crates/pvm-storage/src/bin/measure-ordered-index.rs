@@ -1,21 +1,34 @@
 //! `measure-ordered-index` — emits a single-line JSON object describing the
-//! storage cost of an OrderedIndex workload.
+//! on-chain storage cost of an OrderedIndex workload, measured in the real
+//! `pallet-revive` weight unit (picoseconds of ref_time + bytes of proof_size)
+//! that Polkadot Asset Hub Westend charges — not a synthetic read counter.
 //!
 //! # JSON contract
 //!
 //! Prints exactly one line to stdout (a single `\n`-terminated JSON object).
-//! All diagnostics go to stderr. The schema is the documented contract for
-//! the external optimization loop; see the `CountingHost` module docs for
-//! the field meanings.
+//! All diagnostics go to stderr.
+//!
+//! ```json
+//! {"n":10000,"queries":1000,"t":10,
+//!  "weight_ref_time_per_query":1234567,
+//!  "weight_proof_size_per_query":89,
+//!  "slot_reads_per_query":12.34,
+//!  "insert_weight_ref_time":999999,
+//!  "insert_writes":1234,"insert_clears":0,
+//!  "range_p50_ns":5678,"range_p99_ns":9101,
+//!  "correctness":true}
+//! ```
+//!
+//! Primary metric (the optimization target): `weight_ref_time_per_query` — the
+//! average `pallet-revive` ref_time weight (picoseconds) per prefix-range
+//! query. `weight_proof_size_per_query` is the PoV/state-proof analogue.
+//! `slot_reads_per_query` is retained as a diagnostic (the prior metric).
 //!
 //! # Configuration
 //!
-//! All sizing knobs come from environment variables so the loop can sweep
-//! without recompiling:
-//!
-//! - `BENCH_N`     — number of records inserted (default 10000)
-//! - `BENCH_Q`     — number of prefix-range queries (default 1000)
-//! - `BENCH_T`     — OrderedIndex degree T (default 2, range 2..=12)
+//! - `BENCH_N` — number of records inserted (default 10000)
+//! - `BENCH_Q` — number of prefix-range queries (default 1000)
+//! - `BENCH_T` — OrderedIndex degree T (default 2, range 2..=12)
 
 #![cfg(not(target_arch = "riscv64"))]
 
@@ -70,6 +83,7 @@ fn run_for_t<const T: usize>(n: u64, q: u64) -> ExitCode {
         oracle.insert(k, i);
     }
     let snap_after_insert = counting.snapshot();
+    let insert_weight_ref_time = snap_after_insert.ref_time_ps;
 
     counting.reset();
 
@@ -109,6 +123,8 @@ fn run_for_t<const T: usize>(n: u64, q: u64) -> ExitCode {
     let snap_after_queries = counting.snapshot();
     let total_reads = snap_after_queries.reads;
     let avg_reads_per_query = total_reads as f64 / q as f64;
+    let weight_ref_time_per_query = snap_after_queries.ref_time_ps / q;
+    let weight_proof_size_per_query = snap_after_queries.proof_size_bytes / q;
 
     latencies_ns.sort_unstable();
     let p50_idx = percentile_index(latencies_ns.len(), 50);
@@ -117,30 +133,40 @@ fn run_for_t<const T: usize>(n: u64, q: u64) -> ExitCode {
     let p99_ns = latencies_ns[p99_idx];
 
     eprintln!(
-        "[bench] n={} q={} t={} insert.writes={} insert.clears={} reads_total={} avg_reads/query={:.3} p50={}ns p99={}ns correct={}",
+        "[bench] n={} q={} t={} weight_ref_time/q={} weight_proof/q={} reads/q={:.3} \
+         insert.weight_ref={} insert.writes={} insert.clears={} p50={}ns p99={}ns correct={}",
         n,
         q,
         T,
+        weight_ref_time_per_query,
+        weight_proof_size_per_query,
+        avg_reads_per_query,
+        insert_weight_ref_time,
         snap_after_insert.writes,
         snap_after_insert.clears,
-        total_reads,
-        avg_reads_per_query,
         p50_ns,
         p99_ns,
         all_correct
     );
 
     println!(
-        "{{\"n\":{},\"queries\":{},\"slot_reads_per_query\":{:.2},\"insert_writes\":{},\"insert_clears\":{},\"range_p50_ns\":{},\"range_p99_ns\":{},\"correctness\":{},\"t\":{}}}",
+        "{{\"n\":{},\"queries\":{},\"t\":{},\
+         \"weight_ref_time_per_query\":{},\"weight_proof_size_per_query\":{},\
+         \"slot_reads_per_query\":{:.2},\"insert_weight_ref_time\":{},\
+         \"insert_writes\":{},\"insert_clears\":{},\
+         \"range_p50_ns\":{},\"range_p99_ns\":{},\"correctness\":{}}}",
         n,
         q,
+        T,
+        weight_ref_time_per_query,
+        weight_proof_size_per_query,
         avg_reads_per_query,
+        insert_weight_ref_time,
         snap_after_insert.writes,
         snap_after_insert.clears,
         p50_ns,
         p99_ns,
-        all_correct,
-        T
+        all_correct
     );
 
     if all_correct {

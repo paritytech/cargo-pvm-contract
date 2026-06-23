@@ -1,38 +1,3 @@
-//! `CountingHost` — a `HostApi` wrapper that counts on-chain storage operations.
-//!
-//! The OrderedIndex measurement binary needs to know how many SLOAD / SSTORE /
-//! clear operations an index workload performs. On-chain, each of those maps to
-//! a fixed gas cost, so minimizing them minimizes deploy cost.
-//!
-//! `CountingHost` wraps a [`MockHost`](pvm_contract_types::MockHost) and
-//! forwards every `HostApi` method to the inner host unchanged, with one
-//! exception: the four storage-mutation entry points increment interior
-//! counters. Non-storage methods (balance, caller, keccak, etc.) are
-//! passthrough-only — the wrapper must not affect their behavior.
-//!
-//! The counters live in `Cell<u64>` so the wrapper can be shared via
-//! `Rc<CountingHost>` (the `Host` type stores `Rc<dyn HostApi>`), and the
-//! measurement binary can read totals after running a workload.
-//!
-//! # JSON contract (emitted by `measure-ordered-index`)
-//!
-//! The binary prints exactly one line on stdout, no other stdout output:
-//!
-//! ```json
-//! {"n":10000,"queries":1000,"slot_reads_per_query":12.34,"insert_writes":12345,"insert_clears":0,"range_p50_ns":5678,"range_p99_ns":91011,"correctness":true,"t":2}
-//! ```
-//!
-//! - `n` — number of records inserted before the query phase.
-//! - `queries` — number of prefix-range queries executed.
-//! - `slot_reads_per_query` — total `get_storage` + `get_storage_or_zero` calls
-//!   during the query phase, divided by `queries` (the metric to MINIMIZE).
-//! - `insert_writes` — total `set_storage` calls during the build phase.
-//! - `insert_clears` — total `set_storage_or_clear` calls during the build phase.
-//! - `range_p50_ns` / `range_p99_ns` — wall-clock latency percentiles in nanoseconds.
-//! - `correctness` — `true` iff every query returned the expected multiset of
-//!   `(key, value)` pairs against a known deterministic dataset.
-//! - `t` — the B-tree degree (OrderedIndex generic const).
-
 #![cfg(not(target_arch = "riscv64"))]
 
 extern crate alloc;
@@ -42,66 +7,80 @@ use std::rc::Rc;
 
 use pvm_contract_types::{CallFlags, HostApi, HostResult, MockHost, ReturnFlags, StorageFlags};
 
-/// `Copy` snapshot of the three storage counters. Returned by
-/// [`CountingHost::snapshot`].
+#[path = "pallet_revive_weight.rs"]
+mod pallet_revive_weight;
+use pallet_revive_weight::{clear_weight, read_weight, write_weight, Weight};
+
+/// `Copy` snapshot of the storage counters AND the accumulated real
+/// `pallet-revive` weight. Returned by [`CountingHost::snapshot`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {
     pub reads: u64,
     pub writes: u64,
     pub clears: u64,
+    /// Accumulated `pallet-revive` ref_time in picoseconds (compute time).
+    pub ref_time_ps: u64,
+    /// Accumulated `pallet-revive` proof_size in bytes (PoV / state-proof).
+    pub proof_size_bytes: u64,
 }
 
-/// `HostApi` wrapper that counts the four storage-mutation entry points and
-/// forwards every other `HostApi` method to the inner [`MockHost`] unchanged.
+/// `HostApi` wrapper that counts the four storage-mutation entry points,
+/// captures the per-op byte sizes, and accumulates the real `pallet-revive`
+/// weight each operation would be charged on Polkadot Asset Hub Westend.
+///
+/// The read/write/clear counters are retained as diagnostics (they are what
+/// the prior `slot_reads_per_query` metric measured). The primary metric —
+/// real on-chain weight — lives in `ref_time_ps` / `proof_size_bytes`.
 pub struct CountingHost {
     inner: Rc<MockHost>,
     reads: Cell<u64>,
     writes: Cell<u64>,
     clears: Cell<u64>,
+    weight: Cell<Weight>,
 }
 
 impl CountingHost {
-    /// Wrap a `MockHost` in a `CountingHost`. The returned `Rc<Self>` is
-    /// what gets coerced to `Rc<dyn HostApi>` for `Host::from_dyn`. The
-    /// caller also holds the `Rc<Self>` to read the counters later — the
-    /// two clones share the same underlying counters.
     pub fn new(inner: Rc<MockHost>) -> Rc<Self> {
         Rc::new(Self {
             inner,
             reads: Cell::new(0),
             writes: Cell::new(0),
             clears: Cell::new(0),
+            weight: Cell::new(Weight::default()),
         })
     }
 
     pub fn reads(&self) -> u64 {
         self.reads.get()
     }
-
     pub fn writes(&self) -> u64 {
         self.writes.get()
     }
-
     pub fn clears(&self) -> u64 {
         self.clears.get()
     }
 
-    /// Reset every counter to zero. Use between workload phases (e.g. after
-    /// the build phase, before the query phase) so each phase can be measured
-    /// independently.
     pub fn reset(&self) {
         self.reads.set(0);
         self.writes.set(0);
         self.clears.set(0);
+        self.weight.set(Weight::default());
     }
 
-    /// Take a `Copy` snapshot of the current counters.
     pub fn snapshot(&self) -> Counts {
+        let w = self.weight.get();
         Counts {
             reads: self.reads(),
             writes: self.writes(),
             clears: self.clears(),
+            ref_time_ps: w.ref_time_ps,
+            proof_size_bytes: w.proof_size_bytes,
         }
+    }
+
+    #[inline]
+    fn accrue(&self, w: Weight) {
+        self.weight.set(self.weight.get().saturating_add(w));
     }
 }
 
@@ -185,8 +164,7 @@ impl HostApi for CountingHost {
         input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.inner
-            .call_evm(flags, callee, gas, value, input_data, output)
+        self.inner.call_evm(flags, callee, gas, value, input_data, output)
     }
 
     #[inline]
@@ -240,8 +218,7 @@ impl HostApi for CountingHost {
         input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.inner
-            .delegate_call_evm(flags, address, gas, input_data, output)
+        self.inner.delegate_call_evm(flags, address, gas, input_data, output)
     }
 
     #[inline]
@@ -251,9 +228,13 @@ impl HostApi for CountingHost {
 
     #[inline]
     fn get_storage(&self, flags: StorageFlags, key: &[u8], output: &mut &mut [u8]) -> HostResult {
-        // Read: a storage SLOAD. Dominant gas cost in the workload.
+        let result = self.inner.get_storage(flags, key, output);
+        // After the read, `output` is resized to the value length actually
+        // returned; that length is the `n` parameter to `seal_get_storage`.
+        let n = output.len() as u64;
         self.reads.set(self.reads.get() + 1);
-        self.inner.get_storage(flags, key, output)
+        self.accrue(read_weight(n));
+        result
     }
 
     #[inline]
@@ -307,9 +288,12 @@ impl HostApi for CountingHost {
 
     #[inline]
     fn set_storage(&self, flags: StorageFlags, key: &[u8], value: &[u8]) -> Option<u32> {
-        // Write: a non-zero SSTORE.
+        let new_bytes = value.len() as u64;
+        let ret = self.inner.set_storage(flags, key, value);
+        let old_bytes = ret.unwrap_or(0) as u64;
         self.writes.set(self.writes.get() + 1);
-        self.inner.set_storage(flags, key, value)
+        self.accrue(write_weight(new_bytes, old_bytes));
+        ret
     }
 
     #[inline]
@@ -319,17 +303,27 @@ impl HostApi for CountingHost {
         key: &[u8; 32],
         value: &[u8; 32],
     ) -> Option<u32> {
-        // Clear: an all-zero SSTORE that deletes the slot. Counted
-        // regardless of whether the slot was previously written.
-        self.clears.set(self.clears.get() + 1);
-        self.inner.set_storage_or_clear(flags, key, value)
+        let ret = self.inner.set_storage_or_clear(flags, key, value);
+        let old_bytes = ret.unwrap_or(0) as u64;
+        // `pallet-revive` routing (env.rs): an all-zero value clears the slot,
+        // otherwise it is a 32-byte set. The weight model follows the same
+        // branch so the accumulator reflects the actual on-chain token.
+        if value.iter().all(|&b| b == 0) {
+            self.clears.set(self.clears.get() + 1);
+            self.accrue(clear_weight(old_bytes));
+        } else {
+            self.writes.set(self.writes.get() + 1);
+            self.accrue(write_weight(32, old_bytes));
+        }
+        ret
     }
 
     #[inline]
     fn get_storage_or_zero(&self, flags: StorageFlags, key: &[u8; 32], output: &mut [u8; 32]) {
-        // Read: the 32-byte SLOAD path used by Lazy<u64> and friends.
-        self.reads.set(self.reads.get() + 1);
         self.inner.get_storage_or_zero(flags, key, output);
+        // Fixed 32-byte read path (env.rs: FixedOutput32).
+        self.reads.set(self.reads.get() + 1);
+        self.accrue(read_weight(32));
     }
 
     #[inline]
