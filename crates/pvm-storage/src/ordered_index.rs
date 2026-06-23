@@ -632,18 +632,16 @@ impl<K, V, const T: usize> OrderedIndex<K, V, T> {
     fn cell_lazy(&self, host: &Host, key: StorageKey) -> Lazy<u64> {
         // SAFETY: `Lazy::new` is `unsafe` only because it bypasses the
         // `#[storage]` layout walker; its contract is that no two `Lazy`s
-        // claim overlapping storage keys. The three cell keys
-        // (root/next_id/next_nonce) are distinct `keccak256(suffix ++ root)`
+        // claim overlapping storage keys. The two admin cell keys
+        // (next_id/next_nonce) are distinct `keccak256(suffix ++ root)`
         // values (Solidity `mapping(string => bytes)` entries, distinct
-        // suffixes → distinct preimages → distinct hashes), and node bodies
+        // suffixes → distinct preimages → distinct hashes), node bodies
         // live under `NodeId`-derived keys (`keccak256(pad32(id) ++ root)`,
-        // a disjoint `mapping(uint256 => bytes)` namespace) — so nothing
-        // overlaps. `offset` is 0 (full-slot u64).
+        // a disjoint `mapping(uint256 => bytes)` namespace), and the root
+        // node body lives at the `b"root"` cell key as a *bytes* value
+        // (`storage_*_bytes`, never a `Lazy<u64>`) — so nothing overlaps.
+        // `offset` is 0 (full-slot u64).
         unsafe { Lazy::<u64>::new(key, 0, host.clone()) }
-    }
-
-    fn root_cell_lazy(&self, host: &Host) -> Lazy<u64> {
-        self.cell_lazy(host, self.root_cell_key)
     }
 
     fn next_id_cell_lazy(&self, host: &Host) -> Lazy<u64> {
@@ -705,17 +703,26 @@ where
         Nonce(n)
     }
 
-    fn root_id(&self, host: &Host) -> Option<NodeId> {
-        let v = self.root_cell_lazy(host).get();
-        if v == 0 { None } else { Some(NodeId(v)) }
+    fn load_root(&self, host: &Host) -> Option<Node<K, V>> {
+        let bytes = storage_get_bytes(host, self.root_cell_key.as_bytes()).unwrap_or_default();
+        if bytes.is_empty() {
+            return None;
+        }
+        match Node::decode(&bytes) {
+            Ok(n) => Some(n),
+            Err(_) => panic!("OrderedIndexCorruptNode"),
+        }
     }
 
-    fn set_root_id(&self, host: &Host, id: NodeId) {
-        self.root_cell_lazy(host).set(&id.0);
+    fn store_root(&self, host: &Host, node: &Node<K, V>) {
+        self.assert_node_shape(node);
+        self.assert_node_size(node);
+        let bytes = node.encode();
+        storage_set_bytes(host, self.root_cell_key.as_bytes(), &bytes);
     }
 
-    fn clear_root_id(&self, host: &Host) {
-        self.root_cell_lazy(host).set(&0);
+    fn clear_root(&self, host: &Host) {
+        storage_clear_value(host, self.root_cell_key.as_bytes());
     }
 
     fn child_mirror(&self, host: &Host, id: NodeId) -> ChildRef {
@@ -777,9 +784,9 @@ where
     }
 
     pub fn len(&self, host: &Host) -> u64 {
-        match self.root_id(host) {
+        match self.load_root(host) {
             None => 0,
-            Some(id) => self.load_node(host, id).subtree_count(),
+            Some(root) => root.subtree_count(),
         }
     }
 
@@ -789,7 +796,7 @@ where
 
     pub fn insert(&self, host: &Host, key: &K, value: &V) -> u64 {
         let nonce = self.alloc_nonce(host);
-        match self.root_id(host) {
+        match self.load_root(host) {
             None => {
                 let mut root = Node::<K, V>::leaf();
                 if let Node::Leaf { entries, .. } = &mut root {
@@ -799,11 +806,12 @@ where
                         value: value.clone(),
                     });
                 }
-                let id = self.alloc_node(host, &root);
-                self.set_root_id(host, id);
+                self.store_root(host, &root);
             }
-            Some(root_id) => {
-                if let Some(split) = self.insert_rec(host, root_id, key, nonce, value) {
+            Some(mut root) => {
+                self.insert_into_node(host, &mut root, key, nonce, value);
+                if root.encode().len() > MAX_STORAGE_VALUE_BYTES {
+                    let split = self.split_into_new_node(host, root);
                     let new_root = Node::Internal {
                         separators: alloc::vec![Separator {
                             key: split.sep_key,
@@ -811,7 +819,7 @@ where
                         }],
                         children: alloc::vec![
                             ChildRef {
-                                id: root_id,
+                                id: split.left_id,
                                 subtree_count: SubtreeCount(split.left_subtree_count),
                                 entry_count: EntryCount(split.left_entry_count),
                             },
@@ -822,13 +830,138 @@ where
                             },
                         ],
                     };
-                    self.assert_node_size(&new_root);
-                    let new_root_id = self.alloc_node(host, &new_root);
-                    self.set_root_id(host, new_root_id);
+                    self.store_root(host, &new_root);
+                } else {
+                    self.store_root(host, &root);
                 }
             }
         }
         nonce.0
+    }
+
+    fn insert_into_node(
+        &self,
+        host: &Host,
+        node: &mut Node<K, V>,
+        key: &K,
+        nonce: Nonce,
+        value: &V,
+    ) {
+        match node {
+            Node::Leaf { entries, .. } => {
+                let pos = lower_bound_entry_leaf(entries, key, nonce);
+                entries.insert(
+                    pos,
+                    LeafEntry {
+                        key: key.clone(),
+                        nonce,
+                        value: value.clone(),
+                    },
+                );
+            }
+            Node::Internal {
+                separators,
+                children,
+            } => {
+                let child_idx = lower_bound_entry_sep(separators, key, nonce);
+                let child_id = children[child_idx].id;
+                match self.insert_rec(host, child_id, key, nonce, value) {
+                    None => {
+                        children[child_idx] = self.child_mirror(host, child_id);
+                    }
+                    Some(split) => {
+                        separators.insert(
+                            child_idx,
+                            Separator {
+                                key: split.sep_key,
+                                nonce: split.sep_nonce,
+                            },
+                        );
+                        children[child_idx] = ChildRef {
+                            id: child_id,
+                            subtree_count: SubtreeCount(split.left_subtree_count),
+                            entry_count: EntryCount(split.left_entry_count),
+                        };
+                        children.insert(
+                            child_idx + 1,
+                            ChildRef {
+                                id: split.right_id,
+                                subtree_count: SubtreeCount(split.right_subtree_count),
+                                entry_count: EntryCount(split.right_entry_count),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn split_into_new_node(&self, host: &Host, node: Node<K, V>) -> RootSplit<K> {
+        match node {
+            Node::Leaf { entries, next } => {
+                let cut = self.leaf_cut(&entries, next);
+                let right_entries = entries[cut..].to_vec();
+                let left_entries = entries[..cut].to_vec();
+                let sep_key = right_entries[0].key.clone();
+                let sep_nonce = right_entries[0].nonce;
+
+                let right = Node::Leaf {
+                    entries: right_entries,
+                    next,
+                };
+                let right_id = self.alloc_node(host, &right);
+                let left = Node::Leaf {
+                    entries: left_entries,
+                    next: Some(right_id),
+                };
+                let left_count = left.subtree_count();
+                let left_entry_count = left.slot_count() as u32;
+                let right_count = right.subtree_count();
+                let right_entry_count = right.slot_count() as u32;
+                let left_id = self.alloc_node(host, &left);
+                RootSplit {
+                    sep_key,
+                    sep_nonce,
+                    left_id,
+                    right_id,
+                    left_subtree_count: left_count,
+                    right_subtree_count: right_count,
+                    left_entry_count,
+                    right_entry_count,
+                }
+            }
+            Node::Internal {
+                separators,
+                children,
+            } => {
+                let cut = self.internal_cut(&separators, &children);
+                let median = separators[cut].clone();
+                let left = Node::Internal {
+                    separators: separators[..cut].to_vec(),
+                    children: children[..=cut].to_vec(),
+                };
+                let right = Node::Internal {
+                    separators: separators[cut + 1..].to_vec(),
+                    children: children[cut + 1..].to_vec(),
+                };
+                let left_count = left.subtree_count();
+                let left_entry_count = left.slot_count() as u32;
+                let right_count = right.subtree_count();
+                let right_entry_count = right.slot_count() as u32;
+                let left_id = self.alloc_node(host, &left);
+                let right_id = self.alloc_node(host, &right);
+                RootSplit {
+                    sep_key: median.key,
+                    sep_nonce: median.nonce,
+                    left_id,
+                    right_id,
+                    left_subtree_count: left_count,
+                    right_subtree_count: right_count,
+                    left_entry_count,
+                    right_entry_count,
+                }
+            }
+        }
     }
 
     pub fn get_first(&self, host: &Host, key: &K) -> Option<V> {
@@ -842,8 +975,8 @@ where
     /// without re-descending. Stops as soon as a key strictly greater than
     /// `key` is seen.
     fn first_entry_for(&self, host: &Host, key: &K) -> Option<(Nonce, V)> {
-        let root = self.root_id(host)?;
-        let (mut node, _) = self.descend_to_first_leaf(host, root, Bound::Included(key));
+        let root = self.load_root(host)?;
+        let mut node = self.descend_to_first_leaf(host, root, Bound::Included(key));
         loop {
             let Node::Leaf { entries, next } = &node else {
                 panic!("OrderedIndexCorruptNode");
@@ -865,15 +998,15 @@ where
     }
 
     pub fn remove_by_nonce(&self, host: &Host, key: &K, nonce: u64) -> Option<V> {
-        let root_id = self.root_id(host)?;
-        let removed = self.remove_from(host, root_id, key, Nonce(nonce));
+        let mut root = self.load_root(host)?;
+        let removed = self.remove_in_node(host, &mut root, key, Nonce(nonce));
         if removed.is_some() {
-            let root = self.load_node(host, root_id);
             match &root {
                 Node::Leaf { entries, .. } => {
                     if entries.is_empty() {
-                        self.free_node(host, root_id);
-                        self.clear_root_id(host);
+                        self.clear_root(host);
+                    } else {
+                        self.store_root(host, &root);
                     }
                 }
                 Node::Internal {
@@ -881,14 +1014,40 @@ where
                     children,
                 } => {
                     if separators.is_empty() {
-                        let new_root = children[0].id;
-                        self.free_node(host, root_id);
-                        self.set_root_id(host, new_root);
+                        let sole = children[0].id;
+                        let pulled = self.load_node(host, sole);
+                        self.free_node(host, sole);
+                        self.store_root(host, &pulled);
+                    } else {
+                        self.store_root(host, &root);
                     }
                 }
             }
         }
         removed
+    }
+
+    fn remove_in_node(&self, host: &Host, node: &mut Node<K, V>, k: &K, nonce: Nonce) -> Option<V> {
+        match node {
+            Node::Leaf { entries, .. } => {
+                let pos = lower_bound_entry_leaf(entries, k, nonce);
+                if pos < entries.len() && entries[pos].key == *k && entries[pos].nonce == nonce {
+                    Some(entries.remove(pos).value)
+                } else {
+                    None
+                }
+            }
+            Node::Internal { separators, .. } => {
+                let pos = upper_bound_entry_sep(separators, k, nonce);
+                let descend = self.descend_prepared(host, node, pos);
+                let child_id = node.children()[descend].id;
+                let result = self.remove_from(host, child_id, k, nonce);
+                if result.is_some() {
+                    self.refresh_child_mirrors(host, node, descend);
+                }
+                result
+            }
+        }
     }
 
     pub fn remove_first(&self, host: &Host, key: &K) -> Option<V> {
@@ -911,13 +1070,12 @@ where
     }
 
     pub fn rank_of_key(&self, host: &Host, key: &K) -> u64 {
-        let mut id = match self.root_id(host) {
-            Some(id) => id,
+        let mut node = match self.load_root(host) {
+            Some(node) => node,
             None => return 0,
         };
         let mut rank: u64 = 0;
         loop {
-            let node = self.load_node(host, id);
             match &node {
                 Node::Leaf { entries, .. } => {
                     let pos = lower_bound_key(entries_keys_leaf(entries), key);
@@ -931,7 +1089,8 @@ where
                     for c in &children[..pos] {
                         rank += c.subtree_count.0;
                     }
-                    id = children[pos].id;
+                    let id = children[pos].id;
+                    node = self.load_node(host, id);
                 }
             }
         }
@@ -949,12 +1108,12 @@ where
         if limit == 0 {
             return out;
         }
-        let Some(root) = self.root_id(host) else {
+        let Some(root) = self.load_root(host) else {
             return out;
         };
 
         // Descend ONCE to the first in-range leaf, following separators only.
-        let (mut node, _) = self.descend_to_first_leaf(host, root, from);
+        let mut node = self.descend_to_first_leaf(host, root, from);
         let mut skipped: u64 = 0;
         loop {
             let Node::Leaf { entries, next } = &node else {
@@ -996,17 +1155,11 @@ where
     /// hold) the first key satisfying `from`, returning the already-loaded
     /// leaf node (so the caller never re-reads it) and its id. Touches one
     /// node per level — the depth — and zero leaves beyond the first.
-    fn descend_to_first_leaf(
-        &self,
-        host: &Host,
-        id: NodeId,
-        from: Bound<&K>,
-    ) -> (Node<K, V>, NodeId) {
-        let mut id = id;
+    fn descend_to_first_leaf(&self, host: &Host, start: Node<K, V>, from: Bound<&K>) -> Node<K, V> {
+        let mut node = start;
         loop {
-            let node = self.load_node(host, id);
             match &node {
-                Node::Leaf { .. } => return (node, id),
+                Node::Leaf { .. } => return node,
                 Node::Internal {
                     separators,
                     children,
@@ -1016,7 +1169,8 @@ where
                         Bound::Included(k) => lower_bound_key_sep(separators, k),
                         Bound::Excluded(k) => upper_bound_key_sep(separators, k),
                     };
-                    id = children[pos].id;
+                    let id = children[pos].id;
+                    node = self.load_node(host, id);
                 }
             }
         }
@@ -1524,39 +1678,39 @@ where
     }
 
     fn select_with_nonce(&self, host: &Host, mut rank: u64) -> Option<(K, Nonce, V)> {
-        let mut id = self.root_id(host)?;
+        let mut node = self.load_root(host)?;
         loop {
-            let node = self.load_node(host, id);
             if rank >= node.subtree_count() {
                 return None;
             }
-            match &node {
+            let next_id = match &node {
                 Node::Leaf { entries, .. } => {
                     let e = &entries[rank as usize];
                     return Some((e.key.clone(), e.nonce, e.value.clone()));
                 }
                 Node::Internal { children, .. } => {
-                    let mut descended = false;
+                    let mut descended: Option<NodeId> = None;
                     for c in children {
                         if rank < c.subtree_count.0 {
-                            id = c.id;
-                            descended = true;
+                            descended = Some(c.id);
                             break;
                         }
                         rank -= c.subtree_count.0;
                     }
-                    if !descended {
-                        return None;
-                    }
+                    descended?
                 }
-            }
+            };
+            node = self.load_node(host, next_id);
         }
     }
 
     #[cfg(test)]
     fn walk_all_nodes(&self, host: &Host, visit: &mut dyn FnMut(&Node<K, V>)) {
-        if let Some(root) = self.root_id(host) {
-            self.walk_node(host, root, visit);
+        if let Some(root) = self.load_root(host) {
+            visit(&root);
+            for child in root.children() {
+                self.walk_node(host, child.id, visit);
+            }
         }
     }
 
@@ -1573,6 +1727,17 @@ where
 struct ChildSplit<K: SolEncode + SolDecode + Clone + CompactCodec> {
     sep_key: K,
     sep_nonce: Nonce,
+    right_id: NodeId,
+    left_subtree_count: u64,
+    right_subtree_count: u64,
+    left_entry_count: u32,
+    right_entry_count: u32,
+}
+
+struct RootSplit<K: SolEncode + SolDecode + Clone + CompactCodec> {
+    sep_key: K,
+    sep_nonce: Nonce,
+    left_id: NodeId,
     right_id: NodeId,
     left_subtree_count: u64,
     right_subtree_count: u64,
@@ -1870,9 +2035,9 @@ mod tests {
                     Node::Leaf { .. } => {}
                 }
             });
-            if let Some(root_id) = idx.root_id(&host) {
+            if let Some(root) = idx.load_root(&host) {
                 let mut depths: Vec<usize> = Vec::new();
-                walk_depths(&idx, &host, root_id, 0, &mut depths);
+                walk_depths_node(&idx, &host, &root, 0, &mut depths);
                 if !depths.is_empty() {
                     let first = depths[0];
                     for d in &depths {
@@ -1992,25 +2157,25 @@ mod tests {
         }
     }
 
-    fn walk_depths(
+    fn walk_depths_node(
         idx: &OrderedIndex<String, u64, 2>,
         host: &Host,
-        id: NodeId,
+        node: &Node<String, u64>,
         depth: usize,
         depths: &mut Vec<usize>,
     ) {
-        let node = idx.load_node(host, id);
         if depth > 0 {
             assert!(
                 node.slot_count() >= 1,
                 "non-root node violates min-degree: 0 slots (need >= T-1 = 1)",
             );
         }
-        match &node {
+        match node {
             Node::Leaf { .. } => depths.push(depth),
             Node::Internal { children, .. } => {
                 for c in children {
-                    walk_depths(idx, host, c.id, depth + 1, depths);
+                    let child = idx.load_node(host, c.id);
+                    walk_depths_node(idx, host, &child, depth + 1, depths);
                 }
             }
         }
@@ -2020,24 +2185,19 @@ mod tests {
     /// the leftmost leaf and assert it is sorted, visits each leaf once, and
     /// covers every entry in the index.
     fn assert_leaf_chain_sorted_and_total(idx: &OrderedIndex<String, u64, 2>, host: &Host) {
-        let Some(mut id) = idx.root_id(host) else {
+        let Some(root) = idx.load_root(host) else {
             return;
         };
         // Descend to the leftmost leaf.
-        loop {
-            let node = idx.load_node(host, id);
-            match &node {
-                Node::Leaf { .. } => break,
-                Node::Internal { children, .. } => {
-                    id = children[0].id;
-                }
-            }
+        let mut node = root;
+        while let Node::Internal { children, .. } = &node {
+            let child_id = children[0].id;
+            node = idx.load_node(host, child_id);
         }
         let mut prev: Option<(String, u64)> = None;
         let mut total: u64 = 0;
         let mut seen = 0usize;
         loop {
-            let node = idx.load_node(host, id);
             let Node::Leaf { entries, next } = &node else {
                 panic!("leaf chain hit a non-leaf");
             };
@@ -2055,7 +2215,10 @@ mod tests {
                 total += 1;
             }
             match next {
-                Some(n) => id = *n,
+                Some(n) => {
+                    let n = *n;
+                    node = idx.load_node(host, n);
+                }
                 None => break,
             }
         }
