@@ -265,12 +265,6 @@ impl<
             .and_then(|n| n.checked_add(entries_byte_len))
             .and_then(|n| n.checked_add(children_byte_len))
             .expect("Node::encode: total size overflow");
-        assert!(
-            total <= MAX_STORAGE_VALUE_BYTES,
-            "Node::encode: {} bytes exceeds MAX_STORAGE_VALUE_BYTES ({})",
-            total,
-            MAX_STORAGE_VALUE_BYTES,
-        );
 
         let mut out = Vec::with_capacity(total);
         let flags: u8 = if self.is_leaf() { 0x01 } else { 0x00 };
@@ -420,6 +414,79 @@ impl<
             child_entry_counts,
         })
     }
+
+    fn extract_split_at(&self, cut: usize) -> (Node<K, V>, Entry<K, V>, Node<K, V>) {
+        let median = self.entries[cut].clone();
+        let left = if self.is_leaf() {
+            Node {
+                entries: self.entries[..cut].to_vec(),
+                children: Vec::new(),
+                child_counts: Vec::new(),
+                child_entry_counts: Vec::new(),
+            }
+        } else {
+            Node {
+                entries: self.entries[..cut].to_vec(),
+                children: self.children[..=cut].to_vec(),
+                child_counts: self.child_counts[..=cut].to_vec(),
+                child_entry_counts: self.child_entry_counts[..=cut].to_vec(),
+            }
+        };
+        let right = if self.is_leaf() {
+            Node {
+                entries: self.entries[cut + 1..].to_vec(),
+                children: Vec::new(),
+                child_counts: Vec::new(),
+                child_entry_counts: Vec::new(),
+            }
+        } else {
+            Node {
+                entries: self.entries[cut + 1..].to_vec(),
+                children: self.children[cut + 1..].to_vec(),
+                child_counts: self.child_counts[cut + 1..].to_vec(),
+                child_entry_counts: self.child_entry_counts[cut + 1..].to_vec(),
+            }
+        };
+        (left, median, right)
+    }
+
+    fn split_bytes(self, min_degree: usize) -> (Node<K, V>, Entry<K, V>, Node<K, V>) {
+        let m = self.entries.len();
+        let cut_min = min_degree.saturating_sub(1);
+        let cut_max = m.saturating_sub(min_degree);
+        let mut cut = (m / 2).clamp(cut_min, cut_max);
+        loop {
+            let (left, median, right) = self.extract_split_at(cut);
+            if left.encode().len() <= MAX_STORAGE_VALUE_BYTES
+                && right.encode().len() <= MAX_STORAGE_VALUE_BYTES
+            {
+                return (left, median, right);
+            }
+            let left_too_big = left.encode().len() > MAX_STORAGE_VALUE_BYTES;
+            if left_too_big && cut > cut_min {
+                cut -= 1;
+            } else if !left_too_big && cut < cut_max {
+                cut += 1;
+            } else {
+                panic!(
+                    "OrderedIndexNoByteSplit: {} entries at T={}",
+                    m, min_degree
+                );
+            }
+        }
+    }
+}
+
+struct ChildSplit<
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+> {
+    median: Entry<K, V>,
+    right_id: NodeId,
+    left_subtree_count: u64,
+    right_subtree_count: u64,
+    left_entry_count: u32,
+    right_entry_count: u32,
 }
 
 fn encode_codec_bytes<T: CompactCodec>(v: &T) -> Vec<u8> {
@@ -476,10 +543,6 @@ impl<K, V, const T: usize> OrderedIndex<K, V, T> {
             next_nonce_cell_key,
             _marker: PhantomData,
         }
-    }
-
-    const fn max_keys() -> usize {
-        2 * T - 1
     }
 
     fn cell_lazy(&self, host: &Host, key: StorageKey) -> Lazy<u64> {
@@ -578,7 +641,7 @@ where
     }
 
     fn assert_node_shape(&self, node: &Node<K, V>) {
-        if node.entries.len() > Self::max_keys() {
+        if node.entries.len() > u8::MAX as usize {
             panic!("OrderedIndexNodeTooManyEntries");
         }
         if node.is_leaf() {
@@ -635,20 +698,25 @@ where
                 self.set_root_id(host, id);
             }
             Some(root_id) => {
-                let root = self.load_node(host, root_id);
-                if root.entries.len() == Self::max_keys() {
-                    let mut new_root = Node {
-                        entries: Vec::new(),
-                        children: alloc::vec![root_id],
-                        child_counts: alloc::vec![root.subtree_count()],
-                        child_entry_counts: alloc::vec![root.entries.len() as u32],
-                    };
-                    self.split_child(host, &mut new_root, 0);
-                    let new_root_id = self.alloc_node(host, &new_root);
-                    self.set_root_id(host, new_root_id);
-                    self.insert_nonfull(host, new_root_id, entry);
-                } else {
-                    self.insert_nonfull(host, root_id, entry);
+                match self.insert_rec(host, root_id, entry) {
+                    None => {}
+                    Some(split) => {
+                        let new_root = Node {
+                            entries: alloc::vec![split.median],
+                            children: alloc::vec![root_id, split.right_id],
+                            child_counts: alloc::vec![
+                                split.left_subtree_count,
+                                split.right_subtree_count,
+                            ],
+                            child_entry_counts: alloc::vec![
+                                split.left_entry_count,
+                                split.right_entry_count,
+                            ],
+                        };
+                        self.assert_node_size(&new_root);
+                        let new_root_id = self.alloc_node(host, &new_root);
+                        self.set_root_id(host, new_root_id);
+                    }
                 }
             }
         }
@@ -773,75 +841,57 @@ where
         out
     }
 
-    fn insert_nonfull(&self, host: &Host, node_id: NodeId, entry: Entry<K, V>) {
+    fn insert_rec(
+        &self,
+        host: &Host,
+        node_id: NodeId,
+        entry: Entry<K, V>,
+    ) -> Option<ChildSplit<K, V>> {
         let mut node = self.load_node(host, node_id);
         let pos = node.lower_bound_entry(&entry.key, entry.nonce);
 
         if node.is_leaf() {
             node.entries.insert(pos, entry);
-            self.store_node(host, node_id, &node);
-            return;
-        }
-
-        let mut child_idx = pos;
-        let child = self.load_node(host, node.children[child_idx]);
-        if child.entries.len() == Self::max_keys() {
-            self.split_child(host, &mut node, child_idx);
-            let sep = &node.entries[child_idx];
-            let goes_right = (entry.key.cmp(&sep.key)).then(entry.nonce.cmp(&sep.nonce))
-                == core::cmp::Ordering::Greater;
-            if goes_right {
-                child_idx += 1;
+        } else {
+            let child_idx = pos;
+            let child_id = node.children[child_idx];
+            match self.insert_rec(host, child_id, entry) {
+                None => {
+                    self.refresh_child_mirrors(host, &mut node, child_idx);
+                }
+                Some(split) => {
+                    node.entries.insert(child_idx, split.median);
+                    node.children.insert(child_idx + 1, split.right_id);
+                    node.child_counts[child_idx] = split.left_subtree_count;
+                    node.child_counts
+                        .insert(child_idx + 1, split.right_subtree_count);
+                    node.child_entry_counts[child_idx] = split.left_entry_count;
+                    node.child_entry_counts
+                        .insert(child_idx + 1, split.right_entry_count);
+                }
             }
         }
 
-        let descend = node.children[child_idx];
-        self.insert_nonfull(host, descend, entry);
-        self.refresh_child_mirrors(host, &mut node, child_idx);
-        self.store_node(host, node_id, &node);
-    }
-
-    fn split_child(&self, host: &Host, parent: &mut Node<K, V>, i: usize) {
-        let left_id = parent.children[i];
-        let mut left = self.load_node(host, left_id);
-
-        let right_entries: Vec<Entry<K, V>> = left.entries.drain(T..).collect();
-        let middle = match left.entries.pop() {
-            Some(entry) => entry,
-            None => panic!("OrderedIndexMissingMedian"),
-        };
-
-        let (right_children, right_child_counts, right_child_entry_counts) = if left.is_leaf() {
-            (Vec::new(), Vec::new(), Vec::new())
+        if node.encode().len() > MAX_STORAGE_VALUE_BYTES {
+            let (left, median, right) = node.split_bytes(T);
+            let left_count = left.subtree_count();
+            let left_entry_count = left.entries.len() as u32;
+            let right_count = right.subtree_count();
+            let right_entry_count = right.entries.len() as u32;
+            self.store_node(host, node_id, &left);
+            let right_id = self.alloc_node(host, &right);
+            Some(ChildSplit {
+                median,
+                right_id,
+                left_subtree_count: left_count,
+                right_subtree_count: right_count,
+                left_entry_count,
+                right_entry_count,
+            })
         } else {
-            (
-                left.children.drain(T..).collect::<Vec<_>>(),
-                left.child_counts.drain(T..).collect::<Vec<_>>(),
-                left.child_entry_counts.drain(T..).collect::<Vec<_>>(),
-            )
-        };
-
-        let right = Node {
-            entries: right_entries,
-            children: right_children,
-            child_counts: right_child_counts,
-            child_entry_counts: right_child_entry_counts,
-        };
-
-        let left_count = left.subtree_count();
-        let left_entry_count = left.entries.len() as u32;
-        let right_count = right.subtree_count();
-        let right_entry_count = right.entries.len() as u32;
-
-        self.store_node(host, left_id, &left);
-        let right_id = self.alloc_node(host, &right);
-
-        parent.entries.insert(i, middle);
-        parent.children.insert(i + 1, right_id);
-        parent.child_counts[i] = left_count;
-        parent.child_counts.insert(i + 1, right_count);
-        parent.child_entry_counts[i] = left_entry_count;
-        parent.child_entry_counts.insert(i + 1, right_entry_count);
+            self.store_node(host, node_id, &node);
+            None
+        }
     }
 
     fn remove_from(&self, host: &Host, node_id: NodeId, k: &K, nonce: u64) -> Option<V> {
@@ -1456,9 +1506,13 @@ mod tests {
             for (k, v) in &ops {
                 idx.insert(&host, k, v);
             }
-            let max_keys = 2 * 2 - 1;
             idx.walk_all_nodes(&host, &mut |node: &Node<String, u64>| {
-                assert!(node.entries.len() <= max_keys, "node too many entries");
+                assert!(node.entries.len() <= u8::MAX as usize, "node too many entries");
+                assert!(
+                    node.encode().len() <= MAX_STORAGE_VALUE_BYTES,
+                    "node too large: {} bytes",
+                    node.encode().len()
+                );
                 if !node.children.is_empty() {
                     assert_eq!(node.children.len(), node.entries.len() + 1);
                     assert_eq!(node.child_counts.len(), node.entries.len() + 1);
