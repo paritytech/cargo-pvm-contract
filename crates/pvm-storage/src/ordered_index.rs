@@ -430,11 +430,21 @@ fn encode_codec_bytes<T: CompactCodec>(v: &T) -> Vec<u8> {
     buf
 }
 
-fn derive_cell_key(namespace: &[u8], suffix: &[u8]) -> StorageKey {
-    let mut preimage = Vec::with_capacity(namespace.len() + 1 + suffix.len());
-    preimage.extend_from_slice(namespace);
-    preimage.push(0);
+fn derive_cell_key(root: &StorageKey, suffix: &[u8]) -> StorageKey {
+    // Solidity `mapping(string => bytes)` at slot `root`:
+    //   keccak256(suffix ++ pad32(root))
+    // (root is already a 32-byte slot, so pad32 is identity here.) Matches the
+    // cast-validated `storage_derive_key_unpadded` helper output — the
+    // `ordered_index_cell_and_node_keys_are_solidity_layout` test cross-checks
+    // the two byte-for-byte, and `mapping_string_key_solidity_parity` proves
+    // that helper against `cast index string`. This keeps OrderedIndex
+    // Solidity-readable: a Solidity contract, `cast storage`, or any EVM tool
+    // locates each cell exactly as it would a `mapping(string => bytes)` entry,
+    // and matches the NodeId-derived node keys (`keccak256(pad32(id) ++ root)`,
+    // i.e. `mapping(uint256 => bytes)`).
+    let mut preimage = Vec::with_capacity(suffix.len() + 32);
     preimage.extend_from_slice(suffix);
+    preimage.extend_from_slice(root.as_bytes());
     StorageKey(pvm_contract_types::keccak256(&preimage))
 }
 
@@ -456,9 +466,9 @@ impl<K, V, const T: usize> OrderedIndex<K, V, T> {
             "OrderedIndex: T > 128 exceeds u8 entries_len capacity (2T-1 > 255)"
         );
         let root_key = StorageKey(pvm_contract_types::keccak256(namespace));
-        let root_cell_key = derive_cell_key(namespace, b"root");
-        let next_id_cell_key = derive_cell_key(namespace, b"next_id");
-        let next_nonce_cell_key = derive_cell_key(namespace, b"next_nonce");
+        let root_cell_key = derive_cell_key(&root_key, b"root");
+        let next_id_cell_key = derive_cell_key(&root_key, b"next_id");
+        let next_nonce_cell_key = derive_cell_key(&root_key, b"next_nonce");
         Self {
             root_key,
             root_cell_key,
@@ -476,9 +486,12 @@ impl<K, V, const T: usize> OrderedIndex<K, V, T> {
         // SAFETY: `Lazy::new` is `unsafe` only because it bypasses the
         // `#[storage]` layout walker; its contract is that no two `Lazy`s
         // claim overlapping storage keys. The three cell keys
-        // (root/next_id/next_nonce) are distinct `keccak256(namespace ++
-        // suffix)` values, and node bodies live under `NodeId`-derived keys
-        // in a disjoint subtree, so nothing overlaps. `offset` is 0 (full-slot u64).
+        // (root/next_id/next_nonce) are distinct `keccak256(suffix ++ root)`
+        // values (Solidity `mapping(string => bytes)` entries, distinct
+        // suffixes → distinct preimages → distinct hashes), and node bodies
+        // live under `NodeId`-derived keys (`keccak256(pad32(id) ++ root)`,
+        // a disjoint `mapping(uint256 => bytes)` namespace) — so nothing
+        // overlaps. `offset` is 0 (full-slot u64).
         unsafe { Lazy::<u64>::new(key, 0, host.clone()) }
     }
 
@@ -1255,7 +1268,7 @@ mod tests {
     use proptest::prelude::*;
     use pvm_contract_types::{Host, MockHostBuilder};
 
-    use super::{MAX_STORAGE_VALUE_BYTES, Node, NodeId, OrderedIndex};
+    use super::{MAX_STORAGE_VALUE_BYTES, Node, NodeId, OrderedIndex, StorageKey};
 
     fn host() -> Host {
         Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
@@ -1278,6 +1291,59 @@ mod tests {
             .filter(|((k, _), _)| k == key)
             .min_by_key(|((_, n), _)| *n)
             .map(|((_, n), v)| (*n, *v))
+    }
+
+    /// OrderedIndex must use Solidity-compatible key derivation, the repo's
+    /// headline invariant (lib.rs: "Solidity-compatible slot layout"), which
+    /// Lazy/Mapping/StorageVec all prove via `cast index` cross-checks.
+    /// OrderedIndex was the lone outlier (bespoke `keccak256(ns ++ 0x00 ++ suf)`);
+    /// this test pins it to the Solidity scheme two ways — the exact Solidity
+    /// preimage computed independently, and the crate's cast-validated helper.
+    #[test]
+    fn ordered_index_cell_and_node_keys_are_solidity_layout() {
+        let host = host();
+        let idx = index(&host);
+        let root: &[u8; 32] = idx.root_key.as_bytes();
+
+        let cells: [(&str, &[u8], &StorageKey); 3] = [
+            ("root", b"root" as &[u8], &idx.root_cell_key),
+            ("next_id", b"next_id" as &[u8], &idx.next_id_cell_key),
+            ("next_nonce", b"next_nonce" as &[u8], &idx.next_nonce_cell_key),
+        ];
+        for (name, suffix, cell) in cells {
+            // Solidity mapping(string => bytes): keccak256(suffix ++ pad32(root))
+            let mut preimage = Vec::with_capacity(suffix.len() + 32);
+            preimage.extend_from_slice(suffix);
+            preimage.extend_from_slice(root);
+            let manual = pvm_contract_types::keccak256(&preimage);
+            let helper = crate::storage_derive_key_unpadded(&host, root, suffix);
+            assert_eq!(
+                cell.0, manual,
+                "cell `{name}` must match the Solidity mapping(string) preimage"
+            );
+            assert_eq!(
+                cell.0, helper,
+                "cell `{name}` must match the cast-validated storage_derive_key_unpadded"
+            );
+        }
+
+        // Solidity mapping(uint256 => bytes): keccak256(pad32(id) ++ pad32(root))
+        let node7 = idx.node_key(&host, NodeId(7));
+        let mut padded_id = [0u8; 32];
+        padded_id[24..32].copy_from_slice(&7u64.to_be_bytes());
+        let mut preimage = [0u8; 64];
+        preimage[0..32].copy_from_slice(&padded_id);
+        preimage[32..64].copy_from_slice(root);
+        assert_eq!(
+            node7.0,
+            pvm_contract_types::keccak256(&preimage),
+            "node key must match the Solidity mapping(uint256) preimage"
+        );
+        assert_eq!(
+            node7.0,
+            crate::storage_derive_key(&host, root, &padded_id),
+            "node key must match the cast-validated storage_derive_key helper"
+        );
     }
 
     proptest! {
