@@ -1,0 +1,87 @@
+name: ordered-index-weight
+description: >
+  Minimize the REAL pallet-revive on-chain weight per prefix-range query on the
+  OrderedIndex (a persistent sorted B-tree multimap in pvm-storage), measured
+  in the exact unit Polkadot Asset Hub Westend charges — ref_time picoseconds
+  (compute) + proof_size bytes (PoV). The metric is computed from the per-op
+  byte sizes captured by an instrumented CountingHost, multiplied by the
+  pallet-revive storage weight constants transcribed from polkadot-sdk
+  (substrate/frame/revive/src/vm/runtime_costs.rs + the Asset Hub Westend
+  generated weights + rocksdb_weights.rs). This replaces the prior
+  slot_reads_per_query proxy (which treated every SLOAD as equal and was blind
+  to per-byte weight + the real per-op constants). Baseline (T=10, the prior
+  run's converged codec) is 995_118_621 ps/q at N=1M.
+
+metric:
+  primary:
+    type: hard
+    name: weight_ref_time_per_query
+    direction: minimize
+    baseline: 995118621
+    target: 850000000
+  degenerate_gates:
+    - name: correctness
+      check: "== true"
+      description: "Range-query results must match the BTreeMap oracle (limit-aware) at N=1M — no silent data loss."
+    - name: node_size
+      check: "<= 416"
+      description: "Every Node encode MUST stay <= MAX_STORAGE_VALUE_BYTES (416); the assert_node_size gate enforces it (panic = degenerate)."
+  diagnostics:
+    - name: weight_proof_size_per_query
+    - name: slot_reads_per_query
+    - name: insert_weight_ref_time
+    - name: insert_writes
+    - name: insert_clears
+    - name: range_p50_ns
+    - name: range_p99_ns
+    - name: t
+
+measurement:
+  # The experiment sets BENCH_T to the degree(s) it is evaluating; the harness
+  # monomorphizes OrderedIndex::<_,_,T> per BENCH_T and prints one JSON line.
+  command: "BENCH_N=1000000 cargo run --release -p pvm-storage --bin measure-ordered-index --features alloc 2>/dev/null"
+  working_directory: "."
+  timeout_seconds: 300
+  output_format: json
+  stability:
+    mode: stable
+
+scope:
+  mutable:
+    - "crates/pvm-storage/src/ordered_index.rs"
+  immutable:
+    - "crates/pvm-storage/src/lib.rs"
+    - "crates/pvm-storage/src/bin/measure-ordered-index.rs"
+    - "crates/pvm-storage/src/bin/validate-realistic.rs"
+    - "crates/pvm-storage/benches/counting_host.rs"
+    - "crates/pvm-storage/benches/pallet_revive_weight.rs"
+    - "crates/pvm-storage/Cargo.toml"
+
+execution:
+  mode: serial
+  backend: worktree
+  max_concurrent: 1
+
+constraints:
+  - "NO parity_scale_codec (SCALE) anywhere — the port's reason for existing."
+  - "Every Node encode MUST stay <= MAX_STORAGE_VALUE_BYTES (416); the assert_node_size gate enforces it (panic = degenerate)."
+  - "Keep the public OrderedIndex API stable (new/insert/get_first/remove_first/remove/remove_by_nonce/select/rank_of_key/range) so the measure binary + tests keep working."
+  - "All 7 property tests must pass (BTreeMap oracle independence)."
+  - "Decode never casts — Node::decode returns Option/Result, fails closed."
+  - "Document unsafe blocks (none expected in experiments; codec changes are safe code)."
+  - "The weight model (pallet_revive_weight.rs) is the source of truth for the metric — experiments MUST NOT alter it (immutable scope). It is transcribed from polkadot-sdk; see its module doc for provenance."
+
+stopping:
+  max_iterations: 30
+  max_hours: 6
+  plateau_iterations: 6
+  target_reached: true
+
+# Validation bar (separate from the loop metric): before merge, the winning
+# configuration is compiled to a PVM contract and its actual consumed gas
+# measured on the pallet-revive dev-node (substrate/frame/revive/dev-node) to
+# confirm the weight-model metric tracks real on-chain gas. Tracked as a
+# follow-up milestone, not a per-experiment gate (too slow for the loop).
+validation_bar:
+  mode: once-after-loop
+  description: "Compile OrderedIndex range/insert ops to a .polkavm contract; deploy on the pallet-revive dev-node; assert measured gas correlates (within 15%) with weight_ref_time_per_query."
