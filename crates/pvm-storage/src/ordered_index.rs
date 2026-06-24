@@ -185,12 +185,12 @@ fn separator_composite<K: CompactCodec>(key: &K, nonce: Nonce) -> Vec<u8> {
 fn separator_between<K: CompactCodec>(left_max: &(K, Nonce), right_min: &(K, Nonce)) -> SepBytes {
     let left = separator_composite(&left_max.0, left_max.1);
     let right = separator_composite(&right_min.0, right_min.1);
-    let mut idx = 0usize;
-    let common = left.len().min(right.len());
-    while idx < common && left[idx] == right[idx] {
-        idx += 1;
-    }
-    let take = (idx + 1).min(right.len());
+    let shared = left
+        .iter()
+        .zip(right.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let take = (shared + 1).min(right.len());
     SepBytes(right[..take].to_vec())
 }
 
@@ -813,6 +813,10 @@ where
         }
     }
 
+    fn over_cap(&self, node: &Node<K, V>) -> bool {
+        node.encode().len() > MAX_STORAGE_VALUE_BYTES
+    }
+
     pub fn len(&self, host: &Host) -> u64 {
         match self.load_root(host) {
             None => 0,
@@ -840,7 +844,7 @@ where
             }
             Some(mut root) => {
                 self.insert_into_node(host, &mut root, key, nonce, value);
-                if root.encode().len() > MAX_STORAGE_VALUE_BYTES {
+                if self.over_cap(&root) {
                     let split = self.split_into_new_node(host, root);
                     let new_root = Node::Internal {
                         separators: alloc::vec![split.separator],
@@ -1324,7 +1328,7 @@ where
             }
         }
 
-        if node.encode().len() > MAX_STORAGE_VALUE_BYTES {
+        if self.over_cap(&node) {
             Some(self.split_node(host, node_id, node))
         } else {
             self.store_node(host, node_id, &node);
@@ -1930,8 +1934,9 @@ mod tests {
     use pvm_contract_types::{Host, MockHost, MockHostBuilder};
 
     use super::{
-        FLAG_LEAF, LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, Nonce,
-        OrderedIndex, StorageKey, separator_between, separator_composite,
+        ChildRef, EntryCount, FLAG_LEAF, LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError,
+        NodeId, Nonce, OrderedIndex, SepBytes, StorageKey, SubtreeCount, lower_bound_entry_sep,
+        lower_bound_key_sep, separator_between, separator_composite, upper_bound_key_sep,
     };
 
     fn host() -> Host {
@@ -2417,6 +2422,142 @@ mod tests {
 
     fn mixed_key() -> impl Strategy<Value = String> {
         proptest::string::string_regex("[a-z]{1,90}").unwrap()
+    }
+
+    #[test]
+    fn over_cap_splits_strictly_above_the_byte_budget() {
+        let host = host();
+        let idx = index(&host);
+        let two = |b: usize| Node::<String, u64>::Leaf {
+            entries: alloc::vec![
+                leaf_entry(&alloc::format!("a{}", "x".repeat(200)), 0, 0),
+                leaf_entry(&alloc::format!("c{}", "x".repeat(b)), 1, 0),
+            ],
+            next: None,
+        };
+        let at_cap = (1..255)
+            .map(two)
+            .find(|n| n.encode().len() == MAX_STORAGE_VALUE_BYTES)
+            .expect("a two-entry leaf can hit the cap exactly");
+        assert_eq!(at_cap.encode().len(), MAX_STORAGE_VALUE_BYTES);
+        assert!(
+            !idx.over_cap(&at_cap),
+            "a node exactly at the cap fits and must not split"
+        );
+
+        let over = two(254);
+        assert!(over.encode().len() > MAX_STORAGE_VALUE_BYTES);
+        assert!(idx.over_cap(&over));
+    }
+
+    #[test]
+    fn leaf_cut_returns_the_maximal_pack_left_index() {
+        let host = host();
+        let idx = index(&host);
+        let entries: Vec<LeafEntry<String, u64>> = (0..8u64)
+            .map(|i| {
+                let mut k = String::new();
+                k.push((b'a' + i as u8) as char);
+                k.push_str(&"y".repeat(60));
+                leaf_entry(&k, i, i)
+            })
+            .collect();
+        let leaf = |slice: &[LeafEntry<String, u64>]| Node::<String, u64>::Leaf {
+            entries: slice.to_vec(),
+            next: Some(NodeId(u64::MAX)),
+        };
+        assert!(leaf(&entries).encode().len() > MAX_STORAGE_VALUE_BYTES);
+        let cut = idx.leaf_cut(&entries, None);
+        assert!(cut >= 1);
+        assert!(leaf(&entries[..cut]).encode().len() <= MAX_STORAGE_VALUE_BYTES);
+        assert!(leaf(&entries[cut..]).encode().len() <= MAX_STORAGE_VALUE_BYTES);
+        if cut < entries.len() - 1 {
+            assert!(
+                leaf(&entries[..cut + 1]).encode().len() > MAX_STORAGE_VALUE_BYTES,
+                "leaf_cut left half is not maximally packed",
+            );
+        }
+    }
+
+    #[test]
+    fn internal_cut_returns_the_maximal_pack_left_index() {
+        let host = host();
+        let idx = index(&host);
+        let seps: Vec<SepBytes> = (0..8u64)
+            .map(|i| {
+                let mut k = String::new();
+                k.push((b'a' + i as u8) as char);
+                k.push_str(&"y".repeat(60));
+                SepBytes(separator_composite(&k, Nonce(i)))
+            })
+            .collect();
+        let children: Vec<ChildRef> = (0..9u64)
+            .map(|i| ChildRef {
+                id: NodeId(i + 1),
+                subtree_count: SubtreeCount(1),
+                entry_count: EntryCount(1),
+            })
+            .collect();
+        let internal = |s: &[SepBytes], c: &[ChildRef]| Node::<String, u64>::Internal {
+            separators: s.to_vec(),
+            children: c.to_vec(),
+        };
+        assert!(internal(&seps, &children).encode().len() > MAX_STORAGE_VALUE_BYTES);
+        let cut = idx.internal_cut(&seps, &children);
+        assert!(cut >= 1);
+        assert!(
+            internal(&seps[..cut], &children[..=cut]).encode().len() <= MAX_STORAGE_VALUE_BYTES
+        );
+        assert!(
+            internal(&seps[cut + 1..], &children[cut + 1..])
+                .encode()
+                .len()
+                <= MAX_STORAGE_VALUE_BYTES
+        );
+        if cut < seps.len() - 2 {
+            assert!(
+                internal(&seps[..cut + 1], &children[..=cut + 1])
+                    .encode()
+                    .len()
+                    > MAX_STORAGE_VALUE_BYTES,
+                "internal_cut left half is not maximally packed",
+            );
+        }
+    }
+
+    #[test]
+    fn separator_between_yields_shortest_distinguishing_prefix() {
+        let sep = separator_between(
+            &(String::from("apple"), Nonce(0)),
+            &(String::from("apricot"), Nonce(0)),
+        );
+        assert_eq!(sep.as_slice(), b"apr");
+        let dup = separator_between(
+            &(String::from("k"), Nonce(1)),
+            &(String::from("k"), Nonce(2)),
+        );
+        assert_eq!(
+            dup.as_slice(),
+            separator_composite(&String::from("k"), Nonce(2)).as_slice()
+        );
+    }
+
+    #[test]
+    fn separator_searches_route_at_exact_boundary() {
+        let seps = alloc::vec![SepBytes(separator_composite(&String::from("m"), Nonce(0)))];
+        assert_eq!(lower_bound_key_sep(&seps, &String::from("a")), 0);
+        assert_eq!(lower_bound_key_sep(&seps, &String::from("m")), 0);
+        assert_eq!(lower_bound_key_sep(&seps, &String::from("z")), 1);
+        assert_eq!(upper_bound_key_sep(&seps, &String::from("a")), 0);
+        assert_eq!(upper_bound_key_sep(&seps, &String::from("m")), 1);
+        assert_eq!(
+            lower_bound_entry_sep(&seps, &String::from("m"), Nonce(0)),
+            0
+        );
+        assert_eq!(
+            lower_bound_entry_sep(&seps, &String::from("m"), Nonce(1)),
+            1
+        );
     }
 
     #[test]
