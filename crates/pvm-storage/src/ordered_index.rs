@@ -1429,17 +1429,7 @@ where
             left.encode().len() <= MAX_STORAGE_VALUE_BYTES
                 && right.encode().len() <= MAX_STORAGE_VALUE_BYTES
         };
-        let mut cut = hi;
-        loop {
-            if fits(cut) {
-                return cut;
-            }
-            if cut > lo {
-                cut -= 1;
-            } else {
-                panic!("OrderedIndexNoByteSplit: leaf {} entries at T={}", m, T);
-            }
-        }
+        (lo..=hi).rev().find(|&cut| fits(cut)).unwrap_or(lo)
     }
 
     /// Choose an internal split point (the pushed-up median index). Pack-left,
@@ -1450,8 +1440,7 @@ where
         let m = separators.len();
         let lo = T - 1;
         let hi = m - T; // right keeps m - cut - 1 separators >= T-1
-        let mut cut = hi;
-        loop {
+        let fits = |cut: usize| -> bool {
             let left = Node::<K, V>::Internal {
                 separators: separators[..cut].to_vec(),
                 children: children[..=cut].to_vec(),
@@ -1460,17 +1449,10 @@ where
                 separators: separators[cut + 1..].to_vec(),
                 children: children[cut + 1..].to_vec(),
             };
-            if left.encode().len() <= MAX_STORAGE_VALUE_BYTES
+            left.encode().len() <= MAX_STORAGE_VALUE_BYTES
                 && right.encode().len() <= MAX_STORAGE_VALUE_BYTES
-            {
-                return cut;
-            }
-            if cut > lo {
-                cut -= 1;
-            } else {
-                panic!("OrderedIndexNoByteSplit: internal {} seps at T={}", m, T);
-            }
-        }
+        };
+        (lo..=hi).rev().find(|&cut| fits(cut)).unwrap_or(lo)
     }
 
     fn remove_from(&self, host: &Host, node_id: NodeId, k: &K, nonce: Nonce) -> RemoveOutcome<V> {
@@ -2523,6 +2505,81 @@ mod tests {
                 "internal_cut left half is not maximally packed",
             );
         }
+    }
+
+    #[test]
+    fn leaf_cut_falls_to_the_min_degree_floor() {
+        let host = host();
+        let idx = index(&host);
+        let entries = alloc::vec![
+            leaf_entry(&alloc::format!("a{}", "x".repeat(205)), 0, 0),
+            leaf_entry(&alloc::format!("b{}", "x".repeat(205)), 1, 0),
+        ];
+        assert!(
+            Node::<String, u64>::Leaf {
+                entries: entries.clone(),
+                next: None
+            }
+            .encode()
+            .len()
+                > MAX_STORAGE_VALUE_BYTES
+        );
+        assert_eq!(idx.leaf_cut(&entries, None), 1);
+    }
+
+    #[test]
+    fn leaf_cut_caps_at_the_min_degree_ceiling() {
+        let host = host();
+        let idx = index(&host);
+        let entries: Vec<LeafEntry<String, u64>> = (0..7u64)
+            .map(|i| {
+                let mut k = String::new();
+                k.push((b'a' + i as u8) as char);
+                k.push_str(&"y".repeat(58));
+                leaf_entry(&k, i, i)
+            })
+            .collect();
+        assert!(
+            Node::<String, u64>::Leaf {
+                entries: entries.clone(),
+                next: None
+            }
+            .encode()
+            .len()
+                > MAX_STORAGE_VALUE_BYTES
+        );
+        assert_eq!(idx.leaf_cut(&entries, None), entries.len() - 1);
+    }
+
+    #[test]
+    fn internal_cut_caps_at_the_min_degree_ceiling() {
+        let host = host();
+        let idx = index(&host);
+        let seps: Vec<SepBytes> = (0..9u64)
+            .map(|i| {
+                let mut k = String::new();
+                k.push((b'a' + i as u8) as char);
+                k.push_str(&"y".repeat(42));
+                SepBytes(separator_composite(&k, Nonce(i)))
+            })
+            .collect();
+        let children: Vec<ChildRef> = (0..10u64)
+            .map(|i| ChildRef {
+                id: NodeId(i + 1),
+                subtree_count: SubtreeCount(1),
+                entry_count: EntryCount(1),
+            })
+            .collect();
+        assert!(
+            Node::<String, u64>::Internal {
+                separators: seps.clone(),
+                children: children.clone()
+            }
+            .encode()
+            .len()
+                > MAX_STORAGE_VALUE_BYTES
+        );
+        assert_eq!(idx.internal_cut(&seps, &children), seps.len() - 2);
     }
 
     #[test]
