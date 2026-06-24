@@ -2528,6 +2528,26 @@ mod tests {
     }
 
     #[test]
+    fn alloc_node_hands_out_distinct_ids() {
+        let host = host();
+        let idx = index(&host);
+        let leaf = Node::<String, u64>::Leaf {
+            entries: alloc::vec![LeafEntry {
+                key: String::from("a"),
+                nonce: Nonce(0),
+                value: 1,
+            }],
+            next: None,
+        };
+        let a = idx.alloc_node(&host, &leaf);
+        let b = idx.alloc_node(&host, &leaf);
+        let c = idx.alloc_node(&host, &leaf);
+        assert_ne!(a, b);
+        assert_ne!(b, c);
+        assert_ne!(a, c);
+    }
+
+    #[test]
     fn grow_root_from_split_lifts_a_new_internal_root() {
         let host = host();
         let idx = index(&host);
