@@ -1709,8 +1709,7 @@ where
             entry_count: EntryCount(left.slot_count() as u32),
         };
         if let Node::Internal { children, .. } = node {
-            children.remove(pos + 1);
-            children[pos] = merged;
+            children.splice(pos..=pos + 1, core::iter::once(merged));
         }
 
         self.store_node(host, left_id, &left);
