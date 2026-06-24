@@ -240,6 +240,28 @@ fn split_internal_parts<
     (left, median, right)
 }
 
+fn absorb_child_split(
+    separators: &mut Vec<SepBytes>,
+    children: &mut Vec<ChildRef>,
+    child_idx: usize,
+    split: ChildSplit,
+) {
+    separators.insert(child_idx, split.separator);
+    children[child_idx] = ChildRef {
+        id: children[child_idx].id,
+        subtree_count: SubtreeCount(split.left_subtree_count),
+        entry_count: EntryCount(split.left_entry_count),
+    };
+    children.insert(
+        child_idx + 1,
+        ChildRef {
+            id: split.right_id,
+            subtree_count: SubtreeCount(split.right_subtree_count),
+            entry_count: EntryCount(split.right_entry_count),
+        },
+    );
+}
+
 /// A parent's per-child mirror: ONE struct, never parallel vectors that can
 /// desync. `id` locates the child node; `subtree_count` and `entry_count`
 /// mirror the child's totals for O(1) rank accounting and min-degree checks.
@@ -923,22 +945,7 @@ where
                     None => {
                         children[child_idx] = self.child_mirror(host, child_id);
                     }
-                    Some(split) => {
-                        separators.insert(child_idx, split.separator);
-                        children[child_idx] = ChildRef {
-                            id: child_id,
-                            subtree_count: SubtreeCount(split.left_subtree_count),
-                            entry_count: EntryCount(split.left_entry_count),
-                        };
-                        children.insert(
-                            child_idx + 1,
-                            ChildRef {
-                                id: split.right_id,
-                                subtree_count: SubtreeCount(split.right_subtree_count),
-                                entry_count: EntryCount(split.right_entry_count),
-                            },
-                        );
-                    }
+                    Some(split) => absorb_child_split(separators, children, child_idx, split),
                 }
             }
         }
@@ -1146,20 +1153,7 @@ where
             children,
         } = node
         {
-            separators.insert(child_idx, split.separator);
-            children[child_idx] = ChildRef {
-                id: children[child_idx].id,
-                subtree_count: SubtreeCount(split.left_subtree_count),
-                entry_count: EntryCount(split.left_entry_count),
-            };
-            children.insert(
-                child_idx + 1,
-                ChildRef {
-                    id: split.right_id,
-                    subtree_count: SubtreeCount(split.right_subtree_count),
-                    entry_count: EntryCount(split.right_entry_count),
-                },
-            );
+            absorb_child_split(separators, children, child_idx, split);
         }
     }
 
@@ -1321,22 +1315,7 @@ where
                     None => {
                         children[child_idx] = self.child_mirror(host, child_id);
                     }
-                    Some(split) => {
-                        separators.insert(child_idx, split.separator);
-                        children[child_idx] = ChildRef {
-                            id: child_id,
-                            subtree_count: SubtreeCount(split.left_subtree_count),
-                            entry_count: EntryCount(split.left_entry_count),
-                        };
-                        children.insert(
-                            child_idx + 1,
-                            ChildRef {
-                                id: split.right_id,
-                                subtree_count: SubtreeCount(split.right_subtree_count),
-                                entry_count: EntryCount(split.right_entry_count),
-                            },
-                        );
-                    }
+                    Some(split) => absorb_child_split(separators, children, child_idx, split),
                 }
             }
         }
