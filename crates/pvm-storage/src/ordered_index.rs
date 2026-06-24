@@ -1724,11 +1724,8 @@ where
     where
         V: PartialEq,
     {
-        let rank = self.rank_of_key(host, k);
-        let total = self.len(host);
-        let mut cursor = rank;
-        while cursor < total {
-            let (ck, nonce, cv) = self.select_with_nonce(host, cursor)?;
+        let mut cursor = self.rank_of_key(host, k);
+        while let Some((ck, nonce, cv)) = self.select_with_nonce(host, cursor) {
             if ck != *k {
                 return None;
             }
