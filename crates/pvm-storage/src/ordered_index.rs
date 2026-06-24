@@ -2834,6 +2834,34 @@ mod tests {
     }
 
     #[test]
+    fn descend_prepared_borrows_from_left_for_the_rightmost_thin_child() {
+        let host = host();
+        let idx = index(&host);
+        let left = Node::<String, u64>::Leaf {
+            entries: alloc::vec![
+                leaf_entry("a", 0, 1),
+                leaf_entry("b", 1, 2),
+                leaf_entry("c", 2, 3),
+            ],
+            next: None,
+        };
+        let right = Node::<String, u64>::Leaf {
+            entries: alloc::vec![leaf_entry("m", 3, 4)],
+            next: None,
+        };
+        let left_id = idx.alloc_node(&host, &left);
+        let right_id = idx.alloc_node(&host, &right);
+        let mut parent = Node::<String, u64>::Internal {
+            separators: alloc::vec![SepBytes(separator_composite(&String::from("m"), Nonce(3)))],
+            children: alloc::vec![
+                idx.child_mirror(&host, left_id),
+                idx.child_mirror(&host, right_id),
+            ],
+        };
+        assert_eq!(idx.descend_prepared(&host, &mut parent, 1), 1);
+    }
+
+    #[test]
     fn decode_reports_precise_truncation_variant() {
         assert_eq!(
             Node::<String, u64>::decode(&[]).err(),
