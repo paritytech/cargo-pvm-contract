@@ -784,9 +784,6 @@ where
     }
 
     fn assert_node_shape(&self, node: &Node<K, V>) {
-        if node.slot_count() > u8::MAX as usize {
-            panic!("OrderedIndexNodeTooManyEntries");
-        }
         if let Node::Internal {
             separators,
             children,
@@ -1933,8 +1930,8 @@ mod tests {
     use pvm_contract_types::{Host, MockHostBuilder};
 
     use super::{
-        MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, Nonce, OrderedIndex, StorageKey,
-        separator_between, separator_composite,
+        LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, Nonce, OrderedIndex,
+        StorageKey, separator_between, separator_composite,
     };
 
     fn host() -> Host {
@@ -2396,30 +2393,130 @@ mod tests {
             .map(|((k, n), v)| ((k.clone(), *n), *v))
             .collect();
         for (i, ((k, _), v)) in sorted.iter().enumerate() {
-            if i % 13 == 0 || i + 1 == sorted.len() {
-                assert_eq!(idx.select(host, i as u64), Some((k.clone(), *v)));
-            }
+            assert_eq!(idx.select(host, i as u64), Some((k.clone(), *v)));
         }
         assert_eq!(idx.select(host, oracle.len() as u64), None);
 
         let mut distinct: Vec<String> = oracle.keys().map(|(k, _)| k.clone()).collect();
         distinct.dedup();
-        for (i, k) in distinct.iter().enumerate() {
-            if i % 11 == 0 || i + 1 == distinct.len() {
-                let rank = sorted.iter().take_while(|((kk, _), _)| kk < k).count();
-                assert_eq!(idx.rank_of_key(host, k), rank as u64);
-                let first = oracle
-                    .iter()
-                    .filter(|((kk, _), _)| kk == k)
-                    .min_by_key(|((_, n), _)| *n)
-                    .map(|(_, v)| *v);
-                assert_eq!(idx.get_first(host, k), first);
-            }
+        for k in &distinct {
+            let rank = sorted.iter().take_while(|((kk, _), _)| kk < k).count();
+            assert_eq!(idx.rank_of_key(host, k), rank as u64);
+            let first = oracle
+                .iter()
+                .filter(|((kk, _), _)| kk == k)
+                .min_by_key(|((_, n), _)| *n)
+                .map(|(_, v)| *v);
+            assert_eq!(idx.get_first(host, k), first);
         }
     }
 
     fn deep_key() -> impl Strategy<Value = String> {
         proptest::string::string_regex("[a-z]{40,90}").unwrap()
+    }
+
+    fn mixed_key() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-z]{1,90}").unwrap()
+    }
+
+    fn leaf_entry(key: &str, nonce: u64, value: u64) -> LeafEntry<String, u64> {
+        LeafEntry {
+            key: String::from(key),
+            nonce: Nonce(nonce),
+            value,
+        }
+    }
+
+    #[test]
+    fn index_is_empty_reflects_population() {
+        let host = host();
+        let idx = index(&host);
+        assert!(idx.is_empty(&host));
+        idx.insert(&host, &String::from("a"), &1);
+        assert!(!idx.is_empty(&host));
+        idx.remove_first(&host, &String::from("a"));
+        assert!(idx.is_empty(&host));
+    }
+
+    #[test]
+    fn key_prefix_compresses_common_leaf_prefix() {
+        let two = Node::<String, u64>::Leaf {
+            entries: alloc::vec![leaf_entry("user01", 0, 1), leaf_entry("user02", 1, 2)],
+            next: None,
+        };
+        assert_eq!(two.key_prefix(), b"user0".to_vec());
+        let single = Node::<String, u64>::Leaf {
+            entries: alloc::vec![leaf_entry("user01", 0, 1)],
+            next: None,
+        };
+        assert!(single.key_prefix().is_empty());
+        let divergent = Node::<String, u64>::Leaf {
+            entries: alloc::vec![leaf_entry("apple", 0, 1), leaf_entry("zebra", 1, 2)],
+            next: None,
+        };
+        assert!(divergent.key_prefix().is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "OrderedIndexUnsortedNode")]
+    fn assert_node_shape_rejects_unsorted_leaf() {
+        let host = host();
+        let idx = index(&host);
+        let unsorted = Node::<String, u64>::Leaf {
+            entries: alloc::vec![leaf_entry("b", 0, 1), leaf_entry("a", 1, 2)],
+            next: None,
+        };
+        idx.assert_node_shape(&unsorted);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn range_all_bound_kinds_match_oracle(
+            ops in proptest::collection::vec((short_key(), any::<u64>()), 1..120),
+            lo_key in short_key(),
+            hi_key in short_key(),
+            lo_kind in 0u8..3,
+            hi_kind in 0u8..3,
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            let from = match lo_kind {
+                0 => Bound::Unbounded,
+                1 => Bound::Included(&lo_key),
+                _ => Bound::Excluded(&lo_key),
+            };
+            let to = match hi_kind {
+                0 => Bound::Unbounded,
+                1 => Bound::Included(&hi_key),
+                _ => Bound::Excluded(&hi_key),
+            };
+            let actual = idx.range(&host, from, to, 0, u64::MAX);
+            let expected: Vec<(String, u64)> = oracle
+                .iter()
+                .filter(|((k, _), _)| {
+                    let lo_ok = match lo_kind {
+                        0 => true,
+                        1 => k.as_str() >= lo_key.as_str(),
+                        _ => k.as_str() > lo_key.as_str(),
+                    };
+                    let hi_ok = match hi_kind {
+                        0 => true,
+                        1 => k.as_str() <= hi_key.as_str(),
+                        _ => k.as_str() < hi_key.as_str(),
+                    };
+                    lo_ok && hi_ok
+                })
+                .map(|((k, _), v)| (k.clone(), *v))
+                .collect();
+            prop_assert_eq!(actual, expected);
+        }
     }
 
     fn assert_bplus_structure(idx: &OrderedIndex<String, u64, 2>, host: &Host) {
@@ -2508,6 +2605,32 @@ mod tests {
         // (min-degree, separator order, child mirrors) across the tear-down, so
         // a rebalance that corrupts structure but keeps a correct multiset is
         // caught.
+        #[test]
+        fn mixed_size_keys_match_oracle(
+            ops in proptest::collection::vec((mixed_key(), any::<u64>()), 16..200),
+            keep_every in 2usize..6,
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            assert_bplus_structure(&idx, &host);
+            assert_oracle_equiv(&idx, &host, &oracle);
+
+            let all: Vec<(String, u64)> = oracle.keys().cloned().collect();
+            for (i, (k, n)) in all.iter().enumerate() {
+                if i % keep_every != 0 {
+                    prop_assert!(idx.remove_by_nonce(&host, k, *n).is_some());
+                    oracle.remove(&(k.clone(), *n));
+                }
+            }
+            assert_bplus_structure(&idx, &host);
+            assert_oracle_equiv(&idx, &host, &oracle);
+        }
+
         #[test]
         fn removals_preserve_bplus_structure(
             ops in proptest::collection::vec((deep_key(), any::<u64>()), 24..130),
