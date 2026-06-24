@@ -471,15 +471,14 @@ impl<
         let prefix_len = bytes[2] as usize;
 
         let mut cursor = HEADER_LEN;
-        if cursor
+        let prefix_end = cursor
             .checked_add(prefix_len)
+            .ok_or(NodeDecodeError::Truncated)?;
+        let prefix = bytes
+            .get(cursor..prefix_end)
             .ok_or(NodeDecodeError::Truncated)?
-            > bytes.len()
-        {
-            return Err(NodeDecodeError::Truncated);
-        }
-        let prefix = bytes[cursor..cursor + prefix_len].to_vec();
-        cursor += prefix_len;
+            .to_vec();
+        cursor = prefix_end;
 
         if is_leaf {
             let mut entries: Vec<LeafEntry<K, V>> = Vec::with_capacity(count);
@@ -509,15 +508,16 @@ impl<
             let mut separators: Vec<SepBytes> = Vec::with_capacity(count);
             for _ in 0..count {
                 let sep_len = read_byte(bytes, &mut cursor)? as usize;
-                if cursor
+                let sep_end = cursor
                     .checked_add(sep_len)
-                    .ok_or(NodeDecodeError::Truncated)?
-                    > bytes.len()
-                {
-                    return Err(NodeDecodeError::Truncated);
-                }
-                separators.push(SepBytes(bytes[cursor..cursor + sep_len].to_vec()));
-                cursor += sep_len;
+                    .ok_or(NodeDecodeError::Truncated)?;
+                separators.push(SepBytes(
+                    bytes
+                        .get(cursor..sep_end)
+                        .ok_or(NodeDecodeError::Truncated)?
+                        .to_vec(),
+                ));
+                cursor = sep_end;
             }
             let children_len = count.checked_add(1).ok_or(NodeDecodeError::BadChildCount)?;
             let mut children: Vec<ChildRef> = Vec::with_capacity(children_len);
@@ -576,11 +576,8 @@ fn read_byte(bytes: &[u8], cursor: &mut usize) -> Result<u8, NodeDecodeError> {
 }
 
 fn read_codec_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, NodeDecodeError> {
-    if *cursor > bytes.len() {
-        return Err(NodeDecodeError::Truncated);
-    }
-    let remaining_before = bytes.len() - *cursor;
-    let mut input: &[u8] = &bytes[*cursor..];
+    let mut input: &[u8] = bytes.get(*cursor..).ok_or(NodeDecodeError::Truncated)?;
+    let remaining_before = input.len();
     let v = u64::compact_decode_from(&mut input).map_err(|_| NodeDecodeError::BadCodec)?;
     *cursor += remaining_before - input.len();
     Ok(v)
@@ -592,21 +589,18 @@ fn read_key<K: CompactCodec>(
     prefix: &[u8],
 ) -> Result<K, NodeDecodeError> {
     let k_suffix_len = read_byte(bytes, cursor)? as usize;
-    if cursor
+    let end = cursor
         .checked_add(k_suffix_len)
-        .ok_or(NodeDecodeError::Truncated)?
-        > bytes.len()
-    {
-        return Err(NodeDecodeError::Truncated);
-    }
+        .ok_or(NodeDecodeError::Truncated)?;
+    let suffix = bytes.get(*cursor..end).ok_or(NodeDecodeError::Truncated)?;
     let full_key_len = prefix
         .len()
         .checked_add(k_suffix_len)
         .ok_or(NodeDecodeError::Truncated)?;
     let mut full_key = Vec::with_capacity(full_key_len);
     full_key.extend_from_slice(prefix);
-    full_key.extend_from_slice(&bytes[*cursor..*cursor + k_suffix_len]);
-    *cursor += k_suffix_len;
+    full_key.extend_from_slice(suffix);
+    *cursor = end;
     let mut body: &[u8] = &full_key;
     let key = K::compact_decode_from(&mut body).map_err(|_| NodeDecodeError::BadCodec)?;
     if !body.is_empty() {
@@ -620,16 +614,12 @@ fn read_codec_body<T: CompactCodec>(
     cursor: &mut usize,
     body_len: usize,
 ) -> Result<T, NodeDecodeError> {
-    if cursor
+    let end = cursor
         .checked_add(body_len)
-        .ok_or(NodeDecodeError::Truncated)?
-        > bytes.len()
-    {
-        return Err(NodeDecodeError::Truncated);
-    }
-    let mut body: &[u8] = &bytes[*cursor..*cursor + body_len];
+        .ok_or(NodeDecodeError::Truncated)?;
+    let mut body: &[u8] = bytes.get(*cursor..end).ok_or(NodeDecodeError::Truncated)?;
     let value = T::compact_decode_from(&mut body).map_err(|_| NodeDecodeError::BadCodec)?;
-    *cursor += body_len;
+    *cursor = end;
     Ok(value)
 }
 
