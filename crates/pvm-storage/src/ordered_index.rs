@@ -2420,6 +2420,31 @@ mod tests {
     }
 
     #[test]
+    fn remove_by_nonce_requires_exact_nonce_at_depth() {
+        let host = host();
+        let idx = index(&host);
+        let first = idx.insert(&host, &String::from("a"), &10);
+        for i in 0..220u64 {
+            idx.insert(&host, &alloc::format!("b{i:03}"), &i);
+        }
+        let second = idx.insert(&host, &String::from("a"), &20);
+        let gap = (first + second) / 2;
+        assert!(gap != first && gap != second);
+        assert!(
+            idx.remove_by_nonce(&host, &String::from("a"), gap)
+                .is_none()
+        );
+        assert_eq!(
+            idx.remove_by_nonce(&host, &String::from("a"), second),
+            Some(20)
+        );
+        assert_eq!(
+            idx.remove_by_nonce(&host, &String::from("a"), first),
+            Some(10)
+        );
+    }
+
+    #[test]
     fn decode_reports_precise_truncation_variant() {
         assert_eq!(
             Node::<String, u64>::decode(&[]).err(),
