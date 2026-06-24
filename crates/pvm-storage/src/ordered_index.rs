@@ -1932,7 +1932,10 @@ mod tests {
     use proptest::prelude::*;
     use pvm_contract_types::{Host, MockHostBuilder};
 
-    use super::{MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, OrderedIndex, StorageKey};
+    use super::{
+        MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, Nonce, OrderedIndex, StorageKey,
+        separator_between, separator_composite,
+    };
 
     fn host() -> Host {
         Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
@@ -2504,6 +2507,72 @@ mod tests {
             let absent_key = String::from("zzzzzzzzz_absent");
             prop_assert!(!idx.remove(&host, &absent_key, &0));
             prop_assert_eq!(idx.len(&host) as usize, oracle.len());
+        }
+    }
+
+    // Low-byte keys so 0x00 bytes and byte-prefix relationships appear by
+    // construction — this is what reaches `separator_composite`'s 0x00-escape
+    // branch, which the `[a-z]` tree tests never exercise.
+    fn low_byte_string() -> impl Strategy<Value = String> {
+        proptest::collection::vec(0u8..=5u8, 0..12)
+            .prop_map(|bytes| String::from_utf8(bytes).expect("0x00..=0x05 is valid UTF-8"))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(300))]
+
+        #[test]
+        fn separator_composite_preserves_total_order(
+            k1 in low_byte_string(), n1 in any::<u64>(),
+            k2 in low_byte_string(), n2 in any::<u64>(),
+        ) {
+            let t1 = (k1, Nonce(n1));
+            let t2 = (k2, Nonce(n2));
+            let c1 = separator_composite(&t1.0, t1.1);
+            let c2 = separator_composite(&t2.0, t2.1);
+            prop_assert!(
+                t1.cmp(&t2) == c1.as_slice().cmp(c2.as_slice()),
+                "composite byte order must match (K, Nonce) total order\n\
+                 t1={:?} -> {:?}\n\
+                 t2={:?} -> {:?}",
+                t1, c1, t2, c2,
+            );
+        }
+
+        #[test]
+        fn separator_between_yields_valid_separator(
+            k1 in low_byte_string(), n1 in any::<u64>(),
+            k2 in low_byte_string(), n2 in any::<u64>(),
+        ) {
+            // Order the pair by construction (swap) rather than filter, so the
+            // shrink budget is spent on the equal-pair edge, not on rejection.
+            let mut a = (k1, Nonce(n1));
+            let mut b = (k2, Nonce(n2));
+            if a > b {
+                core::mem::swap(&mut a, &mut b);
+            }
+            prop_assume!(a != b);
+            let left_c = separator_composite(&a.0, a.1);
+            let right_c = separator_composite(&b.0, b.1);
+            let sep = separator_between(&a, &b);
+            prop_assert!(
+                left_c.as_slice() < sep.as_slice(),
+                "sep {:?} must be strictly greater than left composite {:?}",
+                sep.as_slice(),
+                left_c.as_slice(),
+            );
+            prop_assert!(
+                right_c.as_slice().starts_with(sep.as_slice()),
+                "sep {:?} must be a prefix of right composite (len {})",
+                sep.as_slice(),
+                right_c.len(),
+            );
+            prop_assert!(
+                sep.as_slice() <= right_c.as_slice(),
+                "sep {:?} must not exceed right composite {:?}",
+                sep.as_slice(),
+                right_c.as_slice(),
+            );
         }
     }
 }
