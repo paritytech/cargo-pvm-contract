@@ -1441,13 +1441,15 @@ where
         }
     }
 
-    /// Choose an internal split point (the pushed-up median index) keeping
-    /// both halves within cap and min-degree.
+    /// Choose an internal split point (the pushed-up median index). Pack-left,
+    /// matching `leaf_cut`: start at the largest cut that leaves the right half
+    /// at the min-degree floor and decrement until both halves fit the byte
+    /// cap, so the left sibling is maximally full.
     fn internal_cut(&self, separators: &[SepBytes], children: &[ChildRef]) -> usize {
         let m = separators.len();
         let lo = T - 1;
-        let hi = m - T; // right keeps m - cut - 1 separators >= T-1 → cut <= m-T
-        let mut cut = (m / 2).clamp(lo, hi);
+        let hi = m - T; // right keeps m - cut - 1 separators >= T-1
+        let mut cut = hi;
         loop {
             let left = Node::<K, V>::Internal {
                 separators: separators[..cut].to_vec(),
@@ -1457,15 +1459,13 @@ where
                 separators: separators[cut + 1..].to_vec(),
                 children: children[cut + 1..].to_vec(),
             };
-            let left_ok = left.encode().len() <= MAX_STORAGE_VALUE_BYTES;
-            let right_ok = right.encode().len() <= MAX_STORAGE_VALUE_BYTES;
-            if left_ok && right_ok {
+            if left.encode().len() <= MAX_STORAGE_VALUE_BYTES
+                && right.encode().len() <= MAX_STORAGE_VALUE_BYTES
+            {
                 return cut;
             }
-            if !left_ok && cut > lo {
+            if cut > lo {
                 cut -= 1;
-            } else if !right_ok && cut < hi {
-                cut += 1;
             } else {
                 panic!("OrderedIndexNoByteSplit: internal {} seps at T={}", m, T);
             }
