@@ -2528,6 +2528,50 @@ mod tests {
     }
 
     #[test]
+    fn grow_root_from_split_lifts_a_new_internal_root() {
+        let host = host();
+        let idx = index(&host);
+        let mut root = Node::<String, u64>::Leaf {
+            entries: alloc::vec![LeafEntry {
+                key: String::from("a"),
+                nonce: Nonce(0),
+                value: 1,
+            }],
+            next: None,
+        };
+        idx.store_root(&host, &root);
+        let sep = SepBytes(separator_composite(&String::from("m"), Nonce(0)));
+        let split = ChildSplit {
+            separator: sep.clone(),
+            right_id: NodeId(77),
+            left_subtree_count: 2,
+            right_subtree_count: 3,
+            left_entry_count: 2,
+            right_entry_count: 3,
+        };
+        idx.grow_root_from_split(&host, &mut root, split);
+        match idx.load_root(&host).expect("root must exist") {
+            Node::Internal {
+                separators,
+                children,
+            } => {
+                assert_eq!(separators, alloc::vec![sep]);
+                assert_eq!(children.len(), 2);
+                assert_eq!(children[0].subtree_count, SubtreeCount(2));
+                assert_eq!(children[0].entry_count, EntryCount(2));
+                assert_eq!(children[1].id, NodeId(77));
+                assert_eq!(children[1].subtree_count, SubtreeCount(3));
+                assert_eq!(children[1].entry_count, EntryCount(3));
+                match idx.load_node(&host, children[0].id) {
+                    Node::Leaf { entries, .. } => assert_eq!(entries.len(), 1),
+                    _ => panic!("left child must hold the old leaf root"),
+                }
+            }
+            _ => panic!("root must be lifted to internal"),
+        }
+    }
+
+    #[test]
     fn internal_cut_returns_the_maximal_pack_left_index() {
         let host = host();
         let idx = index(&host);
