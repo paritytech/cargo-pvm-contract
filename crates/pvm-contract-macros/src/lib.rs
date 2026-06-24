@@ -1029,9 +1029,47 @@ pub fn payable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```ignore
 /// #[derive(SolType)]
 /// pub enum Status { Pending, Shipped, Delivered }
-/// // SOL_NAME = "uint8"; Status::Shipped encodes to a word with byte 31 == 1;
-/// // decoding byte 31 == 3 returns Err(DecodeError).
 /// ```
+///
+/// ## Generated Code for Enums
+///
+/// For `Status` above, the macro generates (discriminant in the low byte,
+/// decode bounds-checked against the variant count):
+///
+/// ```ignore
+/// impl ::pvm_contract_sdk::SolEncode for Status {
+///     const IS_DYNAMIC: bool = false;
+///     const SOL_NAME: &'static str = "uint8";
+///     const HEAD_SIZE: usize = 32;
+///     fn encode_body_len(&self) -> usize { 32 }
+///     fn encode_body_to(&self, buf: &mut [u8]) {
+///         let d: u8 = match self { Status::Pending => 0, Status::Shipped => 1, Status::Delivered => 2 };
+///         buf[..31].fill(0);
+///         buf[31] = d;
+///     }
+/// }
+///
+/// impl ::pvm_contract_sdk::StaticEncodedLen for Status {
+///     const ENCODED_SIZE: usize = 32;
+/// }
+///
+/// impl ::pvm_contract_sdk::SolDecode for Status {
+///     fn decode_at(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError> {
+///         match *input.get(offset + 31).ok_or(::pvm_contract_sdk::DecodeError)? {
+///             0 => Ok(Status::Pending),
+///             1 => Ok(Status::Shipped),
+///             2 => Ok(Status::Delivered),
+///             _ => Err(::pvm_contract_sdk::DecodeError),
+///         }
+///     }
+/// }
+///
+/// impl ::pvm_contract_sdk::SolArrayElement for Status {}
+/// ```
+///
+/// No `StaticDecode` (`decode_unchecked`) impl is generated, so every decode
+/// path is the bounds-checked one above. For a 256-variant enum every `u8` is
+/// valid and the `_ => Err(..)` arm is omitted (the match is already exhaustive).
 ///
 /// # Static vs Dynamic Structs
 ///

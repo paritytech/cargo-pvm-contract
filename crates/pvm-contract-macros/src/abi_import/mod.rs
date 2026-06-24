@@ -2713,4 +2713,33 @@ mod test {
         "#]]
         .assert_eq(&file);
     }
+
+    #[test]
+    fn enum_param_method_selector_uses_uint8() {
+        let tokens = quote! {
+            enum Light { Red, Yellow, Green }
+            interface Traffic {
+                function setLight(Light light) external;
+            }
+        };
+        let file = syn_solidity::parse2(tokens).unwrap();
+        let rendered = prettyplease::unparse(
+            &syn::File::parse
+                .parse2(expand_to_module(&file, true).to_token_stream())
+                .unwrap(),
+        );
+
+        let selector = crate::signature::compute_selector("setLight(uint8)");
+        let expected = format!(
+            "selector: [{}u8, {}u8, {}u8, {}u8]",
+            selector[0], selector[1], selector[2], selector[3]
+        );
+
+        assert!(
+            rendered.contains(&expected),
+            "expected enum-param selector keccak(\"setLight(uint8)\") = {expected}, got:\n{rendered}"
+        );
+        assert!(rendered.contains("pub enum Light"));
+        assert!(!rendered.contains("compile_error"));
+    }
 }

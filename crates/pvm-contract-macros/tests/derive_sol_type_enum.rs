@@ -1,5 +1,9 @@
 extern crate alloc;
 
+use alloc::vec;
+
+use alloy_core::sol_types::SolValue;
+use proptest::prelude::*;
 use pvm_contract_sdk::SolDecode;
 use pvm_contract_sdk::SolEncode;
 use pvm_contract_sdk::SolType;
@@ -9,6 +13,16 @@ enum Color {
     Red,
     Green,
     Blue,
+}
+
+const COLOR_COUNT: u8 = 3;
+
+fn color_of(discriminant: u8) -> Color {
+    match discriminant {
+        0 => Color::Red,
+        1 => Color::Green,
+        _ => Color::Blue,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, SolType)]
@@ -31,28 +45,23 @@ fn enum_sol_name_is_uint8() {
 }
 
 #[test]
-fn enum_roundtrip_every_variant() {
-    for (variant, discriminant) in [(Color::Red, 0u8), (Color::Green, 1), (Color::Blue, 2)] {
-        let mut buf = [0u8; 32];
+fn enum_roundtrip_matches_alloy_uint8_encoding_proptest() {
+    proptest!(|(discriminant in 0u8..COLOR_COUNT)| {
+        let variant = color_of(discriminant);
+        let mut buf = vec![0u8; variant.encode_len()];
         variant.encode_to(&mut buf);
-        assert_eq!(buf, word_with_byte(discriminant));
-        assert_eq!(Color::decode(&buf).unwrap(), variant);
-    }
+        let alloy = alloy_core::primitives::U256::from(discriminant).abi_encode();
+        prop_assert_eq!(&buf, &alloy);
+        prop_assert_eq!(buf[31], discriminant);
+        prop_assert_eq!(Color::decode(&buf).unwrap(), variant);
+    });
 }
 
 #[test]
-fn enum_decode_accepts_last_valid_discriminant() {
-    assert_eq!(Color::decode(&word_with_byte(2)).unwrap(), Color::Blue);
-}
-
-#[test]
-fn enum_decode_rejects_first_out_of_range_discriminant() {
-    assert!(Color::decode(&word_with_byte(3)).is_err());
-}
-
-#[test]
-fn enum_decode_rejects_max_byte_discriminant() {
-    assert!(Color::decode(&word_with_byte(255)).is_err());
+fn enum_decode_rejects_every_out_of_range_discriminant_proptest() {
+    proptest!(|(discriminant in COLOR_COUNT..=u8::MAX)| {
+        prop_assert!(Color::decode(&word_with_byte(discriminant)).is_err());
+    });
 }
 
 #[test]

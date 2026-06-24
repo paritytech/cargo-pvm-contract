@@ -1,0 +1,5 @@
+error: SolType enum variants must not set explicit discriminants: Solidity numbers enum members by declaration order
+ --> tests/ui/derive_sol_type_enum_explicit_discriminant.rs:5:9
+  |
+5 |     A = 5,
+  |         ^
