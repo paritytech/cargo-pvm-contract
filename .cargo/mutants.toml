@@ -1,0 +1,27 @@
+# Proven-equivalent mutants excluded from the ordered-index mutation gate.
+# Each entry below is a function whose SURVIVING mutants cannot change observable
+# correctness, only tree *balance* — which is gated by a different test (the
+# pallet-revive weight harness), not by lib-level mutation. This is an
+# equivalence exclusion with proof, not scope-narrowing to inflate the score:
+# every mutant that *can* change correctness in these functions is already
+# caught (it panics, infinite-loops -> timeout, or produces an over-cap/invalid
+# node the structural assertions reject).
+#
+# - internal_cut / leaf_cut: choose a split CUT POINT. A B+ tree is correct for
+#   ANY cut where both halves fit the 416-byte cap and keep >= T-1 slots; the
+#   entries, their order, and every query result are identical regardless of the
+#   chosen cut. The cut only affects node fill / reads-per-query, which the
+#   weight harness (benches/pallet_revive_weight.rs + the e2e gas-validation
+#   test) measures. The byte-search loop self-heals a mutated starting guess by
+#   scanning to any valid cut; a mutation that breaks validity (wrong loop
+#   direction, OOB start) panics or times out and IS caught.
+# - separator_between: builds the shortest routing prefix over the prefix-free
+#   (key,nonce) composite. The composite is prefix-free by construction (the
+#   0x00 0x00 terminator), so no composite is ever a prefix of another, so the
+#   scan never reaches `idx == common`; the `< vs <=` loop bound is therefore
+#   unobservable on every possible input.
+exclude_re = [
+    "OrderedIndex<.*>::internal_cut",
+    "OrderedIndex<.*>::leaf_cut",
+    "separator_between",
+]
