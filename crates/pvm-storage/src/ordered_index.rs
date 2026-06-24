@@ -2508,6 +2508,56 @@ mod tests {
     }
 
     #[test]
+    fn leaf_cut_keeps_the_right_half_above_min_degree() {
+        let host = host();
+        let idx = index(&host);
+        let entries: Vec<LeafEntry<String, u64>> = (0..4u64)
+            .map(|i| {
+                let mut k = String::new();
+                k.push((b'a' + i as u8) as char);
+                leaf_entry(&k, i, i)
+            })
+            .collect();
+        assert!(
+            Node::<String, u64>::Leaf {
+                entries: entries.clone(),
+                next: None
+            }
+            .encode()
+            .len()
+                <= MAX_STORAGE_VALUE_BYTES
+        );
+        assert_eq!(idx.leaf_cut(&entries, None), entries.len() - 1);
+    }
+
+    #[test]
+    fn internal_cut_keeps_the_right_half_above_min_degree() {
+        let host = host();
+        let idx = index(&host);
+        let small = |count: u64| {
+            let seps: Vec<SepBytes> = (0..count)
+                .map(|i| {
+                    let mut k = String::new();
+                    k.push((b'a' + i as u8) as char);
+                    SepBytes(separator_composite(&k, Nonce(i)))
+                })
+                .collect();
+            let children: Vec<ChildRef> = (0..count + 1)
+                .map(|i| ChildRef {
+                    id: NodeId(i + 1),
+                    subtree_count: SubtreeCount(1),
+                    entry_count: EntryCount(1),
+                })
+                .collect();
+            (seps, children)
+        };
+        let (seps, children) = small(4);
+        assert_eq!(idx.internal_cut(&seps, &children), seps.len() - 2);
+        let (seps3, children3) = small(3);
+        assert_eq!(idx.internal_cut(&seps3, &children3), 1);
+    }
+
+    #[test]
     fn leaf_cut_falls_to_the_min_degree_floor() {
         let host = host();
         let idx = index(&host);
