@@ -1912,10 +1912,10 @@ mod tests {
     use pvm_contract_types::{Host, MockHost, MockHostBuilder};
 
     use super::{
-        ChildRef, EntryCount, FLAG_LEAF, LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError,
-        NodeId, Nonce, OrderedIndex, SepBytes, StorageKey, SubtreeCount, lower_bound_entry_sep,
-        lower_bound_key_sep, separator_between, separator_composite, split_internal_parts,
-        split_leaf_parts, upper_bound_key_sep,
+        ChildRef, ChildSplit, EntryCount, FLAG_LEAF, LeafEntry, MAX_STORAGE_VALUE_BYTES, Node,
+        NodeDecodeError, NodeId, Nonce, OrderedIndex, SepBytes, StorageKey, SubtreeCount,
+        lower_bound_entry_sep, lower_bound_key_sep, separator_between, separator_composite,
+        split_internal_parts, split_leaf_parts, upper_bound_key_sep,
     };
 
     fn host() -> Host {
@@ -2504,6 +2504,47 @@ mod tests {
                 assert_eq!(rc, children[3..].to_vec());
             }
             _ => panic!("right must be internal"),
+        }
+    }
+
+    #[test]
+    fn graft_child_split_inserts_separator_and_right_child() {
+        let host = host();
+        let idx = index(&host);
+        let cr = |id: u64, st: u64, ec: u32| ChildRef {
+            id: NodeId(id),
+            subtree_count: SubtreeCount(st),
+            entry_count: EntryCount(ec),
+        };
+        let mut node = Node::<String, u64>::Internal {
+            separators: alloc::vec![SepBytes(separator_composite(&String::from("m"), Nonce(0)))],
+            children: alloc::vec![cr(1, 5, 5), cr(2, 6, 6)],
+        };
+        let new_sep = SepBytes(separator_composite(&String::from("g"), Nonce(0)));
+        let split = ChildSplit {
+            separator: new_sep.clone(),
+            right_id: NodeId(9),
+            left_subtree_count: 3,
+            right_subtree_count: 4,
+            left_entry_count: 3,
+            right_entry_count: 4,
+        };
+        idx.graft_child_split(&mut node, 0, Some(split));
+        match node {
+            Node::Internal {
+                separators,
+                children,
+            } => {
+                assert_eq!(
+                    separators,
+                    alloc::vec![
+                        new_sep,
+                        SepBytes(separator_composite(&String::from("m"), Nonce(0)))
+                    ]
+                );
+                assert_eq!(children, alloc::vec![cr(1, 3, 3), cr(9, 4, 4), cr(2, 6, 6)]);
+            }
+            _ => panic!("node must stay internal"),
         }
     }
 
