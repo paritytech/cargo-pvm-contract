@@ -544,6 +544,31 @@ pub fn get_point() -> Point {
 }
 ```
 
+#### Enums
+
+A fieldless (C-like) enum is supported via the same `SolType` derive and encodes as Solidity `uint8` — the variant's 0-based declaration index, right-aligned in a 32-byte word (matching the ABI spec, where an `enum` is encoded as `uint8`).
+
+```rust,ignore
+#[derive(pvm_contract_macros::SolType)]
+pub enum Status {
+    Pending,
+    Shipped,
+    Delivered,
+}
+```
+
+This generates:
+
+- `SolEncode` impl with `SOL_NAME = "uint8"`, encoding the discriminant into byte 31
+- `StaticEncodedLen` impl with `ENCODED_SIZE = 32`
+- `SolDecode` impl that maps the byte to a variant, returning `DecodeError` for any value `>=` the variant count
+
+Constraints (matching solc): the enum must have **1..=256 variants** and **no explicit discriminants** (Solidity numbers enum members by declaration order). The **canonical signature uses `uint8`**, so selectors match solc — `setStatus(Status)` hashes as `setStatus(uint8)`.
+
+**Decode bounds rejection.** An out-of-range discriminant is rejected as `DecodeError` (surfaced as an `InvalidCalldata` revert) rather than constructing an invalid enum value — this is a decode, never an unchecked cast, and there is deliberately no trusting `StaticDecode::decode_unchecked` for enums.
+
+**Divergence from solc, by design.** solc's *explicit conversion* `Status(x)` and its *return-path* ABI decoder reject out-of-range with `Panic(0x21)`, but solc's *parameter* ABI decoder does **not** range-check enum parameters (Solidity issue #13832). This SDK validates on every decode path — parameter, return, and nested in structs/tuples/arrays — matching `alloy-core` and solc's return decoder, and failing closed. It does not reproduce solc's exact `Panic(0x21)` revert bytes; it uses the SDK's uniform `InvalidCalldata` decode-failure path.
+
 #### Static vs Dynamic Structs
 
 Structs with only static fields generate `StaticEncodedLen` and can be returned in both alloc and no_alloc modes.

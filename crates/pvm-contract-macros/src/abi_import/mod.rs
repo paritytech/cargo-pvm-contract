@@ -4,7 +4,7 @@ use quote::{format_ident, quote};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
-use crate::utils::{capitalize, compute_function_signature, to_pascal_case, to_snake_case};
+use crate::utils::{capitalize, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(
@@ -22,7 +22,7 @@ pub fn expand_function(
     let selector: Vec<TokenStream> = if is_constructor {
         [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
     } else {
-        compute_selector(&compute_function_signature(func))
+        compute_selector(&ctxt.function_signature(func))
             .into_iter()
             .map(|x| quote! { #x })
             .collect()
@@ -186,34 +186,20 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
             }
         }
         syn_solidity::Type::Custom(custom) => {
-            if ctxt.resolve_type(custom.clone()) {
-                let (ns, path) = if custom.len() == 1 {
-                    (None, to_pascal_case(&custom.first().to_string()))
+            if ctxt.resolve_type(custom.clone()) || ctxt.is_enum(custom.clone()) {
+                if custom.len() == 1 {
+                    let raw = custom.first().to_string();
+                    let name = format_ident!("{}", to_pascal_case(&raw));
+                    if ctxt.type_is_in_current_body(&raw) {
+                        quote! { #name }
+                    } else {
+                        quote! { super::#name }
+                    }
                 } else {
-                    (
-                        Some(to_snake_case(&custom.first().to_string())),
-                        to_pascal_case(&custom.last().to_string()),
-                    )
-                };
-                let ns = ns
-                    .map(|x| {
-                        let ident = format_ident!("{}", x);
-                        quote! { super::#ident }
-                    })
-                    .or_else(|| Some(quote! {super}));
-                let path = format_ident!("{}", path);
-                let path = Some(quote! {::#path});
-                let path = [ns, path];
-                let path = path.into_iter();
-                quote! {
-                    #(#path)*
+                    let ns = format_ident!("{}", to_snake_case(&custom.first().to_string()));
+                    let name = format_ident!("{}", to_pascal_case(&custom.last().to_string()));
+                    quote! { super::#ns::#name }
                 }
-            } else if ctxt.is_enum(custom.clone()) {
-                let lit = format!(
-                    "Solidity `enum` types {} are not yet supported by abi_import!",
-                    &custom
-                );
-                quote! { compile_error!(#lit); }
             } else {
                 let lit = format!("unknown type: {}", typ);
 
@@ -258,6 +244,20 @@ fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> 
         #[derive(SolType, PartialEq, Eq,  Debug)]
         pub struct #name {
             #(#fields),*
+        }
+    }
+}
+
+fn expand_enum(x: &syn_solidity::ItemEnum) -> TokenStream {
+    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let variants = x
+        .variants
+        .iter()
+        .map(|variant| format_ident!("{}", to_pascal_case(&variant.ident.to_string())));
+    quote! {
+        #[derive(SolType, Clone, Copy, PartialEq, Eq, Debug)]
+        pub enum #name {
+            #(#variants),*
         }
     }
 }
@@ -348,6 +348,7 @@ fn expand_items<'a>(
         syn_solidity::Item::Struct(x) => Some(expand_struct(x, ctxt, alloc)),
         syn_solidity::Item::Error(x) => Some(expand_error(x, ctxt, alloc)),
         syn_solidity::Item::Udt(x) => Some(expand_udt(x, ctxt, alloc)),
+        syn_solidity::Item::Enum(x) => Some(expand_enum(x)),
         _ => None,
     })
 }
@@ -2398,11 +2399,11 @@ mod test {
                 > Ballot<Mutability, Inputs, Outputs, false> {
                     pub fn send_voter_info(
                         mut self,
-                        voter: super::Voter,
-                    ) -> Ballot<NonPayable, (super::Voter), (), true> {
-                        Ballot::<NonPayable, (super::Voter), (), true> {
+                        voter: Voter,
+                    ) -> Ballot<NonPayable, (Voter), (), true> {
+                        Ballot::<NonPayable, (Voter), (), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<NonPayable, (super::Voter), ()> {
+                            call_builder: CallBuilder::<NonPayable, (Voter), ()> {
                                 payload: (voter),
                                 selector: [217u8, 117u8, 149u8, 186u8],
                                 witness: NonPayable::default(),

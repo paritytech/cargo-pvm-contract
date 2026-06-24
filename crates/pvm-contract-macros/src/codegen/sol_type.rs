@@ -9,16 +9,11 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let fields = match &input.data {
         syn::Data::Struct(data) => &data.fields,
-        syn::Data::Enum(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "SolType can only be derived for structs",
-            ));
-        }
+        syn::Data::Enum(data) => return expand_enum_sol_type(name, data),
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
-                "SolType can only be derived for structs",
+                "SolType can only be derived for structs and fieldless enums",
             ));
         }
     };
@@ -42,6 +37,98 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
     } else {
         expand_static_sol_type(name, fields, &field_info)
     }
+}
+
+fn expand_enum_sol_type(name: &syn::Ident, data: &syn::DataEnum) -> syn::Result<TokenStream> {
+    for variant in &data.variants {
+        if !matches!(variant.fields, Fields::Unit) {
+            return Err(syn::Error::new_spanned(
+                variant,
+                "SolType enum variants must be fieldless: a Solidity enum maps to uint8",
+            ));
+        }
+        if let Some((_, discriminant)) = &variant.discriminant {
+            return Err(syn::Error::new_spanned(
+                discriminant,
+                "SolType enum variants must not set explicit discriminants: \
+                 Solidity numbers enum members by declaration order",
+            ));
+        }
+    }
+
+    let variant_count = data.variants.len();
+    if variant_count == 0 {
+        return Err(syn::Error::new_spanned(
+            name,
+            "SolType enum must have at least one variant: Solidity enums require >= 1 member",
+        ));
+    }
+    if variant_count > 256 {
+        return Err(syn::Error::new_spanned(
+            name,
+            "SolType enum must have at most 256 variants: Solidity enums map to uint8",
+        ));
+    }
+
+    let encode_arms = data.variants.iter().enumerate().map(|(index, variant)| {
+        let ident = &variant.ident;
+        let discriminant = index as u8;
+        quote! { #name::#ident => #discriminant }
+    });
+
+    let decode_arms = data.variants.iter().enumerate().map(|(index, variant)| {
+        let ident = &variant.ident;
+        let discriminant = index as u8;
+        quote! { #discriminant => ::core::result::Result::Ok(#name::#ident) }
+    });
+
+    let out_of_range_arm = if variant_count == 256 {
+        quote! {}
+    } else {
+        quote! { _ => ::core::result::Result::Err(::pvm_contract_sdk::DecodeError), }
+    };
+
+    Ok(quote! {
+        impl ::pvm_contract_sdk::SolEncode for #name {
+            const IS_DYNAMIC: bool = false;
+            const SOL_NAME: &'static str = "uint8";
+            const HEAD_SIZE: usize = 32;
+
+            #[inline]
+            fn encode_body_len(&self) -> usize {
+                32
+            }
+
+            fn encode_body_to(&self, buf: &mut [u8]) {
+                let __discriminant: u8 = match self {
+                    #(#encode_arms),*
+                };
+                buf[..31].fill(0);
+                buf[31] = __discriminant;
+            }
+        }
+
+        impl ::pvm_contract_sdk::StaticEncodedLen for #name {
+            const ENCODED_SIZE: usize = 32;
+        }
+
+        impl ::pvm_contract_sdk::SolDecode for #name {
+            fn decode_at(
+                input: &[u8],
+                offset: usize,
+            ) -> ::core::result::Result<Self, ::pvm_contract_sdk::DecodeError> {
+                let __discriminant = *input
+                    .get(offset + 31)
+                    .ok_or(::pvm_contract_sdk::DecodeError)?;
+                match __discriminant {
+                    #(#decode_arms),*,
+                    #out_of_range_arm
+                }
+            }
+        }
+
+        impl ::pvm_contract_sdk::SolArrayElement for #name {}
+    })
 }
 
 fn expand_static_sol_type(

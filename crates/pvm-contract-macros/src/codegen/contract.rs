@@ -10,7 +10,7 @@ use super::dispatch::{
 };
 use super::storage_layout::extract_optional_slot_attr;
 use crate::signature::{SolType, compute_selector};
-use crate::utils::{compute_function_signature, to_snake_case};
+use crate::utils::{compute_function_signature_substituting_enums, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -696,11 +696,31 @@ fn build_assert_non_payable_call(emit: bool) -> TokenStream {
     quote! { __pvm_assert_non_payable(this.host()); }
 }
 
+fn collect_sol_enum_names(file: &syn_solidity::File) -> std::collections::HashSet<String> {
+    fn visit(items: &[Item], names: &mut std::collections::HashSet<String>) {
+        for item in items {
+            match item {
+                Item::Enum(item_enum) => {
+                    names.insert(item_enum.name.to_string());
+                }
+                Item::Contract(item_contract) => visit(&item_contract.body, names),
+                _ => {}
+            }
+        }
+    }
+    let mut names = std::collections::HashSet::new();
+    visit(&file.items, &mut names);
+    names
+}
+
 fn parse_contract(
     input: &ItemMod,
     sol_interface: Option<&syn_solidity::File>,
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
+    let sol_enum_names = sol_interface
+        .map(collect_sol_enum_names)
+        .unwrap_or_default();
     let content = input
         .content
         .as_ref()
@@ -1008,7 +1028,11 @@ fn parse_contract(
                         &param_types,
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&compute_function_signature(sol_func));
+                    let selector = compute_selector(
+                        &compute_function_signature_substituting_enums(sol_func, |path| {
+                            sol_enum_names.contains(&path.last().to_string())
+                        }),
+                    );
                     let sol_mutability = match sol_func.attributes.mutability() {
                         Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
                         Some(syn_solidity::Mutability::View(_)) => StateMutability::View,

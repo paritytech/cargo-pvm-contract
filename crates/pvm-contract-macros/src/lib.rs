@@ -1017,6 +1017,21 @@ pub fn payable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// | `String` | `string` | dynamic |
 /// | `&str` | `string` | dynamic |
 /// | Other `SolType` struct | tuple | sum of field sizes |
+/// | Fieldless `enum` | `uint8` | 32 bytes |
+///
+/// # Enums
+///
+/// A fieldless (C-like) enum encodes as Solidity `uint8`: the variant's 0-based
+/// declaration index. Decoding rejects any discriminant `>=` the variant count
+/// as `DecodeError` rather than constructing an out-of-range value. The enum
+/// must have 1..=256 variants and no explicit discriminants.
+///
+/// ```ignore
+/// #[derive(SolType)]
+/// pub enum Status { Pending, Shipped, Delivered }
+/// // SOL_NAME = "uint8"; Status::Shipped encodes to a word with byte 31 == 1;
+/// // decoding byte 31 == 3 returns Err(DecodeError).
+/// ```
 ///
 /// # Static vs Dynamic Structs
 ///
@@ -1142,7 +1157,7 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 /// - structs: present
 /// - errors: present
 /// - udts: present
-/// - enums: currently not supported
+/// - enums: present (fieldless; encoded as Solidity `uint8`)
 ///
 /// # Example of usage
 /// - `solidity` literal

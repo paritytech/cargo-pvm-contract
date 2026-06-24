@@ -1,0 +1,5 @@
+error: SolType enum must have at least one variant: Solidity enums require >= 1 member
+ --> tests/ui/derive_sol_type_enum_empty.rs:4:10
+  |
+4 | pub enum Empty {}
+  |          ^^^^^

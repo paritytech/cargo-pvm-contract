@@ -242,6 +242,7 @@ The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) ma
 | `T[N]` (fixed array) | `[T; N]` | yes | yes | blanket impl, requires `T: SolArrayElement` | SOL_NAME = `"T[N]"` via `ConstStr` |
 | `(T1,T2,...)` (tuple) | `(T, U, ...)` | yes | yes | macro-generated, arities 1-12 | SOL_NAME = `"(T1,T2,...)"` via `ConstStr` |
 | custom struct | `#[derive(SolType)]` | yes | yes | proc macro generated | Also emits `SolArrayElement` |
+| Solidity `enum` | fieldless `#[derive(SolType)]` enum | yes | yes | proc macro generated | Encoded as `uint8` (0-based discriminant); decode rejects out-of-range as `DecodeError`; 1..=256 variants. Canonical signature uses `uint8`. |
 
 ### Wrapper Type: `Address`
 

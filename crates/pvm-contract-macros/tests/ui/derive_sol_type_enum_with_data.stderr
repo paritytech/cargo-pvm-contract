@@ -1,0 +1,5 @@
+error: SolType enum variants must be fieldless: a Solidity enum maps to uint8
+ --> tests/ui/derive_sol_type_enum_with_data.rs:5:5
+  |
+5 |     A(u64),
+  |     ^^^^^^

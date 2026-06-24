@@ -4,7 +4,7 @@ use syn_solidity::{File, Item, ItemContract, ItemFunction, SolIdent};
 
 use crate::{
     signature::compute_selector,
-    utils::{compute_function_signature, to_snake_case},
+    utils::{compute_function_signature_substituting_enums, to_snake_case},
 };
 
 #[derive(Default)]
@@ -60,6 +60,18 @@ impl Ctxt {
             })
     }
 
+    pub fn type_is_in_current_body(&self, name: &str) -> bool {
+        self.current_ns.is_some()
+            && (self
+                .types
+                .get(&self.current_ns)
+                .is_some_and(|set| set.contains(name))
+                || self
+                    .enums
+                    .get(&self.current_ns)
+                    .is_some_and(|set| set.contains(name)))
+    }
+
     pub fn set_ns(&mut self, ns: SolIdent) {
         self.current_ns = Some(ns);
     }
@@ -70,6 +82,10 @@ impl Ctxt {
         let res = f(self);
         self.current_ns = past_ns;
         res
+    }
+
+    pub fn function_signature(&self, item: &ItemFunction) -> String {
+        compute_function_signature_substituting_enums(item, |path| self.is_enum(path.clone()))
     }
 
     pub fn function_name(&self, item: &ItemFunction) -> String {
@@ -84,7 +100,7 @@ impl Ctxt {
             format!(
                 "{}_{}",
                 name,
-                const_hex::encode(compute_selector(&compute_function_signature(item)))
+                const_hex::encode(compute_selector(&self.function_signature(item)))
             )
         } else {
             to_snake_case(&item.name().to_string())
@@ -155,7 +171,7 @@ impl Ctxt {
     }
 
     fn visit_function(&mut self, ns: SolIdent, function: &ItemFunction) {
-        let sig = compute_function_signature(function);
+        let sig = self.function_signature(function);
         match self
             .overloaded_functions
             .entry(Some(ns))
