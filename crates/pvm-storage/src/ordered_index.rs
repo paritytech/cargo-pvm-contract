@@ -2422,6 +2422,61 @@ mod tests {
         proptest::string::string_regex("[a-z]{40,90}").unwrap()
     }
 
+    fn assert_bplus_structure(idx: &OrderedIndex<String, u64, 2>, host: &Host) {
+        idx.walk_all_nodes(host, &mut |node: &Node<String, u64>| {
+            assert!(
+                node.slot_count() <= u8::MAX as usize,
+                "node exceeds u8 slot count"
+            );
+            assert!(
+                node.encode().len() <= MAX_STORAGE_VALUE_BYTES,
+                "node exceeds {}B cap",
+                MAX_STORAGE_VALUE_BYTES,
+            );
+            if let Node::Internal {
+                separators,
+                children,
+            } = node
+            {
+                assert_eq!(
+                    children.len(),
+                    separators.len() + 1,
+                    "internal node children != separators + 1",
+                );
+                for pair in separators.windows(2) {
+                    assert!(
+                        pair[0].as_slice() < pair[1].as_slice(),
+                        "internal separators not strictly increasing",
+                    );
+                }
+            }
+        });
+        if let Some(root) = idx.load_root(host) {
+            let mut depths: Vec<usize> = Vec::new();
+            walk_depths_node(idx, host, &root, 0, &mut depths);
+            if let Some(first) = depths.first() {
+                for d in &depths {
+                    assert_eq!(*d, *first, "leaves sit at unequal depths");
+                }
+            }
+        }
+        idx.walk_all_nodes(host, &mut |node: &Node<String, u64>| {
+            for c in node.children() {
+                let child = idx.load_node(host, c.id);
+                assert_eq!(
+                    c.subtree_count.0,
+                    child.subtree_count(),
+                    "child mirror subtree_count drifted",
+                );
+                assert_eq!(
+                    c.entry_count.0,
+                    child.slot_count() as u32,
+                    "child mirror entry_count drifted",
+                );
+            }
+        });
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(96))]
 
@@ -2446,6 +2501,42 @@ mod tests {
                     oracle.remove(&(k.clone(), *n));
                 }
             }
+            assert_oracle_equiv(&idx, &host, &oracle);
+        }
+
+        // Like deep_tree_matches_oracle but asserts B+ STRUCTURAL invariants
+        // (min-degree, separator order, child mirrors) across the tear-down, so
+        // a rebalance that corrupts structure but keeps a correct multiset is
+        // caught.
+        #[test]
+        fn removals_preserve_bplus_structure(
+            ops in proptest::collection::vec((deep_key(), any::<u64>()), 24..130),
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            assert_bplus_structure(&idx, &host);
+            assert_oracle_equiv(&idx, &host, &oracle);
+
+            let all: Vec<(String, u64)> = oracle.keys().cloned().collect();
+            let total = all.len();
+            for (i, (k, n)) in all.iter().enumerate() {
+                if i + 1 >= total {
+                    break;
+                }
+                prop_assert!(idx.remove_by_nonce(&host, k, *n).is_some());
+                oracle.remove(&(k.clone(), *n));
+                let removed = i + 1;
+                if removed == total / 2 || removed == total * 3 / 4 || removed + 2 >= total {
+                    assert_bplus_structure(&idx, &host);
+                    assert_oracle_equiv(&idx, &host, &oracle);
+                }
+            }
+            assert_bplus_structure(&idx, &host);
             assert_oracle_equiv(&idx, &host, &oracle);
         }
     }
