@@ -3,3 +3,5 @@ target
 examples/*/target/
 *.polkavm
 .worktrees
+mutants.out
+mutants.out.old

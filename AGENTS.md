@@ -445,6 +445,19 @@ cargo +nightly fmt
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
+## Mutation testing
+
+Gate: **100% mutation score on changed files** (zero surviving mutants), matching the workspace Definition of Done. Tool: `cargo-mutants` (`cargo install cargo-mutants --locked`), run under the **CI-pinned toolchain (1.92)** so the baseline matches CI.
+
+```bash
+cargo mutants -p <pkg> --features alloc -f <changed-file> --iterate --timeout 300 -- --lib
+```
+
+- **`--iterate` is MANDATORY on every re-run.** It reads the previous `mutants.out` and re-tests only the surviving (missed/timeout) mutants, skipping those already caught. A re-run *without* it re-tests every mutant and wastes ~20 min per cycle — the single biggest time-sink in the mutation loop.
+- **`-- --lib`** scopes the test command to library unit tests, excluding the `tests/ui/*` trybuild snapshots. Those `.stderr` snapshots are pinned to one rustc patch and mismatch on any other (e.g. a local toolchain ≠ the CI pin), which would fail the unmutated baseline and abort the whole run.
+- `mutants.out/` is gitignored — never delete it between runs; `--iterate` needs it.
+- Kill a survivor with a **sharper test** or by **deleting the dead/redundant branch** it exploits (subtract-before-add). Reserve `#[mutants::skip]` for a **proven-equivalent** mutant only, annotated inline with the equivalence proof. Never narrow the mutated set to inflate the score.
+
 ## Benchmarks
 
 ### Encoding benchmarks (criterion)
