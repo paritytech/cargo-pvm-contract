@@ -1,0 +1,2 @@
+# Build args only (activate `alloc` so its tests run, restrict to lib target). NO exclude_re/exclude_globs/skip — zero suppressions; every mutant is killed by a real test.
+additional_cargo_args = ["--features", "alloc", "--lib"]
