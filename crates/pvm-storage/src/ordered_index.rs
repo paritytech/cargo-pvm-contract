@@ -2823,6 +2823,17 @@ mod tests {
     }
 
     #[test]
+    fn remove_by_nonce_past_the_end_of_a_child_leaf_is_a_noop() {
+        let host = host();
+        let idx = index(&host);
+        for i in 0..220u64 {
+            idx.insert(&host, &alloc::format!("b{i:03}"), &i);
+        }
+        assert_eq!(idx.remove_by_nonce(&host, &String::from("z"), 0), None);
+        assert_eq!(idx.len(&host), 220);
+    }
+
+    #[test]
     fn decode_reports_precise_truncation_variant() {
         assert_eq!(
             Node::<String, u64>::decode(&[]).err(),
