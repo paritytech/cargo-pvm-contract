@@ -131,20 +131,80 @@ impl<
     }
 }
 
-/// A separator in an internal node: a (key, nonce) routing tuple with NO
-/// value. Separators direct descent; they never carry payload (B+ semantics).
-struct Separator<K: SolEncode + SolDecode + Clone + CompactCodec> {
-    key: K,
-    nonce: Nonce,
+/// An opaque, order-preserving internal-node routing key: the shortest byte
+/// prefix over the encoded `(key, nonce)` ordering tuple that still satisfies
+/// the B+ separating property `max(left) < sep <= min(right)`. Not a typed
+/// `K` — full keys live only in leaves.
+#[derive(Clone, PartialEq, Eq)]
+struct SepBytes(Vec<u8>);
+
+impl SepBytes {
+    fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
 }
 
-impl<K: SolEncode + SolDecode + Clone + CompactCodec> Clone for Separator<K> {
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key.clone(),
-            nonce: self.nonce,
+const SEP_KEY_TERMINATOR: u8 = 0x00;
+const SEP_KEY_ESCAPE: u8 = 0x01;
+
+/// Order-isomorphic encoding of a `(key, nonce)` routing tuple. Correctness of
+/// every routing comparison rests on this: lexicographic byte order over the
+/// composite must equal the `(K, Nonce)` total order. It holds because (a) the
+/// key's `CompactCodec` bytes are order-isomorphic to `K`'s `Ord`, (b) escaping
+/// `0x00` as `0x00 0x01` and terminating with `0x00 0x00` makes the
+/// variable-length key field prefix-free, so a key that is a byte-prefix of
+/// another still sorts before it and the shorter key's trailing nonce cannot
+/// bleed past the boundary, and (c) a fixed-width big-endian nonce is
+/// order-isomorphic.
+fn separator_composite<K: CompactCodec>(key: &K, nonce: Nonce) -> Vec<u8> {
+    let key_bytes = encode_codec_bytes(key);
+    let mut out = Vec::with_capacity(key_bytes.len() + 2 + 8);
+    for &b in &key_bytes {
+        out.push(b);
+        if b == SEP_KEY_TERMINATOR {
+            out.push(SEP_KEY_ESCAPE);
         }
     }
+    out.push(SEP_KEY_TERMINATOR);
+    out.push(SEP_KEY_TERMINATOR);
+    out.extend_from_slice(&nonce.0.to_be_bytes());
+    out
+}
+
+/// Manufacture the minimal routing separator that sits strictly above
+/// `left_max` and at-or-below `right_min` (`max(left) < sep <= min(right)`).
+///
+/// Both boundary tuples are encoded with `separator_composite`. The result is
+/// the shortest prefix of `right_min`'s composite that is strictly greater
+/// than `left_max`'s composite: one byte past the first position where the two
+/// composites differ. When `right_min`'s composite is a strict byte-extension
+/// of `left_max`'s (no differing position within the shorter length), the full
+/// `right_min` composite is already minimal and is kept. The two composites
+/// are never equal — distinct adjacent subtrees mean `left_max < right_min`,
+/// which the encoding preserves.
+fn separator_between<K: CompactCodec>(left_max: &(K, Nonce), right_min: &(K, Nonce)) -> SepBytes {
+    let left = separator_composite(&left_max.0, left_max.1);
+    let right = separator_composite(&right_min.0, right_min.1);
+    let mut idx = 0usize;
+    let common = left.len().min(right.len());
+    while idx < common && left[idx] == right[idx] {
+        idx += 1;
+    }
+    let take = (idx + 1).min(right.len());
+    SepBytes(right[..take].to_vec())
+}
+
+fn leaf_boundary_separator<
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+>(
+    left_max: &LeafEntry<K, V>,
+    right_min: &LeafEntry<K, V>,
+) -> SepBytes {
+    separator_between(
+        &(left_max.key.clone(), left_max.nonce),
+        &(right_min.key.clone(), right_min.nonce),
+    )
 }
 
 /// A parent's per-child mirror: ONE struct, never parallel vectors that can
@@ -210,7 +270,7 @@ enum Node<
         next: Option<NodeId>,
     },
     Internal {
-        separators: Vec<Separator<K>>,
+        separators: Vec<SepBytes>,
         children: Vec<ChildRef>,
     },
 }
@@ -285,24 +345,25 @@ impl<
 
     /// The first routing key in this node (smallest entry/separator key),
     /// used for prefix-compression and parent-separator computation.
-    fn first_key(&self) -> Option<&K> {
+    fn first_leaf_key(&self) -> Option<&K> {
         match self {
             Node::Leaf { entries, .. } => entries.first().map(|e| &e.key),
-            Node::Internal { separators, .. } => separators.first().map(|s| &s.key),
+            Node::Internal { .. } => None,
         }
     }
 
-    fn last_key(&self) -> Option<&K> {
+    fn last_leaf_key(&self) -> Option<&K> {
         match self {
             Node::Leaf { entries, .. } => entries.last().map(|e| &e.key),
-            Node::Internal { separators, .. } => separators.last().map(|s| &s.key),
+            Node::Internal { .. } => None,
         }
     }
 
-    /// The common byte prefix of all routing keys in this node. For sorted
-    /// keys this equals the common prefix of the first and last key (O(1)).
+    /// The common byte prefix shared by every leaf key in this node, used to
+    /// shrink the per-entry suffix written on the wire. Internal nodes carry
+    /// opaque, already-minimal separators and are not prefix-compressed.
     fn key_prefix(&self) -> Vec<u8> {
-        match (self.first_key(), self.last_key()) {
+        match (self.first_leaf_key(), self.last_leaf_key()) {
             (Some(first), Some(last)) if self.slot_count() >= 2 => {
                 let fb = encode_codec_bytes(first);
                 let lb = encode_codec_bytes(last);
@@ -349,8 +410,10 @@ impl<
                 children,
             } => {
                 for s in separators {
-                    write_codec(&mut out, s.nonce.0);
-                    write_key_suffix(&mut out, &s.key, prefix_len);
+                    let sep_len = u8::try_from(s.as_slice().len())
+                        .expect("Node::encode: separator > 255 bytes");
+                    out.push(sep_len);
+                    out.extend_from_slice(s.as_slice());
                 }
                 for c in children {
                     write_codec(&mut out, c.id.0);
@@ -410,14 +473,18 @@ impl<
             }
             Ok(Node::Leaf { entries, next })
         } else {
-            let mut separators: Vec<Separator<K>> = Vec::with_capacity(count);
+            let mut separators: Vec<SepBytes> = Vec::with_capacity(count);
             for _ in 0..count {
-                let nonce = read_codec_u64(bytes, &mut cursor)?;
-                let key = read_key(bytes, &mut cursor, &prefix)?;
-                separators.push(Separator {
-                    key,
-                    nonce: Nonce(nonce),
-                });
+                let sep_len = read_byte(bytes, &mut cursor)? as usize;
+                if cursor
+                    .checked_add(sep_len)
+                    .ok_or(NodeDecodeError::Truncated)?
+                    > bytes.len()
+                {
+                    return Err(NodeDecodeError::Truncated);
+                }
+                separators.push(SepBytes(bytes[cursor..cursor + sep_len].to_vec()));
+                cursor += sep_len;
             }
             let children_len = count.checked_add(1).ok_or(NodeDecodeError::BadChildCount)?;
             let mut children: Vec<ChildRef> = Vec::with_capacity(children_len);
@@ -636,10 +703,26 @@ where
 
     fn store_node(&self, host: &Host, id: NodeId, node: &Node<K, V>) {
         self.assert_node_shape(node);
-        self.assert_node_size(node);
         let key = self.node_key(host, id);
         let bytes = node.encode();
         storage_set_bytes(host, key.as_bytes(), &bytes);
+    }
+
+    /// The single cap-checked write path for a node addressed by id. If the
+    /// node already fits the storage cap it is stored and `None` is returned.
+    /// Otherwise it is routed through the same byte-bounded `split_node`
+    /// machinery the insert path uses — the left half is stored in place, a
+    /// right sibling is allocated, and the resulting `ChildSplit` (a new
+    /// separator + right child id) is returned for the parent to graft. There
+    /// is no path that hands an oversized node to storage: the only outcomes
+    /// are "fits" or "split into halves that fit".
+    fn store_node_or_split(&self, host: &Host, id: NodeId, node: Node<K, V>) -> Option<ChildSplit> {
+        if node.encode().len() <= MAX_STORAGE_VALUE_BYTES {
+            self.store_node(host, id, &node);
+            None
+        } else {
+            Some(self.split_node(host, id, node))
+        }
     }
 
     fn free_node(&self, host: &Host, id: NodeId) {
@@ -676,7 +759,6 @@ where
 
     fn store_root(&self, host: &Host, node: &Node<K, V>) {
         self.assert_node_shape(node);
-        self.assert_node_size(node);
         let bytes = node.encode();
         storage_set_bytes(host, self.root_cell_key.as_bytes(), &bytes);
     }
@@ -726,20 +808,11 @@ where
             }
             Node::Internal { separators, .. } => {
                 for i in 1..separators.len() {
-                    let prev = &separators[i - 1];
-                    let curr = &separators[i];
-                    if prev.key > curr.key || (prev.key == curr.key && prev.nonce.0 >= curr.nonce.0)
-                    {
+                    if separators[i - 1].as_slice() >= separators[i].as_slice() {
                         panic!("OrderedIndexUnsortedNode");
                     }
                 }
             }
-        }
-    }
-
-    fn assert_node_size(&self, node: &Node<K, V>) {
-        if node.encode().len() > MAX_STORAGE_VALUE_BYTES {
-            panic!("OrderedIndexNodeTooLarge");
         }
     }
 
@@ -773,10 +846,7 @@ where
                 if root.encode().len() > MAX_STORAGE_VALUE_BYTES {
                     let split = self.split_into_new_node(host, root);
                     let new_root = Node::Internal {
-                        separators: alloc::vec![Separator {
-                            key: split.sep_key,
-                            nonce: split.sep_nonce,
-                        }],
+                        separators: alloc::vec![split.separator],
                         children: alloc::vec![
                             ChildRef {
                                 id: split.left_id,
@@ -830,13 +900,7 @@ where
                         children[child_idx] = self.child_mirror(host, child_id);
                     }
                     Some(split) => {
-                        separators.insert(
-                            child_idx,
-                            Separator {
-                                key: split.sep_key,
-                                nonce: split.sep_nonce,
-                            },
-                        );
+                        separators.insert(child_idx, split.separator);
                         children[child_idx] = ChildRef {
                             id: child_id,
                             subtree_count: SubtreeCount(split.left_subtree_count),
@@ -856,14 +920,13 @@ where
         }
     }
 
-    fn split_into_new_node(&self, host: &Host, node: Node<K, V>) -> RootSplit<K> {
+    fn split_into_new_node(&self, host: &Host, node: Node<K, V>) -> RootSplit {
         match node {
             Node::Leaf { entries, next } => {
                 let cut = self.leaf_cut(&entries, next);
                 let right_entries = entries[cut..].to_vec();
                 let left_entries = entries[..cut].to_vec();
-                let sep_key = right_entries[0].key.clone();
-                let sep_nonce = right_entries[0].nonce;
+                let separator = leaf_boundary_separator(&entries[cut - 1], &entries[cut]);
 
                 let right = Node::Leaf {
                     entries: right_entries,
@@ -880,8 +943,7 @@ where
                 let right_entry_count = right.slot_count() as u32;
                 let left_id = self.alloc_node(host, &left);
                 RootSplit {
-                    sep_key,
-                    sep_nonce,
+                    separator,
                     left_id,
                     right_id,
                     left_subtree_count: left_count,
@@ -911,8 +973,7 @@ where
                 let left_id = self.alloc_node(host, &left);
                 let right_id = self.alloc_node(host, &right);
                 RootSplit {
-                    sep_key: median.key,
-                    sep_nonce: median.nonce,
+                    separator: median,
                     left_id,
                     right_id,
                     left_subtree_count: left_count,
@@ -959,54 +1020,132 @@ where
 
     pub fn remove_by_nonce(&self, host: &Host, key: &K, nonce: u64) -> Option<V> {
         let mut root = self.load_root(host)?;
-        let removed = self.remove_in_node(host, &mut root, key, Nonce(nonce));
-        if removed.is_some() {
-            match &root {
-                Node::Leaf { entries, .. } => {
-                    if entries.is_empty() {
-                        self.clear_root(host);
-                    } else {
-                        self.store_root(host, &root);
+        let outcome = self.remove_in_node(host, &mut root, key, Nonce(nonce));
+        if outcome.removed.is_some() {
+            match outcome.split {
+                Some(split) => self.grow_root_from_split(host, &mut root, split),
+                None => match &root {
+                    Node::Leaf { entries, .. } => {
+                        if entries.is_empty() {
+                            self.clear_root(host);
+                        } else {
+                            self.store_root(host, &root);
+                        }
                     }
-                }
-                Node::Internal {
-                    separators,
-                    children,
-                } => {
-                    if separators.is_empty() {
-                        let sole = children[0].id;
-                        let pulled = self.load_node(host, sole);
-                        self.free_node(host, sole);
-                        self.store_root(host, &pulled);
-                    } else {
-                        self.store_root(host, &root);
+                    Node::Internal {
+                        separators,
+                        children,
+                    } => {
+                        if separators.is_empty() {
+                            let sole = children[0].id;
+                            let pulled = self.load_node(host, sole);
+                            self.free_node(host, sole);
+                            self.store_root(host, &pulled);
+                        } else {
+                            self.store_root(host, &root);
+                        }
                     }
-                }
+                },
             }
         }
-        removed
+        outcome.removed
     }
 
-    fn remove_in_node(&self, host: &Host, node: &mut Node<K, V>, k: &K, nonce: Nonce) -> Option<V> {
+    fn grow_root_from_split(&self, host: &Host, root: &mut Node<K, V>, split: ChildSplit) {
+        let left_id = self.alloc_node(host, root);
+        let new_root = Node::Internal {
+            separators: alloc::vec![split.separator],
+            children: alloc::vec![
+                ChildRef {
+                    id: left_id,
+                    subtree_count: SubtreeCount(split.left_subtree_count),
+                    entry_count: EntryCount(split.left_entry_count),
+                },
+                ChildRef {
+                    id: split.right_id,
+                    subtree_count: SubtreeCount(split.right_subtree_count),
+                    entry_count: EntryCount(split.right_entry_count),
+                },
+            ],
+        };
+        self.store_root(host, &new_root);
+    }
+
+    fn remove_in_node(
+        &self,
+        host: &Host,
+        node: &mut Node<K, V>,
+        k: &K,
+        nonce: Nonce,
+    ) -> RemoveOutcome<V> {
         match node {
             Node::Leaf { entries, .. } => {
                 let pos = lower_bound_entry_leaf(entries, k, nonce);
-                if pos < entries.len() && entries[pos].key == *k && entries[pos].nonce == nonce {
-                    Some(entries.remove(pos).value)
-                } else {
-                    None
+                let removed =
+                    if pos < entries.len() && entries[pos].key == *k && entries[pos].nonce == nonce
+                    {
+                        Some(entries.remove(pos).value)
+                    } else {
+                        None
+                    };
+                RemoveOutcome {
+                    removed,
+                    split: None,
                 }
             }
             Node::Internal { separators, .. } => {
                 let pos = upper_bound_entry_sep(separators, k, nonce);
                 let descend = self.descend_prepared(host, node, pos);
                 let child_id = node.children()[descend].id;
-                let result = self.remove_from(host, child_id, k, nonce);
-                if result.is_some() {
-                    self.refresh_child_mirrors(host, node, descend);
+                let child = self.remove_from(host, child_id, k, nonce);
+                if child.removed.is_none() {
+                    return RemoveOutcome {
+                        removed: None,
+                        split: None,
+                    };
                 }
-                result
+                self.refresh_child_mirrors(host, node, descend);
+                self.graft_child_split(node, descend, child.split);
+                RemoveOutcome {
+                    removed: child.removed,
+                    split: None,
+                }
             }
+        }
+    }
+
+    /// Graft a child's propagated split into `node` at the child slot, exactly
+    /// as the insert path does: insert the new separator and the right child
+    /// mirror right of the grown child. Whether `node` itself then overflows is
+    /// decided where `node` is written (`store_node_or_split`), not here.
+    fn graft_child_split(
+        &self,
+        node: &mut Node<K, V>,
+        child_idx: usize,
+        child_split: Option<ChildSplit>,
+    ) {
+        let Some(split) = child_split else {
+            return;
+        };
+        if let Node::Internal {
+            separators,
+            children,
+        } = node
+        {
+            separators.insert(child_idx, split.separator);
+            children[child_idx] = ChildRef {
+                id: children[child_idx].id,
+                subtree_count: SubtreeCount(split.left_subtree_count),
+                entry_count: EntryCount(split.left_entry_count),
+            };
+            children.insert(
+                child_idx + 1,
+                ChildRef {
+                    id: split.right_id,
+                    subtree_count: SubtreeCount(split.right_subtree_count),
+                    entry_count: EntryCount(split.right_entry_count),
+                },
+            );
         }
     }
 
@@ -1143,7 +1282,7 @@ where
         key: &K,
         nonce: Nonce,
         value: &V,
-    ) -> Option<ChildSplit<K>> {
+    ) -> Option<ChildSplit> {
         let mut node = self.load_node(host, node_id);
 
         match &mut node {
@@ -1169,13 +1308,7 @@ where
                         children[child_idx] = self.child_mirror(host, child_id);
                     }
                     Some(split) => {
-                        separators.insert(
-                            child_idx,
-                            Separator {
-                                key: split.sep_key,
-                                nonce: split.sep_nonce,
-                            },
-                        );
+                        separators.insert(child_idx, split.separator);
                         children[child_idx] = ChildRef {
                             id: child_id,
                             subtree_count: SubtreeCount(split.left_subtree_count),
@@ -1195,7 +1328,7 @@ where
         }
 
         if node.encode().len() > MAX_STORAGE_VALUE_BYTES {
-            self.split_node(host, node_id, node)
+            Some(self.split_node(host, node_id, node))
         } else {
             self.store_node(host, node_id, &node);
             None
@@ -1204,19 +1337,19 @@ where
 
     /// Split an over-full node, store the left half in place, allocate the
     /// right half, and return the separator + child mirrors to the parent.
-    /// Leaf split COPIES the right half's first key up (B+ — the median key
-    /// stays in the right leaf too) AND rewires the next-links. Internal
-    /// split PUSHES the median separator up (it is removed from both halves).
-    fn split_node(&self, host: &Host, node_id: NodeId, node: Node<K, V>) -> Option<ChildSplit<K>> {
+    /// Leaf split manufactures a minimal separator at the new boundary (B+ —
+    /// the boundary key stays in the right leaf too) AND rewires the
+    /// next-links. Internal split PUSHES the median separator up verbatim (it
+    /// is removed from both halves; re-truncating it would break the
+    /// grandparent seam).
+    fn split_node(&self, host: &Host, node_id: NodeId, node: Node<K, V>) -> ChildSplit {
         match node {
             Node::Leaf { entries, next } => {
                 let cut = self.leaf_cut(&entries, next);
                 let right_entries = entries[cut..].to_vec();
                 let left_entries = entries[..cut].to_vec();
-                let sep_key = right_entries[0].key.clone();
-                let sep_nonce = right_entries[0].nonce;
+                let separator = leaf_boundary_separator(&entries[cut - 1], &entries[cut]);
 
-                // Rewire: new right inherits old.next; left points to new right.
                 let right = Node::Leaf {
                     entries: right_entries,
                     next,
@@ -1231,15 +1364,14 @@ where
                 let right_count = right.subtree_count();
                 let right_entry_count = right.slot_count() as u32;
                 self.store_node(host, node_id, &left);
-                Some(ChildSplit {
-                    sep_key,
-                    sep_nonce,
+                ChildSplit {
+                    separator,
                     right_id,
                     left_subtree_count: left_count,
                     right_subtree_count: right_count,
                     left_entry_count,
                     right_entry_count,
-                })
+                }
             }
             Node::Internal {
                 separators,
@@ -1261,15 +1393,14 @@ where
                 let right_entry_count = right.slot_count() as u32;
                 self.store_node(host, node_id, &left);
                 let right_id = self.alloc_node(host, &right);
-                Some(ChildSplit {
-                    sep_key: median.key,
-                    sep_nonce: median.nonce,
+                ChildSplit {
+                    separator: median,
                     right_id,
                     left_subtree_count: left_count,
                     right_subtree_count: right_count,
                     left_entry_count,
                     right_entry_count,
-                })
+                }
             }
         }
     }
@@ -1312,7 +1443,7 @@ where
 
     /// Choose an internal split point (the pushed-up median index) keeping
     /// both halves within cap and min-degree.
-    fn internal_cut(&self, separators: &[Separator<K>], children: &[ChildRef]) -> usize {
+    fn internal_cut(&self, separators: &[SepBytes], children: &[ChildRef]) -> usize {
         let m = separators.len();
         let lo = T - 1;
         let hi = m - T; // right keeps m - cut - 1 separators >= T-1 → cut <= m-T
@@ -1341,31 +1472,43 @@ where
         }
     }
 
-    fn remove_from(&self, host: &Host, node_id: NodeId, k: &K, nonce: Nonce) -> Option<V> {
+    fn remove_from(&self, host: &Host, node_id: NodeId, k: &K, nonce: Nonce) -> RemoveOutcome<V> {
         let mut node = self.load_node(host, node_id);
         match &mut node {
             Node::Leaf { entries, .. } => {
                 let pos = lower_bound_entry_leaf(entries, k, nonce);
                 if pos < entries.len() && entries[pos].key == *k && entries[pos].nonce == nonce {
                     let removed = entries.remove(pos).value;
-                    self.store_node(host, node_id, &node);
-                    Some(removed)
+                    let split = self.store_node_or_split(host, node_id, node);
+                    RemoveOutcome {
+                        removed: Some(removed),
+                        split,
+                    }
                 } else {
-                    None
+                    RemoveOutcome {
+                        removed: None,
+                        split: None,
+                    }
                 }
             }
             Node::Internal { separators, .. } => {
                 let pos = upper_bound_entry_sep(separators, k, nonce);
-                // In a B+ tree data lives only in leaves: always descend.
                 let descend = self.descend_prepared(host, &mut node, pos);
                 let child_id = node.children()[descend].id;
-                self.store_node(host, node_id, &node);
-                let result = self.remove_from(host, child_id, k, nonce);
-                if result.is_some() {
-                    self.refresh_child_mirrors(host, &mut node, descend);
-                    self.store_node(host, node_id, &node);
+                let child = self.remove_from(host, child_id, k, nonce);
+                if child.removed.is_none() {
+                    return RemoveOutcome {
+                        removed: None,
+                        split: None,
+                    };
                 }
-                result
+                self.refresh_child_mirrors(host, &mut node, descend);
+                self.graft_child_split(&mut node, descend, child.split);
+                let split = self.store_node_or_split(host, node_id, node);
+                RemoveOutcome {
+                    removed: child.removed,
+                    split,
+                }
             }
         }
     }
@@ -1400,8 +1543,9 @@ where
 
         let new_sep = match (&mut left, &mut child) {
             // Leaf borrow: move the last left entry into the child; the new
-            // separator is the moved entry's key/nonce (B+ — separator mirrors
-            // the right subtree's first key). Leaves keep their next-links.
+            // separator is a minimal distinguisher at the new boundary
+            // (between the left leaf's new last entry and the moved entry that
+            // is now the child's first). Leaves keep their next-links.
             (
                 Node::Leaf {
                     entries: left_entries,
@@ -1416,15 +1560,17 @@ where
                     Some(e) => e,
                     None => panic!("OrderedIndexBorrowLeftEmpty"),
                 };
-                let sep = Separator {
-                    key: moved.key.clone(),
-                    nonce: moved.nonce,
+                let new_last = match left_entries.last() {
+                    Some(e) => e,
+                    None => panic!("OrderedIndexBorrowLeftEmpty"),
                 };
+                let sep = leaf_boundary_separator(new_last, &moved);
                 child_entries.insert(0, moved);
                 sep
             }
-            // Internal borrow: rotate through the parent separator and move
-            // the last left child across.
+            // Internal borrow: rotate the parent separator down and the last
+            // left separator up VERBATIM (never re-truncated — that would break
+            // the grandparent seam), moving the last left child across.
             (
                 Node::Internal {
                     separators: left_seps,
@@ -1497,11 +1643,11 @@ where
             ) => {
                 let moved = right_entries.remove(0);
                 child_entries.push(moved);
-                // New separator mirrors the right leaf's new first key.
-                Separator {
-                    key: right_entries[0].key.clone(),
-                    nonce: right_entries[0].nonce,
-                }
+                let new_last = match child_entries.last() {
+                    Some(e) => e,
+                    None => panic!("OrderedIndexBorrowRightEmpty"),
+                };
+                leaf_boundary_separator(new_last, &right_entries[0])
             }
             (
                 Node::Internal {
@@ -1684,9 +1830,20 @@ where
     }
 }
 
-struct ChildSplit<K: SolEncode + SolDecode + Clone + CompactCodec> {
-    sep_key: K,
-    sep_nonce: Nonce,
+/// The pure-core value a remove descent returns to its parent: the removed
+/// payload (if the target existed) plus an optional `ChildSplit` to graft into
+/// the parent. A split arises when rebalancing this child grew a near-cap
+/// parent past the storage cap (a minimal borrowed separator that still tips
+/// it, or an internal redistribute with a longer recomputed divider): the
+/// over-full node is split, and the new separator + right child propagate up
+/// exactly as an insert split does.
+struct RemoveOutcome<V> {
+    removed: Option<V>,
+    split: Option<ChildSplit>,
+}
+
+struct ChildSplit {
+    separator: SepBytes,
     right_id: NodeId,
     left_subtree_count: u64,
     right_subtree_count: u64,
@@ -1694,9 +1851,8 @@ struct ChildSplit<K: SolEncode + SolDecode + Clone + CompactCodec> {
     right_entry_count: u32,
 }
 
-struct RootSplit<K: SolEncode + SolDecode + Clone + CompactCodec> {
-    sep_key: K,
-    sep_nonce: Nonce,
+struct RootSplit {
+    separator: SepBytes,
     left_id: NodeId,
     right_id: NodeId,
     left_subtree_count: u64,
@@ -1745,34 +1901,24 @@ fn lower_bound_entry_leaf<
     entries.partition_point(|e| e.key < *k || (e.key == *k && e.nonce.0 < nonce.0))
 }
 
-fn lower_bound_key_sep<K: SolEncode + SolDecode + Clone + CompactCodec + Ord>(
-    separators: &[Separator<K>],
-    k: &K,
-) -> usize {
-    separators.partition_point(|s| s.key < *k)
+fn lower_bound_key_sep<K: CompactCodec>(separators: &[SepBytes], k: &K) -> usize {
+    let query = separator_composite(k, Nonce(0));
+    separators.partition_point(|s| s.as_slice() < query.as_slice())
 }
 
-fn upper_bound_key_sep<K: SolEncode + SolDecode + Clone + CompactCodec + Ord>(
-    separators: &[Separator<K>],
-    k: &K,
-) -> usize {
-    separators.partition_point(|s| s.key <= *k)
+fn upper_bound_key_sep<K: CompactCodec>(separators: &[SepBytes], k: &K) -> usize {
+    let query = separator_composite(k, Nonce(u64::MAX));
+    separators.partition_point(|s| s.as_slice() <= query.as_slice())
 }
 
-fn lower_bound_entry_sep<K: SolEncode + SolDecode + Clone + CompactCodec + Ord>(
-    separators: &[Separator<K>],
-    k: &K,
-    nonce: Nonce,
-) -> usize {
-    separators.partition_point(|s| s.key < *k || (s.key == *k && s.nonce.0 < nonce.0))
+fn lower_bound_entry_sep<K: CompactCodec>(separators: &[SepBytes], k: &K, nonce: Nonce) -> usize {
+    let query = separator_composite(k, nonce);
+    separators.partition_point(|s| s.as_slice() < query.as_slice())
 }
 
-fn upper_bound_entry_sep<K: SolEncode + SolDecode + Clone + CompactCodec + Ord>(
-    separators: &[Separator<K>],
-    k: &K,
-    nonce: Nonce,
-) -> usize {
-    separators.partition_point(|s| s.key < *k || (s.key == *k && s.nonce.0 <= nonce.0))
+fn upper_bound_entry_sep<K: CompactCodec>(separators: &[SepBytes], k: &K, nonce: Nonce) -> usize {
+    let query = separator_composite(k, nonce);
+    separators.partition_point(|s| s.as_slice() <= query.as_slice())
 }
 
 #[cfg(test)]
@@ -2232,5 +2378,132 @@ mod tests {
             idx.len(host),
             "leaf chain does not cover all entries"
         );
+    }
+
+    fn assert_oracle_equiv(
+        idx: &OrderedIndex<String, u64, 2>,
+        host: &Host,
+        oracle: &BTreeMap<(String, u64), u64>,
+    ) {
+        assert_eq!(idx.len(host) as usize, oracle.len());
+        assert_leaf_chain_sorted_and_total(idx, host);
+
+        let sorted: Vec<((String, u64), u64)> = oracle
+            .iter()
+            .map(|((k, n), v)| ((k.clone(), *n), *v))
+            .collect();
+        for (i, ((k, _), v)) in sorted.iter().enumerate() {
+            if i % 13 == 0 || i + 1 == sorted.len() {
+                assert_eq!(idx.select(host, i as u64), Some((k.clone(), *v)));
+            }
+        }
+        assert_eq!(idx.select(host, oracle.len() as u64), None);
+
+        let mut distinct: Vec<String> = oracle.keys().map(|(k, _)| k.clone()).collect();
+        distinct.dedup();
+        for (i, k) in distinct.iter().enumerate() {
+            if i % 11 == 0 || i + 1 == distinct.len() {
+                let rank = sorted.iter().take_while(|((kk, _), _)| kk < k).count();
+                assert_eq!(idx.rank_of_key(host, k), rank as u64);
+                let first = oracle
+                    .iter()
+                    .filter(|((kk, _), _)| kk == k)
+                    .min_by_key(|((_, n), _)| *n)
+                    .map(|(_, v)| *v);
+                assert_eq!(idx.get_first(host, k), first);
+            }
+        }
+    }
+
+    fn deep_key() -> impl Strategy<Value = String> {
+        proptest::string::string_regex("[a-z]{40,90}").unwrap()
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(96))]
+
+        #[test]
+        fn deep_tree_matches_oracle(
+            ops in proptest::collection::vec((deep_key(), any::<u64>()), 24..130),
+            keep_every in 2usize..6,
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            assert_oracle_equiv(&idx, &host, &oracle);
+
+            let all: Vec<(String, u64)> = oracle.keys().cloned().collect();
+            for (i, (k, n)) in all.iter().enumerate() {
+                if i % keep_every != 0 {
+                    prop_assert!(idx.remove_by_nonce(&host, k, *n).is_some());
+                    oracle.remove(&(k.clone(), *n));
+                }
+            }
+            assert_oracle_equiv(&idx, &host, &oracle);
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn select_rank_match_oracle(
+            ops in proptest::collection::vec((short_key(), any::<u64>()), 1..120)
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            let sorted: Vec<((String, u64), u64)> =
+                oracle.iter().map(|((k, n), v)| ((k.clone(), *n), *v)).collect();
+            for (i, ((k, _), v)) in sorted.iter().enumerate() {
+                prop_assert_eq!(idx.select(&host, i as u64), Some((k.clone(), *v)));
+            }
+            prop_assert_eq!(idx.select(&host, sorted.len() as u64), None);
+            let mut distinct: Vec<String> = oracle.keys().map(|(k, _)| k.clone()).collect();
+            distinct.dedup();
+            for k in &distinct {
+                let rank = sorted.iter().take_while(|((kk, _), _)| kk < k).count();
+                prop_assert_eq!(idx.rank_of_key(&host, k), rank as u64);
+            }
+        }
+
+        #[test]
+        fn remove_by_value_matches_oracle(
+            ops in proptest::collection::vec((short_key(), any::<u64>()), 1..120)
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            let mut targets: Vec<(String, u64)> =
+                oracle.iter().map(|((k, _), v)| (k.clone(), *v)).collect();
+            targets.dedup();
+            for (k, v) in &targets {
+                let smallest = oracle
+                    .iter()
+                    .filter(|((kk, _), vv)| kk == k && *vv == v)
+                    .map(|((_, n), _)| *n)
+                    .min();
+                let removed = idx.remove(&host, k, v);
+                prop_assert_eq!(removed, smallest.is_some());
+                if let Some(n) = smallest {
+                    oracle.remove(&(k.clone(), n));
+                }
+            }
+            let absent_key = String::from("zzzzzzzzz_absent");
+            prop_assert!(!idx.remove(&host, &absent_key, &0));
+            prop_assert_eq!(idx.len(&host) as usize, oracle.len());
+        }
     }
 }
