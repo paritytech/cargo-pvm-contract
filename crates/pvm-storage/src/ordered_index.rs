@@ -1927,11 +1927,11 @@ mod tests {
     use alloc::vec::Vec;
     use core::ops::Bound;
     use proptest::prelude::*;
-    use pvm_contract_types::{Host, MockHostBuilder};
+    use pvm_contract_types::{Host, MockHost, MockHostBuilder};
 
     use super::{
-        LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, Nonce, OrderedIndex,
-        StorageKey, separator_between, separator_composite,
+        FLAG_LEAF, LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError, NodeId, Nonce,
+        OrderedIndex, StorageKey, separator_between, separator_composite,
     };
 
     fn host() -> Host {
@@ -2419,11 +2419,195 @@ mod tests {
         proptest::string::string_regex("[a-z]{1,90}").unwrap()
     }
 
+    #[test]
+    fn decode_reports_precise_truncation_variant() {
+        assert_eq!(
+            Node::<String, u64>::decode(&[]).err(),
+            Some(NodeDecodeError::Truncated),
+        );
+        assert_eq!(
+            Node::<String, u64>::decode(&[FLAG_LEAF, 0]).err(),
+            Some(NodeDecodeError::Truncated),
+        );
+        assert_eq!(
+            Node::<String, u64>::decode(&[FLAG_LEAF, 0, 0]).err(),
+            Some(NodeDecodeError::BadNextLeaf),
+        );
+        assert_eq!(
+            Node::<String, u64>::decode(&[FLAG_LEAF, 0, 5]).err(),
+            Some(NodeDecodeError::Truncated),
+        );
+        assert_eq!(
+            Node::<String, u64>::decode(&[0, 1, 0]).err(),
+            Some(NodeDecodeError::Truncated),
+        );
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn deep_remove_paths_match_oracle(
+            ops in proptest::collection::vec((deep_key(), 0u64..6), 80..220),
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            if let Some(((k, n), _)) = oracle.iter().next() {
+                let k = k.clone();
+                let absent = n.wrapping_add(7_777_777);
+                prop_assert!(idx.remove_by_nonce(&host, &k, absent).is_none());
+            }
+            let mut targets: Vec<(String, u64)> =
+                oracle.iter().map(|((k, _), v)| (k.clone(), *v)).collect();
+            targets.dedup();
+            for (k, v) in &targets {
+                let smallest = oracle
+                    .iter()
+                    .filter(|((kk, _), vv)| kk == k && *vv == v)
+                    .map(|((_, n), _)| *n)
+                    .min();
+                prop_assert_eq!(idx.remove(&host, k, v), smallest.is_some());
+                if let Some(n) = smallest {
+                    oracle.remove(&(k.clone(), n));
+                }
+            }
+            assert_oracle_equiv(&idx, &host, &oracle);
+        }
+
+        #[test]
+        fn deep_churn_preserves_structure_and_content(
+            ops in proptest::collection::vec((deep_key(), any::<u64>()), 120..260),
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            prop_assert!(
+                idx.load_root(&host).is_some_and(|r| !r.is_leaf()),
+                "120+ long keys must build a multi-level tree",
+            );
+            assert_bplus_structure(&idx, &host);
+            assert_oracle_equiv(&idx, &host, &oracle);
+
+            let all: Vec<(String, u64)> = oracle.keys().cloned().collect();
+            for (k, n) in &all {
+                prop_assert!(idx.remove_by_nonce(&host, k, *n).is_some());
+                oracle.remove(&(k.clone(), *n));
+                assert_bplus_structure(&idx, &host);
+            }
+            prop_assert!(idx.is_empty(&host));
+        }
+    }
+
     fn leaf_entry(key: &str, nonce: u64, value: u64) -> LeafEntry<String, u64> {
         LeafEntry {
             key: String::from(key),
             nonce: Nonce(nonce),
             value,
+        }
+    }
+
+    fn host_with_mock() -> (Host, Rc<MockHost>) {
+        let mock = Rc::new(MockHostBuilder::new().build());
+        (Host::from_dyn(mock.clone()), mock)
+    }
+
+    fn collect_node_ids(idx: &OrderedIndex<String, u64, 2>, host: &Host) -> Vec<NodeId> {
+        fn walk(
+            idx: &OrderedIndex<String, u64, 2>,
+            host: &Host,
+            node: &Node<String, u64>,
+            ids: &mut Vec<NodeId>,
+        ) {
+            for c in node.children() {
+                ids.push(c.id);
+                let child = idx.load_node(host, c.id);
+                walk(idx, host, &child, ids);
+            }
+        }
+        let mut ids = Vec::new();
+        if let Some(root) = idx.load_root(host) {
+            walk(idx, host, &root, &mut ids);
+        }
+        ids
+    }
+
+    #[test]
+    fn free_node_clears_storage_when_a_merge_drops_a_node() {
+        let (host, mock) = host_with_mock();
+        let idx = index(&host);
+        for i in 0..300u64 {
+            idx.insert(&host, &alloc::format!("k{i:03}"), &i);
+        }
+        let before = collect_node_ids(&idx, &host);
+        assert!(before.len() >= 3, "300 keys must build a multi-node tree");
+        for i in 0..300u64 {
+            idx.remove_first(&host, &alloc::format!("k{i:03}"));
+        }
+        let after = collect_node_ids(&idx, &host);
+        let freed: Vec<NodeId> = before
+            .iter()
+            .copied()
+            .filter(|id| !after.contains(id))
+            .collect();
+        assert!(!freed.is_empty(), "tearing the tree down must free nodes");
+        for id in freed {
+            let key = idx.node_key(&host, id);
+            assert!(
+                mock.get_raw_storage(key.as_bytes()).is_none(),
+                "freed node {id:?} was left in storage",
+            );
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn duplicate_heavy_ops_match_oracle(
+            ops in proptest::collection::vec(
+                (proptest::string::string_regex("[a-c]").unwrap(), 0u64..4),
+                1..150,
+            ),
+        ) {
+            let host = host();
+            let idx = index(&host);
+            let mut oracle: BTreeMap<(String, u64), u64> = BTreeMap::new();
+            for (k, v) in &ops {
+                let n = idx.insert(&host, k, v);
+                oracle.insert((k.clone(), n), *v);
+            }
+            assert_oracle_equiv(&idx, &host, &oracle);
+
+            if let Some(((k, n), _)) = oracle.iter().next() {
+                let k = k.clone();
+                let absent = n.wrapping_add(9_999_999);
+                prop_assert!(idx.remove_by_nonce(&host, &k, absent).is_none());
+            }
+
+            let mut targets: Vec<(String, u64)> =
+                oracle.iter().map(|((k, _), v)| (k.clone(), *v)).collect();
+            targets.dedup();
+            for (k, v) in &targets {
+                let smallest = oracle
+                    .iter()
+                    .filter(|((kk, _), vv)| kk == k && *vv == v)
+                    .map(|((_, n), _)| *n)
+                    .min();
+                prop_assert_eq!(idx.remove(&host, k, v), smallest.is_some());
+                if let Some(n) = smallest {
+                    oracle.remove(&(k.clone(), n));
+                }
+            }
+            assert_oracle_equiv(&idx, &host, &oracle);
         }
     }
 
