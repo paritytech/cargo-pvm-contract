@@ -135,7 +135,7 @@ impl<
 /// prefix over the encoded `(key, nonce)` ordering tuple that still satisfies
 /// the B+ separating property `max(left) < sep <= min(right)`. Not a typed
 /// `K` — full keys live only in leaves.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SepBytes(Vec<u8>);
 
 impl SepBytes {
@@ -205,6 +205,37 @@ fn leaf_boundary_separator<
         &(left_max.key.clone(), left_max.nonce),
         &(right_min.key.clone(), right_min.nonce),
     )
+}
+
+fn split_leaf_parts<
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+>(
+    entries: &[LeafEntry<K, V>],
+    cut: usize,
+) -> (Vec<LeafEntry<K, V>>, SepBytes, Vec<LeafEntry<K, V>>) {
+    let separator = leaf_boundary_separator(&entries[cut - 1], &entries[cut]);
+    (entries[..cut].to_vec(), separator, entries[cut..].to_vec())
+}
+
+fn split_internal_parts<
+    K: SolEncode + SolDecode + Clone + CompactCodec,
+    V: SolEncode + SolDecode + Clone + CompactCodec,
+>(
+    separators: &[SepBytes],
+    children: &[ChildRef],
+    cut: usize,
+) -> (Node<K, V>, SepBytes, Node<K, V>) {
+    let median = separators[cut].clone();
+    let left = Node::Internal {
+        separators: separators[..cut].to_vec(),
+        children: children[..=cut].to_vec(),
+    };
+    let right = Node::Internal {
+        separators: separators[cut + 1..].to_vec(),
+        children: children[cut + 1..].to_vec(),
+    };
+    (left, median, right)
 }
 
 /// A parent's per-child mirror: ONE struct, never parallel vectors that can
@@ -925,10 +956,7 @@ where
         match node {
             Node::Leaf { entries, next } => {
                 let cut = self.leaf_cut(&entries, next);
-                let right_entries = entries[cut..].to_vec();
-                let left_entries = entries[..cut].to_vec();
-                let separator = leaf_boundary_separator(&entries[cut - 1], &entries[cut]);
-
+                let (left_entries, separator, right_entries) = split_leaf_parts(&entries, cut);
                 let right = Node::Leaf {
                     entries: right_entries,
                     next,
@@ -958,15 +986,8 @@ where
                 children,
             } => {
                 let cut = self.internal_cut(&separators, &children);
-                let median = separators[cut].clone();
-                let left = Node::Internal {
-                    separators: separators[..cut].to_vec(),
-                    children: children[..=cut].to_vec(),
-                };
-                let right = Node::Internal {
-                    separators: separators[cut + 1..].to_vec(),
-                    children: children[cut + 1..].to_vec(),
-                };
+                let (left, median, right) =
+                    split_internal_parts::<K, V>(&separators, &children, cut);
                 let left_count = left.subtree_count();
                 let left_entry_count = left.slot_count() as u32;
                 let right_count = right.subtree_count();
@@ -1347,10 +1368,7 @@ where
         match node {
             Node::Leaf { entries, next } => {
                 let cut = self.leaf_cut(&entries, next);
-                let right_entries = entries[cut..].to_vec();
-                let left_entries = entries[..cut].to_vec();
-                let separator = leaf_boundary_separator(&entries[cut - 1], &entries[cut]);
-
+                let (left_entries, separator, right_entries) = split_leaf_parts(&entries, cut);
                 let right = Node::Leaf {
                     entries: right_entries,
                     next,
@@ -1379,15 +1397,8 @@ where
                 children,
             } => {
                 let cut = self.internal_cut(&separators, &children);
-                let median = separators[cut].clone();
-                let left = Node::Internal {
-                    separators: separators[..cut].to_vec(),
-                    children: children[..=cut].to_vec(),
-                };
-                let right = Node::Internal {
-                    separators: separators[cut + 1..].to_vec(),
-                    children: children[cut + 1..].to_vec(),
-                };
+                let (left, median, right) =
+                    split_internal_parts::<K, V>(&separators, &children, cut);
                 let left_count = left.subtree_count();
                 let left_entry_count = left.slot_count() as u32;
                 let right_count = right.subtree_count();
@@ -1441,14 +1452,7 @@ where
         let lo = T - 1;
         let hi = m - T; // right keeps m - cut - 1 separators >= T-1
         let fits = |cut: usize| -> bool {
-            let left = Node::<K, V>::Internal {
-                separators: separators[..cut].to_vec(),
-                children: children[..=cut].to_vec(),
-            };
-            let right = Node::<K, V>::Internal {
-                separators: separators[cut + 1..].to_vec(),
-                children: children[cut + 1..].to_vec(),
-            };
+            let (left, _, right) = split_internal_parts::<K, V>(separators, children, cut);
             left.encode().len() <= MAX_STORAGE_VALUE_BYTES
                 && right.encode().len() <= MAX_STORAGE_VALUE_BYTES
         };
@@ -1918,7 +1922,8 @@ mod tests {
     use super::{
         ChildRef, EntryCount, FLAG_LEAF, LeafEntry, MAX_STORAGE_VALUE_BYTES, Node, NodeDecodeError,
         NodeId, Nonce, OrderedIndex, SepBytes, StorageKey, SubtreeCount, lower_bound_entry_sep,
-        lower_bound_key_sep, separator_between, separator_composite, upper_bound_key_sep,
+        lower_bound_key_sep, separator_between, separator_composite, split_internal_parts,
+        split_leaf_parts, upper_bound_key_sep,
     };
 
     fn host() -> Host {
@@ -2458,6 +2463,55 @@ mod tests {
                 leaf(&entries[..cut + 1]).encode().len() > MAX_STORAGE_VALUE_BYTES,
                 "leaf_cut left half is not maximally packed",
             );
+        }
+    }
+
+    #[test]
+    fn split_leaf_parts_cuts_at_index_with_boundary_separator() {
+        let entries: Vec<LeafEntry<String, u64>> = (0..6u64)
+            .map(|i| leaf_entry(&alloc::format!("k{i}"), i, i))
+            .collect();
+        let (left, sep, right) = split_leaf_parts(&entries, 4);
+        assert_eq!(left.len(), 4);
+        assert_eq!(left[3].key, "k3");
+        assert_eq!(right.len(), 2);
+        assert_eq!(right[0].key, "k4");
+        assert_eq!(sep.as_slice(), b"k4");
+    }
+
+    #[test]
+    fn split_internal_parts_pushes_median_and_partitions_children() {
+        let seps: Vec<SepBytes> = (0..6u64)
+            .map(|i| SepBytes(separator_composite(&alloc::format!("s{i}"), Nonce(i))))
+            .collect();
+        let children: Vec<ChildRef> = (0..7u64)
+            .map(|i| ChildRef {
+                id: NodeId(i),
+                subtree_count: SubtreeCount(i),
+                entry_count: EntryCount(i as u32),
+            })
+            .collect();
+        let (left, median, right) = split_internal_parts::<String, u64>(&seps, &children, 2);
+        assert_eq!(median, seps[2]);
+        match left {
+            Node::Internal {
+                separators,
+                children: lc,
+            } => {
+                assert_eq!(separators, seps[..2].to_vec());
+                assert_eq!(lc, children[..=2].to_vec());
+            }
+            _ => panic!("left must be internal"),
+        }
+        match right {
+            Node::Internal {
+                separators,
+                children: rc,
+            } => {
+                assert_eq!(separators, seps[3..].to_vec());
+                assert_eq!(rc, children[3..].to_vec());
+            }
+            _ => panic!("right must be internal"),
         }
     }
 
