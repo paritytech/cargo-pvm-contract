@@ -207,13 +207,15 @@ fn leaf_boundary_separator<
     )
 }
 
+type LeafSplit<K, V> = (Vec<LeafEntry<K, V>>, SepBytes, Vec<LeafEntry<K, V>>);
+
 fn split_leaf_parts<
     K: SolEncode + SolDecode + Clone + CompactCodec,
     V: SolEncode + SolDecode + Clone + CompactCodec,
 >(
     entries: &[LeafEntry<K, V>],
     cut: usize,
-) -> (Vec<LeafEntry<K, V>>, SepBytes, Vec<LeafEntry<K, V>>) {
+) -> LeafSplit<K, V> {
     let separator = leaf_boundary_separator(&entries[cut - 1], &entries[cut]);
     (entries[..cut].to_vec(), separator, entries[cut..].to_vec())
 }
