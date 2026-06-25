@@ -108,6 +108,7 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 - `#[method]` — marks a public function as a contract method
 - `#[method(rename = "name")]` — overrides the Solidity function name (default: snake_case to camelCase)
 - `#[payable]` — marks the method as `payable` (must be combined with `&mut self`)
+- `#[non_reentrant]` — emits an OpenZeppelin-compatible reentrancy guard (see [Reentrancy Protection](#reentrancy-protection)). Only valid on a `&self` / `&mut self` `#[method]` (not pure, constructor, fallback, or receive)
 
 ### Mutability Inference
 
@@ -150,7 +151,7 @@ Three layers, in increasing strength:
 
 This matches Solidity's `pure` rules — solc rejects the same operations in a `pure` function. If a method needs `keccak256`, block context, or any host call, mark it `view` (`&self`) rather than pure. The restriction isn't a SDK limitation; it's the same semantic boundary Solidity callers expect when they see `pure` in the ABI.
 
-**Reentrancy non-protection:** `&mut self` enforces single-threaded mutation within a frame, but persistent storage is shared across reentrant frames (each callee gets a fresh contract struct, so the borrow checker offers no cross-frame guarantee). A reentrancy-sensitive method needs an explicit guard (not provided by the SDK yet).
+**Reentrancy non-protection:** `&mut self` enforces single-threaded mutation within a frame, but persistent storage is shared across reentrant frames (each callee gets a fresh contract struct, so the borrow checker offers no cross-frame guarantee). pallet-revive rejects reentrancy by default; a contract that opts into `ALLOW_REENTRY` and needs an explicit guard can use the `#[non_reentrant]` modifier (see [Reentrancy Protection](#reentrancy-protection)).
 
 ### Fallback and Receive Handlers
 
@@ -392,6 +393,30 @@ host.call_evm(
 ```
 
 **Security: do not enable `ALLOW_REENTRY` unless the contract is specifically designed to handle reentrant callbacks** (e.g., flash loans, ERC-777 hooks). Reentrancy is one of the most exploited vulnerability classes in smart contracts. The default protection exists to prevent the classic attack where a callee re-enters the caller before state updates are complete. PVM creates fresh memory per call, so in-memory state is not shared across reentrant invocations. On-chain storage is shared.
+
+### `#[non_reentrant]` modifier
+
+For contracts that opt into `ALLOW_REENTRY` (and thus lose the default runtime reject), `#[non_reentrant]` re-adds an explicit OpenZeppelin-style guard on a method. The mode is inferred from the receiver:
+
+- **`&mut self` — full guard** (OZ `nonReentrant`): reverts if a guarded section is already in progress, otherwise sets a lock for the duration of the call and clears it on return.
+- **`&self` — read-only check** (OZ `nonReentrantView`): reverts if a guarded section is in progress; never writes.
+
+```rust
+#[method]
+#[non_reentrant]
+pub fn flash_loan(&mut self, ...) -> Result<(), Error> { /* ... */ }
+```
+
+On re-entry a guarded method reverts with the OZ-compatible `ReentrancyGuardReentrantCall` error (selector matches OZ v5), so Foundry/Etherscan decode it. The error is registered in the contract's ABI for guarded methods.
+
+Implementation notes (for maintainers):
+
+- **Opt-in only.** On a contract that never sets `ALLOW_REENTRY`, the guard is redundant with pallet-revive's default reject (pure overhead). Use it only on the `ALLOW_REENTRY` paths. This can't be enforced at compile time: `ALLOW_REENTRY` is a runtime call flag (not a static contract property), and the guarded method often makes no calls itself (a sibling makes the `ALLOW_REENTRY` call while the guarded method is the one re-entered via the shared lock), so the macro can't tell whether the guard is warranted. The redundant case is wasted gas, not a correctness issue.
+- **Two different errors.** A reentrant call on a *default* contract reverts with pallet-revive's `ReentranceDenied` (a runtime trap, not ABI-decodable); only the `#[non_reentrant]` path produces the ABI-decodable `ReentrancyGuardReentrantCall`. This differs from OZ, which has a single mechanism. The SDK can't unify them because the default-path error belongs to the runtime.
+- **Guard every reachable mutating entry point** during an `ALLOW_REENTRY` window: the guard only protects methods that carry the attribute; an unguarded sibling mutator is a hole. (Internal Rust calls bypass the guard; it protects external dispatch entry points only.)
+- **Delegatecall/proxy:** the lock lives in the *current* storage context, so under `delegatecall` it guards the caller's storage. That's the correct EVM behavior, but call it out since proxy + reentrancy is a common confusion.
+- **The lock lives at a fixed namespaced key** (`keccak256("pvm.guards.reentrancy")`), not in the contract's declared storage layout, so it never perturbs slot numbering or the `storageLayout` ABI (`pvm-contract-types::reentrancy`).
+- **The lock is cleared by explicit codegen before the `return_value`, never via `Drop`.** On-chain `return_value` terminates the call without unwinding, so a `Drop` guard would never run there (it would on host targets, hiding the bug), leaving the lock set forever and bricking the contract.
 
 ## Host APIs
 

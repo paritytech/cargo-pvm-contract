@@ -698,3 +698,30 @@ fn receive_dsl_accumulates_multiple_transfers() {
     let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
     assert_eq!(count, "3");
 }
+
+// --- `#[non_reentrant]` modifier: the SDK guard catches a re-entrant call ---
+
+#[test]
+fn non_reentrant_guard_blocks_reentry() {
+    let (_anvil, cast, addr) = deploy("reentrancy_guard");
+
+    // attemptReentry() makes a real re-entrant call with ALLOW_REENTRY set, so
+    // the SDK guard rather than pallet-revive's default reject must catch it.
+    let out = cast.send_expect_revert(&addr, "attemptReentry()", &[], DEFAULT_PRIVATE_KEY);
+    assert!(
+        !out.status.success(),
+        "re-entry was not blocked by the guard"
+    );
+
+    // Check the revert is the reentrancy error.
+    let reentrancy_selector = cast.selector("ReentrancyGuardReentrantCall()");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.to_lowercase().contains(&reentrancy_selector),
+        "revert should carry the ReentrancyGuardReentrantCall selector (0x{reentrancy_selector}); got:\n{combined}"
+    );
+}
