@@ -1,7 +1,7 @@
 error: `#[receive]` is implicitly payable; remove the redundant `#[payable]` attribute
- --> tests/ui/receive_with_payable.rs:6:9
+ --> tests/ui/receive_with_payable.rs:7:9
   |
-6 | /         #[pvm_contract_macros::receive]
-7 | |         #[pvm_contract_macros::payable]
-8 | |         pub fn receive(&mut self) {}
+7 | /         #[pvm_contract_macros::receive]
+8 | |         #[pvm_contract_macros::payable]
+9 | |         pub fn receive(&mut self) {}
   | |____________________________________^

@@ -1,7 +1,7 @@
 error[E0308]: mismatched types
-  --> tests/ui/view_caller_calls_nonpayable_callee.rs:36:21
+  --> tests/ui/view_caller_calls_nonpayable_callee.rs:37:21
    |
-36 |             cb.call(self)?;
+37 |             cb.call(self)?;
    |                ---- ^^^^ types differ in mutability
    |                |
    |                arguments to this method are incorrect

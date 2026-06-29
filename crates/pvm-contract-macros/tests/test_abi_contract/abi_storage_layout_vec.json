@@ -55,7 +55,7 @@
         "label": "buckets",
         "offset": 0,
         "slot": "3",
-        "type": "mapping(address,uint256[])"
+        "type": "mapping(address => uint256[])"
       },
       {
         "label": "pool.owner",

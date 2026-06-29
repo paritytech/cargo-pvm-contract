@@ -136,7 +136,7 @@ cargo build --target riscv64emac-unknown-none-polkavm
 RISC-V ELF Binary
     │
     ▼
-polkavm-linker 0.31.0 (strip + optimize)
+polkavm-linker 0.34.0 (strip + optimize)
     │
     ▼
 target/<profile>/<name>.polkavm   — deployable bytecode

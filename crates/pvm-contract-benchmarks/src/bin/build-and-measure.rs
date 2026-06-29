@@ -44,7 +44,7 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
-polkavm-derive = {{ version = "0.31.0" }}
+polkavm-derive = {{ version = "0.34.0" }}
 
 [profile.dev]
 panic = "abort"
@@ -81,7 +81,7 @@ path = "src/{}.rs"
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
-polkavm-derive = {{ version = "0.31.0" }}
+polkavm-derive = {{ version = "0.34.0" }}
 
 [profile.dev]
 panic = "abort"
@@ -117,7 +117,7 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-builder-dsl = {{ path = "{}" }}
-polkavm-derive = {{ version = "0.31.0" }}
+polkavm-derive = {{ version = "0.34.0" }}
 
 [profile.dev]
 panic = "abort"

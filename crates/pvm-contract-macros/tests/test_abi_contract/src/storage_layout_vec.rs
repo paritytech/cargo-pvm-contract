@@ -19,7 +19,7 @@ pub struct PoolState {
 /// storage-layout JSON emitted under `--features abi-gen` resolves
 /// `StorageVec<T>` to Solidity's `T[]` type name across every shape:
 /// flat (`uint256[]`), nested (`uint256[][]`), mapping-valued
-/// (`mapping(address,uint256[])`), and embedded in a `#[storage]` sub-struct
+/// (`mapping(address => uint256[])`), and embedded in a `#[storage]` sub-struct
 /// (`pool.entries: uint256[]`) — via the macro's syntactic leaf path
 /// (mirroring how `Lazy` / `Mapping` resolve).
 #[pvm_contract_sdk::contract]

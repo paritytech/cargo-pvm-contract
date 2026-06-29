@@ -18,7 +18,6 @@
 //! contract: a mismatch between the `layout_step` chain and the literal
 //! `(slot, offset)` we pass to `new_at` from the test would either fail the
 //! macro's runtime asserts or be caught by Test 9's `storageLayout` JSON.
-
 extern crate alloc;
 
 use pvm_contract_sdk::{Address, Lazy, Mapping, U256};
@@ -798,7 +797,7 @@ fn with_mapping_emits_solc_compatible_storage_layout() {
     let expected: pvm_contract_sdk::serde_json::Value = pvm_contract_sdk::serde_json::json!({
         "storage": [
             { "label": "before",   "offset": 0, "slot": "0", "type": "bool" },
-            { "label": "balances", "offset": 0, "slot": "1", "type": "mapping(address,uint256)" },
+            { "label": "balances", "offset": 0, "slot": "1", "type": "mapping(address => uint256)" },
             { "label": "after",    "offset": 0, "slot": "2", "type": "bool" },
         ]
     });
