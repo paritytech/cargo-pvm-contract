@@ -46,8 +46,8 @@ extern crate alloc;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use pvm_contract_sdk::{SolStorage, SolType};
 use pvm_contract_sdk::{Address, Bytes, I256, Lazy, Mapping, StorageVec, U256};
+use pvm_contract_sdk::{SolStorage, SolType};
 
 // ---------------------------------------------------------------------------
 // Fixtures: a `#[contract(no_main)]` module + the equivalent Solidity source.

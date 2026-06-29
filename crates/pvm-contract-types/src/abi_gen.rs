@@ -106,7 +106,7 @@ pub struct StorageLayout {
 ///
 /// The `#[contract]` macro builds each leaf entry's `"type"` string by
 /// recursively walking field types (`Lazy<T>` unwraps, `Mapping<K, V>` builds
-/// `"mapping(K_name, V_name)"`). At leaf positions, the macro needs a way to
+/// `"mapping(K_name => V_name)"`). At leaf positions, the macro needs a way to
 /// name the type — for primitives this is [`SolEncode::SOL_NAME`] (already
 /// in this crate), for `#[storage]` sub-structs the macro emits an impl
 /// returning the Rust ident, and for storage handles (`Lazy<T>`,
@@ -124,7 +124,7 @@ pub trait StorageTypeName {
     /// (`"uint256"`, `"address"`); `#[storage]` sub-structs and
     /// `#[derive(SolStorage)]` value structs return their Rust ident;
     /// `Lazy<T>` returns `T`'s name; `Mapping<K, V>` returns
-    /// `"mapping(K_name,V_name)"`.
+    /// `"mapping(K_name => V_name)"`.
     ///
     /// **No `SolEncode` blanket impl.** A naive
     /// `impl<T: SolEncode> StorageTypeName for T` would let *any* ABI type

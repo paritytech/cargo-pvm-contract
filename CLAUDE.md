@@ -14,7 +14,10 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error trait (`SolError`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
+| `cargo-pvm-contract-extrinsics` | Library defining extrinsics for PVM smart contracts on pallet-revive |
+| `pvm-bump-allocator` | Simple bump allocator for PVM smart contracts (backs `allocator = "bump"`) |
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
+| `pvm-contract-e2e-tests` | End-to-end + integration test harness |
 
 ## How It Works
 
@@ -39,10 +42,10 @@ cargo build --release  (user runs this in the scaffolded project)
     |     +-- Output: ELF binary
     |
     +-- polkavm_linker (strip + optimize, TargetInstructionSet::ReviveV1)
-    |     Output: target/{binary}.{profile}.polkavm
+    |     Output: target/{profile}/{binary}.polkavm
     |
     +-- ABI generation (parse .sol or run with --features abi-gen)
-          Output: target/{binary}.{profile}.abi.json
+          Output: target/{profile}/{binary}.abi.json
 ```
 
 ### Two API Styles
@@ -69,7 +72,7 @@ mod my_token {
 }
 ```
 
-The macro injects a `pub host: Host` field on the storage struct and a `fn host(&self) -> &Host` accessor. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`.
+The macro injects a `pub host: Host` field on the storage struct and a `fn host(&self) -> &Host` accessor. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`. On host targets the macro also emits a `Foo::with_host(backend: impl HostApi)` test constructor that wires up the storage fields against the backend without running the `#[constructor]` (seed state on the backend directly).
 
 **DSL API** (explicit, manual dispatch):
 ```rust
@@ -176,23 +179,31 @@ The SDK uses Solidity ABI encoding (Ethereum-compatible):
 pub trait SolEncode {
     const IS_DYNAMIC: bool;        // true for String, Vec, bytes
     const SOL_NAME: &'static str;  // "uint256", "address", "(uint64,uint64)", etc.
-    const HEAD_SIZE: usize;        // 32 for primitives, sum of fields for structs
+    const HEAD_SIZE: usize = 32;   // 32 for primitives, sum of fields for structs
     const SLOT_SIZE: usize;        // HEAD_SIZE for static, 32 for dynamic (default)
-    const IS_TUPLE: bool;          // true only for Rust tuples (T1, T2, ...)
+    const IS_TUPLE: bool = false;  // true only for Rust tuples (T1, T2, ...)
     fn encode_body_len(&self) -> usize;  // field body size
     fn encode_body_to(&self, buf: &mut [u8]);  // field body encoding
     fn encode_len(&self) -> usize;   // top-level size (default, IS_TUPLE/IS_DYNAMIC aware)
     fn encode_to(&self, buf: &mut [u8]);  // top-level encoding (default, smart wrapping)
+    fn indexed_topic(&self) -> [u8; 32];  // default: event-topic encoding for indexed params
+    // #[cfg(feature = "abi-gen")]
+    fn abi_param(name: &str) -> AbiParam;  // ABI JSON parameter descriptor
 }
 
 pub trait SolDecode: SolEncode + Sized {
-    fn decode(input: &[u8]) -> Self;
-    fn decode_at(input: &[u8], offset: usize) -> Self;
-    fn decode_tail(input: &[u8], offset: usize) -> Self;
+    fn decode(input: &[u8]) -> Result<Self, DecodeError>;             // default
+    fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError>;  // required
+    fn decode_tail(input: &[u8], offset: usize) -> Result<Self, DecodeError>;  // default
 }
 
-pub trait StaticEncodedLen: SolEncode {
+pub trait StaticEncodedLen: SolEncode + Sized {
     const ENCODED_SIZE: usize;  // compile-time known size, used for stack buffers
+}
+
+// No-alloc fast-path decoder used by the dispatch codegen for static types.
+pub trait StaticDecode: SolDecode + SolEncode + StaticEncodedLen + Sized {
+    unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self;
 }
 ```
 
@@ -267,6 +278,8 @@ The derive macro detects whether a struct is static or dynamic:
 - **Static** (all fields have compile-time known sizes): generates `StaticEncodedLen`, fixed-size encode/decode
 - **Dynamic** (contains String, Vec, or custom types that might be dynamic): runtime offset tracking, head+tail separation
 
+`#[derive(SolType)]` covers ABI-only use (function-parameter / event-field structs). A struct used as a **storage value** (`Lazy<S>`, `Mapping<_, S>`) must *additionally* derive `#[derive(SolStorage)]`, which provides `StorageEncode`/`StorageDecode` and the abi-gen `StorageTypeName` layout-naming trait. See the Storage section.
+
 ## Storage
 
 The `pvm-storage` crate provides typed storage helpers with Solidity-compatible slot layout.
@@ -291,7 +304,7 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
   - `Mapping<K, StorageVec<T>>` (Solidity `mapping(K => T[])`): `get(&K) -> Ref<StorageVec<T>>` (read) / `entry(&K) -> RefMut<StorageVec<T>>` (write), then operate on the inner vec — `self.posts.entry(&author).push(&post)`
   - `StorageVec<StorageVec<T>>` (Solidity `T[][]`): `len`/`get(i) -> Ref<…>`/`try_get`/`first`/`last`/`iter` for reads; `grow() -> RefMut<…>` appends an empty inner row, `entry(i) -> RefMut<…>` mutates an existing one, and `erase_last() -> bool` drops the last row (the inner vec can't be returned by value, so it's destroyed rather than popped)
   - These shapes are supported via dedicated impls today; arbitrary nesting (3+ levels, `StorageVec<Mapping<…>>`) awaits the planned `StorageType` unification
-- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). The built-in leaf types — `Lazy<T>`, `Mapping<K, V>`, and `StorageVec<T>` — are recognized syntactically by the macro's layout resolver (`is_layout_leaf` / `sol_storage_type_name`, naming them directly: `StorageVec<T>` → `T[]`, `Mapping<K, V>` → `mapping(...)`), so they participate in abi-gen output through `StorageComponent` alone and do **not** implement `StorageLayoutEmit`. A genuinely hand-rolled composite component the resolver doesn't recognize must implement both traits to flatten its leaves. `StorageComponent::PACKED_BYTES = 32` declares "always start a fresh slot" — mappings, multi-slot composites, and embedded `#[storage]` sub-structs all set this; sub-32-byte primitives propagate `T::PACKED_BYTES`
+- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). Layout emission is **uniform with no syntactic type-name special-casing**: every storage field — `Lazy<T>`, `Mapping<K, V>`, `StorageVec<T>`, and embedded `#[storage]` sub-structs — dispatches through `<#ty as StorageLayoutEmit>::emit_entries(base, offset, name_prefix, entries)`, the single source of truth for both a leaf's layout and its `type` string. The built-in leaves implement **both** `StorageComponent` and `StorageLayoutEmit`, plus `StorageTypeName` for the `type` name (`Lazy<T>` → `T`'s name, `Mapping<K, V>` → `mapping(K => V)`, `StorageVec<T>` → `T[]`, `[T; N]` → `T[N]`); there is no `is_layout_leaf`/`sol_storage_type_name` resolver. A hand-rolled composite component just implements the same two traits to flatten its leaves. `StorageComponent::PACKED_BYTES = 32` declares "always start a fresh slot" — mappings, multi-slot composites, and embedded `#[storage]` sub-structs all set this; sub-32-byte primitives propagate `T::PACKED_BYTES`
 - **Field-level packing:** adjacent sub-32-byte contract fields share a slot byte-for-byte with solc's layout. For `Lazy<u128> a; Lazy<u128> b;`, `a` occupies the low-order 16 bytes and `b` the high-order 16 bytes (solc's lower-order-first packing). The macro walker `layout_step` (defined in `pvm-contract-types`, re-exported by `pvm-storage`) is the const-fn computing each placement; it tracks an internal big-endian offset (`a` → 16, `b` → 0) used as the read-modify-write window in `Lazy::set/get`. The `storageLayout` JSON converts this to solc's convention — `offset` counted from the least-significant byte — so the emitted layout matches solc exactly (`a` → offset 0, `b` → offset 16). Packed writes are read-modify-write (one SLOAD + one SSTORE), matching solc's gas profile
 - **`try_get` is full-slot only:** `Lazy::<T>::try_get` is rejected at compile time for sub-32-byte `T` (e.g. `Lazy<u128>`) with a const-assert message — a neighbour's write to the same slot would make `try_get` indistinguishable from `get`. For packed fields, use `.get()` and compare to the zero value of `T`
 - **Test-harness contract modules:** `#[contract(no_main)]` suppresses the abi-gen `fn main()` emission so a `#[contract]` can sit inside a `tests/` integration test or library crate without colliding with the test harness's own `main`. `__abi_json()` / `__storage_layout_json()` accessors are still emitted on the module
@@ -347,7 +360,7 @@ The `host` field name is reserved. The macro injects it automatically.
 
 ### Bytecode Optimization
 
-Storage uses type-erased inner functions that operate on raw `[u8; 32]` arrays so the host-call logic is shared across all `Lazy`/`Mapping` instantiations. Benchmarked with/without `#[inline(never)]`: letting the compiler decide produced smaller `.polkavm` output (4,523 vs 4,978 bytes for mytoken), so `#[inline(never)]` is omitted. Contracts that don't use `pvm-storage` pay zero bytes.
+Storage uses type-erased inner functions that operate on raw `[u8; 32]` arrays so the host-call logic is shared across all `Lazy`/`Mapping` instantiations. Benchmarked with/without `#[inline(never)]`: letting the compiler decide produced smaller `.polkavm` output, so `#[inline(never)]` is omitted. Contracts that don't use `pvm-storage` pay zero bytes.
 
 ### Raw Host Calls
 
@@ -488,18 +501,20 @@ Seven MyToken variants as separate binaries:
 
 ### test-contracts
 
-Multi-binary project with 9+ contracts for E2E integration tests:
+Multi-binary project (19 contracts) for E2E integration tests:
 
-- `Flipper` — boolean toggle
-- `StorageTypes` — all primitive type storage roundtrips
-- `MultiMethod` — multiple view + state methods
-- `ReturnValues` — tuple returns
-- `Events` — event emission with indexed params
-- `DynamicTypes` — String, Vec<u8>, Vec<U256>
-- `CompositeTypes` — fixed arrays, tuples
-- `ConstructorArgs` — constructor with parameters
-- `CallerCheck` — `api::caller()` access
-- `ErrorHandling` — `#[derive(SolError)]` (struct + enum) ABI-encoded revert flow
+- `flipper` — boolean toggle
+- `storage-types` — all primitive type storage roundtrips
+- `multi-method` — multiple view + state methods
+- `return-values` — tuple returns
+- `events` — event emission with indexed params
+- `dynamic-types` — String, Vec<u8>, Vec<U256>
+- `composite-types` — fixed arrays, tuples
+- `constructor-args` — constructor with parameters
+- `caller-check` — `api::caller()` access
+- `error-handling` — `#[derive(SolError)]` (struct + enum) ABI-encoded revert flow
+- `payable` / `receive` / `receive_dsl` — `#[payable]`, `#[receive]`, and DSL receive handlers
+- Cross-contract: `flipper_call`, `flipper_delegate`, `flipper_instantiate` (`call`/`delegate_call`/`instantiate` via `abi_import!`), `point_adder` + `point_adder_call` (struct args across a call), `error_caller` (decoding a callee's `SolError` revert)
 
 ### Building examples
 
@@ -520,32 +535,46 @@ crates/
   cargo-pvm-contract-builder/   build.rs helper
     src/lib.rs                  PvmBuilder: ELF build -> polkavm link -> ABI gen
     src/abi.rs                  ABI JSON generation (from .sol or abi-gen feature)
+  cargo-pvm-contract-extrinsics/ pallet-revive extrinsic definitions
   pvm-contract-macros/          Proc macros
     src/codegen/contract.rs     #[contract] attribute parsing + module generation
     src/codegen/dispatch.rs     Selector computation + dispatch match arms
-    src/codegen/encode.rs       (removed — encoding now handled directly in dispatch.rs)
     src/codegen/decode.rs       Parameter decoding codegen
+    src/codegen/method.rs       #[method]/#[constructor]/#[fallback]/#[receive] parsing
     src/codegen/sol_type.rs     #[derive(SolType)] expansion
     src/codegen/sol_error.rs    #[derive(SolError)] expansion
+    src/codegen/sol_event.rs    #[derive(SolEvent)] expansion
+    src/codegen/sol_storage.rs  #[storage] / #[derive(SolStorage)] expansion
+    src/codegen/storage_layout.rs  storageLayout JSON emit (slots, packing, type names)
+    src/codegen/abi_gen.rs      abi-gen main() + __abi_json/__storage_layout_json accessors
+    src/abi_import/             abi_import! parsing (parse.rs, ctxt.rs)
     src/signature/types.rs      Rust-to-Solidity type mapping
-    src/signature/parser.rs     Solidity signature parsing
     src/signature/selector.rs   Keccak-256 selector computation
-    src/solidity.rs             .sol interface file parsing
   pvm-contract-sdk/              Primary user-facing SDK crate (re-exports macros, types, polkavm-derive)
   pvm-contract-core/             Core structures for the PVM smart contracts SDK
   pvm-contract-types/           ABI encoding/decoding traits
     src/lib.rs                  SolEncode, SolDecode, StaticEncodedLen + primitive impls
     src/alloc_types.rs          String, Vec<T> impls (alloc feature)
-  pvm-storage/                  Typed storage helpers (Lazy, Mapping)
+    src/storage_codec.rs        Storage encode/decode (static slots + dynamic bytes/string)
+    src/layout.rs               layout_step / MAX_STATIC_SLOTS field-packing walker
+    src/host.rs                 HostApi trait + Host / Context wrappers
+    src/i256.rs                 I256 signed 256-bit integer
+  pvm-storage/                  Typed storage helpers (Lazy, Mapping, StorageVec)
   pvm-contract-builder-dsl/     Runtime dispatch DSL
+  pvm-bump-allocator/           Bump allocator (allocator = "bump")
   pvm-contract-benchmarks/      Binary size CI regression tool
   pvm-contract-e2e-tests/       E2E + integration test harness
 examples/
-  example-mytoken/              6 MyToken variants
-  test-contracts/               9+ test contracts with .sol interfaces
+  example-mytoken/              7 MyToken variants
+  test-contracts/               19 test contracts with .sol interfaces
 specs/
   abi.md                        ABI encoding specification (includes error encoding)
+  architecture.md               Architecture overview
+  build.md                      Build pipeline
   builder-dsl.md                Builder DSL specification
+  cli.md                        CLI reference
+  deployment.md                 Deployment
+  proc-macros.md                Proc-macro reference
 ```
 
 ## Editing Rust Code

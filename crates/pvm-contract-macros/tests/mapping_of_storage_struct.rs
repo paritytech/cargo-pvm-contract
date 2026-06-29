@@ -406,13 +406,12 @@ fn delete_then_overwrite_storage_struct_entry() {
 // ---------------------------------------------------------------------------
 // Type-alias resolution through `StorageTypeName`
 //
-// The macro's `sol_storage_type_name` syntactically detects `Lazy<T>` /
-// `Mapping<K, V>` and unwraps/recurses. For a type *alias* the syntactic
-// ident is the alias name, not "Mapping" — the detection fails and the
-// codegen falls through to `<Alias as StorageTypeName>::name()`. Since
-// there is no blanket `StorageTypeName` impl, the explicit impls on
-// `Lazy<T>` / `Mapping<K, V>` in `pvm-storage` are what make this resolve;
-// without them codegen would fail.
+// The macro names every field uniformly via `<#ty as StorageTypeName>::name()`.
+// For a type *alias* the syntactic ident is the alias name (e.g. "Balances",
+// not "Mapping"), so resolution relies entirely on the explicit `StorageTypeName`
+// impls on `Lazy<T>` / `Mapping<K, V>` in `pvm-storage`. Since there is no
+// blanket `StorageTypeName` impl, those explicit impls are what make this
+// resolve; without them codegen would fail.
 //
 // These tests pin the alias-resolution path so that the impls live forever.
 // ---------------------------------------------------------------------------

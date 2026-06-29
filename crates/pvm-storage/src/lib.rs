@@ -907,15 +907,14 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
     }
 }
 
-/// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by
-/// `T` (the same way the macro's syntactic `Lazy<T>` detection unwraps).
+/// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by `T`.
 ///
-/// This explicit impl closes a gap: when a contract author aliases a type
-/// (`type Counter = Lazy<U256>;`) the syntactic wrapper detection in
-/// `sol_storage_type_name` doesn't see "Lazy" — it sees "Counter" — and
-/// falls through to `<Counter as StorageTypeName>::name()`. Without this
-/// impl, that path would fail (Lazy doesn't implement `SolEncode`, so the
-/// blanket impl doesn't cover it).
+/// The macro names every field through `<#ty as StorageTypeName>::name()`, so
+/// this explicit impl is what gives `Lazy<T>` its name — and it keeps working
+/// when a contract author aliases the type (`type Counter = Lazy<U256>;`), where
+/// the field's syntactic ident is "Counter", not "Lazy". There is no blanket
+/// `StorageTypeName` impl (`Lazy` doesn't implement `SolEncode`), so without
+/// this impl that path would fail.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for Lazy<T> {
     fn name() -> alloc::string::String {
@@ -1103,7 +1102,7 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
     }
 }
 
-/// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K,V)` entry.
+/// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K => V)` entry.
 /// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
 /// is always `0` here; it is threaded through for signature uniformity.
 #[cfg(feature = "abi-gen")]
