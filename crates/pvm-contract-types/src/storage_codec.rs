@@ -949,6 +949,12 @@ impl<const N: usize> crate::StorageTypeName for [u8; N] {
     }
 }
 
+impl<T: crate::SolArrayElement, const N: usize> crate::StorageTypeName for [T; N] {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fixed-size arrays `[T; N]` for T != u8.
 //
