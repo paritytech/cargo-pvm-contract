@@ -55,7 +55,9 @@ mod contract {
     }
 }
 
-#[cfg(test)]
+// `with_host` is only generated for host (non-`abi-gen`) builds, so gate the
+// tests to match — `cargo pvm-contract test` builds without `abi-gen`.
+#[cfg(all(test, not(feature = "abi-gen")))]
 mod tests {
     use super::contract::Contract;
     use pvm_contract_sdk::MockHostBuilder;
@@ -63,17 +65,18 @@ mod tests {
     // Unit tests run on the host against a `MockHost` — no chain needed.
     // Run them with `cargo pvm-contract test`.
     //
-    // `Contract::with_host` wires an instance to the mock host (it does not run
-    // your `#[constructor]`). Seed any required state on the mock, then call
-    // methods directly and assert on their typed return values, e.g.:
+    // `Contract::with_host` wires an instance to the mock host. Seed any
+    // required state on the mock, then call methods directly and assert on
+    // their typed return values, e.g.:
     //
     //     let mock = MockHostBuilder::new().caller([0x11; 20]).build();
     //     let mut contract = Contract::with_host(mock.clone());
     //     assert!(contract.my_method(/* ... */).is_ok());
 
     #[test]
-    fn contract_constructs() {
+    fn constructor_succeeds() {
         let mock = MockHostBuilder::new().build();
-        let _contract = Contract::with_host(mock);
+        let mut contract = Contract::with_host(mock);
+        assert!(contract.new().is_ok());
     }
 }

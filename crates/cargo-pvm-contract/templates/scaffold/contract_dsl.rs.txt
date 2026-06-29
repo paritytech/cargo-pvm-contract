@@ -86,3 +86,41 @@ fn {{ func.name_snake }}_handler(
 }
 {% endfor %}
 {% endif %}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // `Host` and `ContractBuilder` come in via `super::*`; only the std-gated
+    // test helpers need an explicit import.
+    use pvm_contract_builder_dsl::pvm_contract_types::{MockHostBuilder, ReturnFlags};
+    use std::rc::Rc;
+
+    // DSL contracts are tested at the dispatch level: build a `MockHost` with
+    // the calldata you want to send, drive it through a `ContractBuilder`, then
+    // read back the captured return value. Run with `cargo pvm-contract test`.
+    //
+    // To exercise a real method, register its handler and send its selector:
+    //
+    //     let mut calldata = MY_METHOD_SELECTOR.to_vec();
+    //     // calldata.extend_from_slice(&encoded_args);
+    //     let mock = Rc::new(MockHostBuilder::new().calldata(calldata).build());
+    //     ContractBuilder::new()
+    //         .method(MY_METHOD_SELECTOR, my_method_handler)
+    //         .dispatch_impl::<256>(&Host::from_dyn(mock.clone()));
+    //     let rv = mock.take_return_value().expect("dispatch should return");
+    //     assert_eq!(rv.flags, ReturnFlags::empty());
+
+    #[test]
+    fn unknown_selector_reverts() {
+        let mock = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xde, 0xad, 0xbe, 0xef])
+                .build(),
+        );
+        ContractBuilder::new().dispatch_impl::<256>(&Host::from_dyn(mock.clone()));
+        let rv = mock
+            .take_return_value()
+            .expect("dispatch should call return_value");
+        assert_eq!(rv.flags, ReturnFlags::REVERT);
+    }
+}

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Args, Debug)]
@@ -37,13 +37,37 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
     // targeting polkavm, passing `--target <host>` still takes precedence.
     let host_target = host_target_triple()?;
 
-    let mut cmd = Command::new(env!("CARGO"));
-    cmd.arg("test")
+    // Run the test build from the project directory so rustup resolves the
+    // project's pinned toolchain (`rust-toolchain.toml` / inherited
+    // `RUSTUP_TOOLCHAIN`). `manifest_path` is already canonical, so it stays
+    // valid regardless of the working directory.
+    let project_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory: {manifest_path:?}"))?
+        .to_path_buf();
+
+    // Invoke `cargo` from PATH (the rustup proxy), not `env!("CARGO")`: the
+    // latter bakes in the absolute path of whatever toolchain built this CLI
+    // and bypasses the proxy, so the project's `rust-toolchain.toml` would be
+    // ignored. The bare proxy honors it, matching the `build` subcommand.
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&project_dir)
+        .arg("test")
         .arg("--manifest-path")
         .arg(&manifest_path)
         .arg("--target")
         .arg(&host_target)
         .env_remove("CARGO_BUILD_TARGET");
+
+    // Scaffolded `.cargo/config.toml` forces `-Zbuild-std=core,alloc` for the
+    // polkavm target. Host unit tests link the real prebuilt `std` (the crate
+    // is not `no_std` under `cfg(test)`), so a build-std `alloc` collides with
+    // std's `alloc` (duplicate `exchange_malloc` lang item). Override it with
+    // an empty `-Zbuild-std=` — but only on a nightly cargo: stable already
+    // ignores the config's build-std, and rejects the `-Z` flag outright.
+    if cargo_is_nightly(&project_dir) {
+        cmd.arg("-Zbuild-std=");
+    }
 
     if !args.features.is_empty() {
         cmd.arg("--features").arg(args.features.join(","));
@@ -64,6 +88,22 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
         anyhow::bail!("cargo test failed with status {status}");
     }
     Ok(())
+}
+
+/// Whether the `cargo` resolved from `project_dir` is a nightly-channel cargo.
+/// Detected by parsing `cargo --version` (nightly prints e.g.
+/// `cargo 1.92.0-nightly (...)`). Defaults to `false` (don't pass `-Z`) if the
+/// probe fails — the safe choice, since stable rejects `-Z` and ignores the
+/// scaffold's build-std config anyway.
+fn cargo_is_nightly(project_dir: &Path) -> bool {
+    Command::new("cargo")
+        .current_dir(project_dir)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .is_some_and(|version| version.contains("nightly"))
 }
 
 fn host_target_triple() -> Result<String> {

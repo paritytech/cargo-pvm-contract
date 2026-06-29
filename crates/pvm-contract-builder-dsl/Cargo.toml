@@ -15,6 +15,9 @@ ruint = { version = "1.17", default-features = false }
 [features]
 default = []
 alloc = ["pvm-contract-types/alloc"]
+# Host-only: pulls in `pvm-contract-types/std`, which exposes `MockHost` for
+# unit tests. Never enabled for the on-chain (no_std) build.
+std = ["alloc", "pvm-contract-types/std"]
 
 [dev-dependencies]
 pvm-contract-types = { path = "../pvm-contract-types", features = ["std"] }
