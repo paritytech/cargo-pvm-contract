@@ -40,6 +40,15 @@ pvm-bump-allocator = "{{ builder_version }}"
 [features]
 abi-gen = ["pvm-contract-sdk/abi-gen"]
 
+# `std` (and thus `MockHost`) is enabled only for `cargo pvm-contract test`,
+# never for the release contract build, so the deployed binary stays no_std.
+[dev-dependencies]
+{% if let Some(path) = local_path -%}
+pvm-contract-sdk = { path = "{{ path }}/crates/pvm-contract-sdk", features = ["std"] }
+{% else -%}
+pvm-contract-sdk = { version = "{{ builder_version }}", features = ["std"] }
+{% endif -%}
+
 {% endif -%}
 [profile.release]
 codegen-units = 1
