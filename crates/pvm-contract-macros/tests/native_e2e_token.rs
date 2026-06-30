@@ -20,8 +20,7 @@
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, Host, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
-    StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
@@ -176,9 +175,7 @@ fn host_with_caller(caller: [u8; 20]) -> MockHost {
 /// `MockHost` share state (`Rc<RefCell<_>>` internally), so assertions can
 /// read back storage/events through the returned handle.
 fn make_contract(mock: &MockHost) -> mini_token::MiniToken {
-    mini_token::MiniToken {
-        host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
-    }
+    mini_token::MiniToken::with_host(mock.clone())
 }
 
 /// Seed the owner slot directly (simulates a prior `new()` invocation).

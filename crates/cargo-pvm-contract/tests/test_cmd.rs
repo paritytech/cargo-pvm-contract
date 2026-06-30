@@ -517,7 +517,7 @@ fn polkavm_binary_is_valid() {
 #[test]
 fn cli_test_is_end_to_end_for_scaffolded_macro_project() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-macro", "macro", None);
+    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-macro", "macro", Some("bump"));
 
     run_cli_test(&project_dir);
 }
@@ -525,7 +525,7 @@ fn cli_test_is_end_to_end_for_scaffolded_macro_project() {
 #[test]
 fn cli_test_supports_manifest_path_from_outside_project_dir() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-manifest", "macro", None);
+    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-manifest", "macro", Some("bump"));
     let manifest_path = project_dir.join("Cargo.toml");
 
     run_cli_test_with_manifest(&manifest_path, temp_dir.path());

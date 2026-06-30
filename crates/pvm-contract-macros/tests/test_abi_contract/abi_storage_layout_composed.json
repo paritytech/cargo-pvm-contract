@@ -43,13 +43,13 @@
         "label": "erc20.balances",
         "offset": 0,
         "slot": "1",
-        "type": "mapping(address,uint256)"
+        "type": "mapping(address => uint256)"
       },
       {
         "label": "erc20.allowances",
         "offset": 0,
         "slot": "2",
-        "type": "mapping(address,mapping(address,uint256))"
+        "type": "mapping(address => mapping(address => uint256))"
       },
       {
         "label": "metadata.name",

@@ -110,7 +110,7 @@ fn storage_layout_composed_produces_valid_abi() {
 /// Contract with `StorageVec` storage fields. Verifies that the storageLayout
 /// JSON compiles and resolves `StorageVec<T>` to Solidity's `T[]` type name,
 /// including nested (`uint256[][]`) and mapping-valued
-/// (`mapping(address,uint256[])`) shapes — i.e. the case that previously
+/// (`mapping(address => uint256[])`) shapes — i.e. the case that previously
 /// failed to compile under `--features abi-gen` because `StorageVec` lacked a
 /// layout-emit path.
 #[test]

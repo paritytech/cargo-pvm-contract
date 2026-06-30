@@ -213,11 +213,10 @@ impl<T: SolEncode> crate::SolArrayElement for alloc::vec::Vec<T> {}
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
+        // Read the head pointer with checked arithmetic so an attacker-controlled
+        // offset near `usize::MAX` fails closed instead of wrapping — symmetric
+        // with `String`/`Bytes::decode_at` and `Vec::decode_tail`.
+        let data_offset = crate::read_word_offset(input, offset)?;
         Self::decode_tail(input, data_offset)
     }
 

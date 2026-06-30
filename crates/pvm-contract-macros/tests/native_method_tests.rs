@@ -21,7 +21,7 @@
 //!   parsing, ABI revert encoding — end-to-end verification that the
 //!   deployed contract will decode the same bytes Foundry/ethers send.
 
-use pvm_contract_sdk::{Address, Host, MockHost, MockHostBuilder};
+use pvm_contract_sdk::{Address, MockHost, MockHostBuilder};
 use ruint::aliases::U256;
 
 const OWNER_SLOT: [u8; 32] = [0u8; 32];
@@ -134,9 +134,7 @@ const BOB: [u8; 20] = [0xB0; 20];
 
 fn contract_with_caller(caller: [u8; 20]) -> (MiniToken, MockHost) {
     let mock = MockHostBuilder::new().caller(caller).build();
-    let contract = MiniToken {
-        host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
-    };
+    let contract = MiniToken::with_host(mock.clone());
     (contract, mock)
 }
 
@@ -250,9 +248,7 @@ fn mint_then_transfer_chain_updates_state_correctly() {
             next_host.set_raw_storage(key.to_vec(), v);
         }
     }
-    let mut contract = MiniToken {
-        host: Host::from_dyn(::std::rc::Rc::new(next_host.clone())),
-    };
+    let mut contract = MiniToken::with_host(next_host.clone());
 
     contract
         .transfer(Address::from(BOB), U256::from(400u64))

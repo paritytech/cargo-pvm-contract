@@ -909,15 +909,14 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
     }
 }
 
-/// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by
-/// `T` (the same way the macro's syntactic `Lazy<T>` detection unwraps).
+/// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by `T`.
 ///
-/// This explicit impl closes a gap: when a contract author aliases a type
-/// (`type Counter = Lazy<U256>;`) the syntactic wrapper detection in
-/// `sol_storage_type_name` doesn't see "Lazy" — it sees "Counter" — and
-/// falls through to `<Counter as StorageTypeName>::name()`. Without this
-/// impl, that path would fail (Lazy doesn't implement `SolEncode`, so the
-/// blanket impl doesn't cover it).
+/// The macro names every field through `<#ty as StorageTypeName>::name()`, so
+/// this explicit impl is what gives `Lazy<T>` its name — and it keeps working
+/// when a contract author aliases the type (`type Counter = Lazy<U256>;`), where
+/// the field's syntactic ident is "Counter", not "Lazy". There is no blanket
+/// `StorageTypeName` impl (`Lazy` doesn't implement `SolEncode`), so without
+/// this impl that path would fail.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for Lazy<T> {
     fn name() -> alloc::string::String {
@@ -1081,7 +1080,7 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     }
 }
 
-/// `Mapping<K, V>` in layout JSON is `mapping(K_name,V_name)`. This impl
+/// `Mapping<K, V>` in layout JSON is `mapping(K_name => V_name)`. This impl
 /// is the fallback for callers that didn't take the macro's syntactic
 /// `Mapping<K, V>` detection path — for example a type-aliased mapping
 /// (`type Balances = Mapping<Address, U256>;`) flowing into the layout
@@ -1098,14 +1097,14 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
 {
     fn name() -> alloc::string::String {
         alloc::format!(
-            "mapping({},{})",
+            "mapping({} => {})",
             <K as pvm_contract_types::StorageTypeName>::name(),
             <V as pvm_contract_types::StorageTypeName>::name(),
         )
     }
 }
 
-/// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K,V)` entry.
+/// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K => V)` entry.
 /// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
 /// is always `0` here; it is threaded through for signature uniformity.
 #[cfg(feature = "abi-gen")]
@@ -1845,7 +1844,7 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<T> {
 /// `StorageVec<T>` is Solidity's `T[]`; in layout JSON it's named `<T>[]`.
 /// Recursing on the element name lets `StorageVec<StorageVec<U256>>` resolve
 /// to `uint256[][]` and `Mapping<K, StorageVec<T>>` (whose `name()` calls
-/// `V::name()`) nest to `mapping(K,T[])`.
+/// `V::name()`) nest to `mapping(K => T[])`.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for StorageVec<T> {
     fn name() -> alloc::string::String {

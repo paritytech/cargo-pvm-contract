@@ -272,7 +272,7 @@ fn mapping_of_storage_struct_layout_json_names_value_struct() {
     //   - label  = "by_owner"
     //   - slot   = "0"
     //   - offset = 0
-    //   - type   = "mapping(address,VaultData)"
+    //   - type   = "mapping(address => VaultData)"
     // The value-type name "VaultData" comes from the `#[storage]`-derived
     // `impl StorageTypeName for VaultData { const NAME = "VaultData"; }`.
     let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
@@ -283,7 +283,7 @@ fn mapping_of_storage_struct_layout_json_names_value_struct() {
     assert_eq!(e["slot"], "0");
     assert_eq!(e["offset"], 0);
     assert_eq!(
-        e["type"], "mapping(address,VaultData)",
+        e["type"], "mapping(address => VaultData)",
         "storage-typed mapping value resolved via StorageTypeName: {layout}",
     );
 }
@@ -406,13 +406,12 @@ fn delete_then_overwrite_storage_struct_entry() {
 // ---------------------------------------------------------------------------
 // Type-alias resolution through `StorageTypeName`
 //
-// The macro's `sol_storage_type_name` syntactically detects `Lazy<T>` /
-// `Mapping<K, V>` and unwraps/recurses. For a type *alias* the syntactic
-// ident is the alias name, not "Mapping" — the detection fails and the
-// codegen falls through to `<Alias as StorageTypeName>::name()`. Since
-// there is no blanket `StorageTypeName` impl, the explicit impls on
-// `Lazy<T>` / `Mapping<K, V>` in `pvm-storage` are what make this resolve;
-// without them codegen would fail.
+// The macro names every field uniformly via `<#ty as StorageTypeName>::name()`.
+// For a type *alias* the syntactic ident is the alias name (e.g. "Balances",
+// not "Mapping"), so resolution relies entirely on the explicit `StorageTypeName`
+// impls on `Lazy<T>` / `Mapping<K, V>` in `pvm-storage`. Since there is no
+// blanket `StorageTypeName` impl, those explicit impls are what make this
+// resolve; without them codegen would fail.
 //
 // These tests pin the alias-resolution path so that the impls live forever.
 // ---------------------------------------------------------------------------
@@ -502,16 +501,16 @@ fn type_alias_resolution_for_lazy_and_mapping_in_layout_json() {
     assert_eq!(entries[0]["type"], "uint256");
 
     // `Balances = Mapping<Address, U256>` → `Mapping<K, V>::name()`
-    // returns `mapping(K_name,V_name)`.
+    // returns `mapping(K_name => V_name)`.
     assert_eq!(entries[1]["label"], "balances");
-    assert_eq!(entries[1]["type"], "mapping(address,uint256)");
+    assert_eq!(entries[1]["type"], "mapping(address => uint256)");
 
     // `Nested = Mapping<Address, Mapping<Address, U256>>` → inner Mapping
     // resolves recursively via the same impl.
     assert_eq!(entries[2]["label"], "allowances");
     assert_eq!(
         entries[2]["type"],
-        "mapping(address,mapping(address,uint256))",
+        "mapping(address => mapping(address => uint256))",
     );
 }
 
@@ -586,7 +585,7 @@ fn sol_storage_value_struct_uses_struct_name_in_layout_json() {
     // `Mapping<u64, PackedPoint>` — value-type name embedded in mapping
     // notation, again as the struct ident.
     assert_eq!(
-        by_id["type"], "mapping(uint64,PackedPoint)",
+        by_id["type"], "mapping(uint64 => PackedPoint)",
         "Mapping<_, PackedPoint> should embed struct ident, not ABI tuple. Got layout: {layout}",
     );
 }

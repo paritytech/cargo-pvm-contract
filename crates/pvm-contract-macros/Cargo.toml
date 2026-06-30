@@ -12,12 +12,17 @@ proc-macro = true
 [features]
 default = []
 abi-gen = []
+# Differential storage-layout tests that shell out to `solc --standard-json`
+# and assert our emitted layout matches solc's. Requires `solc` on PATH; gated
+# so the default `cargo test` stays solc-free. Implies `abi-gen` because the
+# tests call the macro-emitted `__storage_layout_json()` accessor.
+solc-tests = ["abi-gen"]
 
 [dependencies]
-proc-macro2 = "1.0"
+proc-macro2 = { workspace = true }
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
-syn-solidity = { version = "1.5" }
+syn-solidity = { workspace = true }
 alloy-json-abi = { version = "1.5" }
 keccak-const.workspace = true
 pvm-contract-types = { path = "../pvm-contract-types" }

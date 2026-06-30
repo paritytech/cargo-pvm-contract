@@ -10,8 +10,7 @@
 //! after `route()` returns to inspect the contract's response.
 
 use pvm_contract_types::{
-    Address, Host, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
-    StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
@@ -59,9 +58,7 @@ fn encode_address(addr: Address) -> Vec<u8> {
 
 fn new_contract() -> (my_token::MyContract, MockHost) {
     let mock = MockHostBuilder::new().build();
-    let contract = my_token::MyContract {
-        host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
-    };
+    let contract = my_token::MyContract::with_host(mock.clone());
     (contract, mock)
 }
 

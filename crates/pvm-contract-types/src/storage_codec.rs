@@ -474,12 +474,6 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
 }
 
 pub trait StoragePackable: StaticStorageEncode + StaticStorageDecode + Sized {
-    /// Byte offset within a slot where this type lives when it occupies a slot
-    /// on its own (solc's right-aligned rule for both integers and `bytesN`).
-    /// Derived from `PACKED_BYTES` — a single source of truth, so impls never
-    /// restate it. Override is possible but should never be needed.
-    const CANONICAL_OFFSET: usize = 32 - <Self as StorageEncode>::PACKED_BYTES;
-
     /// Pack self into `buf[offset..offset + Self::PACKED_BYTES]` WITHOUT
     /// zeroing surrounding bytes. The caller is responsible for any
     /// pre-zeroing of the target byte window (e.g. the contract-field
@@ -922,8 +916,7 @@ impl<const N: usize> StoragePackable for [u8; N] {
     // solc 0.8.30 bytecode for `bytes4 public a; a = 0xdeadbeef;` which
     // emits an SSTORE of `0x000000...deadbeef`). The Solidity docs phrasing
     // "stored from the start of the array" refers to in-memory ABI layout,
-    // not on-chain storage. CANONICAL_OFFSET (= 32 - N) is derived from
-    // PACKED_BYTES by the trait default.
+    // not on-chain storage. `encode_slot`/`from_slots` pack at offset `32 - N`.
     #[inline]
     fn pack_into(&self, buf: &mut [u8; 32], offset: usize) {
         const {
@@ -951,6 +944,13 @@ impl<const N: usize> StoragePackable for [u8; N] {
 
 #[cfg(feature = "abi-gen")]
 impl<const N: usize> crate::StorageTypeName for [u8; N] {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+impl<T: crate::SolArrayElement, const N: usize> crate::StorageTypeName for [T; N] {
     fn name() -> alloc::string::String {
         alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
@@ -1239,18 +1239,6 @@ impl_storage_tuple! {
 #[cfg(feature = "alloc")]
 pub(crate) const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 
-/// Upper bound on the decoded length of a dynamic storage value, in bytes.
-///
-/// `pallet-revive` caps a single storage value at 416 bytes (13 × 32-byte
-/// slots — see `pvm_storage::MAX_STATIC_SLOTS` docs), so a dynamic value's
-/// self-reported header length can never legitimately exceed this. The
-/// spilled-form decoder in [`decode_dyn_header`] clamps to this value: a
-/// corrupt or hostile co-located writer claiming a huge length (e.g. `2^50`)
-/// must not be able to drive an unbounded allocation or SLOAD loop in
-/// [`read_dyn_body`] / [`clear_dynamic_bytes`] / [`write_dynamic_bytes`].
-#[cfg(feature = "alloc")]
-const MAX_STORAGE_BYTES: usize = 416;
-
 #[cfg(feature = "alloc")]
 enum DynHeader {
     Inline { len: usize },
@@ -1267,23 +1255,25 @@ fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
         }
     } else {
         // Spilled: whole slot encodes `len * 2 + 1` as big-endian u256.
-        // Real-world lengths fit in usize; non-zero high bytes indicate
-        // corruption / non-Solidity writer — treat as empty.
+        // A dynamic value has no fixed upper bound — like solc (and Stylus) it
+        // stripes across as many 32-byte slots as `len` needs, so the header
+        // length is authoritative. Storage is per-contract isolated (the header
+        // is always self-written) and the read loop is gas-bounded on-chain, so
+        // there's nothing to clamp. We only reject lengths that can't be
+        // legitimate — non-zero high 16 bytes (>= 2^128) or one that doesn't fit
+        // `usize` — as corruption / a non-Solidity writer, treating them as empty.
         let high_zero = slot_bytes[..16].iter().all(|&b| b == 0);
-        let mut len_be = [0u8; 16];
-        len_be.copy_from_slice(&slot_bytes[16..32]);
-        let raw = u128::from_be_bytes(len_be);
-        let raw_len = raw >> 1;
         if !high_zero {
             return DynHeader::Spilled { len: 0 };
         }
-        // Clamp to the runtime's per-value cap. A legitimate value never
-        // exceeds `MAX_STORAGE_BYTES`, so clamping a wildly large header
-        // bounds the downstream allocation and SLOAD loop without affecting
-        // any value a conforming writer could have produced. (The previous
-        // `raw_len > usize::MAX as u128` guard was always false on 64-bit.)
+        let mut len_be = [0u8; 16];
+        len_be.copy_from_slice(&slot_bytes[16..32]);
+        let raw_len = u128::from_be_bytes(len_be) >> 1;
+        if raw_len > usize::MAX as u128 {
+            return DynHeader::Spilled { len: 0 };
+        }
         DynHeader::Spilled {
-            len: raw_len.min(MAX_STORAGE_BYTES as u128) as usize,
+            len: raw_len as usize,
         }
     }
 }
@@ -1306,9 +1296,8 @@ fn dyn_body_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
 #[cfg(feature = "alloc")]
 fn read_dyn_body(host: &Host, slot: &[u8; 32], len: usize) -> alloc::vec::Vec<u8> {
     // Grow incrementally: capacity tracks bytes actually read from storage,
-    // never the self-reported header length. `decode_dyn_header` already
-    // clamps `len` to `MAX_STORAGE_BYTES`, but starting from an empty `Vec`
-    // keeps this resilient regardless of how the length was derived.
+    // never the self-reported header length, so a corrupt header can't drive a
+    // huge up-front allocation. The read loop itself is gas-bounded on-chain.
     let mut out = alloc::vec::Vec::new();
     let mut body_slot = dyn_body_root(host, slot);
     let mut remaining = len;
@@ -1639,7 +1628,7 @@ mod tests {
 
     // --- consts ---
 
-    // --- dynamic-body length clamping (host-target only) ---
+    // --- dynamic-body roundtrip + header corruption handling ---
 
     #[cfg(feature = "std")]
     fn mock_host() -> Host {
@@ -1648,45 +1637,38 @@ mod tests {
 
     #[cfg(feature = "alloc")]
     #[test]
-    fn decode_dyn_header_clamps_hostile_spilled_length() {
-        // Spilled header claiming len = 2^50 from a corrupt / hostile writer.
-        let raw: u128 = (1u128 << 50) * 2 + 1;
-        let mut header = [0u8; 32];
-        header[16..32].copy_from_slice(&raw.to_be_bytes());
+    fn decode_dyn_header_rejects_corrupt_high_bytes() {
+        // A spilled header with non-zero high 16 bytes (>= 2^128) can only be
+        // corruption / a non-Solidity writer — decode to empty rather than a
+        // bogus huge length.
+        let header = [0xffu8; 32]; // byte 31 has bit 0 set => spilled form
         match decode_dyn_header(&header) {
-            DynHeader::Spilled { len } => assert_eq!(len, MAX_STORAGE_BYTES),
+            DynHeader::Spilled { len } => assert_eq!(len, 0),
             DynHeader::Inline { .. } => panic!("expected spilled header"),
         }
     }
 
     #[cfg(feature = "std")]
     #[test]
-    fn read_dyn_body_bounded_by_hostile_header() {
-        // A header claiming 2^50 bytes must not drive an unbounded allocation:
-        // the read is bounded to MAX_STORAGE_BYTES and returns cleanly. Before
-        // the clamp + incremental-growth fix this aborted in
-        // `Vec::with_capacity(2^50)` before any SLOAD ran.
+    fn dynamic_bytes_long_roundtrip() {
+        // A legitimate long value (>= 32 bytes) roundtrips byte-for-byte
+        // through the spilled path.
         let host = mock_host();
-        let slot = [7u8; 32];
-        let raw: u128 = (1u128 << 50) * 2 + 1;
-        let mut header = [0u8; 32];
-        header[16..32].copy_from_slice(&raw.to_be_bytes());
-        host.set_storage(StorageFlags::empty(), &slot, &header);
-
-        let out = read_dynamic_bytes(&host, &slot);
-        assert_eq!(out.len(), MAX_STORAGE_BYTES);
-        // Body chunks were never written, so they read back as zero.
-        assert!(out.iter().all(|&b| b == 0));
+        let slot = [9u8; 32];
+        let data: alloc::vec::Vec<u8> = (0..200u32).map(|i| i as u8).collect();
+        write_dynamic_bytes(&host, &slot, &data);
+        assert_eq!(read_dynamic_bytes(&host, &slot), data);
     }
 
     #[cfg(feature = "std")]
     #[test]
-    fn dynamic_bytes_long_roundtrip() {
-        // A legitimate long value (>= 32 bytes, under the cap) still
-        // roundtrips byte-for-byte through the spilled path.
+    fn dynamic_bytes_above_old_cap_roundtrips() {
+        // Regression guard: a value well past the old 416-byte clamp must
+        // roundtrip. Dynamic values have no fixed cap — like solc/Stylus they
+        // stripe across as many 32-byte slots as the length needs.
         let host = mock_host();
-        let slot = [9u8; 32];
-        let data: alloc::vec::Vec<u8> = (0..200u32).map(|i| i as u8).collect();
+        let slot = [11u8; 32];
+        let data: alloc::vec::Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
         write_dynamic_bytes(&host, &slot, &data);
         assert_eq!(read_dynamic_bytes(&host, &slot), data);
     }
@@ -1695,15 +1677,8 @@ mod tests {
     fn const_invariants() {
         assert_eq!(<u32 as StorageEncode>::STORAGE_SLOTS, 1);
         assert_eq!(<u32 as StorageEncode>::PACKED_BYTES, 4);
-        assert_eq!(<u32 as StoragePackable>::CANONICAL_OFFSET, 28);
-
         assert_eq!(<Address as StorageEncode>::PACKED_BYTES, 20);
-        assert_eq!(<Address as StoragePackable>::CANONICAL_OFFSET, 12);
-
         assert_eq!(<U256 as StorageEncode>::PACKED_BYTES, 32);
-        assert_eq!(<U256 as StoragePackable>::CANONICAL_OFFSET, 0);
-
         assert_eq!(<[u8; 20] as StorageEncode>::PACKED_BYTES, 20);
-        assert_eq!(<[u8; 20] as StoragePackable>::CANONICAL_OFFSET, 12);
     }
 }

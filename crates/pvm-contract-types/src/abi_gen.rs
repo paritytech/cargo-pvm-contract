@@ -106,7 +106,7 @@ pub struct StorageLayout {
 ///
 /// The `#[contract]` macro builds each leaf entry's `"type"` string by
 /// recursively walking field types (`Lazy<T>` unwraps, `Mapping<K, V>` builds
-/// `"mapping(K_name, V_name)"`). At leaf positions, the macro needs a way to
+/// `"mapping(K_name => V_name)"`). At leaf positions, the macro needs a way to
 /// name the type — for primitives this is [`SolEncode::SOL_NAME`] (already
 /// in this crate), for `#[storage]` sub-structs the macro emits an impl
 /// returning the Rust ident, and for storage handles (`Lazy<T>`,
@@ -124,7 +124,7 @@ pub trait StorageTypeName {
     /// (`"uint256"`, `"address"`); `#[storage]` sub-structs and
     /// `#[derive(SolStorage)]` value structs return their Rust ident;
     /// `Lazy<T>` returns `T`'s name; `Mapping<K, V>` returns
-    /// `"mapping(K_name,V_name)"`.
+    /// `"mapping(K_name => V_name)"`.
     ///
     /// **No `SolEncode` blanket impl.** A naive
     /// `impl<T: SolEncode> StorageTypeName for T` would let *any* ABI type
@@ -321,7 +321,7 @@ mod tests {
                     label: "balances".into(),
                     slot: "1".into(),
                     offset: 0,
-                    ty: "mapping(address,uint256)".into(),
+                    ty: "mapping(address => uint256)".into(),
                 },
             ],
         };
@@ -329,7 +329,7 @@ mod tests {
 
         assert_eq!(
             json,
-            r#"{"storage":[{"label":"total_supply","slot":"0","offset":0,"type":"uint256"},{"label":"balances","slot":"1","offset":0,"type":"mapping(address,uint256)"}]}"#
+            r#"{"storage":[{"label":"total_supply","slot":"0","offset":0,"type":"uint256"},{"label":"balances","slot":"1","offset":0,"type":"mapping(address => uint256)"}]}"#
         );
 
         // Roundtrip.
@@ -346,7 +346,7 @@ mod tests {
         let legacy = r#"{
             "storage": [
                 {"label": "total_supply", "slot": "0", "type": "uint256"},
-                {"label": "balances", "slot": "1", "type": "mapping(address,uint256)"}
+                {"label": "balances", "slot": "1", "type": "mapping(address => uint256)"}
             ]
         }"#;
         let parsed: StorageLayout = serde_json::from_str(legacy).unwrap();
