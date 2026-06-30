@@ -46,8 +46,8 @@ extern crate alloc;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-use pvm_contract_sdk::SolType;
 use pvm_contract_sdk::{Address, Bytes, I256, Lazy, Mapping, StorageVec, U256};
+use pvm_contract_sdk::{SolStorage, SolType};
 
 // ---------------------------------------------------------------------------
 // Fixtures: a `#[contract(no_main)]` module + the equivalent Solidity source.
@@ -279,7 +279,7 @@ contract Arrays {
 /// A `#[derive(SolType)]` struct used as a `Lazy` value. The fields/slots line
 /// up with solc, but our `type` is the inline tuple name `(uint64,uint64)`
 /// whereas solc names it `struct WithStruct.Point`.
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Point {
     pub x: u64,
     pub y: u64,

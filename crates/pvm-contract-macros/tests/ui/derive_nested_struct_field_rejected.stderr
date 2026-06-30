@@ -1,0 +1,5 @@
+error: `Account` cannot derive `SolStorage`: field `inner` has type `Reserves` (Rust: `Reserves`), which is not yet supported as a `StorageEncode` field. Only fixed-size primitives (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, and `bytes` (Rust `Bytes`) are supported today. Hint: a struct cannot yet be a packed value field of a `SolStorage` struct. To store a nested struct, make BOTH structs `#[pvm_contract_sdk::storage]` and access them through a field handle or `Mapping<_, T>` with `.view()` / `.view_mut()` — this produces the identical solc storage layout. (`#[derive(SolType)]` alone remains correct if you only need ABI for calldata / events.)
+  --> tests/ui/derive_nested_struct_field_rejected.rs:22:16
+   |
+22 |     pub inner: Reserves,
+   |                ^^^^^^^^

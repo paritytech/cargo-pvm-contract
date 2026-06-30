@@ -7,9 +7,9 @@
 // matching solc's gas profile for `uint128 reserve0; uint128 reserve1;`.
 #[pvm_contract_sdk::contract("AmmReserves.sol", allocator = "bump")]
 mod amm_reserves {
-    use pvm_contract_sdk::{EmptyError, Lazy, SolType};
+    use pvm_contract_sdk::{EmptyError, Lazy, SolStorage, SolType};
 
-    #[derive(SolType)]
+    #[derive(SolType, SolStorage)]
     pub struct Reserves {
         pub reserve0: u128,
         pub reserve1: u128,

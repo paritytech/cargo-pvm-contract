@@ -43,7 +43,7 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolEvent, SolType, abi_import, constructor, contract, fallback, method,
+    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback, method,
     non_reentrant, payable, receive, storage,
 };
 
@@ -98,6 +98,8 @@ pub use pvm_contract_types::{
     SolEvent,
     StaticDecode,
     StaticEncodedLen,
+    StaticStorageDecode,
+    StaticStorageEncode,
     StorageArrayElement,
     StorageDecode,
     StorageEncode,
@@ -111,6 +113,8 @@ pub use pvm_contract_types::{
     // Framework errors
     framework_errors,
     keccak256,
+    // Storage-layout walker wrapper (StorageEncode family) used by codegen
+    layout_step_encode,
     read_word_offset,
     value_transferred_is_nonzero,
 };
@@ -140,8 +144,8 @@ pub use pvm_contract_core::call::{
 // different on-chain layout). `StorageComponent` is the trait typed
 // storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
-    AsStorageKey, LayoutStep, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey, StorageVec,
-    layout_step,
+    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, StorageComponent,
+    StorageKey, StorageVec, layout_step, layout_step_component,
 };
 
 #[cfg(feature = "abi-gen")]
@@ -152,8 +156,8 @@ pub use pvm_contract_types::Bytes;
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_contract_types::{
-    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
-    parse_type_str, storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName,
+    abi_to_json, parse_type_str, storage_layout_to_json,
 };
 
 #[cfg(feature = "std")]
@@ -161,6 +165,11 @@ pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;
+
+/// Storage codec helpers used by macro-generated impls (kept under a public
+/// path so generated `::pvm_contract_sdk::storage_codec::static_*` calls
+/// resolve in downstream crates).
+pub use pvm_contract_types::storage_codec;
 
 // ---------------------------------------------------------------------------
 // Hidden re-exports for macro-generated code

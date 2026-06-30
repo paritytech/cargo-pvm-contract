@@ -1,3 +1,14 @@
+// trybuild `.stderr` snapshots are sensitive to both the compiler version and
+// the active cfg/feature set: with `abi-gen` enabled the `#[contract]` macro
+// additionally emits a `fn main()`, which collides with each fixture's own
+// `fn main()` and injects a spurious `E0428` into the diagnostics. The
+// committed `.stderr` files are authored for the default (non-`abi-gen`)
+// configuration — the one CI runs (`cargo test -p pvm-contract-macros`) — so
+// pin the UI suite to that single canonical config. Running it under
+// `--all-features` would compare against a different, feature-shifted set of
+// diagnostics, which is not what these snapshots assert.
+#![cfg(not(feature = "abi-gen"))]
+
 use std::path::PathBuf;
 
 fn copy_fixtures_into_trybuild_project() {
