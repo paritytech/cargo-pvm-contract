@@ -1231,15 +1231,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 extern crate alloc;
 
                 #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
-                use alloc::vec;
-
-                #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
-                use alloc::vec::Vec;
-
-                #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
-                use alloc::string::String;
-
-                #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
                 #[global_allocator]
                 static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<#allocator_size>>> = {
                     static mut ARRAY: picoalloc::Array<#allocator_size> = picoalloc::Array([0u8; #allocator_size]);
@@ -1255,15 +1246,6 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {
                 #[cfg(not(feature = "abi-gen"))]
                 extern crate alloc;
-
-                #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
-                use alloc::vec;
-
-                #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
-                use alloc::vec::Vec;
-
-                #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
-                use alloc::string::String;
 
                 #[cfg(all(not(feature = "abi-gen"), any(target_arch = "riscv32", target_arch = "riscv64")))]
                 #[global_allocator]
