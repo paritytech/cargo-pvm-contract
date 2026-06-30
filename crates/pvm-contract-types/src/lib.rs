@@ -25,8 +25,8 @@ pub use revert_string_alloc::RevertString;
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
 pub use abi_gen::{
-    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
-    parse_type_str, storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName,
+    abi_to_json, parse_type_str, storage_layout_to_json,
 };
 
 use framework_errors::INVALID_CALLDATA;
@@ -46,6 +46,13 @@ pub use host::{
 #[doc(hidden)]
 pub mod __private {
     pub trait Sealed {}
+
+    /// Slot-key increment + static-slot sweep helpers, called by
+    /// `#[derive(SolStorage)]`-generated dynamic-struct codec bodies. Not part
+    /// of the user-facing API.
+    pub use crate::storage_codec::{
+        clear_static_slots, inc_be_32, load_static_slots, try_load_static_slots, write_static_slots,
+    };
 }
 
 /// Re-exported so macro-generated `call()` / `deploy()` wrappers can reach it
@@ -61,8 +68,14 @@ pub use mock_host::{Halt, MockHost, MockHostBuilder, ReturnValue};
 mod i256;
 pub use i256::{I256, ParseI256Error};
 
-mod storage_codec;
-pub use storage_codec::{StorageArrayElement, StorageDecode, StorageEncode, StoragePackable};
+pub mod layout;
+pub use layout::{LayoutStep, MAX_STATIC_SLOTS, layout_step};
+
+pub mod storage_codec;
+pub use storage_codec::{
+    StaticStorageDecode, StaticStorageEncode, StorageArrayElement, StorageDecode, StorageEncode,
+    StoragePackable, layout_step_encode,
+};
 
 #[doc(hidden)]
 pub use const_format;

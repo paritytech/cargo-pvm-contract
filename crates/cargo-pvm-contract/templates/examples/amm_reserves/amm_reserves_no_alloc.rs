@@ -13,9 +13,9 @@
 // batches both fields into a single host round-trip.
 #[pvm_contract_sdk::contract("AmmReserves.sol", buffer = 256)]
 mod amm_reserves {
-    use pvm_contract_sdk::{EmptyError, Lazy, SolType};
+    use pvm_contract_sdk::{EmptyError, Lazy, SolStorage, SolType};
 
-    #[derive(SolType)]
+    #[derive(SolType, SolStorage)]
     pub struct Reserves {
         pub reserve0: u128,
         pub reserve1: u128,

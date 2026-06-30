@@ -326,8 +326,9 @@ The derive generates:
 
 - `SELECTOR` — first 4 bytes of `keccak256("InsufficientBalance(address,uint256,uint256)")`
 - `SIGNATURE` — the canonical signature string
-- `encode_params(&self, buf) -> usize` — ABI-encodes fields after the selector
+- `encode_to(&self, buf) -> usize` — writes the selector followed by the ABI-encoded fields into `buf`, returning the number of bytes written
 - `encoded_size() -> usize` — total revert data size (4 + encoded params)
+- `decode_at(input, offset) -> Result<Option<Self>, DecodeError>` — the symmetric decoder (returns `Ok(None)` when the selector doesn't match)
 
 ### Revert Data Layout
 
@@ -355,16 +356,23 @@ For a static custom error like `InsufficientBalance { account, required, availab
 
 ### Error Enums
 
-When a method can return multiple error types, use `sol_revert_enum!`:
+When a method can return multiple error types, derive `SolError` on an enum whose
+variants each wrap a single `#[derive(SolError)]` struct:
 
 ```rust,ignore
-pvm_contract_sdk::sol_revert_enum!(ContractError {
-    InsufficientBalance,
-    Unauthorized,
-});
+#[derive(pvm_contract_macros::SolError)]
+pub enum ContractError {
+    InsufficientBalance(InsufficientBalance),
+    Unauthorized(Unauthorized),
+}
 ```
 
-This generates an enum with `From` conversions and automatically includes `RevertString` and `Panic` variants. Each variant delegates to its inner type's encoding.
+The derive generates `From<InsufficientBalance>` / `From<Unauthorized>` conversions
+(so handlers can write `Err(InsufficientBalance { .. }.into())`) and an `encode_to` /
+`decode_at` / `error_signatures` impl that dispatches to the active variant's inner
+type. The enum's own `SELECTOR` is zeroed and its `SIGNATURE` is empty — the selector
+on the wire is always the inner error's. To surface `require`-style messages or
+arithmetic panics, add explicit `RevertString` / `Panic` variants to the enum.
 
 ### EmptyError
 

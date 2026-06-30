@@ -214,13 +214,43 @@ pub(super) enum Slot {
     Auto,
 }
 
+/// Identifier prefix for the auto-numbered slot `LayoutStep` consts. Defined
+/// once and shared by [`auto_slot_consts`] and the field-init site so the
+/// generated name and the reference to it can never drift.
+pub(super) const AUTO_SLOT_PREFIX: &str = "__pvm_storage_slot_";
+/// Identifier prefix for the per-field `alone` bool consts.
+pub(super) const AUTO_ALONE_PREFIX: &str = "__pvm_storage_alone_";
+
 /// Build the chain of `__pvm_storage_slot_<name>` const items for auto-numbered
 /// contract-struct fields. Walks only the auto-numbered subset (explicit
 /// `#[slot(N)]` fields do not participate). Delegates to the shared
 /// [`super::storage_layout::slot_chain_consts`] helper so the chain logic
-/// matches `#[storage]`'s offset chain.
-pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
-    let auto: Vec<super::storage_layout::ChainField<'_>> = slot_fields
+/// matches `#[storage]`'s offset chain. Returns the const items plus their
+/// idents (in auto-field order) for [`auto_alone_consts`] to reference.
+pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> (Vec<TokenStream>, Vec<syn::Ident>) {
+    let auto = auto_chain_fields(slot_fields);
+    super::storage_layout::slot_chain_consts(AUTO_SLOT_PREFIX, &auto)
+}
+
+/// Build the chain of `__pvm_storage_alone_<name>: bool` const items for
+/// auto-numbered contract-struct fields. Each const tells whether the
+/// field is alone in its storage slot — see
+/// [`super::storage_layout::alone_chain_consts`] for the derivation rule.
+/// Feeds the `alone: bool` arg of `StorageComponent::new_at` so sub-word
+/// `Lazy<T>` fields with no sub-word siblings can skip RMW on writes.
+/// `slot_idents` are the idents returned by [`auto_slot_consts`].
+pub(super) fn auto_alone_consts(
+    slot_fields: &[SlotField],
+    slot_idents: &[syn::Ident],
+) -> Vec<TokenStream> {
+    let auto = auto_chain_fields(slot_fields);
+    super::storage_layout::alone_chain_consts(AUTO_ALONE_PREFIX, slot_idents, &auto)
+}
+
+/// Shared filter: extract the auto-numbered subset of fields as
+/// [`ChainField`]s for both the layout-step and alone-flag walkers.
+fn auto_chain_fields(slot_fields: &[SlotField]) -> Vec<super::storage_layout::ChainField<'_>> {
+    slot_fields
         .iter()
         .filter(|sf| matches!(sf.slot, Slot::Auto))
         .map(|sf| super::storage_layout::ChainField {
@@ -228,8 +258,7 @@ pub(super) fn auto_slot_consts(slot_fields: &[SlotField]) -> Vec<TokenStream> {
             ty: &sf.ty,
             cfg_attrs: &sf.cfg_attrs,
         })
-        .collect();
-    super::storage_layout::slot_chain_consts("__pvm_storage_slot_", &auto)
+        .collect()
 }
 
 impl SlotField {
@@ -1267,7 +1296,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     // a clone of the host handle so cells share the same backing store. Explicit
     // `#[slot(N)]` fields use `N` directly; auto-numbered fields read their slot
     // from the `__pvm_storage_slot_*` const chain built by `auto_slot_consts`.
-    let auto_slot_consts = auto_slot_consts(&slot_fields);
+    let (auto_slot_consts, auto_slot_idents) = auto_slot_consts(&slot_fields);
+    let auto_alone_consts = auto_alone_consts(&slot_fields, &auto_slot_idents);
     let explicit_overlap_checks = explicit_slot_overlap_checks(&slot_fields);
     let explicit_full_slot_checks = explicit_slot_full_slot_only_checks(&slot_fields);
 
@@ -1277,18 +1307,30 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let name = &sf.name;
             let ty = &sf.ty;
             let cfgs = &sf.cfg_attrs;
-            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
-                Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
-                Slot::Auto => {
-                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", name);
-                    (quote! { #const_ident.slot }, quote! { #const_ident.offset })
-                }
-            };
+            let (slot_expr, offset_expr, alone_expr): (TokenStream, TokenStream, TokenStream) =
+                match sf.slot {
+                    // Explicit `#[slot(N)]` is restricted to full-slot types
+                    // elsewhere in this file (`explicit_slot_full_slot_only_checks`).
+                    // Full-slot components ignore `alone`, so the literal `true`
+                    // is purely cosmetic — it would behave identically as `false`
+                    // for `Mapping`/`Lazy<U256>`/etc.
+                    Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }, quote! { true }),
+                    Slot::Auto => {
+                        let const_ident = quote::format_ident!("{}{}", AUTO_SLOT_PREFIX, name);
+                        let alone_ident = quote::format_ident!("{}{}", AUTO_ALONE_PREFIX, name);
+                        (
+                            quote! { #const_ident.slot },
+                            quote! { #const_ident.offset },
+                            quote! { #alone_ident },
+                        )
+                    }
+                };
             quote! {
                 #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
-                    #slot_expr,
+                    ::pvm_contract_sdk::StorageKey::from_slot(#slot_expr),
                     #offset_expr,
+                    #alone_expr,
                     host.clone(),
                 )
             }
@@ -1297,6 +1339,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let this_construction = quote! {
         let host = ::pvm_contract_sdk::Host::new();
         #(#auto_slot_consts)*
+        #(#auto_alone_consts)*
         let mut this = #struct_name {
             #(#slot_field_inits,)*
             host,
@@ -1333,6 +1376,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     ::std::rc::Rc::new(backend),
                 );
                 #(#auto_slot_consts)*
+                #(#auto_alone_consts)*
                 Self {
                     #(#slot_field_inits,)*
                     host,
@@ -1829,14 +1873,15 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
             continue;
         };
         if ident == "host" {
-            if extract_optional_slot_attr(field)?.is_some() {
-                return Err(syn::Error::new_spanned(
-                    field,
-                    "`host` is a reserved field name injected by the #[contract] macro. \
-                     Rename this storage field.",
-                ));
-            }
-            continue;
+            // Reject regardless of `#[slot]` presence: in auto-numbering mode a
+            // `host` field would otherwise be silently dropped (filtered out by
+            // `rewrite_storage_struct`) and replaced by the injected handle,
+            // losing the user's intended storage field with no diagnostic.
+            return Err(syn::Error::new_spanned(
+                field,
+                "`host` is a reserved field name injected by the #[contract] macro. \
+                 Rename this storage field.",
+            ));
         }
         let explicit = extract_optional_slot_attr(field)?;
         let cfg_attrs: Vec<syn::Attribute> = field
@@ -3200,15 +3245,16 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Each slot field is constructed via StorageComponent::new_at(N, host.clone())
+        // Each slot field is constructed via
+        // StorageComponent::new_at(StorageKey::from_slot(N), ..., host.clone())
         assert!(
-            output.contains("StorageComponent > :: new_at (0u64"),
-            "Slot field 0 should use StorageComponent::new_at(0u64, ...).\n\
+            output.contains(":: StorageKey :: from_slot (0u64)"),
+            "Slot field 0 should pass StorageKey::from_slot(0u64).\n\
              Expanded output:\n{output}"
         );
         assert!(
-            output.contains("StorageComponent > :: new_at (1u64"),
-            "Slot field 1 should use StorageComponent::new_at(1u64, ...).\n\
+            output.contains(":: StorageKey :: from_slot (1u64)"),
+            "Slot field 1 should pass StorageKey::from_slot(1u64).\n\
              Expanded output:\n{output}"
         );
         assert!(
@@ -3252,7 +3298,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let slot_init_count = output.matches("new_at (0u64").count();
+        let slot_init_count = output.matches("StorageKey :: from_slot (0u64)").count();
         assert!(
             slot_init_count >= 2,
             "Slot field should be initialized in both deploy() and call().\n\
@@ -3290,7 +3336,7 @@ mod tests {
         // The first auto-numbered field seeds from LayoutStep::FIRST.
         assert!(
             output.contains(
-                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Lazy < U256 > > (:: pvm_contract_sdk :: LayoutStep :: FIRST)"
             ),
             "First auto-numbered field should seed from LayoutStep::FIRST.\n\
              Expanded output:\n{output}"
@@ -3298,22 +3344,23 @@ mod tests {
         // Each subsequent field chains off the previous step via `layout_step`.
         assert!(
             output.contains(
-                "const __pvm_storage_slot_balances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (__pvm_storage_slot_counter ,"
+                "const __pvm_storage_slot_balances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Mapping < Address , U256 > > (__pvm_storage_slot_counter)"
             ),
             "Second field should chain off the first via layout_step.\n\
              Expanded output:\n{output}"
         );
         assert!(
             output.contains(
-                "const __pvm_storage_slot_allowances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (__pvm_storage_slot_balances ,"
+                "const __pvm_storage_slot_allowances : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Mapping < Address , Mapping < Address , U256 > > > (__pvm_storage_slot_balances)"
             ),
             "Third field should chain off the second.\n\
              Expanded output:\n{output}"
         );
-        // Field construction references the slot consts (rather than literals).
+        // Field construction wraps the LayoutStep's u64 slot in StorageKey::from_slot
+        // and passes the offset.
         assert!(
-            output.contains("StorageComponent > :: new_at (__pvm_storage_slot_counter . slot , __pvm_storage_slot_counter . offset ,"),
-            "Auto-numbered fields should pass slot + offset from the LayoutStep const.\n\
+            output.contains("StorageComponent > :: new_at (:: pvm_contract_sdk :: StorageKey :: from_slot (__pvm_storage_slot_counter . slot) , __pvm_storage_slot_counter . offset , __pvm_storage_alone_counter ,"),
+            "Auto-numbered fields should wrap their slot in StorageKey::from_slot and pass the alone flag.\n\
              Expanded output:\n{output}"
         );
     }
@@ -3549,7 +3596,7 @@ mod tests {
             .to_string();
         assert!(
             output.contains(
-                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step (:: pvm_contract_sdk :: LayoutStep :: FIRST ,"
+                "const __pvm_storage_slot_counter : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: layout_step_component :: < Lazy < U256 > > (:: pvm_contract_sdk :: LayoutStep :: FIRST)"
             ),
             "Single unannotated field should auto-number to slot 0 via layout_step seed.\n\
              Expanded output:\n{output}"
@@ -3563,6 +3610,34 @@ mod tests {
             mod my_contract {
                 pub struct MyContract {
                     #[slot(0)]
+                    host: Lazy<U256>,
+                }
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let err = expand_contract(ContractArgs::default(), item)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`host` is a reserved field name"),
+            "Expected reserved-host validation. Got: {err}"
+        );
+    }
+
+    #[test]
+    fn host_field_without_slot_attr_is_rejected() {
+        // Auto-numbering mode (no `#[slot]`): a `host` field must be rejected
+        // with the same diagnostic as the explicit path, not silently dropped.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract {
                     host: Lazy<U256>,
                 }
                 impl MyContract {

@@ -3,14 +3,68 @@ use quote::{format_ident, quote};
 
 /// One field that participates in an auto-numbered storage slot chain.
 ///
-/// Used by [`slot_chain_consts`] to emit a sequence of compile-time consts
-/// whose values walk `prev + <PrevTy as StorageComponent>::SLOTS`. The first
-/// const evaluates to `0`; downstream code adds an explicit base (e.g.
-/// `base + #const_ident`) when the chain is relative to a runtime offset.
+/// Used by [`slot_chain_consts`] to emit a chain of `LayoutStep` consts, each
+/// computed by `layout_step` from the previous step plus the field's
+/// `PACKED_BYTES` and `SLOTS`, so sub-word siblings pack solc-style. The first
+/// seeds from `LayoutStep::FIRST`. Callers read `.slot`/`.offset` from each
+/// step (e.g. `base.add(#const_ident.slot)`) to place the field relative to a
+/// runtime base.
 pub(super) struct ChainField<'a> {
     pub name: &'a syn::Ident,
     pub ty: &'a syn::Type,
     pub cfg_attrs: &'a [syn::Attribute],
+}
+
+/// Build a chain of `const <alone_prefix><name>: bool = ...;` items that
+/// each tell whether the corresponding field is alone in its storage slot
+/// — i.e. no sibling field shares the same slot index.
+///
+/// The const evaluates by comparing the field's `LayoutStep.slot` against
+/// the adjacent neighbours' `.slot`. A field with no left neighbour or no
+/// right neighbour skips that comparison; a single isolated field is
+/// trivially `true`. The result feeds the `alone: bool` argument of
+/// [`StorageComponent::new_at`](pvm_contract_sdk::StorageComponent::new_at)
+/// so sub-word `Lazy<T>` can skip the read-modify-write SLOAD when the slot
+/// has no sub-word neighbour.
+///
+/// `slot_idents` are the `LayoutStep` const idents produced by
+/// [`slot_chain_consts`] (one per field, in the same order); the generated
+/// comparisons reference them directly, so there is no prefix string to keep
+/// in sync between the two builders. Per-field `#[cfg]` attributes are
+/// propagated.
+pub(super) fn alone_chain_consts(
+    alone_prefix: &str,
+    slot_idents: &[syn::Ident],
+    fields: &[ChainField],
+) -> Vec<TokenStream> {
+    fields
+        .iter()
+        .enumerate()
+        .map(|(i, sf)| {
+            let alone_ident = format_ident!("{}{}", alone_prefix, sf.name);
+            let cfgs = sf.cfg_attrs;
+            let cur_slot = &slot_idents[i];
+            // Comparison against the previous field (if any).
+            let prev_check = if i == 0 {
+                quote! { true }
+            } else {
+                let prev_slot = &slot_idents[i - 1];
+                quote! { #cur_slot.slot != #prev_slot.slot }
+            };
+            // Comparison against the next field (if any).
+            let next_check = if i + 1 == fields.len() {
+                quote! { true }
+            } else {
+                let next_slot = &slot_idents[i + 1];
+                quote! { #cur_slot.slot != #next_slot.slot }
+            };
+            quote! {
+                #(#cfgs)*
+                #[allow(non_upper_case_globals)]
+                const #alone_ident: bool = #prev_check && #next_check;
+            }
+        })
+        .collect()
 }
 
 /// Build a chain of `const <prefix><name>: ::pvm_contract_sdk::LayoutStep
@@ -28,53 +82,63 @@ pub(super) struct ChainField<'a> {
 ///
 /// Shared by `#[contract]` (top-level struct fields) and `#[storage]`
 /// (sub-storage struct fields, with the chain re-rooted at `base`).
-pub(super) fn slot_chain_consts(prefix: &str, fields: &[ChainField]) -> Vec<TokenStream> {
-    fields
+///
+/// Returns the generated const items together with their idents (in field
+/// order) so callers — notably [`alone_chain_consts`] — can reference the
+/// consts by value instead of reconstructing their names from `prefix`.
+pub(super) fn slot_chain_consts(
+    prefix: &str,
+    fields: &[ChainField],
+) -> (Vec<TokenStream>, Vec<syn::Ident>) {
+    let idents: Vec<syn::Ident> = fields
+        .iter()
+        .map(|sf| format_ident!("{}{}", prefix, sf.name))
+        .collect();
+    let items = fields
         .iter()
         .enumerate()
         .map(|(i, sf)| {
-            let const_ident = format_ident!("{}{}", prefix, sf.name);
+            let const_ident = &idents[i];
             let cfgs = sf.cfg_attrs;
             let ty = sf.ty;
             let prev_expr = if i == 0 {
                 quote! { ::pvm_contract_sdk::LayoutStep::FIRST }
             } else {
-                let prev = &fields[i - 1];
-                let prev_const = format_ident!("{}{}", prefix, prev.name);
+                let prev_const = &idents[i - 1];
                 quote! { #prev_const }
             };
             quote! {
                 #(#cfgs)*
                 #[allow(non_upper_case_globals)]
                 const #const_ident: ::pvm_contract_sdk::LayoutStep =
-                    ::pvm_contract_sdk::layout_step(
-                        #prev_expr,
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES,
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::SLOTS,
-                    );
+                    ::pvm_contract_sdk::layout_step_component::<#ty>(#prev_expr);
             }
         })
-        .collect()
+        .collect();
+    (items, idents)
 }
 
 /// Generate the TokenStream that pushes storage-layout entries for one field
 /// into the local `entries` Vec.
 ///
-/// For `Lazy<T>` / `Mapping<K, V>` (recognised syntactically) this emits a
-/// single `entries.push(StorageLayoutEntry { … })` with the type name resolved
-/// through `<T as SolEncode>::SOL_NAME`. For any other type the field is
-/// treated as an embedded `#[storage]` sub-struct and dispatched through
-/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`], which recursively
-/// flattens its leaves into the same `entries` Vec, prefixing labels with the
-/// field path (`erc20.total_supply`, `metadata.name`, …) per solc convention.
+/// Every field — `Lazy<T>`, `Mapping<K, V>`, or an embedded `#[storage]`
+/// sub-struct — dispatches uniformly through
+/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`]. Leaf types push a
+/// single entry; sub-structs recursively flatten their own leaves into the
+/// same `entries` Vec, prefixing labels with the field path
+/// (`erc20.total_supply`, `metadata.name`, …) per solc convention. There is
+/// no syntactic type-name special-casing: `<#ty as StorageLayoutEmit>` is the
+/// single source of truth for both the entry's `type` string and its layout,
+/// so adding a storage component is a pure trait-impl task.
 ///
 /// `slot_expr` is a `u64` expression (literal or `base + __pvm_storage_offset_*`
-/// const). `prefix_expr` is a `&str` expression: `""` at the top of a
-/// `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
+/// const); `offset_expr` is a `u8` expression (the packed byte offset, `0` for
+/// full-slot fields). `prefix_expr` is a `&str` expression: `""` at the top of
+/// a `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
 /// `emit_entries` body.
 ///
 /// Used by `#[contract]`'s `__storage_layout_json` (top-level) and `#[storage]`'s
-/// `__storage_layout_entries` (sub-storage).
+/// `emit_entries` (sub-storage).
 pub(super) fn generate_layout_emit(
     field_name_str: &str,
     ty: &syn::Type,
@@ -82,126 +146,39 @@ pub(super) fn generate_layout_emit(
     offset_expr: TokenStream,
     prefix_expr: TokenStream,
 ) -> TokenStream {
-    if is_layout_leaf(ty) {
-        let ty_name_expr = sol_storage_type_name(ty);
-        quote! {
-            entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                label: ::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
-                slot: {
-                    let slot_value: u64 = #slot_expr;
-                    ::std::format!("{}", slot_value)
-                },
-                // The walker tracks `offset` as the big-endian start index of
-                // the field's bytes (distance from the most-significant byte).
-                // solc's storageLayout counts `offset` from the least-significant
-                // byte, so convert: `solc_offset = 32 - high - size`, where
-                // `size` is the field's packed width. Full-slot types
-                // (`PACKED_BYTES == 32`, `offset == 0`) map to `0` unchanged.
-                // Right-alignment holds for every value type in solc storage
-                // (integers, bool, address, and `bytesN`), so this one formula
-                // covers all leaves. The internal RMW window in `Lazy::set/get`
-                // keeps using the unconverted big-endian `offset`.
-                offset: {
-                    let __high: u8 = #offset_expr;
-                    32u8 - __high
-                        - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES as u8
-                },
-                ty: #ty_name_expr,
-            });
+    // Caller is expected to have a `&mut Vec<StorageLayoutEntry>` binding in
+    // scope named `entries`; passing it straight into the trait call
+    // auto-reborrows. Every storage field — `Lazy<T>`, `Mapping<K, V>`,
+    // `StorageVec<T>`, and embedded `#[storage]` sub-structs — implements
+    // `StorageLayoutEmit`, so there is no syntactic type-name special-casing:
+    // the trait is the single source of truth for both the entry's `type`
+    // string and its layout.
+    //
+    // The walker tracks `offset` as the big-endian start index of the field's
+    // bytes (distance from the most-significant byte). solc's `storageLayout`
+    // counts `offset` from the least-significant byte, so convert here —
+    // `solc_offset = 32 - high - size`, where `size` is the field's packed
+    // width (`StorageComponent::PACKED_BYTES`). Right-alignment holds for every
+    // value type in solc storage (integers, bool, address, `bytesN`), and
+    // full-slot leaves (`PACKED_BYTES == 32`, `high == 0`) map to `0`
+    // unchanged, so this one formula covers every leaf. The leaf `emit_entries`
+    // impls then push the already-converted offset verbatim. The internal RMW
+    // window in `Lazy::set/get` keeps using the unconverted big-endian offset.
+    let solc_offset = quote! {
+        {
+            let __high: u8 = #offset_expr;
+            32u8 - __high
+                - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES as u8
         }
-    } else {
-        // Caller is expected to have a `&mut Vec<StorageLayoutEntry>` binding
-        // in scope named `entries`. `entries.push(...)` works against either an
-        // owned Vec or a `&mut Vec`, while passing `entries` straight into the
-        // trait call auto-reborrows when it's already a `&mut`.
-        quote! {
-            <#ty as ::pvm_contract_sdk::StorageLayoutEmit>::emit_entries(
-                #slot_expr,
-                &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
-                entries,
-            );
-        }
-    }
-}
-
-/// Whether the type's layout entry is a single inlined leaf (`Lazy<T>`,
-/// `Mapping<K, V>`, or `StorageVec<T>`) rather than something that should
-/// recurse through [`StorageLayoutEmit`].
-fn is_layout_leaf(ty: &syn::Type) -> bool {
-    matches!(wrapper_and_type_args(ty), Some((name, args)) if {
-        (name == "Lazy" && args.len() == 1)
-            || (name == "Mapping" && args.len() == 2)
-            || (name == "StorageVec" && args.len() == 1)
-    })
-}
-
-/// Build a `String`-valued token expression that names the Solidity storage
-/// type for a storage field's Rust type. Unwraps `Lazy<T>`, recurses into
-/// `Mapping<K, V>` and `StorageVec<T>` (`T[]`) syntactically; everything else
-/// is named via `<T as SolEncode>::SOL_NAME`.
-fn sol_storage_type_name(ty: &syn::Type) -> TokenStream {
-    if let Some((wrapper, args)) = wrapper_and_type_args(ty) {
-        match (wrapper.as_str(), args.as_slice()) {
-            ("Lazy", [inner]) => {
-                return sol_storage_type_name(inner);
-            }
-            ("Mapping", [k, v]) => {
-                let v_expr = sol_storage_type_name(v);
-                return quote! {
-                    ::std::format!(
-                        "mapping({} => {})",
-                        <#k as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
-                        #v_expr,
-                    )
-                };
-            }
-            // `StorageVec<T>` is Solidity's `T[]`. Recurse on the element type
-            // so `StorageVec<StorageVec<U256>>` resolves to `uint256[][]` and
-            // `Mapping<K, StorageVec<T>>` nests correctly.
-            ("StorageVec", [inner]) => {
-                let inner_expr = sol_storage_type_name(inner);
-                return quote! {
-                    ::std::format!("{}[]", #inner_expr)
-                };
-            }
-            _ => {}
-        }
-    }
+    };
     quote! {
-        ::std::string::String::from(<#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME)
+        <#ty as ::pvm_contract_sdk::StorageLayoutEmit>::emit_entries(
+            #slot_expr,
+            #solc_offset,
+            &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
+            entries,
+        );
     }
-}
-
-/// If `ty` is a path type whose final segment is `Lazy`, `Mapping`, or
-/// `StorageVec`, return the segment name and the type-position generic
-/// arguments. Matches on the last segment's ident only, so `Lazy<T>`,
-/// `pvm_storage::Lazy<T>`, and `pvm_contract_sdk::Lazy<T>` all resolve.
-///
-/// Returns `None` for any other type shape, which falls through to the
-/// `SolEncode::SOL_NAME` leaf path.
-fn wrapper_and_type_args(ty: &syn::Type) -> Option<(String, Vec<&syn::Type>)> {
-    let path = match ty {
-        syn::Type::Path(tp) if tp.qself.is_none() => &tp.path,
-        _ => return None,
-    };
-    let last = path.segments.last()?;
-    let name = last.ident.to_string();
-    if name != "Lazy" && name != "Mapping" && name != "StorageVec" {
-        return None;
-    }
-    let args = match &last.arguments {
-        syn::PathArguments::AngleBracketed(a) => a,
-        _ => return None,
-    };
-    let type_args: Vec<&syn::Type> = args
-        .args
-        .iter()
-        .filter_map(|a| match a {
-            syn::GenericArgument::Type(t) => Some(t),
-            _ => None,
-        })
-        .collect();
-    Some((name, type_args))
 }
 
 /// Extract the `#[slot(N)]` attribute value from a field, if present.
