@@ -1407,10 +1407,9 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot — the gas-optimal policy that matches solc.
 ///   For full-slot elements, every pop frees a full slot.
-/// - Out-of-bounds `get`/`set` revert via a plain trap with a static message
-///   (no `core::fmt` in the bytecode), **not** solc's ABI-encoded
-///   `Panic(0x32)` — off-chain callers won't see the `0x32` code. Use
-///   `try_get` to avoid the trap.
+/// - Out-of-bounds `get`/`set` revert with solc's ABI-encoded `Panic(0x32)`
+///   (array out-of-bounds access), matching Solidity — off-chain callers can
+///   decode the `0x32` code. Use `try_get` for a non-reverting read.
 ///
 /// # Element shapes supported
 ///
