@@ -513,7 +513,7 @@ pub trait StorageComponent: Sized {
     ///
     /// - [`Lazy<T>`]: zero the slot(s) the value occupies. For sub-word
     ///   primitives this is a sub-slot RMW that preserves neighbours
-    ///   (matches solc/Stylus). For dynamic types (`String`, `Bytes`),
+    ///   (matches solc). For dynamic types (`String`, `Bytes`),
     ///   clears the header AND any spilled body chunks.
     /// - [`Mapping<K, V>`]: **no-op**. Solidity mappings have no header to
     ///   clear — entries live at derived keys that can't be enumerated. If
@@ -807,7 +807,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// (sub-32-byte primitives that share a slot with neighbours via the
     /// macro walker), `set` performs one SLOAD + one SSTORE: it loads the
     /// shared slot, zeros only the field's byte window, writes the new
-    /// bytes back, and stores. This matches solc and Stylus's gas profile
+    /// bytes back, and stores. This matches solc gas profile
     /// for packed `SSTORE`s — neighbours sharing the slot are preserved.
     ///
     /// **Fast path when alone in slot** (`self.alone == true`): when the

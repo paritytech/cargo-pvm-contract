@@ -107,7 +107,16 @@ pub enum Halt {
 /// silently swallowed.
 struct HaltPanic(Halt);
 
+/// An opaque, cloned copy of a [`MockHost`]'s full state, produced by
+/// [`MockHost::snapshot`] and reinstated by [`MockHost::restore`].
+///
+/// Use it to model pallet-revive's atomic revert explicitly: snapshot before a
+/// call, and `restore` afterwards if it reverted (`MockHost` does not roll back
+/// automatically — see [`MockHost::run_until_halt`]).
+pub struct MockSnapshot(MockState);
+
 /// Shared inner state of a [`MockHost`]. Lives behind `Rc<RefCell<_>>`.
+#[derive(Clone)]
 struct MockState {
     // --- Input state (typically set before execution, read during) ---
     caller: [u8; 20],
@@ -200,6 +209,20 @@ impl MockHost {
         self.state.borrow().events.clone()
     }
 
+    /// Capture the full mock state (storage, events, balances, …) so it can be
+    /// reinstated later with [`Self::restore`]. The primary use is modelling atomic revert
+    /// explicitly (snapshot before a call, `restore` if it reverted).
+    pub fn snapshot(&self) -> MockSnapshot {
+        MockSnapshot(self.state.borrow().clone())
+    }
+
+    /// Reinstate a state previously captured by [`Self::snapshot`], discarding
+    /// every mutation made since. This is the explicit rollback primitive —
+    /// `MockHost` never rolls back on its own.
+    pub fn restore(&self, snapshot: MockSnapshot) {
+        *self.state.borrow_mut() = snapshot.0;
+    }
+
     /// Raw storage read — for test assertions.
     pub fn get_raw_storage(&self, key: &[u8]) -> Option<Vec<u8>> {
         self.state.borrow().storage.get(key).cloned()
@@ -225,7 +248,8 @@ impl MockHost {
     }
 
     /// Run `f`, returning the captured [`Halt`] if it called
-    /// [`HostApi::terminate`] or [`HostApi::consume_all_gas`].
+    /// [`HostApi::revert`], [`HostApi::terminate`], or
+    /// [`HostApi::consume_all_gas`].
     ///
     /// Returns `None` if `f` completed without halting. Non-halt panics from
     /// `f` (overflow, `unwrap`, `BorrowMutError`, etc.) propagate via
@@ -234,6 +258,13 @@ impl MockHost {
     ///
     /// `f` is wrapped in [`std::panic::AssertUnwindSafe`] internally so test
     /// authors don't need to thread the bound through their closures.
+    ///
+    /// **No implicit state rollback.** `MockHost` is a
+    /// transparent flat state store: storage (SSTORE) and event (LOG) writes
+    /// `f` made before a revert **persist** — this does not model
+    /// pallet-revive's on-chain atomic revert. To assert or reset post-revert
+    /// state, capture [`MockHost::snapshot`] before the call and
+    /// [`MockHost::restore`] it after.
     pub fn run_until_halt<F: FnOnce()>(&self, f: F) -> Option<Halt> {
         use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
         match catch_unwind(AssertUnwindSafe(f)) {
@@ -246,7 +277,8 @@ impl MockHost {
     }
 
     /// Run `f`, asserting it reverted via [`HostApi::revert`], and return the
-    /// captured [`ReturnValue`] (the ABI-encoded revert `(flags, data)`).
+    /// captured [`ReturnValue`] (the revert `flags` plus the ABI-encoded revert
+    /// `data`).
     ///
     /// Panics the test with a clear message if `f` returned normally or halted
     /// some other way (terminate / consume-all-gas). Genuine bug panics from
@@ -268,7 +300,7 @@ impl MockHost {
 
     /// Run `f`, asserting it reverted with Solidity `Panic(uint256)` data, and
     /// return the decoded [`Panic`](crate::Panic) variant. Assert on the
-    /// variant, e.g. `assert_eq!(mock.expect_panic(|| v.get(0)),
+    /// variant, e.g. `assert_eq!(mock.expect_panic(|| { let _ = v.get(0); }),
     /// Panic::OutOfBoundsAccess)`.
     ///
     /// Panics the test if `f` did not revert (see [`Self::expect_revert`]), if
@@ -1345,9 +1377,7 @@ mod tests {
     fn expect_revert_returns_abi_bytes() {
         let mock = MockHostBuilder::new().build();
         let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
-        let rv = mock.expect_revert(|| {
-            crate::panic_revert(&host, crate::Panic::OutOfBoundsAccess)
-        });
+        let rv = mock.expect_revert(|| crate::panic_revert(&host, crate::Panic::OutOfBoundsAccess));
         assert!(rv.flags.contains(ReturnFlags::REVERT));
         // Panic(uint256) selector + code byte.
         assert_eq!(&rv.data[0..4], &[0x4e, 0x48, 0x7b, 0x71]);
@@ -1360,5 +1390,43 @@ mod tests {
     fn expect_revert_panics_when_closure_returns_normally() {
         let mock = MockHostBuilder::new().build();
         mock.expect_revert(|| { /* no revert */ });
+    }
+
+    #[test]
+    fn revert_does_not_roll_back_state_by_default() {
+        // MockHost is a flat store: writes made before a
+        // revert persist. The revert data is still observable via expect_panic.
+        let mock = MockHostBuilder::new().build();
+        let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
+        let key = [7u8; 32];
+
+        let panic = mock.expect_panic(|| {
+            host.set_storage(StorageFlags::empty(), &key, &[1u8; 32]);
+            crate::panic_revert(&host, crate::Panic::OutOfBoundsAccess);
+        });
+        assert_eq!(panic, crate::Panic::OutOfBoundsAccess);
+        // Not rolled back automatically:
+        assert_eq!(mock.get_raw_storage(&key), Some(vec![1u8; 32]));
+    }
+
+    #[test]
+    fn snapshot_restore_models_atomic_revert() {
+        // The explicit pattern for asserting a revert left no trace.
+        let mock = MockHostBuilder::new().build();
+        let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
+        let key = [7u8; 32];
+        mock.set_raw_storage(key.to_vec(), vec![0xaa; 32]);
+
+        let before = mock.snapshot();
+        mock.expect_panic(|| {
+            host.set_storage(StorageFlags::empty(), &key, &[1u8; 32]);
+            host.deposit_event(&[[9u8; 32]], &[1, 2, 3]);
+            crate::panic_revert(&host, crate::Panic::OutOfBoundsAccess);
+        });
+        mock.restore(before);
+
+        // Storage/events are back to the pre-call snapshot.
+        assert_eq!(mock.get_raw_storage(&key), Some(vec![0xaa; 32]));
+        assert!(mock.events().is_empty());
     }
 }
