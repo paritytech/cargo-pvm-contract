@@ -10,6 +10,7 @@ members = [
     "crates/pvm-contract-benchmarks",
     "crates/pvm-contract-builder-dsl",
     "crates/pvm-storage",
+    "crates/pvm-solc-differential",
     "crates/pvm-contract-e2e-tests",
     "crates/cargo-pvm-contract-extrinsics",
 ]

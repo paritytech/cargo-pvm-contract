@@ -1,0 +1,34 @@
+[package]
+name = "pvm-solc-differential"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Differential tests of the SDK against real solc: storage layout (JSON) and on-chain storage representation (executed on revm)"
+publish = false
+
+[dependencies]
+# Our SDK surface + the host mock that captures storage writes. Light, always
+# built. `abi-gen` (below) turns on the macro's `__storage_layout_json()` path
+# used by the layout module.
+pvm-contract-sdk = { path = "../pvm-contract-sdk", features = ["alloc", "std"] }
+pvm-contract-types = { path = "../pvm-contract-types", features = [
+    "alloc",
+    "std",
+] }
+ruint = { workspace = true, default-features = false }
+
+# Ground-truth execution of solc output (storage representation). Optional so
+# the default build (and `cargo test --workspace`) stays free of revm's heavy
+# dependency tree; enabled only by `solc-tests`, which also needs `solc` on PATH.
+revm = { version = "40", optional = true }
+alloy-core = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[features]
+default = []
+# Emit the macro's storage-layout JSON accessor (the layout module needs it).
+abi-gen = ["pvm-contract-sdk/abi-gen"]
+# Run the differential tests: needs `solc` on PATH and pulls revm for the
+# storage-representation execution. Implies `abi-gen` for the layout module.
+solc-tests = ["abi-gen", "dep:revm", "dep:alloy-core", "dep:serde_json"]
