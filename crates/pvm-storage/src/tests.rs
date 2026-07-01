@@ -2198,11 +2198,11 @@ fn storage_vec_set_oob_reverts_panic_0x32() {
 }
 
 #[test]
-fn storage_vec_len_corrupt_high_byte_reverts_panic_0x41() {
+fn storage_vec_len_corrupt_high_byte_reverts_panic_0x22() {
     // Seed the length slot with a value whose upper 24 bytes are non-zero —
     // i.e. a length > u64::MAX, only reachable via foreign/raw writes or a
-    // layout collision. `len()` must revert with Panic(0x41) rather than
-    // silently truncating or bricking.
+    // layout collision. `len()` must revert with Panic(0x22) (incorrectly
+    // encoded storage array) rather than silently truncating or bricking.
     let (host, mock) = host_and_mock();
     let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
     let mut corrupt = [0u8; 32];
@@ -2212,7 +2212,7 @@ fn storage_vec_len_corrupt_high_byte_reverts_panic_0x41() {
         mock.expect_panic(|| {
             let _ = v.len();
         }),
-        Panic::OOM
+        Panic::StorageByteArrayEncoding
     );
 }
 

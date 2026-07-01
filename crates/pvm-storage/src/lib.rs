@@ -200,13 +200,14 @@ fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
 /// Read a u64 length from a storage slot's lower 8 bytes (big-endian).
 /// Solidity stores array lengths as `uint256`; we cap support at `u64::MAX`
 /// elements (more than enough for any real-world contract). If the upper 24
-/// bytes are non-zero — indicating corrupted state or a length set via raw
-/// uAPI beyond our supported range — we revert with `Panic(0x41)` ("array too
-/// large"), matching Solidity's resource-exhaustion panic class.
+/// bytes are non-zero the stored length is malformed — corrupt state or a
+/// length written via raw uAPI beyond our supported range — so we revert with
+/// `Panic(0x22)`, which is exactly Solidity's "accessed a storage byte array
+/// that is incorrectly encoded".
 fn read_len_u64(host: &Host, slot_key: &[u8; 32]) -> u64 {
     let buf = storage_get_32(host, slot_key);
     if !buf[..24].iter().all(|&b| b == 0) {
-        panic_revert(host, Panic::OOM);
+        panic_revert(host, Panic::StorageByteArrayEncoding);
     }
     u64::from_be_bytes([
         buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
