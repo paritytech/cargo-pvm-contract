@@ -12,8 +12,11 @@ anyhow = { workspace = true }
 polkavm-linker = { workspace = true }
 pvm-contract-types = { path = "../pvm-contract-types", default-features = false, features = ["abi-gen"] }
 syn = { workspace = true }
+syn-solidity = { workspace = true }
+proc-macro2 = { workspace = true }
 toml_edit = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.13"
+expect-test = "1.5.1"

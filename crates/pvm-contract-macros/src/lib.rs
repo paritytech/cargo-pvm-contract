@@ -177,12 +177,17 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// ```ignore
 /// let mock = MockHostBuilder::new().build();
-/// let mut contract = my_token::Contract {
-///     host: Host::from_dyn(::std::rc::Rc::new(mock.clone())),
-/// };
+/// let mut contract = my_token::Contract::with_host(mock.clone());
 /// let bal = contract.balance_of(account);
 /// assert_eq!(bal, U256::from(42));
 /// ```
+///
+/// The macro generates `Contract::with_host(backend)` — wraps any
+/// `HostApi` implementor in `Rc<dyn HostApi>` and initialises `#[slot(N)]`
+/// fields. Mirrors the std-lib `Vec::with_capacity` idiom for
+/// "constructor with a non-default dependency." The user's
+/// `#[constructor]` is NOT run — seed storage on the mock directly if
+/// you need initial state.
 ///
 /// **Dispatch-level** (selector routing, ABI revert encoding) — drive
 /// `route()` with raw calldata and read the captured `ReturnValue`:
@@ -1079,6 +1084,43 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
     match codegen::expand_sol_type(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive the storage-layout traits ([`StorageEncode`], [`StorageDecode`],
+/// and the `StaticStorageEncode`/`StaticStorageDecode` refinement for static
+/// structs) for a struct that can be used as a `Lazy<S>` / `Mapping<_, S>`
+/// value.
+///
+/// This derive is **separate from `#[derive(SolType)]`** — `SolType` covers
+/// ABI encoding (calldata, return values, event fields) and is meaningful
+/// for any struct, while `SolStorage` covers the solc-compatible on-chain
+/// storage layout and only makes sense for structs that will live in
+/// contract storage. Most user structs that go in storage will derive both:
+///
+/// ```ignore
+/// #[derive(SolType, SolStorage)]
+/// struct AccountInfo {
+///     addr: Address,
+///     balance: U256,
+/// }
+/// ```
+///
+/// If any field is not yet storage-compatible (nested SolType structs,
+/// `Vec<T>` for `T != u8`, fixed arrays of non-`u8`, tuples), the derive
+/// emits a `compile_error!` at expansion time — visible to `cargo check`
+/// and `trybuild`, unlike the prior `const STORAGE_SLOTS = panic!(...)`
+/// stub that only fired during MIR const-eval at `cargo build` time.
+///
+/// [`StorageEncode`]: pvm_contract_sdk::StorageEncode
+/// [`StorageDecode`]: pvm_contract_sdk::StorageDecode
+#[proc_macro_derive(SolStorage)]
+pub fn sol_storage(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match codegen::expand_sol_storage(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

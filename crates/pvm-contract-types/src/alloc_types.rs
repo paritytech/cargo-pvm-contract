@@ -72,35 +72,37 @@ impl crate::StorageEncode for Bytes {
     const PACKED_BYTES: usize = 32;
     const HAS_DYNAMIC_BODY: bool = true;
 
-    // Dynamic-body type: live path goes through `write_to_storage` (header +
-    // body in one operation). `encode_slot` exists only to satisfy the
-    // trait's required-method contract that compile-checks static impls
-    // never forget a real slot codec.
-    fn encode_slot(&self, _slot_idx: usize, _buf: &mut [u8; 32]) {
-        unreachable!("Bytes::encode_slot: dispatch through write_to_storage")
-    }
-
     fn write_to_storage(&self, host: &crate::Host, base_key: &[u8; 32]) {
         crate::storage_codec::write_dynamic_bytes(host, base_key, &self.0);
     }
 
-    fn clear_storage(host: &crate::Host, base_key: &[u8; 32], _slots: usize) {
+    fn clear_storage(host: &crate::Host, base_key: &[u8; 32]) {
         crate::storage_codec::clear_dynamic_bytes(host, base_key);
     }
 }
 
 impl crate::StorageDecode for Bytes {
-    // Dynamic-body type: see `encode_slot` above. Reads dispatch through
-    // `read_from_storage`.
-    fn from_slots(_slots: &[[u8; 32]]) -> Self {
-        unreachable!("Bytes::from_slots: dispatch through read_from_storage")
+    fn read_from_storage(host: &crate::Host, base_key: &[u8; 32]) -> Self {
+        Bytes(crate::storage_codec::read_dynamic_bytes(host, base_key))
     }
 
-    fn read_from_storage<const MAX_INLINE_SLOTS: usize>(
-        host: &crate::Host,
-        base_key: &[u8; 32],
-    ) -> Self {
-        Bytes(crate::storage_codec::read_dynamic_bytes(host, base_key))
+    fn try_read_from_storage(host: &crate::Host, base_key: &[u8; 32]) -> Option<Self> {
+        // Header-only peek: zero header means nothing written. Empty values
+        // are tagged with EMPTY_INLINE_SENTINEL at byte 30 (see storage_codec).
+        use crate::HostApi;
+        let mut header = [0u8; 32];
+        host.get_storage_or_zero(crate::StorageFlags::empty(), base_key, &mut header);
+        if header == [0u8; 32] {
+            return None;
+        }
+        Some(Self::read_from_storage(host, base_key))
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+impl crate::StorageTypeName for Bytes {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as SolEncode>::SOL_NAME)
     }
 }
 
@@ -211,11 +213,10 @@ impl<T: SolEncode> crate::SolArrayElement for alloc::vec::Vec<T> {}
 
 impl<T: SolDecode> SolDecode for alloc::vec::Vec<T> {
     fn decode_at(input: &[u8], offset: usize) -> Result<Self, DecodeError> {
-        let data_offset = input
-            .get(offset + 24..offset + 32)
-            .and_then(|x| TryInto::<[u8; 8]>::try_into(x).ok())
-            .ok_or(DecodeError)
-            .map(u64::from_be_bytes)? as usize;
+        // Read the head pointer with checked arithmetic so an attacker-controlled
+        // offset near `usize::MAX` fails closed instead of wrapping — symmetric
+        // with `String`/`Bytes::decode_at` and `Vec::decode_tail`.
+        let data_offset = crate::read_word_offset(input, offset)?;
         Self::decode_tail(input, data_offset)
     }
 

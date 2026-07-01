@@ -114,7 +114,7 @@ fn lazy_multi_slot_writes_consecutive_keys() {
 
     let slot0 = storage_get_32(&host, &base);
     let mut next = base;
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
     let slot1 = storage_get_32(&host, &next);
 
     assert_eq!(slot0[31], 0xAA, "first U256 at base slot: {slot0:?}");
@@ -130,7 +130,7 @@ fn lazy_multi_slot_try_get_some_when_only_second_word_set() {
     let mut second = [0u8; 32];
     second[31] = 0x42;
     let mut next = *key.as_bytes();
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
     storage_set_32(&host, &next, &second);
 
     let lazy = unsafe { Lazy::<(U256, U256)>::new(key, 0, host) };
@@ -156,7 +156,7 @@ fn lazy_multi_slot_clear_removes_all_words() {
 
     let mut next = base;
     assert_eq!(storage_try_get_32(&host, &next), None, "word 0 not cleared");
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
     assert_eq!(storage_try_get_32(&host, &next), None, "word 1 not cleared");
 }
 
@@ -167,7 +167,7 @@ fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
     let mut lazy = unsafe { Lazy::<(U256, U256)>::new(StorageKey::from_slot(0), 0, h()) };
     let host = lazy.host.clone();
     let mut next = *lazy.key.as_bytes();
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
 
     lazy.set(&(U256::from(5u64), U256::from(5u64)));
     lazy.set(&(U256::from(5u64), U256::ZERO));
@@ -253,7 +253,7 @@ fn mapping_multi_slot_remove_clears_all_words() {
 
     let mut k = derived;
     assert_eq!(storage_try_get_32(&host, &k), None, "word 0 not removed");
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     assert_eq!(storage_try_get_32(&host, &k), None, "word 1 not removed");
     assert_eq!(m.try_get(&addr), None);
 }
@@ -266,7 +266,7 @@ fn mapping_multi_slot_overwrite_smaller_clears_stale_word() {
     let host = m.host.clone();
     let addr = Address([0xEF; 20]);
     let mut next = *m.slot_of(&addr).as_bytes();
-    inc_slot(&mut next);
+    inc_be_32(&mut next);
 
     m.insert(&addr, &(U256::from(1u64), U256::from(2u64)));
     m.insert(&addr, &(U256::from(1u64), U256::ZERO));
@@ -301,8 +301,10 @@ fn nested_mapping_allowances() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    allowances.entry(&owner).insert(&spender, &U256::from(500));
-    assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
+    allowances
+        .view_mut(&owner)
+        .insert(&spender, &U256::from(500));
+    assert_eq!(allowances.view(&owner).get(&spender), U256::from(500));
 }
 
 // --- Tuple keys ---
@@ -318,7 +320,7 @@ fn tuple_key_matches_chaining() {
     let mut chained = unsafe {
         Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone())
     };
-    chained.entry(&owner).insert(&spender, &amount);
+    chained.view_mut(&owner).insert(&spender, &amount);
 
     // Read via tuple key (same slot, same host state)
     let tuple_map =
@@ -424,7 +426,7 @@ fn lazy_string_overwrite_smaller() {
             None,
             "stale body chunk not cleared"
         );
-        inc_slot(&mut body_slot);
+        inc_be_32(&mut body_slot);
     }
 }
 
@@ -610,7 +612,7 @@ fn lazy_string_long_spill_layout() {
     let chunk0 = storage_get_32(&host, &body_slot);
     assert_eq!(&chunk0[..32], &s.as_bytes()[..32]);
 
-    inc_slot(&mut body_slot);
+    inc_be_32(&mut body_slot);
     let chunk1 = storage_get_32(&host, &body_slot);
     assert_eq!(&chunk1[..8], &s.as_bytes()[32..40]);
     assert!(chunk1[8..].iter().all(|&b| b == 0), "trailing chunk pad");
@@ -652,7 +654,7 @@ fn lazy_string_shrink_long_to_short_clears_chunks() {
             None,
             "body chunk {chunk_idx} not cleared after shrink"
         );
-        inc_slot(&mut body_slot);
+        inc_be_32(&mut body_slot);
     }
 }
 
@@ -677,7 +679,7 @@ fn lazy_string_clear_after_long_deletes_chunks() {
             None,
             "body chunk {chunk_idx} survived clear()"
         );
-        inc_slot(&mut body_slot);
+        inc_be_32(&mut body_slot);
     }
     assert_eq!(lazy.try_get(), None);
     assert_eq!(lazy.get(), "");
@@ -959,6 +961,134 @@ fn packed_u128_clear_preserves_neighbour() {
     assert_ne!(slot, [0u8; 32], "slot retained — a kept it alive");
 }
 
+/// Fast path: when `Lazy::new_alone` declares the slot has no neighbours,
+/// `set` writes the value directly with the surrounding bytes zeroed —
+/// skipping the SLOAD that the RMW path would do to preserve neighbours.
+///
+/// We can't count SLOADs from the test (`MockHost` doesn't expose a
+/// counter), so we observe the effect: pre-seed the slot with a non-zero
+/// "neighbour" pattern at bytes 0..16, then `set` an alone-flagged
+/// `Lazy<u128>` at offset 16. After the write the neighbour bytes must be
+/// zero — proof that the SLOAD didn't happen (otherwise the RMW path
+/// would have preserved them).
+#[test]
+fn lazy_set_alone_in_slot_skips_rmw_and_clobbers_neighbour_bytes() {
+    let host = h();
+    let key = StorageKey::from_slot(0);
+
+    // Seed the slot with a pattern: bytes 0..16 non-zero (a hypothetical
+    // neighbour), bytes 16..32 zero.
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    storage_set_32(&host, key.as_bytes(), &seed);
+
+    // Alone-in-slot write at offset 16.
+    let mut lazy = unsafe { Lazy::<u128>::new_alone(key, 16, host.clone()) };
+    let v = 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10u128;
+    lazy.set(&v);
+
+    // Bytes 16..32 hold the value; bytes 0..16 are zero (RMW would have
+    // preserved the 0xCC pattern).
+    let slot = storage_get_32(&host, key.as_bytes());
+    assert_eq!(
+        &slot[16..32],
+        &v.to_be_bytes(),
+        "value written at offset 16"
+    );
+    assert!(
+        slot[..16].iter().all(|&b| b == 0),
+        "alone fast path clobbered the neighbour bytes (no SLOAD): got {:02x?}",
+        &slot[..16],
+    );
+}
+
+/// Counter-check: with `alone = false` (the default `Lazy::new` path), `set`
+/// must take the RMW branch and preserve neighbour bytes. Pairs with the
+/// fast-path test above so a regression on either branch is caught.
+#[test]
+fn lazy_set_not_alone_rmw_preserves_neighbour_bytes() {
+    let host = h();
+    let key = StorageKey::from_slot(0);
+
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    storage_set_32(&host, key.as_bytes(), &seed);
+
+    let mut lazy = unsafe { Lazy::<u128>::new(key, 16, host.clone()) };
+    let v = 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10u128;
+    lazy.set(&v);
+
+    let slot = storage_get_32(&host, key.as_bytes());
+    assert_eq!(
+        &slot[16..32],
+        &v.to_be_bytes(),
+        "value written at offset 16"
+    );
+    assert_eq!(
+        &slot[..16],
+        &[0xCC; 16],
+        "RMW preserved the neighbour bytes",
+    );
+}
+
+/// `Lazy::clear` fast path: alone-in-slot clears emit a single all-zero
+/// SSTORE (auto-deleted by the host), without first SLOADing the slot.
+/// Observable via the same neighbour-clobber test — RMW would have
+/// preserved the 0xCC pattern.
+#[test]
+fn lazy_clear_alone_in_slot_skips_rmw_and_clobbers_neighbour_bytes() {
+    let host = h();
+    let key = StorageKey::from_slot(0);
+
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    seed[16..].copy_from_slice(&[0xAA; 16]);
+    storage_set_32(&host, key.as_bytes(), &seed);
+
+    let mut lazy = unsafe { Lazy::<u128>::new_alone(key, 16, host.clone()) };
+    <Lazy<u128> as StorageComponent>::clear(&mut lazy);
+
+    // Whole slot wiped: the host's `set_storage_or_clear` auto-deletes the
+    // all-zero slot, so `storage_get_32` reads back zeros for every byte.
+    let slot = storage_get_32(&host, key.as_bytes());
+    assert_eq!(
+        slot, [0u8; 32],
+        "alone-in-slot clear wiped the whole slot — no RMW",
+    );
+}
+
+/// `Mapping::entry(&k).set(&v)` must hit the alone fast path because each
+/// derived slot is unique to `k`. Verifies the wiring from `Mapping::entry`
+/// → `Lazy::new_alone`. Same observable signature: seed the derived slot
+/// with non-zero "neighbour" bytes, then write through `entry` and check
+/// they were clobbered.
+#[test]
+fn mapping_entry_set_takes_alone_fast_path_for_subword_v() {
+    let host = h();
+    let mut m = unsafe { Mapping::<Address, u128>::new(StorageKey::from_slot(7), host.clone()) };
+    let addr = Address([0x12; 20]);
+
+    // Seed the derived slot with a pattern at bytes 0..16. This would only
+    // happen in practice if some other contract or raw uAPI wrote there —
+    // not reachable through the typed API. The seed lets us observe whether
+    // `entry().set()` takes the RMW or alone path.
+    let derived = m.slot_of(&addr);
+    let mut seed = [0u8; 32];
+    seed[..16].copy_from_slice(&[0xCC; 16]);
+    storage_set_32(&host, derived.as_bytes(), &seed);
+
+    let v = 0x1122_3344_5566_7788_99AA_BBCC_DDEE_FF00u128;
+    m.entry(&addr).set(&v);
+
+    let slot = storage_get_32(&host, derived.as_bytes());
+    assert_eq!(&slot[16..32], &v.to_be_bytes(), "value at offset 16");
+    assert!(
+        slot[..16].iter().all(|&b| b == 0),
+        "Mapping::entry took the alone fast path — neighbour bytes clobbered: got {:02x?}",
+        &slot[..16],
+    );
+}
+
 /// Multi-slot composite (`(U256, U256)`) starts a fresh slot and consumes
 /// it to the end, so the next field starts at a new slot.
 #[test]
@@ -1052,7 +1182,7 @@ fn lazy_string_decode_silently_replaces_invalid_utf8_with_replacement_char() {
 fn storage_component_new_at_matches_new() {
     let host = h();
     let mut a = unsafe { Lazy::<U256>::new(StorageKey::from_slot(7), 0, host.clone()) };
-    let mut b = <Lazy<U256> as StorageComponent>::new_at(7, 0, host);
+    let mut b = <Lazy<U256> as StorageComponent>::new_at(StorageKey::from_slot(7), 0, true, host);
     a.set(&U256::from(99));
     // `b` shares the host, so should see the same write.
     assert_eq!(b.get(), U256::from(99));
@@ -1240,22 +1370,26 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
     let k2 = Address([0xBB; 20]);
     let v: u128 = 0x1234_5678_90AB_CDEFu128;
 
-    m1.entry(&k1).entry(&k2).set(&v);
-    m2.entry(&k1).insert(&k2, &v);
+    m1.view_mut(&k1).entry(&k2).set(&v);
+    m2.view_mut(&k1).insert(&k2, &v);
 
-    // Outer get → Ref<inner>, inner .get(k2) → V.
+    // Outer view → Ref<inner>, inner .get(k2) → V.
     assert_eq!(
-        m1.get(&k1).get(&k2),
+        m1.view(&k1).get(&k2),
         v,
-        "nested: entry-entry-set then get-get"
+        "nested: view_mut/entry/set then view/get"
     );
-    assert_eq!(m2.get(&k1).get(&k2), v, "nested: entry-insert then get-get");
+    assert_eq!(
+        m2.view(&k1).get(&k2),
+        v,
+        "nested: view_mut/insert then view/get"
+    );
 
     // Inspect the deepest derived slot via the inner mapping's slot_of
     // (which is reachable through Ref<Mapping<K2, V>>::slot_of since
     // slot_of takes `&self`).
-    let inner_slot_1 = m1.get(&k1).slot_of(&k2);
-    let inner_slot_2 = m2.get(&k1).slot_of(&k2);
+    let inner_slot_1 = m1.view(&k1).slot_of(&k2);
+    let inner_slot_2 = m2.view(&k1).slot_of(&k2);
     let slot1 = storage_get_32(&host, inner_slot_1.as_bytes());
     let slot2 = storage_get_32(&host, inner_slot_2.as_bytes());
     assert_eq!(slot1, slot2, "nested: entry vs insert produce same bytes");
@@ -1316,7 +1450,14 @@ where
     let map_entry_slot = m_entry.slot_of(&1u64);
     // 4. StorageComponent::new_at + set
     {
-        let mut lazy = <Lazy<V> as StorageComponent>::new_at(3, canonical, host.clone());
+        // alone=true is the realistic input here — these slots have no
+        // siblings — and exercises the fast write path.
+        let mut lazy = <Lazy<V> as StorageComponent>::new_at(
+            StorageKey::from_slot(3),
+            canonical,
+            true,
+            host.clone(),
+        );
         lazy.set(&sample);
     }
 
@@ -1351,7 +1492,13 @@ where
     let r_map_insert = m_insert.get(&1u64);
     let r_map_entry_get = m_entry.get(&1u64);
     let r_map_entry_entry_get = m_entry.entry(&1u64).get();
-    let r_component = <Lazy<V> as StorageComponent>::new_at(3, canonical, host.clone()).get();
+    let r_component = <Lazy<V> as StorageComponent>::new_at(
+        StorageKey::from_slot(3),
+        canonical,
+        true,
+        host.clone(),
+    )
+    .get();
     assert_eq!(r_lazy, sample, "{name}: Lazy round-trip");
     assert_eq!(r_map_insert, sample, "{name}: Mapping::get round-trip");
     assert_eq!(
@@ -1597,12 +1744,12 @@ fn erc20_storage_example() {
     assert_eq!(balances.get(&bob), U256::from(300));
 
     // Approve: alice approves bob for 500
-    allowances.entry(&alice).insert(&bob, &U256::from(500));
+    allowances.view_mut(&alice).insert(&bob, &U256::from(500));
 
     // Read allowance via chaining
-    assert_eq!(allowances.get(&alice).get(&bob), U256::from(500));
+    assert_eq!(allowances.view(&alice).get(&bob), U256::from(500));
     // Other direction is zero
-    assert_eq!(allowances.get(&bob).get(&alice), U256::ZERO);
+    assert_eq!(allowances.view(&bob).get(&alice), U256::ZERO);
 }
 
 #[test]
@@ -1647,8 +1794,8 @@ fn nested_mapping_slot_matches_solidity() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    // Derive via chaining: get(&owner) returns inner Mapping, then slot_of(&spender)
-    let inner = allowances.get(&owner);
+    // Derive via chaining: view(&owner) returns Ref<inner>, then slot_of(&spender)
+    let inner = allowances.view(&owner);
     let slot = inner.slot_of(&spender);
 
     let expected = [
@@ -1857,7 +2004,7 @@ fn lazy_string_native_clear_removes_header_and_body() {
     let mut body = dynamic_data_root(&host, key.as_bytes());
     for _ in 0..3 {
         assert_eq!(storage_try_get_32(&host, &body), None);
-        inc_slot(&mut body);
+        inc_be_32(&mut body);
     }
 }
 
@@ -2054,7 +2201,7 @@ fn storage_vec_clear_resets_everything() {
     let mut k = body;
     for _ in 0..3 {
         assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
-        inc_slot(&mut k);
+        inc_be_32(&mut k);
     }
 }
 
@@ -2105,10 +2252,10 @@ fn storage_vec_layout_matches_solidity_uint256_array() {
     let e0 = storage_get_32(&host, &body);
     assert_eq!(e0[31], 0xAA);
     let mut k = body;
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e1 = storage_get_32(&host, &k);
     assert_eq!(e1[31], 0xBB);
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e2 = storage_get_32(&host, &k);
     assert_eq!(e2[31], 0xCC);
 }
@@ -2153,7 +2300,8 @@ fn storage_vec_new_at_matches_unsafe_new() {
     // it produces a handle indistinguishable from `unsafe { new(...) }`.
     let host = h();
     let mut a = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(3), host.clone()) };
-    let mut b = <StorageVec<U256> as StorageComponent>::new_at(3, 0, host);
+    let mut b =
+        <StorageVec<U256> as StorageComponent>::new_at(StorageKey::from_slot(3), 0, true, host);
     a.push(&U256::from(7u64));
     assert_eq!(b.get(0), U256::from(7u64));
     b.push(&U256::from(9u64));
@@ -2204,7 +2352,7 @@ fn storage_vec_subword_u32_layout_matches_solc() {
 
     // Slot 1 of body holds elements 8..10.
     let mut s1_key = body;
-    inc_slot(&mut s1_key);
+    inc_be_32(&mut s1_key);
     let s1 = storage_get_32(&host, &s1_key);
     // Element 8 lives at within=0 (bytes 28..32).
     assert_eq!(
@@ -2259,7 +2407,7 @@ fn storage_vec_subword_pop_clears_slot_when_freeing_first_in_slot() {
     }
     let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
     let mut slot1_key = body;
-    inc_slot(&mut slot1_key);
+    inc_be_32(&mut slot1_key);
     // Before pop: slot 1 has element 8 at bytes 28..32.
     let before = storage_get_32(&host, &slot1_key);
     assert_eq!(
@@ -2294,7 +2442,7 @@ fn storage_vec_subword_clear_resets_all_body_slots() {
     let mut key = body;
     for _ in 0..3 {
         assert_eq!(storage_get_32(&host, &key), [0u8; 32]);
-        inc_slot(&mut key);
+        inc_be_32(&mut key);
     }
 }
 
@@ -2341,16 +2489,16 @@ fn storage_vec_multislot_layout_uses_stride() {
     // Element 0 occupies slots body+0, body+1.
     let e0_s0 = storage_get_32(&host, &body);
     let mut k = body;
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e0_s1 = storage_get_32(&host, &k);
     // Tuple `(a, b)` encoding: a at slot 0, b at slot 1 (both right-aligned U256s).
     assert_eq!(U256::from_be_bytes(e0_s0), U256::from(0x1111u64));
     assert_eq!(U256::from_be_bytes(e0_s1), U256::from(0x2222u64));
 
     // Element 1 occupies slots body+2, body+3.
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e1_s0 = storage_get_32(&host, &k);
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     let e1_s1 = storage_get_32(&host, &k);
     assert_eq!(U256::from_be_bytes(e1_s0), U256::from(0x3333u64));
     assert_eq!(U256::from_be_bytes(e1_s1), U256::from(0x4444u64));
@@ -2381,7 +2529,7 @@ fn storage_vec_multislot_pop_clears_all_slots() {
     let mut k = body;
     inc_slot_by(&mut k, 2); // element 1 starts at body + 2
     assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
-    inc_slot(&mut k);
+    inc_be_32(&mut k);
     assert_eq!(storage_get_32(&host, &k), [0u8; 32]);
 }
 
@@ -2424,7 +2572,7 @@ fn storage_vec_fixed_array_u32_boundary_crossing() {
     );
 
     let mut slot1_key = body;
-    inc_slot(&mut slot1_key);
+    inc_be_32(&mut slot1_key);
     let slot1 = storage_get_32(&host, &slot1_key);
     // element 8 right-aligned in slot 1
     assert_eq!(
@@ -2472,7 +2620,7 @@ fn storage_vec_fixed_array_address_no_packing() {
         let slot = storage_get_32(&host, &k);
         assert_eq!(&slot[..12], &[0u8; 12]);
         assert_eq!(&slot[12..32], &expected.0);
-        inc_slot(&mut k);
+        inc_be_32(&mut k);
     }
 }
 
@@ -2505,7 +2653,7 @@ fn storage_vec_fixed_array_pop_clears_all_slots() {
 
     let body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
     let mut slot1 = body;
-    inc_slot(&mut slot1);
+    inc_be_32(&mut slot1);
     assert_ne!(storage_get_32(&host, &body), [0u8; 32]);
     assert_ne!(storage_get_32(&host, &slot1), [0u8; 32]);
 
@@ -2639,7 +2787,7 @@ fn storage_vec_dynamic_clear_zeros_spilled_bodies() {
     let mut header_key = body;
     for _ in 0..3 {
         assert_eq!(storage_get_32(&host, &header_key), [0u8; 32]);
-        inc_slot(&mut header_key);
+        inc_be_32(&mut header_key);
     }
 
     // The previously-non-zero spilled chunk of element 0 is now zero.
@@ -2718,7 +2866,7 @@ fn mapping_of_storage_vec_matches_solc_layout() {
     assert_eq!(U256::from_be_bytes(e0), U256::from(0xDEADu64));
 
     let mut e1_key = body_base;
-    inc_slot(&mut e1_key);
+    inc_be_32(&mut e1_key);
     let e1 = storage_get_32(&host, &e1_key);
     assert_eq!(U256::from_be_bytes(e1), U256::from(0xBEEFu64));
 }
@@ -2861,7 +3009,7 @@ fn nested_storage_vec_matches_solc_layout() {
     assert_eq!(U256::from_be_bytes(inner2_e0), U256::from(0x2222u64));
 
     let mut inner2_e1_key = inner2_body;
-    inc_slot(&mut inner2_e1_key);
+    inc_be_32(&mut inner2_e1_key);
     let inner2_e1 = storage_get_32(&host, &inner2_e1_key);
     assert_eq!(U256::from_be_bytes(inner2_e1), U256::from(0x3333u64));
 }
@@ -2917,7 +3065,12 @@ fn nested_storage_vec_new_at_matches_new() {
     let host = h();
     let mut a =
         unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(4), host.clone()) };
-    let mut b = <StorageVec<StorageVec<U256>> as StorageComponent>::new_at(4, 0, host);
+    let mut b = <StorageVec<StorageVec<U256>> as StorageComponent>::new_at(
+        StorageKey::from_slot(4),
+        0,
+        true,
+        host,
+    );
     a.grow();
     a.entry(0).push(&U256::from(0xAAu64));
     // Both handles see the same underlying storage.
@@ -2992,7 +3145,7 @@ fn nested_storage_vec_erase_last_recursively_clears_inner() {
     assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner1_body), [0u8; 32]);
     let mut inner1_body_next = inner1_body;
-    inc_slot(&mut inner1_body_next);
+    inc_be_32(&mut inner1_body_next);
     assert_eq!(storage_get_32(&host, &inner1_body_next), [0u8; 32]);
 
     // Surviving inner row is untouched.
@@ -3021,7 +3174,7 @@ fn nested_storage_vec_clear_recursively_clears_all_inners() {
     let outer_body = storage_derive_body_base(&host, StorageKey::from_slot(0).as_bytes());
     let inner0_root = outer_body;
     let mut inner1_root = outer_body;
-    inc_slot(&mut inner1_root);
+    inc_be_32(&mut inner1_root);
     let inner0_body = storage_derive_body_base(&host, &inner0_root);
     let inner1_body = storage_derive_body_base(&host, &inner1_root);
 
@@ -3044,7 +3197,7 @@ fn nested_storage_vec_clear_recursively_clears_all_inners() {
     assert_eq!(storage_get_32(&host, &inner0_root), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner0_body), [0u8; 32]);
     let mut inner0_body_next = inner0_body;
-    inc_slot(&mut inner0_body_next);
+    inc_be_32(&mut inner0_body_next);
     assert_eq!(storage_get_32(&host, &inner0_body_next), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32]);
     assert_eq!(storage_get_32(&host, &inner1_body), [0u8; 32]);

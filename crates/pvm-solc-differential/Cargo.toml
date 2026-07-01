@@ -4,13 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Differential tests of the SDK against real solc: storage layout (JSON) and on-chain storage representation (executed on revm)"
+description = "Differential test of the SDK's on-chain storage representation against real solc (executed on revm)"
 publish = false
 
 [dependencies]
 # Our SDK surface + the host mock that captures storage writes. Light, always
-# built. `abi-gen` (below) turns on the macro's `__storage_layout_json()` path
-# used by the layout module.
+# built.
 pvm-contract-sdk = { path = "../pvm-contract-sdk", features = ["alloc", "std"] }
 pvm-contract-types = { path = "../pvm-contract-types", features = [
     "alloc",
@@ -27,8 +26,12 @@ serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
-# Emit the macro's storage-layout JSON accessor (the layout module needs it).
+# Declared (kept off) only so the `#[derive(SolStorage)]`-emitted
+# `#[cfg(feature = "abi-gen")]` code is a recognized cfg — silences the
+# `unexpected_cfgs` lint. The storage-representation test doesn't use the
+# layout-JSON accessor, so it never needs this enabled.
 abi-gen = ["pvm-contract-sdk/abi-gen"]
-# Run the differential tests: needs `solc` on PATH and pulls revm for the
-# storage-representation execution. Implies `abi-gen` for the layout module.
-solc-tests = ["abi-gen", "dep:revm", "dep:alloy-core", "dep:serde_json"]
+# Run the differential test: needs `solc` on PATH and pulls revm to execute
+# solc's bytecode. Gated so the default build / `cargo test --workspace` stays
+# revm-free.
+solc-tests = ["dep:revm", "dep:alloy-core", "dep:serde_json"]

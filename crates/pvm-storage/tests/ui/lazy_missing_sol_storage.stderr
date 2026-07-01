@@ -1,0 +1,28 @@
+error[E0277]: `MissingSolStorage` cannot be read from `Lazy<MissingSolStorage>` or `Mapping<_, MissingSolStorage>`
+  --> tests/ui/lazy_missing_sol_storage.rs:24:27
+   |
+24 |     store_as_lazy_value::<MissingSolStorage>();
+   |                           ^^^^^^^^^^^^^^^^^ `MissingSolStorage` does not implement `StorageDecode`
+   |
+help: the trait `StorageDecode` is not implemented for `MissingSolStorage`
+  --> tests/ui/lazy_missing_sol_storage.rs:16:1
+   |
+16 | struct MissingSolStorage {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: add `#[derive(SolStorage)]` to `MissingSolStorage` — only types deriving `SolStorage` can be `Lazy<T>` / `Mapping<_, T>` values
+   = note: if `MissingSolStorage` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage
+   = help: the following other types implement trait `StorageDecode`:
+             (A, B)
+             (A, B, C)
+             (A, B, C, D)
+             (A, B, C, D, E)
+             (A, B, C, D, E, F)
+             (A, B, C, D, E, F, G)
+             (A, B, C, D, E, F, G, H)
+             (A,)
+           and $N others
+note: required by a bound in `store_as_lazy_value`
+  --> tests/ui/lazy_missing_sol_storage.rs:21:43
+   |
+21 | fn store_as_lazy_value<T: StorageEncode + StorageDecode>() {}
+   |                                           ^^^^^^^^^^^^^ required by this bound in `store_as_lazy_value`

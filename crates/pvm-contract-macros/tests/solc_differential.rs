@@ -1,33 +1,53 @@
-//! Differential storage-*layout* tests: the macro's emitted `storageLayout`
-//! JSON vs solc's `storageLayout` JSON.
+//! Differential storage-layout tests against the real Solidity compiler.
 //!
-//! Complements the golden-snapshot layout tests in `pvm-contract-macros`
-//! (`abi_output.rs`, which compare to hand-authored JSON): those pin stability
-//! but can't catch a bug baked into both the walker and the golden. Here solc
-//! is the ground truth. For each fixture:
-//!   1. a `#[contract]` module + the *equivalent* Solidity source,
-//!   2. `solc --standard-json` with `storageLayout` output selection,
-//!   3. resolve solc's `type` ids through its `types` table to the human label,
-//!   4. normalize both sides to `{label, slot, offset, type}` (the subset we
+//! Every other storage-layout test in this crate is a *snapshot* test: it
+//! compares the macro's emitted `storageLayout` JSON to a hand-authored golden
+//! file. Those pin stability, but they can't catch a layout bug that was baked
+//! into both the walker and the golden at the same time — the test names say
+//! "solc_compatible" but solc is never actually consulted.
+//!
+//! This file closes that gap. For each fixture it:
+//!   1. takes a `#[contract]` module and the *equivalent* Solidity source,
+//!   2. runs `solc --standard-json` with `storageLayout` output selection,
+//!   3. resolves solc's `type` ids through its `types` table to the human label,
+//!   4. normalizes both sides to `{label, slot, offset, type}` (the subset we
 //!      emit — we don't emit solc's `astId` / `encoding` / `numberOfBytes`),
-//!   5. assert the two normalized layouts are identical.
+//!   5. asserts the two normalized layouts are identical.
+//!
+//! Gated behind the `solc-tests` feature (which implies `abi-gen`, since we
+//! call the macro-emitted `__storage_layout_json()` accessor) because it needs
+//! `solc` on PATH. Run with:
+//!
+//! ```text
+//! cargo test -p pvm-contract-macros --features solc-tests
+//! ```
 //!
 //! ## Known divergences (captured as `#[ignore]`d tests)
 //!
-//! Two shapes do NOT match solc today, encoded as ignored, currently failing
-//! tests (`soltype_struct_value_*`, `substruct_*`) with TODOs to flip on once
-//! fixed. Both stem from our `StorageLayoutEntry` format having no `types`
-//! table, so it can't represent a Solidity `struct` the way solc does (a single
-//! entry whose `type` references a struct described in `types`). Until then,
-//! composed layouts also remain covered on the golden-snapshot path.
+//! Two shapes do NOT match solc today and are encoded as ignored, currently
+//! failing tests at the bottom of this file (`soltype_struct_value_*`,
+//! `substruct_*`) with TODOs to flip them on once fixed:
+//!
+//! - A `#[derive(SolType)]` struct used as a storage value: slots/offsets line
+//!   up, but our `type` is the inline tuple name (`(uint64,uint64)`) rather than
+//!   a solc `struct ...` type.
+//! - A `#[storage]` sub-struct: we flatten its leaves into dotted top-level
+//!   entries (`erc20.total_supply`), whereas solc emits a single struct-typed
+//!   entry and describes members in its `types` table.
+//!
+//! Both stem from our `StorageLayoutEntry` format having no `types` table, so it
+//! can't represent a Solidity `struct` the way solc does. Until that's
+//! addressed, composed layouts also remain covered on the golden-snapshot path
+//! in `storage_composition.rs` / `abi_output.rs`.
+#![cfg(feature = "solc-tests")]
 
-// Fixture struct fields exist to drive layout emission, not to be read at
-// runtime; under `abi-gen` the macro cfg's out the constructing glue, so the
-// compiler sees some as unused.
-#![allow(dead_code)]
+extern crate alloc;
 
-use pvm_contract_sdk::SolType;
+use std::io::Write;
+use std::process::{Command, Stdio};
+
 use pvm_contract_sdk::{Address, Bytes, I256, Lazy, Mapping, StorageVec, U256};
+use pvm_contract_sdk::{SolStorage, SolType};
 
 // ---------------------------------------------------------------------------
 // Fixtures: a `#[contract(no_main)]` module + the equivalent Solidity source.
@@ -37,7 +57,7 @@ use pvm_contract_sdk::{Address, Bytes, I256, Lazy, Mapping, StorageVec, U256};
 /// Sub-word primitives that solc packs into a shared slot, plus full-slot and
 /// multi-slot-pair (`uint128` x2) cases. This is the highest-risk area for
 /// encode/decode correctness and previously had zero ground-truth coverage.
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod packed {
     use super::*;
 
@@ -70,14 +90,14 @@ contract Packed {
 
 /// Mappings, including a nested `mapping(K => mapping(K => V))` and a
 /// dynamic-value mapping.
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod maps {
     use super::*;
 
     pub struct Maps {
         pub balances: Mapping<Address, U256>,
         pub allowances: Mapping<Address, Mapping<Address, U256>>,
-        pub names: Mapping<U256, String>,
+        pub names: Mapping<U256, alloc::string::String>,
     }
 
     impl Maps {
@@ -96,12 +116,12 @@ contract Maps {
 "#;
 
 /// Dynamic value types (`string`, `bytes`) alongside a full-slot static.
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod dyns {
     use super::*;
 
     pub struct Dyns {
-        pub name: Lazy<String>,
+        pub name: Lazy<alloc::string::String>,
         pub blob: Lazy<Bytes>,
         pub total: Lazy<U256>,
     }
@@ -122,7 +142,7 @@ contract Dyns {
 "#;
 
 /// Dynamic arrays: flat `T[]`, nested `T[][]`, and a mapping-valued `T[]`.
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod vecs {
     use super::*;
 
@@ -151,7 +171,7 @@ contract Vecs {
 
 /// Signed integers, including packing (solc packs `intN` like `uintN` of the
 /// same width) and full-slot `int256`.
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod signed {
     use super::*;
 
@@ -182,7 +202,7 @@ contract Signed {
 
 /// `bytesN` fixed bytes packed alongside an integer, plus a full-width
 /// `bytes32`. (`[u8; N]` maps to `bytesN`.)
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod fixedbytes {
     use super::*;
 
@@ -213,7 +233,7 @@ contract FixedBytes {
 /// sub-word packed (`uint128[4]` → 2 slots), and `address[2]` → 2 slots, with a
 /// trailing sentinel to verify the *next* field lands at the right slot
 /// (i.e. that element packing matches solc, not one-slot-per-element).
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod arrays {
     use super::*;
 
@@ -243,22 +263,29 @@ contract Arrays {
 // ---------------------------------------------------------------------------
 // Known divergences — currently FAILING, gated with `#[ignore]`.
 //
-// Captured as ignored tests (rather than silently omitted) so the gap is
+// These two cases produce a layout that does NOT match solc today. They are
+// captured here as ignored tests (rather than silently omitted) so the gap is
 // visible and the test flips green the moment the generator is fixed. Run with
-// `cargo test -p pvm-solc-differential --features solc-tests -- --ignored` to
-// see the current diff.
+// `cargo test -p pvm-contract-macros --features solc-tests -- --ignored` to see
+// the current diff.
+//
+// The shared root cause: our `StorageLayoutEntry` format inlines a flat type
+// *string* and has no `types` table, so it cannot represent a Solidity
+// `struct` the way solc does (a single entry whose `type` references a struct
+// in the `types` table, with the struct's members described there). Fixing
+// either case means teaching the generator to emit solc-shaped struct types.
 // ---------------------------------------------------------------------------
 
 /// A `#[derive(SolType)]` struct used as a `Lazy` value. The fields/slots line
 /// up with solc, but our `type` is the inline tuple name `(uint64,uint64)`
 /// whereas solc names it `struct WithStruct.Point`.
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Point {
     pub x: u64,
     pub y: u64,
 }
 
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod soltype_value {
     use super::*;
 
@@ -290,7 +317,7 @@ pub struct Inner {
     pub b: Lazy<U256>,
 }
 
-#[pvm_contract_sdk::contract(no_main)]
+#[pvm_contract_macros::contract(no_main)]
 mod substruct {
     use super::*;
 
@@ -328,7 +355,7 @@ struct NormEntry {
 
 /// Parse our macro-emitted `__storage_layout_json()` string into sorted
 /// normalized entries. Shape: `{"storage":[{"label","slot"(str),"offset"(num),"type"}]}`.
-fn sdk_layout(json: &str) -> Vec<NormEntry> {
+fn ours(json: &str) -> Vec<NormEntry> {
     let v: serde_json::Value = serde_json::from_str(json).expect("our layout json parses");
     let storage = v["storage"].as_array().expect("storage is an array");
     let mut out: Vec<NormEntry> = storage
@@ -348,10 +375,53 @@ fn sdk_layout(json: &str) -> Vec<NormEntry> {
     out
 }
 
-/// Run solc and return the named contract's storage layout as sorted normalized
-/// entries, resolving each entry's `type` id through the `types` table's `label`.
-fn solc_layout(source: &str, contract: &str) -> Vec<NormEntry> {
-    let parsed = crate::common::run_solc(source, &["storageLayout"]);
+/// Run `solc --standard-json` on `source` and return the named contract's
+/// storage layout as sorted normalized entries, resolving each entry's `type`
+/// id through the `types` table's `label`.
+fn solc(source: &str, contract: &str) -> Vec<NormEntry> {
+    let input = serde_json::json!({
+        "language": "Solidity",
+        "sources": { "C.sol": { "content": source } },
+        "settings": { "outputSelection": { "*": { "*": ["storageLayout"] } } }
+    });
+
+    let mut child = Command::new("solc")
+        .arg("--standard-json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn solc — is it installed and on PATH?");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait for solc");
+    assert!(
+        out.status.success(),
+        "solc exited non-zero:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("solc output parses as json");
+
+    // Standard-json reports compile errors in an `errors` array with exit 0.
+    if let Some(errors) = parsed["errors"].as_array() {
+        let fatal: Vec<&str> = errors
+            .iter()
+            .filter(|e| e["severity"].as_str() == Some("error"))
+            .filter_map(|e| e["formattedMessage"].as_str())
+            .collect();
+        assert!(
+            fatal.is_empty(),
+            "solc reported errors:\n{}",
+            fatal.join("\n")
+        );
+    }
+
     let layout = &parsed["contracts"]["C.sol"][contract]["storageLayout"];
     let types = &layout["types"];
     let storage = layout["storage"]
@@ -389,56 +459,47 @@ fn solc_layout(source: &str, contract: &str) -> Vec<NormEntry> {
 #[test]
 fn packed_layout_matches_solc() {
     assert_eq!(
-        sdk_layout(&packed::__storage_layout_json()),
-        solc_layout(PACKED_SOL, "Packed")
+        ours(&packed::__storage_layout_json()),
+        solc(PACKED_SOL, "Packed")
     );
 }
 
 #[test]
 fn mapping_layout_matches_solc() {
-    assert_eq!(
-        sdk_layout(&maps::__storage_layout_json()),
-        solc_layout(MAPS_SOL, "Maps")
-    );
+    assert_eq!(ours(&maps::__storage_layout_json()), solc(MAPS_SOL, "Maps"));
 }
 
 #[test]
 fn dynamic_layout_matches_solc() {
-    assert_eq!(
-        sdk_layout(&dyns::__storage_layout_json()),
-        solc_layout(DYNS_SOL, "Dyns")
-    );
+    assert_eq!(ours(&dyns::__storage_layout_json()), solc(DYNS_SOL, "Dyns"));
 }
 
 #[test]
 fn vec_layout_matches_solc() {
-    assert_eq!(
-        sdk_layout(&vecs::__storage_layout_json()),
-        solc_layout(VECS_SOL, "Vecs")
-    );
+    assert_eq!(ours(&vecs::__storage_layout_json()), solc(VECS_SOL, "Vecs"));
 }
 
 #[test]
 fn signed_int_layout_matches_solc() {
     assert_eq!(
-        sdk_layout(&signed::__storage_layout_json()),
-        solc_layout(SIGNED_SOL, "Signed")
+        ours(&signed::__storage_layout_json()),
+        solc(SIGNED_SOL, "Signed")
     );
 }
 
 #[test]
 fn fixed_bytes_layout_matches_solc() {
     assert_eq!(
-        sdk_layout(&fixedbytes::__storage_layout_json()),
-        solc_layout(FIXEDBYTES_SOL, "FixedBytes")
+        ours(&fixedbytes::__storage_layout_json()),
+        solc(FIXEDBYTES_SOL, "FixedBytes")
     );
 }
 
 #[test]
 fn fixed_array_layout_matches_solc() {
     assert_eq!(
-        sdk_layout(&arrays::__storage_layout_json()),
-        solc_layout(ARRAYS_SOL, "Arrays")
+        ours(&arrays::__storage_layout_json()),
+        solc(ARRAYS_SOL, "Arrays")
     );
 }
 
@@ -454,8 +515,8 @@ fn fixed_array_layout_matches_solc() {
             not a solc `struct ...` type — enable after generator fix"]
 fn soltype_struct_value_layout_matches_solc() {
     assert_eq!(
-        sdk_layout(&soltype_value::__storage_layout_json()),
-        solc_layout(SOLTYPE_VALUE_SOL, "WithStruct")
+        ours(&soltype_value::__storage_layout_json()),
+        solc(SOLTYPE_VALUE_SOL, "WithStruct")
     );
 }
 
@@ -468,7 +529,7 @@ fn soltype_struct_value_layout_matches_solc() {
             entries, solc emits one struct-typed entry — enable after generator fix"]
 fn substruct_layout_matches_solc() {
     assert_eq!(
-        sdk_layout(&substruct::__storage_layout_json()),
-        solc_layout(SUBSTRUCT_SOL, "Outer")
+        ours(&substruct::__storage_layout_json()),
+        solc(SUBSTRUCT_SOL, "Outer")
     );
 }

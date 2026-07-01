@@ -1,20 +1,20 @@
 //! Stress-test bare `String` fields inside structs used as `Mapping` values:
 //! long→short transitions, multiple updates, body cleanup, etc.
 extern crate alloc;
-use pvm_contract_sdk::{Address, Mapping, SolType, StorageKey};
+use pvm_contract_sdk::{Address, Mapping, SolStorage, SolType, StorageKey};
 use pvm_contract_types::MockHostBuilder;
 
 fn h() -> pvm_contract_sdk::Host {
     pvm_contract_sdk::Host::from_dyn(alloc::rc::Rc::new(MockHostBuilder::new().build()))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct R {
     pub a: Address,
     pub s: alloc::string::String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct MultiDyn {
     pub name: alloc::string::String,
     pub bio: alloc::string::String,

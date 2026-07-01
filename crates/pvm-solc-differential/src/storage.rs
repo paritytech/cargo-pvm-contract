@@ -136,7 +136,8 @@ fn to_32(bytes: &[u8]) -> [u8; 32] {
 // ---------------------------------------------------------------------------
 
 use pvm_contract_sdk::{
-    Address, Bytes, I256, Lazy, Mapping, SolType, StorageComponent, StorageVec, U256,
+    Address, Bytes, I256, Lazy, Mapping, SolStorage, SolType, StorageComponent, StorageKey,
+    StorageVec, U256,
 };
 
 /// Two distinct 20-byte addresses used across mapping/vec fixtures.
@@ -146,7 +147,7 @@ const ADDR_B: [u8; 20] = [0xBB; 20];
 /// A packed static struct: two `uint128` share one 32-byte slot
 /// (`lo` low-order @ offset 0, `hi` high-order @ offset 16, solc-style). Used
 /// to verify packing *inside* a mapping value.
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Pair {
     pub lo: u128,
     pub hi: u128,
@@ -154,7 +155,7 @@ pub struct Pair {
 
 /// A genuinely multi-slot static struct: two `uint256` occupy two consecutive
 /// slots (no packing). Used to verify a struct value spanning >1 derived slot.
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Wide {
     pub a: U256,
     pub b: U256,
@@ -162,7 +163,7 @@ pub struct Wide {
 
 /// Mixed sub-word packing inside one struct slot: solc places
 /// `flag`@0 (1B), `count`@1 (8B), `who`@9 (20B) — 29 bytes, one slot.
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Mixed {
     pub flag: bool,
     pub count: u64,
@@ -172,7 +173,7 @@ pub struct Mixed {
 /// A struct with a trailing dynamic field: solc stores `head` at the struct's
 /// first slot and lays out `tail` (a `string`) at the next slot using its
 /// inline/spilled `bytes` layout.
-#[derive(Clone, Debug, PartialEq, Eq, SolType)]
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct DynS {
     pub head: U256,
     pub tail: String,
@@ -185,7 +186,12 @@ pragma solidity ^0.8.26;
 contract S { uint256 x; function populate() external { x = 42; } }
 "#;
     let actual = sdk_storage(|host| {
-        let mut x = <Lazy<U256> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut x = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         x.set(&U256::from(42u64));
     });
     assert_eq!(actual, solc_storage(SOL, "S"));
@@ -218,12 +224,42 @@ contract Packed {
 "#;
     let actual = sdk_storage(|host| {
         // Big-endian offsets: solc_offset = 32 - high - packed_bytes.
-        let mut flag = <Lazy<bool> as StorageComponent>::new_at(0, 31, host.clone());
-        let mut small = <Lazy<u32> as StorageComponent>::new_at(0, 27, host.clone());
-        let mut who = <Lazy<Address> as StorageComponent>::new_at(0, 7, host.clone());
-        let mut total = <Lazy<U256> as StorageComponent>::new_at(1, 0, host.clone());
-        let mut lo = <Lazy<u128> as StorageComponent>::new_at(2, 16, host.clone());
-        let mut hi = <Lazy<u128> as StorageComponent>::new_at(2, 0, host.clone());
+        let mut flag = <Lazy<bool> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            31,
+            false,
+            host.clone(),
+        );
+        let mut small = <Lazy<u32> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            27,
+            false,
+            host.clone(),
+        );
+        let mut who = <Lazy<Address> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            7,
+            false,
+            host.clone(),
+        );
+        let mut total = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut lo = <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(2),
+            16,
+            false,
+            host.clone(),
+        );
+        let mut hi = <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(2),
+            0,
+            false,
+            host.clone(),
+        );
         flag.set(&true);
         small.set(&0x0102_0304u32);
         who.set(&Address::from(ADDR_A));
@@ -252,15 +288,21 @@ contract Maps {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut allowances = <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::new_at(
-            1,
+        let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
             0,
+            true,
+            host.clone(),
+        );
+        let mut allowances = <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
             host.clone(),
         );
         balances.insert(&Address::from(ADDR_A), &U256::from(1000u64));
         allowances
-            .entry(&Address::from(ADDR_A))
+            .view_mut(&Address::from(ADDR_A))
             .insert(&Address::from(ADDR_B), &U256::from(777u64));
     });
     assert_eq!(actual, solc_storage(SOL, "Maps"));
@@ -286,9 +328,24 @@ contract Dyns {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut short = <Lazy<String> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut long = <Lazy<String> as StorageComponent>::new_at(1, 0, host.clone());
-        let mut blob = <Lazy<Bytes> as StorageComponent>::new_at(2, 0, host.clone());
+        let mut short = <Lazy<String> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut long = <Lazy<String> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut blob = <Lazy<Bytes> as StorageComponent>::new_at(
+            StorageKey::from_slot(2),
+            0,
+            true,
+            host.clone(),
+        );
         short.set(&String::from("hello"));
         long.set(&String::from(LONG));
         blob.set(&Bytes(vec![1, 2, 3, 4, 5, 6, 7, 8]));
@@ -313,8 +370,18 @@ contract Vecs {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut nums = <StorageVec<U256> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut addrs = <StorageVec<Address> as StorageComponent>::new_at(1, 0, host.clone());
+        let mut nums = <StorageVec<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut addrs = <StorageVec<Address> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        );
         for n in [11u64, 22, 33] {
             nums.push(&U256::from(n));
         }
@@ -340,8 +407,18 @@ contract Arrays {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut triple = <Lazy<[U256; 3]> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut quad = <Lazy<[u128; 4]> as StorageComponent>::new_at(3, 0, host.clone());
+        let mut triple = <Lazy<[U256; 3]> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut quad = <Lazy<[u128; 4]> as StorageComponent>::new_at(
+            StorageKey::from_slot(3),
+            0,
+            true,
+            host.clone(),
+        );
         triple.set(&[U256::from(1u64), U256::from(2u64), U256::from(3u64)]);
         quad.set(&[0xAu128, 0xB, 0xC, 0xD]);
     });
@@ -366,7 +443,12 @@ contract MapStruct {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut m = <Mapping<Address, Pair> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut m = <Mapping<Address, Pair> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         m.insert(
             &Address::from(ADDR_A),
             &Pair {
@@ -395,7 +477,12 @@ contract MapWide {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut m = <Mapping<Address, Wide> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut m = <Mapping<Address, Wide> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         m.insert(
             &Address::from(ADDR_A),
             &Wide {
@@ -424,8 +511,18 @@ contract MixedStruct {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut m = <Lazy<Mixed> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut sentinel = <Lazy<U256> as StorageComponent>::new_at(1, 0, host.clone());
+        let mut m = <Lazy<Mixed> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut sentinel = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        );
         m.set(&Mixed {
             flag: true,
             count: 0x0102_0304_0506_0708u64,
@@ -453,7 +550,12 @@ contract VecStruct {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut items = <StorageVec<Pair> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut items = <StorageVec<Pair> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         items.push(&Pair { lo: 1, hi: 2 });
         items.push(&Pair { lo: 3, hi: 4 });
     });
@@ -478,7 +580,12 @@ contract DynStruct {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut s = <Lazy<DynS> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut s = <Lazy<DynS> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         s.set(&DynS {
             head: U256::from(0x99u64),
             tail: String::from(LONG),
@@ -512,9 +619,24 @@ contract Mut {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut a = <Lazy<U256> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut b = <Lazy<U256> as StorageComponent>::new_at(1, 0, host.clone());
-        let mut m = <Mapping<Address, U256> as StorageComponent>::new_at(2, 0, host.clone());
+        let mut a = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut b = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut m = <Mapping<Address, U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(2),
+            0,
+            true,
+            host.clone(),
+        );
         a.set(&U256::from(111u64));
         b.set(&U256::from(222u64));
         m.insert(&Address::from(ADDR_A), &U256::from(5u64));
@@ -540,7 +662,12 @@ contract VecPop {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut v = <StorageVec<U256> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut v = <StorageVec<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         for n in [11u64, 22, 33] {
             v.push(&U256::from(n));
         }
@@ -564,8 +691,18 @@ contract Over {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut lo = <Lazy<u128> as StorageComponent>::new_at(0, 16, host.clone());
-        let mut hi = <Lazy<u128> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut lo = <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            16,
+            false,
+            host.clone(),
+        );
+        let mut hi = <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            false,
+            host.clone(),
+        );
         lo.set(&1u128);
         hi.set(&2u128);
         lo.set(&0xAAAA_AAAA_AAAA_AAAAu128);
@@ -596,9 +733,24 @@ contract Signed {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut a = <Lazy<I256> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut lo = <Lazy<i64> as StorageComponent>::new_at(1, 24, host.clone());
-        let mut hi = <Lazy<i64> as StorageComponent>::new_at(1, 16, host.clone());
+        let mut a = <Lazy<I256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut lo = <Lazy<i64> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            24,
+            false,
+            host.clone(),
+        );
+        let mut hi = <Lazy<i64> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            16,
+            false,
+            host.clone(),
+        );
         a.set(&I256::MINUS_ONE);
         lo.set(&-5i64);
         hi.set(&7i64);
@@ -617,7 +769,12 @@ contract UintKey {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut m = <Mapping<U256, U256> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut m = <Mapping<U256, U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         m.insert(&U256::from(7u64), &U256::from(100u64));
     });
     assert_eq!(actual, solc_storage(SOL, "UintKey"));
@@ -636,7 +793,12 @@ contract StrKey {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut m = <Mapping<String, U256> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut m = <Mapping<String, U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         m.insert(&String::from("hello"), &U256::from(42u64));
     });
     assert_eq!(actual, solc_storage(SOL, "StrKey"));
@@ -656,7 +818,12 @@ contract B32Key {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut m = <Mapping<[u8; 32], U256> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut m = <Mapping<[u8; 32], U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         let mut key = [0u8; 32];
         key[30] = 0x12;
         key[31] = 0x34;
@@ -692,8 +859,18 @@ contract Empty {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut s = <Lazy<String> as StorageComponent>::new_at(0, 0, host.clone());
-        let mut sentinel = <Lazy<U256> as StorageComponent>::new_at(1, 0, host.clone());
+        let mut s = <Lazy<String> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
+        let mut sentinel = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            true,
+            host.clone(),
+        );
         s.set(&String::new());
         sentinel.set(&U256::from(5u64));
     });
@@ -715,7 +892,12 @@ contract LongStr {
 }
 "#;
     let actual = sdk_storage(|host| {
-        let mut s = <Lazy<String> as StorageComponent>::new_at(0, 0, host.clone());
+        let mut s = <Lazy<String> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            0,
+            true,
+            host.clone(),
+        );
         s.set(&String::from(LONG));
     });
     assert_eq!(actual, solc_storage(SOL, "LongStr"));
@@ -748,11 +930,36 @@ contract Spill {
 "#;
     let actual = sdk_storage(|host| {
         // Big-endian offsets: high = 32 - solc_offset - packed_bytes.
-        let mut flag = <Lazy<bool> as StorageComponent>::new_at(0, 31, host.clone());
-        let mut who = <Lazy<Address> as StorageComponent>::new_at(0, 11, host.clone());
-        let mut big = <Lazy<u128> as StorageComponent>::new_at(1, 16, host.clone());
-        let mut small2 = <Lazy<u128> as StorageComponent>::new_at(1, 0, host.clone());
-        let mut tail = <Lazy<U256> as StorageComponent>::new_at(2, 0, host.clone());
+        let mut flag = <Lazy<bool> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            31,
+            false,
+            host.clone(),
+        );
+        let mut who = <Lazy<Address> as StorageComponent>::new_at(
+            StorageKey::from_slot(0),
+            11,
+            false,
+            host.clone(),
+        );
+        let mut big = <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            16,
+            false,
+            host.clone(),
+        );
+        let mut small2 = <Lazy<u128> as StorageComponent>::new_at(
+            StorageKey::from_slot(1),
+            0,
+            false,
+            host.clone(),
+        );
+        let mut tail = <Lazy<U256> as StorageComponent>::new_at(
+            StorageKey::from_slot(2),
+            0,
+            true,
+            host.clone(),
+        );
         flag.set(&true);
         who.set(&Address::from(ADDR_A));
         big.set(&0xCCCC_CCCC_CCCC_CCCCu128);

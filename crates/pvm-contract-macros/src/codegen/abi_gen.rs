@@ -72,7 +72,9 @@ pub fn generate_abi_gen(
 fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
     use super::contract::Slot;
 
-    let auto_slot_consts = super::contract::auto_slot_consts(slot_fields);
+    // Layout JSON only needs the slot consts (no `alone` flags here), so the
+    // returned idents are unused.
+    let (auto_slot_consts, _) = super::contract::auto_slot_consts(slot_fields);
 
     let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
@@ -80,7 +82,8 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
             let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
                 Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
                 Slot::Auto => {
-                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", &sf.name);
+                    let const_ident =
+                        quote::format_ident!("{}{}", super::contract::AUTO_SLOT_PREFIX, &sf.name);
                     (quote! { #const_ident.slot }, quote! { #const_ident.offset })
                 }
             };
