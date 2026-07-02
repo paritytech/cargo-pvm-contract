@@ -1,10 +1,19 @@
 //! Storage-representation fixtures + the solc/revm ground-truth harness.
-//! See the crate-level docs in `lib.rs` for the overall approach.
+//!
+//! Each fixture is a real `#[contract]` whose fields mirror an equivalent
+//! Solidity contract, built via the macro-generated `Contract::with_host(mock)`
+//! and driven by a `populate()` method. The macro computes the storage layout
+//! (auto-numbered, packing sub-word siblings solc-style) exactly as solc does
+//! for the `.sol` — so nothing here hand-places slots/offsets. We dump the
+//! `MockHost` and compare `{slot -> 32 bytes}` against solc-on-revm.
+
+// Each fixture's `#[constructor] new` is required by the macro but never called
+// (`with_host` wires storage without running it), so it reads as dead code.
+#![allow(dead_code)]
 
 use std::collections::BTreeMap;
-use std::rc::Rc;
 
-use pvm_contract_types::{Host, MockHost, MockHostBuilder};
+use pvm_contract_types::{MockHost, MockHostBuilder};
 
 use alloy_core::primitives::keccak256;
 use revm::context::TxEnv;
@@ -98,32 +107,25 @@ fn solc_storage(source: &str, contract: &str) -> StorageMap {
 }
 
 // ---------------------------------------------------------------------------
-// the SDK side (pvm-storage)
+// the SDK side
 // ---------------------------------------------------------------------------
 
-/// Build a `MockHost` + a `Host` handle sharing its state, run `writes`
-/// (which drive `pvm-storage` directly), then return the normalized storage.
-fn sdk_storage(writes: impl FnOnce(&Host)) -> StorageMap {
-    let mock = MockHostBuilder::new().build();
-    let host = Host::from_dyn(Rc::new(mock.clone()));
-    writes(&host);
-    normalize_mock(&mock)
-}
-
+/// Snapshot the `MockHost`'s storage as a normalized map: 32-byte key -> 32-byte
+/// value, zero values omitted (`set_storage_or_clear` already deletes on zero).
 fn normalize_mock(mock: &MockHost) -> StorageMap {
     let mut map = StorageMap::new();
     for (k, v) in mock.storage_dump() {
-        let key = to_32(&k);
         let val = to_32(&v);
         if val != [0u8; 32] {
-            map.insert(key, val);
+            map.insert(to_32(&k), val);
         }
     }
     map
 }
 
-/// Left-pad (big-endian) a storage key/value to 32 bytes. pvm-storage always
-/// writes full 32-byte words, but be defensive about any short value.
+/// Big-endian pad to 32 bytes. pvm-storage always writes full 32-byte words, so
+/// this is a no-op in practice; the `<= 32` assert guards against a short write
+/// rather than silently truncating.
 fn to_32(bytes: &[u8]) -> [u8; 32] {
     assert!(bytes.len() <= 32, "storage word longer than 32 bytes");
     let mut out = [0u8; 32];
@@ -132,37 +134,32 @@ fn to_32(bytes: &[u8]) -> [u8; 32] {
 }
 
 // ---------------------------------------------------------------------------
-// Fixtures
+// Fixtures — a `#[contract]` + the equivalent Solidity, field order identical.
 // ---------------------------------------------------------------------------
 
 use pvm_contract_sdk::{
-    Address, Bytes, I256, Lazy, Mapping, SolStorage, SolType, StorageComponent, StorageKey,
-    StorageVec, U256,
+    Address, Bytes, I256, Lazy, Mapping, SolStorage, SolType, StorageComponent, StorageVec, U256,
 };
 
-/// Two distinct 20-byte addresses used across mapping/vec fixtures.
+/// Two distinct 20-byte addresses used across fixtures.
 const ADDR_A: [u8; 20] = [0xAA; 20];
 const ADDR_B: [u8; 20] = [0xBB; 20];
 
-/// A packed static struct: two `uint128` share one 32-byte slot
-/// (`lo` low-order @ offset 0, `hi` high-order @ offset 16, solc-style). Used
-/// to verify packing *inside* a mapping value.
+/// A packed static struct: two `uint128` share one 32-byte slot.
 #[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Pair {
     pub lo: u128,
     pub hi: u128,
 }
 
-/// A genuinely multi-slot static struct: two `uint256` occupy two consecutive
-/// slots (no packing). Used to verify a struct value spanning >1 derived slot.
+/// A genuinely multi-slot static struct: two `uint256`, two consecutive slots.
 #[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Wide {
     pub a: U256,
     pub b: U256,
 }
 
-/// Mixed sub-word packing inside one struct slot: solc places
-/// `flag`@0 (1B), `count`@1 (8B), `who`@9 (20B) — 29 bytes, one slot.
+/// Mixed sub-word packing inside one struct slot (`flag`@0, `count`@1, `who`@9).
 #[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Mixed {
     pub flag: bool,
@@ -170,13 +167,29 @@ pub struct Mixed {
     pub who: Address,
 }
 
-/// A struct with a trailing dynamic field: solc stores `head` at the struct's
-/// first slot and lays out `tail` (a `string`) at the next slot using its
-/// inline/spilled `bytes` layout.
+/// A struct with a trailing dynamic `string` field.
 #[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct DynS {
     pub head: U256,
     pub tail: String,
+}
+
+// --- single full slot ------------------------------------------------------
+
+#[pvm_contract_sdk::contract]
+mod single {
+    use super::*;
+    pub struct Single {
+        pub x: Lazy<U256>,
+    }
+    impl Single {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.x.set(&U256::from(42u64));
+        }
+    }
 }
 
 #[test]
@@ -185,22 +198,40 @@ fn uint256_single_slot_matches_solc() {
 pragma solidity ^0.8.26;
 contract S { uint256 x; function populate() external { x = 42; } }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut x = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        x.set(&U256::from(42u64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "S"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = single::Single::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "S"));
 }
 
-/// Sub-word fields packed into shared slots (read-modify-write must not clobber
-/// neighbours) plus a full-slot uint256 and a packed uint128 pair. The big-endian
-/// `new_at` offsets mirror what the macro's walker emits; solc's converted
-/// offsets are `flag@0, small@1, who@5` in slot 0.
+// --- field-level packing (bool/u32/address share a slot; u128 pair) --------
+
+#[pvm_contract_sdk::contract]
+mod packed {
+    use super::*;
+    pub struct Packed {
+        pub flag: Lazy<bool>,
+        pub small: Lazy<u32>,
+        pub who: Lazy<Address>,
+        pub total: Lazy<U256>,
+        pub lo: Lazy<u128>,
+        pub hi: Lazy<u128>,
+    }
+    impl Packed {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.flag.set(&true);
+            self.small.set(&0x0102_0304u32);
+            self.who.set(&Address::from(ADDR_A));
+            self.total.set(&U256::from(0x1122_3344_5566_7788u64));
+            self.lo.set(&0xAAAA_AAAA_AAAA_AAAAu128);
+            self.hi.set(&0xBBBB_BBBB_BBBB_BBBBu128);
+        }
+    }
+}
+
 #[test]
 fn packed_fields_match_solc() {
     const SOL: &str = r#"
@@ -222,63 +253,42 @@ contract Packed {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        // Big-endian offsets: solc_offset = 32 - high - packed_bytes.
-        let mut flag = <Lazy<bool> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            31,
-            false,
-            host.clone(),
-        );
-        let mut small = <Lazy<u32> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            27,
-            false,
-            host.clone(),
-        );
-        let mut who = <Lazy<Address> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            7,
-            false,
-            host.clone(),
-        );
-        let mut total = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut lo = <Lazy<u128> as StorageComponent>::new_at(
-            StorageKey::from_slot(2),
-            16,
-            false,
-            host.clone(),
-        );
-        let mut hi = <Lazy<u128> as StorageComponent>::new_at(
-            StorageKey::from_slot(2),
-            0,
-            false,
-            host.clone(),
-        );
-        flag.set(&true);
-        small.set(&0x0102_0304u32);
-        who.set(&Address::from(ADDR_A));
-        total.set(&U256::from(0x1122_3344_5566_7788u64));
-        lo.set(&0xAAAA_AAAA_AAAA_AAAAu128);
-        hi.set(&0xBBBB_BBBB_BBBB_BBBBu128);
-    });
-    assert_eq!(actual, solc_storage(SOL, "Packed"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = packed::Packed::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Packed"));
 }
 
-/// Mapping key derivation `keccak256(pad32(key) ++ pad32(slot))`, single and
-/// nested.
+// --- mappings (single + nested) --------------------------------------------
+
+#[pvm_contract_sdk::contract]
+mod maps {
+    use super::*;
+    pub struct Maps {
+        pub balances: Mapping<Address, U256>,
+        pub allowances: Mapping<Address, Mapping<Address, U256>>,
+    }
+    impl Maps {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.balances
+                .insert(&Address::from(ADDR_A), &U256::from(1000u64));
+            self.allowances
+                .view_mut(&Address::from(ADDR_A))
+                .insert(&Address::from(ADDR_B), &U256::from(777u64));
+        }
+    }
+}
+
 #[test]
 fn mappings_match_solc() {
     const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract Maps {
-    mapping(address => uint256) balances;                              // slot 0
-    mapping(address => mapping(address => uint256)) allowances;        // slot 1
+    mapping(address => uint256) balances;                       // slot 0
+    mapping(address => mapping(address => uint256)) allowances; // slot 1
     function populate() external {
         balances[address(uint160(0x00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA))] = 1000;
         allowances
@@ -287,38 +297,42 @@ contract Maps {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut allowances = <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        balances.insert(&Address::from(ADDR_A), &U256::from(1000u64));
-        allowances
-            .view_mut(&Address::from(ADDR_A))
-            .insert(&Address::from(ADDR_B), &U256::from(777u64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "Maps"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = maps::Maps::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Maps"));
 }
 
-/// Dynamic `string`/`bytes`: short (< 32B, inline in the slot with `2*len` in
-/// the low byte) and long (>= 32B, length*2+1 in the slot, body at
-/// `keccak256(slot) + i`).
+// --- dynamic string/bytes (inline + spilled) -------------------------------
+
+#[pvm_contract_sdk::contract]
+mod dyns {
+    use super::*;
+    pub struct Dyns {
+        pub short: Lazy<String>,
+        pub long: Lazy<String>,
+        pub blob: Lazy<Bytes>,
+    }
+    impl Dyns {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.short.set(&String::from("hello"));
+            self.long
+                .set(&String::from("abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"));
+            self.blob.set(&Bytes(vec![1, 2, 3, 4, 5, 6, 7, 8]));
+        }
+    }
+}
+
 #[test]
 fn dynamic_string_bytes_match_solc() {
-    const LONG: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"; // 42 bytes -> spilled
     const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract Dyns {
     string shortStr;  // slot 0
-    string longStr;   // slot 1
+    string longStr;   // slot 1  (>= 32 bytes -> spilled)
     bytes blob;       // slot 2
     function populate() external {
         shortStr = "hello";
@@ -327,34 +341,35 @@ contract Dyns {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut short = <Lazy<String> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut long = <Lazy<String> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut blob = <Lazy<Bytes> as StorageComponent>::new_at(
-            StorageKey::from_slot(2),
-            0,
-            true,
-            host.clone(),
-        );
-        short.set(&String::from("hello"));
-        long.set(&String::from(LONG));
-        blob.set(&Bytes(vec![1, 2, 3, 4, 5, 6, 7, 8]));
-    });
-    assert_eq!(actual, solc_storage(SOL, "Dyns"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = dyns::Dyns::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Dyns"));
 }
 
-/// `StorageVec`: length word at the base slot, elements at
-/// `keccak256(slot) + i * stride`.
+// --- StorageVec ------------------------------------------------------------
+
+#[pvm_contract_sdk::contract]
+mod vecs {
+    use super::*;
+    pub struct Vecs {
+        pub nums: StorageVec<U256>,
+        pub addrs: StorageVec<Address>,
+    }
+    impl Vecs {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            for n in [11u64, 22, 33] {
+                self.nums.push(&U256::from(n));
+            }
+            self.addrs.push(&Address::from(ADDR_A));
+            self.addrs.push(&Address::from(ADDR_B));
+        }
+    }
+}
+
 #[test]
 fn storage_vec_match_solc() {
     const SOL: &str = r#"
@@ -369,30 +384,33 @@ contract Vecs {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut nums = <StorageVec<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut addrs = <StorageVec<Address> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        for n in [11u64, 22, 33] {
-            nums.push(&U256::from(n));
-        }
-        addrs.push(&Address::from(ADDR_A));
-        addrs.push(&Address::from(ADDR_B));
-    });
-    assert_eq!(actual, solc_storage(SOL, "Vecs"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = vecs::Vecs::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Vecs"));
 }
 
-/// Fixed arrays striped across slots: full-word `uint256[3]` (3 slots) and
-/// sub-word packed `uint128[4]` (2 slots, 2 elements per slot).
+// --- fixed arrays (full-word striped + sub-word packed) --------------------
+
+#[pvm_contract_sdk::contract]
+mod arrays {
+    use super::*;
+    pub struct Arrays {
+        pub triple: Lazy<[U256; 3]>,
+        pub quad: Lazy<[u128; 4]>,
+    }
+    impl Arrays {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.triple
+                .set(&[U256::from(1u64), U256::from(2u64), U256::from(3u64)]);
+            self.quad.set(&[0xAu128, 0xB, 0xC, 0xD]);
+        }
+    }
+}
+
 #[test]
 fn fixed_arrays_match_solc() {
     const SOL: &str = r#"
@@ -406,29 +424,36 @@ contract Arrays {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut triple = <Lazy<[U256; 3]> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut quad = <Lazy<[u128; 4]> as StorageComponent>::new_at(
-            StorageKey::from_slot(3),
-            0,
-            true,
-            host.clone(),
-        );
-        triple.set(&[U256::from(1u64), U256::from(2u64), U256::from(3u64)]);
-        quad.set(&[0xAu128, 0xB, 0xC, 0xD]);
-    });
-    assert_eq!(actual, solc_storage(SOL, "Arrays"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = arrays::Arrays::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Arrays"));
 }
 
-/// Packing *inside* a mapping value: `mapping(address => Pair)` where the
-/// struct's two `uint128` share the single derived slot
-/// `keccak256(pad(key) ++ pad(slot))` — `lo` in the low 16 bytes, `hi` in the
-/// high 16. Verifies key derivation AND intra-value field packing together.
+// --- mapping to a packed struct value --------------------------------------
+
+#[pvm_contract_sdk::contract]
+mod map_pair {
+    use super::*;
+    pub struct MapPair {
+        pub m: Mapping<Address, Pair>,
+    }
+    impl MapPair {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.m.insert(
+                &Address::from(ADDR_A),
+                &Pair {
+                    lo: 0xAAAA_AAAA_AAAA_AAAAu128,
+                    hi: 0xBBBB_BBBB_BBBB_BBBBu128,
+                },
+            );
+        }
+    }
+}
+
 #[test]
 fn mapping_to_packed_struct_value_matches_solc() {
     const SOL: &str = r#"
@@ -442,27 +467,36 @@ contract MapStruct {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut m = <Mapping<Address, Pair> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        m.insert(
-            &Address::from(ADDR_A),
-            &Pair {
-                lo: 0xAAAA_AAAA_AAAA_AAAAu128,
-                hi: 0xBBBB_BBBB_BBBB_BBBBu128,
-            },
-        );
-    });
-    assert_eq!(actual, solc_storage(SOL, "MapStruct"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = map_pair::MapPair::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "MapStruct"));
 }
 
-/// A struct value spanning two derived slots: `mapping(address => Wide)` where
-/// `Wide { uint256 a; uint256 b }` writes `a` at the derived slot and `b` at
-/// derived slot + 1.
+// --- mapping to a multi-slot struct value ----------------------------------
+
+#[pvm_contract_sdk::contract]
+mod map_wide {
+    use super::*;
+    pub struct MapWide {
+        pub m: Mapping<Address, Wide>,
+    }
+    impl MapWide {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.m.insert(
+                &Address::from(ADDR_A),
+                &Wide {
+                    a: U256::from(0x1111_1111_1111_1111u64),
+                    b: U256::from(0x2222_2222_2222_2222u64),
+                },
+            );
+        }
+    }
+}
+
 #[test]
 fn mapping_to_multi_slot_struct_value_matches_solc() {
     const SOL: &str = r#"
@@ -476,26 +510,36 @@ contract MapWide {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut m = <Mapping<Address, Wide> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        m.insert(
-            &Address::from(ADDR_A),
-            &Wide {
-                a: U256::from(0x1111_1111_1111_1111u64),
-                b: U256::from(0x2222_2222_2222_2222u64),
-            },
-        );
-    });
-    assert_eq!(actual, solc_storage(SOL, "MapWide"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = map_wide::MapWide::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "MapWide"));
 }
 
-/// Mixed sub-word packing inside a top-level struct slot, plus a sentinel in
-/// the next slot to prove the struct stays within its own slot (doesn't bleed).
+// --- mixed-packed struct value (top-level) + sentinel ----------------------
+
+#[pvm_contract_sdk::contract]
+mod mixed {
+    use super::*;
+    pub struct MixedC {
+        pub m: Lazy<Mixed>,
+        pub sentinel: Lazy<U256>,
+    }
+    impl MixedC {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.m.set(&Mixed {
+                flag: true,
+                count: 0x0102_0304_0506_0708u64,
+                who: Address::from(ADDR_B),
+            });
+            self.sentinel.set(&U256::from(0xDEADu64));
+        }
+    }
+}
+
 #[test]
 fn mixed_packed_struct_matches_solc() {
     const SOL: &str = r#"
@@ -510,32 +554,31 @@ contract MixedStruct {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut m = <Lazy<Mixed> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut sentinel = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        m.set(&Mixed {
-            flag: true,
-            count: 0x0102_0304_0506_0708u64,
-            who: Address::from(ADDR_B),
-        });
-        sentinel.set(&U256::from(0xDEADu64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "MixedStruct"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = mixed::MixedC::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "MixedStruct"));
 }
 
-/// `StorageVec` of a packed struct: `Pair[]` — length word at the base slot,
-/// each `Pair` element at `keccak256(slot) + i` (one slot per element, two
-/// `uint128` packed within).
+// --- StorageVec of a packed struct -----------------------------------------
+
+#[pvm_contract_sdk::contract]
+mod vec_pair {
+    use super::*;
+    pub struct VecPair {
+        pub items: StorageVec<Pair>,
+    }
+    impl VecPair {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.items.push(&Pair { lo: 1, hi: 2 });
+            self.items.push(&Pair { lo: 3, hi: 4 });
+        }
+    }
+}
+
 #[test]
 fn storage_vec_of_struct_matches_solc() {
     const SOL: &str = r#"
@@ -549,25 +592,35 @@ contract VecStruct {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut items = <StorageVec<Pair> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        items.push(&Pair { lo: 1, hi: 2 });
-        items.push(&Pair { lo: 3, hi: 4 });
-    });
-    assert_eq!(actual, solc_storage(SOL, "VecStruct"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_pair::VecPair::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecStruct"));
 }
 
-/// A struct containing a dynamic `string` field: `head` at the struct's first
-/// slot, `tail` laid out at the next slot with solc's spilled-`bytes` layout
-/// (length*2+1 in the header slot, body at `keccak256(header_slot) + i`).
+// --- struct with a dynamic field -------------------------------------------
+
+#[pvm_contract_sdk::contract]
+mod dyn_struct {
+    use super::*;
+    pub struct DynStruct {
+        pub s: Lazy<DynS>,
+    }
+    impl DynStruct {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.s.set(&DynS {
+                head: U256::from(0x99u64),
+                tail: String::from("abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"),
+            });
+        }
+    }
+}
+
 #[test]
 fn struct_with_dynamic_field_matches_solc() {
-    const LONG: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEF"; // 42 bytes -> spilled
     const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract DynStruct {
@@ -579,28 +632,40 @@ contract DynStruct {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut s = <Lazy<DynS> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        s.set(&DynS {
-            head: U256::from(0x99u64),
-            tail: String::from(LONG),
-        });
-    });
-    assert_eq!(actual, solc_storage(SOL, "DynStruct"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = dyn_struct::DynStruct::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "DynStruct"));
 }
 
 // ---------------------------------------------------------------------------
-// Mutation / clearing (gap #2): delete / remove / pop / overwrite must match
-// solc's SSTORE-of-zero deletion and read-modify-write semantics.
+// Mutation / clearing: delete / remove / pop / overwrite vs solc's
+// SSTORE-of-zero deletion and read-modify-write semantics.
 // ---------------------------------------------------------------------------
 
-/// `delete` a `Lazy` and `delete m[k]` a mapping entry: the cleared slots must
-/// vanish (SSTORE 0 = delete), leaving only the survivors (`b`, `m[B]`).
+#[pvm_contract_sdk::contract]
+mod mut_c {
+    use super::*;
+    pub struct MutC {
+        pub a: Lazy<U256>,
+        pub b: Lazy<U256>,
+        pub m: Mapping<Address, U256>,
+    }
+    impl MutC {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.a.set(&U256::from(111u64));
+            self.b.set(&U256::from(222u64));
+            self.m.insert(&Address::from(ADDR_A), &U256::from(5u64));
+            self.m.insert(&Address::from(ADDR_B), &U256::from(9u64));
+            self.a.clear();
+            self.m.remove(&Address::from(ADDR_A));
+        }
+    }
+}
+
 #[test]
 fn clear_and_remove_match_solc() {
     const SOL: &str = r#"
@@ -618,37 +683,31 @@ contract Mut {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut a = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut b = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut m = <Mapping<Address, U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(2),
-            0,
-            true,
-            host.clone(),
-        );
-        a.set(&U256::from(111u64));
-        b.set(&U256::from(222u64));
-        m.insert(&Address::from(ADDR_A), &U256::from(5u64));
-        m.insert(&Address::from(ADDR_B), &U256::from(9u64));
-        a.clear();
-        m.remove(&Address::from(ADDR_A));
-    });
-    assert_eq!(actual, solc_storage(SOL, "Mut"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = mut_c::MutC::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Mut"));
 }
 
-/// `StorageVec::pop` must decrement the length AND clear the removed element's
-/// slot (solc deletes it) — so the popped slot doesn't linger.
+#[pvm_contract_sdk::contract]
+mod vec_pop {
+    use super::*;
+    pub struct VecPop {
+        pub v: StorageVec<U256>,
+    }
+    impl VecPop {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            for n in [11u64, 22, 33] {
+                self.v.push(&U256::from(n));
+            }
+            self.v.pop();
+        }
+    }
+}
+
 #[test]
 fn storage_vec_pop_matches_solc() {
     const SOL: &str = r#"
@@ -661,23 +720,31 @@ contract VecPop {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut v = <StorageVec<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        for n in [11u64, 22, 33] {
-            v.push(&U256::from(n));
-        }
-        v.pop();
-    });
-    assert_eq!(actual, solc_storage(SOL, "VecPop"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_pop::VecPop::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecPop"));
 }
 
-/// Overwriting one packed field must read-modify-write without clobbering its
-/// slot-neighbour (`hi` must survive `lo`'s second write).
+#[pvm_contract_sdk::contract]
+mod over {
+    use super::*;
+    pub struct Over {
+        pub lo: Lazy<u128>,
+        pub hi: Lazy<u128>,
+    }
+    impl Over {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.lo.set(&1u128);
+            self.hi.set(&2u128);
+            self.lo.set(&0xAAAA_AAAA_AAAA_AAAAu128);
+        }
+    }
+}
+
 #[test]
 fn overwrite_packed_field_matches_solc() {
     const SOL: &str = r#"
@@ -690,33 +757,37 @@ contract Over {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut lo = <Lazy<u128> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            16,
-            false,
-            host.clone(),
-        );
-        let mut hi = <Lazy<u128> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            false,
-            host.clone(),
-        );
-        lo.set(&1u128);
-        hi.set(&2u128);
-        lo.set(&0xAAAA_AAAA_AAAA_AAAAu128);
-    });
-    assert_eq!(actual, solc_storage(SOL, "Over"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = over::Over::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Over"));
 }
 
 // ---------------------------------------------------------------------------
-// Edge cases (gap #3): negative signed (two's complement / sign-extension),
-// non-address mapping keys, empty + multi-slot dynamics.
+// Edge cases: negative signed, non-address mapping keys, empty + multi-slot
+// dynamics.
 // ---------------------------------------------------------------------------
 
-/// Negative signed values: full-slot `int256 = -1` (all 0xff) and packed
-/// `int64` negatives (sign-extended within their 8-byte window, neighbour intact).
+#[pvm_contract_sdk::contract]
+mod signed {
+    use super::*;
+    pub struct Signed {
+        pub a: Lazy<I256>,
+        pub lo: Lazy<i64>,
+        pub hi: Lazy<i64>,
+    }
+    impl Signed {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.a.set(&I256::MINUS_ONE);
+            self.lo.set(&-5i64);
+            self.hi.set(&7i64);
+        }
+    }
+}
+
 #[test]
 fn signed_negative_match_solc() {
     const SOL: &str = r#"
@@ -732,33 +803,28 @@ contract Signed {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut a = <Lazy<I256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut lo = <Lazy<i64> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            24,
-            false,
-            host.clone(),
-        );
-        let mut hi = <Lazy<i64> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            16,
-            false,
-            host.clone(),
-        );
-        a.set(&I256::MINUS_ONE);
-        lo.set(&-5i64);
-        hi.set(&7i64);
-    });
-    assert_eq!(actual, solc_storage(SOL, "Signed"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = signed::Signed::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Signed"));
 }
 
-/// `mapping(uint256 => uint256)` — integer key left-padded to 32 bytes.
+#[pvm_contract_sdk::contract]
+mod uint_key {
+    use super::*;
+    pub struct UintKey {
+        pub m: Mapping<U256, U256>,
+    }
+    impl UintKey {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.m.insert(&U256::from(7u64), &U256::from(100u64));
+        }
+    }
+}
+
 #[test]
 fn mapping_uint_key_matches_solc() {
     const SOL: &str = r#"
@@ -768,23 +834,32 @@ contract UintKey {
     function populate() external { m[7] = 100; }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut m = <Mapping<U256, U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        m.insert(&U256::from(7u64), &U256::from(100u64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "UintKey"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = uint_key::UintKey::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "UintKey"));
 }
 
-/// `mapping(string => uint256)` — DYNAMIC key: the slot is
-/// `keccak256(key_bytes ++ pad32(slot))` over the *raw* (unpadded) key bytes,
-/// a different derivation from fixed-size keys.
+#[pvm_contract_sdk::contract]
+mod str_key {
+    use super::*;
+    pub struct StrKey {
+        pub m: Mapping<String, U256>,
+    }
+    impl StrKey {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.m.insert(&String::from("hello"), &U256::from(42u64));
+        }
+    }
+}
+
 #[test]
 fn mapping_string_key_matches_solc() {
+    // Dynamic key: slot is keccak256(key_bytes ++ pad32(slot)) over the *raw*
+    // (unpadded) key bytes — a different derivation from fixed-size keys.
     const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract StrKey {
@@ -792,20 +867,31 @@ contract StrKey {
     function populate() external { m["hello"] = 42; }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut m = <Mapping<String, U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        m.insert(&String::from("hello"), &U256::from(42u64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "StrKey"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = str_key::StrKey::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "StrKey"));
 }
 
-/// `mapping(bytes32 => uint256)` — fixed-bytes key used directly (32 bytes,
-/// no hashing of the key itself).
+#[pvm_contract_sdk::contract]
+mod b32_key {
+    use super::*;
+    pub struct B32Key {
+        pub m: Mapping<[u8; 32], U256>,
+    }
+    impl B32Key {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            let mut key = [0u8; 32];
+            key[30] = 0x12;
+            key[31] = 0x34;
+            self.m.insert(&key, &U256::from(9u64));
+        }
+    }
+}
+
 #[test]
 fn mapping_bytes32_key_matches_solc() {
     const SOL: &str = r#"
@@ -817,32 +903,37 @@ contract B32Key {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut m = <Mapping<[u8; 32], U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut key = [0u8; 32];
-        key[30] = 0x12;
-        key[31] = 0x34;
-        m.insert(&key, &U256::from(9u64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "B32Key"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = b32_key::B32Key::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "B32Key"));
+}
+
+#[pvm_contract_sdk::contract]
+mod empty {
+    use super::*;
+    pub struct Empty {
+        pub s: Lazy<String>,
+        pub sentinel: Lazy<U256>,
+    }
+    impl Empty {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.s.set(&String::new());
+            self.sentinel.set(&U256::from(5u64));
+        }
+    }
 }
 
 /// Empty `string`: **intentional divergence from solc.** solc stores nothing
 /// for an empty dynamic value (the slot is 0 / deleted). pvm-storage writes an
 /// `EMPTY_INLINE_SENTINEL` (`0x01` at byte 30 of the header slot) so `try_get`
 /// can distinguish "explicitly set to empty" from "never set" (Option
-/// semantics solc lacks). The differential test therefore FAILS — captured as
-/// ignored, executable documentation of the deviation.
-///
-/// Interop note: a Solidity reader of our slot sees low byte 0 → length 0 →
-/// empty (same value), but the raw slot is non-zero where solc's is deleted
-/// (gas/refund and byte-equality differ). If the SDK ever drops the sentinel
-/// to match solc byte-for-byte, un-ignore this.
+/// semantics solc lacks). The differential therefore FAILS — captured as an
+/// ignored, executable record of the deviation. Un-ignore if the SDK ever drops
+/// the sentinel to match solc byte-for-byte.
 #[test]
 #[ignore = "intentional divergence: pvm-storage writes EMPTY_INLINE_SENTINEL for \
             empty dynamics (try_get Option semantics); solc deletes the slot"]
@@ -858,30 +949,33 @@ contract Empty {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut s = <Lazy<String> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        let mut sentinel = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            true,
-            host.clone(),
-        );
-        s.set(&String::new());
-        sentinel.set(&U256::from(5u64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "Empty"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = empty::Empty::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Empty"));
 }
 
-/// A `string` long enough to span multiple keccak body slots (70 bytes -> 3
-/// chunks): header (`2*len+1`) at the base slot, body at `keccak256(slot) + i`.
+#[pvm_contract_sdk::contract]
+mod long_str {
+    use super::*;
+    pub struct LongStr {
+        pub s: Lazy<String>,
+    }
+    impl LongStr {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.s.set(&String::from(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGH",
+            ));
+        }
+    }
+}
+
 #[test]
 fn multi_slot_string_matches_solc() {
-    const LONG: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGH";
+    // 70 bytes -> spans 3 keccak body slots.
     const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract LongStr {
@@ -891,33 +985,50 @@ contract LongStr {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        let mut s = <Lazy<String> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            0,
-            true,
-            host.clone(),
-        );
-        s.set(&String::from(LONG));
-    });
-    assert_eq!(actual, solc_storage(SOL, "LongStr"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = long_str::LongStr::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "LongStr"));
 }
 
-/// Sub-word **spill**: `flag`(1B) + `who`(20B) fill 21 bytes of slot 0, so the
-/// next `uint128`(16B) doesn't fit in the remaining 11 bytes and starts a fresh
-/// slot 1 — where `small2`(16B) then packs alongside it. A `tail` proves the
-/// field after the spilled run lands at the right slot.
-///
-/// solc layout: flag@s0/off0, who@s0/off1, big@s1/off0, small2@s1/off16, tail@s2.
+// --- sub-word spill: a packed run overflows its slot -----------------------
+
+#[pvm_contract_sdk::contract]
+mod spill {
+    use super::*;
+    pub struct Spill {
+        pub flag: Lazy<bool>,
+        pub who: Lazy<Address>,
+        pub big: Lazy<u128>,
+        pub small2: Lazy<u128>,
+        pub tail: Lazy<U256>,
+    }
+    impl Spill {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.flag.set(&true);
+            self.who.set(&Address::from(ADDR_A));
+            self.big.set(&0xCCCC_CCCC_CCCC_CCCCu128);
+            self.small2.set(&0xDDDD_DDDD_DDDD_DDDDu128);
+            self.tail.set(&U256::from(0xEEu64));
+        }
+    }
+}
+
 #[test]
 fn subword_spill_match_solc() {
+    // flag(1B)+who(20B) fill 21 bytes of slot 0, so big(16B) doesn't fit in the
+    // remaining 11 bytes and starts slot 1, where small2 packs after it; tail
+    // proves the field after the spilled run lands at the right slot.
     const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract Spill {
     bool flag;       // slot 0, offset 0
-    address who;     // slot 0, offset 1  (fills bytes 1..21)
-    uint128 big;     // slot 1, offset 0  (spills: 16 > 11 bytes left in slot 0)
-    uint128 small2;  // slot 1, offset 16 (packs after big)
+    address who;     // slot 0, offset 1
+    uint128 big;     // slot 1, offset 0  (spills)
+    uint128 small2;  // slot 1, offset 16
     uint256 tail;    // slot 2
     function populate() external {
         flag   = true;
@@ -928,43 +1039,8 @@ contract Spill {
     }
 }
 "#;
-    let actual = sdk_storage(|host| {
-        // Big-endian offsets: high = 32 - solc_offset - packed_bytes.
-        let mut flag = <Lazy<bool> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            31,
-            false,
-            host.clone(),
-        );
-        let mut who = <Lazy<Address> as StorageComponent>::new_at(
-            StorageKey::from_slot(0),
-            11,
-            false,
-            host.clone(),
-        );
-        let mut big = <Lazy<u128> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            16,
-            false,
-            host.clone(),
-        );
-        let mut small2 = <Lazy<u128> as StorageComponent>::new_at(
-            StorageKey::from_slot(1),
-            0,
-            false,
-            host.clone(),
-        );
-        let mut tail = <Lazy<U256> as StorageComponent>::new_at(
-            StorageKey::from_slot(2),
-            0,
-            true,
-            host.clone(),
-        );
-        flag.set(&true);
-        who.set(&Address::from(ADDR_A));
-        big.set(&0xCCCC_CCCC_CCCC_CCCCu128);
-        small2.set(&0xDDDD_DDDD_DDDD_DDDDu128);
-        tail.set(&U256::from(0xEEu64));
-    });
-    assert_eq!(actual, solc_storage(SOL, "Spill"));
+    let mock = MockHostBuilder::new().build();
+    let mut c = spill::Spill::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Spill"));
 }
