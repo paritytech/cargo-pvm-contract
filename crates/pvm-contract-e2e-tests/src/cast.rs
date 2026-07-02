@@ -1,5 +1,4 @@
 use std::process::{Command, Output};
-use std::time::Duration;
 
 pub const DEFAULT_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -47,36 +46,21 @@ impl CastClient {
             bytecode_hex.to_string()
         };
 
-        // A freshly started anvil-polkadot occasionally answers with a null
-        // JSON-RPC response; retry that transient failure before giving up.
-        let mut attempts = 0;
-        let output = loop {
-            let output = Command::new("cast")
-                .args([
-                    "send",
-                    "--rpc-url",
-                    &self.rpc_url,
-                    "--private-key",
-                    private_key,
-                    "--gas-limit",
-                    "9999999999999",
-                    "--json",
-                    "--create",
-                    &bytecode,
-                ])
-                .output()
-                .expect("cast send --create failed to execute");
-
-            attempts += 1;
-            if output.status.success()
-                || attempts >= 3
-                || !String::from_utf8_lossy(&output.stderr)
-                    .contains("server returned a null response")
-            {
-                break output;
-            }
-            std::thread::sleep(Duration::from_secs(1));
-        };
+        let output = Command::new("cast")
+            .args([
+                "send",
+                "--rpc-url",
+                &self.rpc_url,
+                "--private-key",
+                private_key,
+                "--gas-limit",
+                "9999999999999",
+                "--json",
+                "--create",
+                &bytecode,
+            ])
+            .output()
+            .expect("cast send --create failed to execute");
 
         assert!(
             output.status.success(),
