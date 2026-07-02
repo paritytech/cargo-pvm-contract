@@ -207,7 +207,7 @@ impl MockHost {
 
     /// Snapshot of the entire storage map as `(key, value)` pairs — for tests
     /// that need to enumerate every written slot (e.g. diffing the full storage
-    /// representation against another implementation), not just point-look up a
+    /// representation against another implementation), not just point-lookup a
     /// known key. Zero-valued slots are already absent: `set_storage_or_clear`
     /// deletes on a zero write, matching solc's SSTORE-of-zero semantics.
     pub fn storage_dump(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
