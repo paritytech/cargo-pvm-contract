@@ -124,6 +124,11 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
+// Typed wrappers for the builtin Ethereum precompiles (ecrecover, P256Verify)
+// plus fixed-address constants for the full builtin set. Callable from `&self`
+// (view) methods via `precompiles::ecrecover(self.host(), …)`.
+pub use pvm_contract_core::precompiles;
+
 // Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
 // 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones
 // (`String`, `Bytes`, structs with dynamic fields) through their
