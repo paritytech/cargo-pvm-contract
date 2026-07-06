@@ -997,17 +997,6 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "pallet-revive-proc-macro"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "54d78626aaf92f2c5bd0e25f97a16815753e8e2e3328677986564b4155db7667"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "pallet-revive-proc-macro"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ccc894aeedbf838a18c90503d3d60a933435e4f0095c4f62f4b5a74208ac2d7"
@@ -1019,19 +1008,6 @@ dependencies = [
 
 [[package]]
 name = "pallet-revive-uapi"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6fbad22d6e4ae82c0a1c1335eb2b5f05fda2eaca4cdb732ec2bf354628c9bf"
-dependencies = [
- "bitflags 1.3.2",
- "const-crypto",
- "hex-literal",
- "pallet-revive-proc-macro 0.7.2",
- "polkavm-derive 0.30.0",
-]
-
-[[package]]
-name = "pallet-revive-uapi"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83d6f3e18cd426d9954a263d0e7264faafb5dd88bce8e32c5ef4b85af797baeb"
@@ -1039,7 +1015,7 @@ dependencies = [
  "bitflags 1.3.2",
  "const-crypto",
  "hex-literal",
- "pallet-revive-proc-macro 0.10.0",
+ "pallet-revive-proc-macro",
  "polkavm-derive 0.30.0",
 ]
 
@@ -1293,7 +1269,7 @@ version = "0.3.0"
 dependencies = [
  "const_format",
  "keccak-const",
- "pallet-revive-uapi 0.15.0",
+ "pallet-revive-uapi",
  "ruint",
  "serde",
  "serde_json",
@@ -1752,7 +1728,7 @@ dependencies = [
 name = "test-abi-contract"
 version = "0.1.0"
 dependencies = [
- "pallet-revive-uapi 0.11.0",
+ "pallet-revive-uapi",
  "pvm-contract-macros",
  "pvm-contract-sdk",
  "ruint",
