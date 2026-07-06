@@ -14,18 +14,18 @@ path = "src/{{ bin_source }}.rs"
 {% if use_dsl -%}
 {% if let Some(path) = local_path -%}
 pvm-contract-builder-dsl = { path = "{{ path }}/crates/pvm-contract-builder-dsl"{% if use_alloc %}, features = ["alloc"]{% endif %} }
-polkavm-derive = { version = "0.31.0" }
+polkavm-derive = { version = "0.35.0" }
 {% else -%}
 pvm-contract-builder-dsl = { version = "{{ builder_version }}"{% if use_alloc %}, features = ["alloc"]{% endif %} }
-polkavm-derive = { version = "0.31.0" }
+polkavm-derive = { version = "0.35.0" }
 {% endif -%}
 {% else -%}
 {% if let Some(path) = local_path -%}
 pvm-contract-sdk = { path = "{{ path }}/crates/pvm-contract-sdk"{% if use_alloc %}, features = ["alloc"]{% endif %} }
-polkavm-derive = { version = "0.31.0" }
+polkavm-derive = { version = "0.35.0" }
 {% else -%}
 pvm-contract-sdk = { version = "{{ builder_version }}"{% if use_alloc %}, features = ["alloc"]{% endif %} }
-polkavm-derive = { version = "0.31.0" }
+polkavm-derive = { version = "0.35.0" }
 {% endif -%}
 {% endif -%}
 {% if use_alloc -%}
