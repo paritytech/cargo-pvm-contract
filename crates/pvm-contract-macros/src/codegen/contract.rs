@@ -5,8 +5,8 @@ use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
-    generate_revert_encoding_boundary, generate_router,
+    MethodInfo, RouteItems, StateMutability, generate_param_decoding, generate_revert_via_host,
+    generate_router, size_check,
 };
 use super::storage_layout::extract_optional_slot_attr;
 use crate::signature::{SolType, compute_selector};
@@ -698,9 +698,8 @@ fn build_payable_helpers_fn() -> TokenStream {
         #[inline(never)]
         fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, has_value: bool) {
             if has_value {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                     host,
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
             }
         }
@@ -1409,14 +1408,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             .map(|(name, _)| name.clone())
             .collect();
 
-        let decoding = generate_param_decoding(&param_names, &param_types, true);
+        let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
             min_size_expr,
             decode_statements,
             call_args,
             has_params,
         } = decoding;
-        let size_check = boundary_size_check(has_params, &min_size_expr);
+        let size_check = size_check(has_params, &min_size_expr);
 
         let read_calldata = if param_names.is_empty() {
             quote! {}
@@ -1433,8 +1432,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -1446,7 +1445,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
 
         let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
-        let revert_err = generate_revert_encoding_boundary(use_alloc);
+        let revert_err = generate_revert_via_host(use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -1500,7 +1499,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let receive_dispatch = if parsed.has_receive {
         let receive_name = parsed.receive_name.as_ref().unwrap();
         if parsed.receive_returns_result {
-            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            let revert_err = generate_revert_via_host(use_alloc);
             quote! {
                 if call_data_len == 0 {
                     match this.#receive_name() {
@@ -1527,7 +1526,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
 
         let handler = if parsed.fallback_returns_result {
-            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            let revert_err = generate_revert_via_host(use_alloc);
             quote! {
                 #fallback_assert
                 match this.#fallback_name() {
@@ -1548,13 +1547,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                    this.host(),
                     &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                    this.host(),
                     &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
             },
         )
@@ -1599,8 +1598,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -2801,7 +2800,7 @@ mod tests {
 
         assert!(output.contains("\"owner\""));
         assert!(output.contains("Err (e)"));
-        assert!(output.contains("REVERT"));
+        assert!(output.contains(":: revert ("));
     }
 
     #[test]
@@ -4000,8 +3999,8 @@ mod tests {
                     as usize;
                 let mut call_data = [0u8; 256usize];
                 if call_data_len > 256usize {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE,
                     );
                 }
@@ -4014,16 +4013,16 @@ mod tests {
                         this.receive();
                         return;
                     }
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::NO_SELECTOR,
                     );
                 }
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
                 if route(&mut this, selector, input).is_none() {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
                     );
                 }

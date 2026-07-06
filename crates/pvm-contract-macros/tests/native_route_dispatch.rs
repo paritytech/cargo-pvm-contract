@@ -4,10 +4,11 @@
 //! fully runnable off-target.
 //!
 //! These tests bypass `call()` / `deploy()` (riscv64-only) and invoke the
-//! generated `route()` directly. On host targets, dispatch arms call
-//! `host.return_value(...)` which captures into the `MockHost` rather than
-//! diverging — the test reads the captured [`ReturnValue`] (flags + data)
-//! after `route()` returns to inspect the contract's response.
+//! generated `route()` directly. On host targets, a successful dispatch arm
+//! calls `host.return_value(...)`, which captures into the `MockHost` rather
+//! than diverging — the test reads the captured [`ReturnValue`] after `route()`
+//! returns. A reverting arm calls `host.revert(...)`, which unwinds — the test
+//! catches it with [`MockHost::expect_revert`] and inspects the payload.
 
 use pvm_contract_types::{
     Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
@@ -110,13 +111,9 @@ fn route_short_input_reverts_with_invalid_calldata() {
     let sel = selector("double(uint64)");
     let short_input = [0u8; 1]; // need at least 32 bytes for u64
 
-    let outcome = my_token::route(&mut contract, sel, &short_input);
-    assert_eq!(outcome, Some(()));
-
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    let rv = mock.expect_revert(|| {
+        my_token::route(&mut contract, sel, &short_input);
+    });
     assert_eq!(
         rv.data,
         pvm_contract_types::framework_errors::INVALID_CALLDATA.as_slice()

@@ -3,62 +3,34 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 
-/// Generate boundary-style revert encoding — calls `HostFnImpl::return_value`
-/// directly. Used only inside `call()` / `deploy()` boundaries (fallback, and
-/// constructor revert paths), which are already riscv64-gated.
-pub(super) fn generate_revert_encoding_boundary(use_alloc: bool) -> TokenStream {
+/// Generate revert encoding — encodes the error `e` and calls `host.revert(...)`
+/// on the contract's instance host. Used by both dispatch arms (`route()`) and
+/// the `call()` / `deploy()` boundaries (constructor / fallback / receive
+/// revert paths). `revert` is `-> !`: on `riscv64` it diverges via the syscall;
+/// on host targets it records the payload into the `MockHost` and unwinds so
+/// `expect_revert` catches it. Because it diverges, no trailing `return` is
+/// needed — the arm never falls through.
+pub(super) fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
             use ::pvm_contract_sdk::SolError;
             let __revert_len = e.encoded_size();
             let mut __revert_buf = alloc::vec![0u8; __revert_len];
             e.encode_to(&mut __revert_buf);
-            ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf);
-        }
-    } else {
-        quote! {
-            use ::pvm_contract_sdk::SolError;
-            let mut __revert_buf = [0u8; 256];
-            let __revert_len = e.encode_to(&mut __revert_buf);
-            ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                ::pvm_contract_sdk::ReturnFlags::REVERT, &__revert_buf[..__revert_len]);
-        }
-    }
-}
-
-/// Generate dispatch-style revert encoding — calls `host.return_value(REVERT, ...)`
-/// on the contract's instance host. On `riscv64` this diverges via the syscall;
-/// on host targets it captures into the `MockHost` for the test to inspect.
-/// After the call the dispatch arm returns `Some(())` to signal the selector
-/// was handled.
-fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
-    if use_alloc {
-        quote! {
-            use ::pvm_contract_sdk::SolError;
-            let __revert_len = e.encoded_size();
-            let mut __revert_buf = alloc::vec![0u8; __revert_len];
-            e.encode_to(&mut __revert_buf);
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::REVERT,
                 &__revert_buf,
-            );
-            #[allow(unreachable_code)]
-            return ::core::option::Option::Some(());
+            )
         }
     } else {
         quote! {
             use ::pvm_contract_sdk::SolError;
             let mut __revert_buf = [0u8; 256];
             let __revert_len = e.encode_to(&mut __revert_buf);
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::REVERT,
                 &__revert_buf[..__revert_len],
-            );
-            #[allow(unreachable_code)]
-            return ::core::option::Option::Some(());
+            )
         }
     }
 }
@@ -97,9 +69,9 @@ pub struct MethodInfo {
 
 pub(super) struct ParamDecoding {
     /// Expression evaluating to the minimum required input length.
-    /// Caller wraps this in the appropriate revert mechanism (boundary
-    /// `HostFnImpl::return_value` for constructors, or
-    /// `host.return_value(REVERT, ...)` for dispatch arms).
+    /// Caller wraps this in a size check that reverts via `host.revert(...)`
+    /// on underflow (see [`size_check`]) — same mechanism for both dispatch
+    /// arms and the `deploy()` constructor boundary.
     pub min_size_expr: TokenStream,
     pub decode_statements: Vec<TokenStream>,
     pub call_args: Vec<TokenStream>,
@@ -113,9 +85,8 @@ pub(super) struct ParamDecoding {
 pub(super) fn generate_param_decoding(
     param_names: &[syn::Ident],
     param_types: &[syn::Type],
-    is_constructor: bool,
 ) -> ParamDecoding {
-    let decodes = generate_decode_params(param_types, is_constructor);
+    let decodes = generate_decode_params(param_types);
     let min_size_expr = calculate_min_input_size(param_types);
     let has_params = !param_types.is_empty();
 
@@ -182,37 +153,19 @@ fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
     quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
-/// Size-check wrapped in dispatch-arm style — calls
-/// `host.return_value(REVERT, INVALID_CALLDATA)` and returns `Some(())` when
-/// the input is too short. On `riscv64` the call diverges; on host targets
-/// the test reads the captured return.
-fn dispatch_size_check(has_params: bool, min_size_expr: &TokenStream) -> TokenStream {
+/// Input size-check — calls `host.revert(INVALID_CALLDATA)` when the input is
+/// too short. Used by both dispatch arms (`route()`) and the `deploy()`
+/// constructor boundary. `revert` is `-> !`: on `riscv64` it diverges via the
+/// syscall; on host targets it unwinds so `expect_revert` catches it. No
+/// trailing `return` is needed.
+pub(super) fn size_check(has_params: bool, min_size_expr: &TokenStream) -> TokenStream {
     if has_params {
         quote! {
             if input.len() < (#min_size_expr) {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                     this.host(),
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
                 );
-                #[allow(unreachable_code)]
-                return ::core::option::Option::Some(());
-            }
-        }
-    } else {
-        quote! {}
-    }
-}
-
-/// Size-check wrapped in boundary style — calls `HostFnImpl::return_value`
-/// directly (riscv64-only). Used by `deploy()` for constructor params.
-pub(super) fn boundary_size_check(has_params: bool, min_size_expr: &TokenStream) -> TokenStream {
-    if has_params {
-        quote! {
-            if input.len() < (#min_size_expr) {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
-                    &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
             }
         }
     } else {
@@ -230,14 +183,14 @@ pub fn generate_dispatch_arm(
     let const_def = build_selector_const(method);
 
     let fn_name = &method.fn_name;
-    let decoding = generate_param_decoding(&method.param_names, &method.param_types, false);
+    let decoding = generate_param_decoding(&method.param_names, &method.param_types);
     let ParamDecoding {
         min_size_expr,
         decode_statements,
         call_args,
         has_params,
     } = decoding;
-    let size_check = dispatch_size_check(has_params, &min_size_expr);
+    let size_check = size_check(has_params, &min_size_expr);
     let has_return = !method.return_types.is_empty();
     let encode_and_return = generate_encode_and_return(&method.return_types, use_alloc);
 
@@ -276,7 +229,6 @@ pub fn generate_dispatch_arm(
                     Ok(()) => {
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                             this.host(),
-                            ::pvm_contract_sdk::ReturnFlags::empty(),
                             &[],
                         );
                         #[allow(unreachable_code)]
@@ -298,7 +250,6 @@ pub fn generate_dispatch_arm(
             #invoke(#(#call_args),*);
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::empty(),
                 &[],
             );
             #[allow(unreachable_code)]
@@ -331,13 +282,15 @@ pub struct RouterImpl {
 
 /// Generate the `route` function and `Router` trait impl for a contract module.
 ///
-/// `route` takes `&mut Contract` and returns `Option<()>`. Each matched
-/// dispatch arm calls `this.host().return_value(...)` directly — `-> !` on
-/// `riscv64` (terminates execution), `-> ()` on host targets (captures into
-/// `MockHost` for tests). The arm then returns `Some(())` (unreachable on
-/// `riscv64`, observed by the test harness on host targets). Unmatched
-/// selectors return `None`, allowing composition via `Option::or_else` for
-/// inheritance / parent-router fallthrough.
+/// `route` takes `&mut Contract` and returns `Option<()>`. On success a matched
+/// arm calls `this.host().return_value(...)` — `-> !` on `riscv64` (terminates
+/// execution), `-> ()` on host targets (captures into `MockHost`) — then
+/// returns `Some(())` (unreachable on `riscv64`, observed by the test harness
+/// on host targets). On failure a matched arm calls `this.host().revert(...)`,
+/// which is `-> !` on both targets (syscall on `riscv64`, unwind on host so
+/// `expect_revert` catches it), so it never falls through. Unmatched selectors
+/// return `None`, allowing composition via `Option::or_else` for inheritance /
+/// parent-router fallthrough.
 ///
 /// When every method is non-payable the value-transfer guard collapses into a
 /// single `__pvm_assert_non_payable()` call before the match. Mixed payability
@@ -415,7 +368,6 @@ fn generate_encode_and_return(outputs: &[syn::Type], use_alloc: bool) -> TokenSt
         return quote! {
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::empty(),
                 &[],
             );
             #[allow(unreachable_code)]
@@ -443,7 +395,6 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
             <#ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::empty(),
                 &__buf,
             );
             #[allow(unreachable_code)]
@@ -462,7 +413,6 @@ fn generate_static_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         <#tuple_ty as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
             this.host(),
-            ::pvm_contract_sdk::ReturnFlags::empty(),
             &__buf,
         );
         #[allow(unreachable_code)]
@@ -488,7 +438,6 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
             };
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::empty(),
                 __data,
             );
             #[allow(unreachable_code)]
@@ -512,7 +461,6 @@ fn generate_alloc_encode_and_return(outputs: &[syn::Type]) -> TokenStream {
         };
         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
             this.host(),
-            ::pvm_contract_sdk::ReturnFlags::empty(),
             __data,
         );
         #[allow(unreachable_code)]
@@ -562,12 +510,10 @@ mod tests {
                         __pvm_assert_value_zero(this.host(), __has_value);
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
-                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                                 this.host(),
-                                ::pvm_contract_sdk::ReturnFlags::REVERT,
                                 &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
                             );
-                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
@@ -583,7 +529,6 @@ mod tests {
                         this.transfer(::core::convert::Into::into(to));
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                             this.host(),
-                            ::pvm_contract_sdk::ReturnFlags::empty(),
                             &[],
                         );
                         #[allow(unreachable_code)] return ::core::option::Option::Some(());
@@ -606,12 +551,10 @@ mod tests {
                     __SEL_deposit => {
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
-                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                                 this.host(),
-                                ::pvm_contract_sdk::ReturnFlags::REVERT,
                                 &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
                             );
-                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
@@ -627,7 +570,6 @@ mod tests {
                         this.deposit(::core::convert::Into::into(to));
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                             this.host(),
-                            ::pvm_contract_sdk::ReturnFlags::empty(),
                             &[],
                         );
                         #[allow(unreachable_code)] return ::core::option::Option::Some(());
@@ -650,12 +592,10 @@ mod tests {
                     __SEL_transfer => {
                         if input.len() < (0 + <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE)
                         {
-                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                                 this.host(),
-                                ::pvm_contract_sdk::ReturnFlags::REVERT,
                                 &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
                             );
-                            #[allow(unreachable_code)] return ::core::option::Option::Some(());
                         }
                         let mut __decode_offset: usize = 0;
                         let to = {
@@ -671,7 +611,6 @@ mod tests {
                         this.transfer(::core::convert::Into::into(to));
                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
                             this.host(),
-                            ::pvm_contract_sdk::ReturnFlags::empty(),
                             &[],
                         );
                         #[allow(unreachable_code)] return ::core::option::Option::Some(());

@@ -243,20 +243,18 @@ fn route_ok(
     rv.data
 }
 
-/// Call `route()`, expect a revert (selector handled and `return_value`
-/// called with `flags == REVERT`), and return the captured revert payload.
+/// Call `route()`, expect a revert, and return the captured revert payload.
+/// `route()` reverts via `host.revert(...)`, which unwinds on host targets, so
+/// it must be caught with `expect_revert`.
 fn route_revert(
     contract: &mut mini_token::MiniToken,
     mock: &MockHost,
     sel: [u8; 4],
     input: &[u8],
 ) -> Vec<u8> {
-    let outcome = mini_token::route(contract, sel, input);
-    assert_eq!(outcome, Some(()), "expected matched selector");
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::REVERT, "expected REVERT flags");
+    let rv = mock.expect_revert(|| {
+        mini_token::route(contract, sel, input);
+    });
     rv.data
 }
 

@@ -33,20 +33,23 @@
 //!
 //! Two different mechanisms, by role:
 //!
-//! - [`HostApi::return_value`](super::HostApi::return_value) is called only
-//!   from macro/DSL dispatch glue. On host targets `MockHost` captures the
-//!   `(flags, data)` pair into a [`ReturnValue`] and returns normally; the
-//!   dispatch wrapper exits via its generated `return Some(())` and tests
-//!   inspect the result via [`MockHost::take_return_value`].
+//! - [`HostApi::return_value`](super::HostApi::return_value) is the **success**
+//!   door, called only from macro/DSL dispatch glue on a successful return. On
+//!   host targets `MockHost` captures `data` into a [`ReturnValue`] (tagged with
+//!   empty flags) and returns normally; the dispatch wrapper exits via its
+//!   generated `return Some(())` and tests inspect the result via
+//!   [`MockHost::take_return_value`].
 //!
-//! - [`HostApi::terminate`](super::HostApi::terminate) and
+//! - [`HostApi::revert`](super::HostApi::revert),
+//!   [`HostApi::terminate`](super::HostApi::terminate), and
 //!   [`HostApi::consume_all_gas`](super::HostApi::consume_all_gas) can be
-//!   called from arbitrary positions in user code. On host targets
-//!   `MockHost` panics with a typed payload so user code after the call
-//!   doesn't run (matching on-chain semantics). Tests recover the captured
-//!   [`Halt`] via [`MockHost::run_until_halt`], which downcasts the panic
-//!   and re-throws non-halt panics so contract bugs aren't silently
-//!   swallowed.
+//!   called from arbitrary positions in user code (and, for `revert`, from
+//!   dispatch error arms). On host targets `MockHost` panics with a typed
+//!   payload so user code after the call doesn't run (matching on-chain
+//!   semantics); `revert` also records its `data` (tagged [`ReturnFlags::REVERT`])
+//!   so the payload survives the unwind. Tests recover the captured [`Halt`]
+//!   via [`MockHost::run_until_halt`], which downcasts the panic and re-throws
+//!   non-halt panics so contract bugs aren't silently swallowed.
 
 use core::cell::RefCell;
 use std::collections::HashMap;
@@ -63,13 +66,15 @@ pub type MockCallReturn = Result<Vec<u8>, ()>;
 /// One captured event: `(topics, data)`.
 pub type EventRecord = (Vec<[u8; 32]>, Vec<u8>);
 
-/// The `(flags, data)` payload from a single [`HostApi::return_value`] call,
-/// captured by [`MockHost`] for route-driving tests.
+/// The payload captured by [`MockHost`] for route-driving tests, from a single
+/// [`HostApi::return_value`] (success) or [`HostApi::revert`] (failure) call.
 ///
 /// `flags == ReturnFlags::empty()` indicates a successful return (the
 /// dispatch arm matched and the method returned `Ok` / a value);
 /// `flags == ReturnFlags::REVERT` indicates a revert, with `data` holding
-/// the encoded revert payload (4-byte selector + ABI-encoded fields).
+/// the encoded revert payload (4-byte selector + ABI-encoded fields). The
+/// flag is set by the mock according to which door was called, not by the
+/// caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturnValue {
     pub flags: ReturnFlags,
@@ -93,10 +98,11 @@ pub enum Halt {
     Terminate { beneficiary: [u8; 20] },
     /// Contract called [`HostApi::consume_all_gas`].
     ConsumeAllGas,
-    /// Contract called [`HostApi::revert`]. The `(flags, data)` payload is
-    /// recorded into the mock's [`ReturnValue`] (read it via
-    /// [`MockHost::take_return_value`]); this variant is just the typed marker
-    /// that distinguishes a revert from the other halts.
+    /// Contract called [`HostApi::revert`]. The revert `data` is recorded into
+    /// the mock's [`ReturnValue`] before the unwind; recover it with
+    /// [`MockHost::expect_revert`] (which returns the captured [`ReturnValue`]).
+    /// This variant is just the typed marker that distinguishes a revert from
+    /// the other halts.
     Revert,
 }
 
@@ -137,10 +143,11 @@ struct MockState {
     events: Vec<EventRecord>,
     immutable_data: Vec<u8>,
     return_data: Vec<u8>,
-    /// Captured `return_value` call from the contract.
-    /// On host targets, `HostApi::return_value` does not diverge; instead it
-    /// records the encoded result here so route-driving tests can read it
-    /// after `route()` returns.
+    /// Captured `return_value` (success) or `revert` (failure) payload from the
+    /// contract. On host targets, `HostApi::return_value` does not diverge; it
+    /// records the encoded success result here so route-driving tests can read
+    /// it after `route()` returns. `HostApi::revert` records the revert payload
+    /// here too (before unwinding) so it survives to `take_return_value()`.
     return_value: Option<ReturnValue>,
 
     // --- Mock configuration ---
@@ -234,15 +241,15 @@ impl MockHost {
     }
 
     /// Take the [`ReturnValue`] captured by the most recent
-    /// [`HostApi::return_value`] call on this mock, leaving the slot empty.
-    /// Returns `None` if no `return_value` has been called since the last
-    /// `take_return_value`.
+    /// [`HostApi::return_value`] (success) or [`HostApi::revert`] (failure)
+    /// call on this mock, leaving the slot empty. Returns `None` if neither
+    /// has been called since the last `take_return_value`.
     ///
-    /// On host targets, dispatch arms call `host.return_value(...)` which
-    /// records the encoded result here instead of diverging. Each
-    /// `route()` invocation should be followed by exactly one
-    /// `take_return_value()` — consuming the value rather than cloning
-    /// prevents stale captures from leaking across calls on the same mock.
+    /// On host targets, successful dispatch arms call `host.return_value(...)`,
+    /// which records the encoded result here instead of diverging. For reverts,
+    /// prefer [`Self::expect_revert`], which recovers the payload after the
+    /// unwind. Consuming the value rather than cloning prevents stale captures
+    /// from leaking across calls on the same mock.
     pub fn take_return_value(&self) -> Option<ReturnValue> {
         self.state.borrow_mut().return_value.take()
     }
@@ -277,8 +284,15 @@ impl MockHost {
     }
 
     /// Run `f`, asserting it reverted via [`HostApi::revert`], and return the
-    /// captured [`ReturnValue`] (the revert `flags` plus the ABI-encoded revert
+    /// captured [`ReturnValue`] (`flags == REVERT` plus the ABI-encoded revert
     /// `data`).
+    ///
+    /// Because [`HostApi::revert`] is the sole revert door, this catches every
+    /// revert: dispatch-arm custom errors and `RevertString` (macro `route()` /
+    /// DSL `dispatch_impl`) as well as `panic_revert`-driven `Panic(uint256)`
+    /// from storage. Drive the contract through `route()` / `dispatch_impl` (or
+    /// call a reverting helper) inside `f`, then decode `rv.data` yourself; for
+    /// the standard `Panic(uint256)` case prefer [`Self::expect_panic`].
     ///
     /// Panics the test with a clear message if `f` returned normally or halted
     /// some other way (terminate / consume-all-gas). Genuine bug panics from
@@ -286,8 +300,9 @@ impl MockHost {
     /// `run_until_halt`, so an expected revert prints a panic line to stderr —
     /// same as the other halts; this is benign test noise.
     ///
-    /// Use this for custom-error / `RevertString` reverts you decode yourself;
-    /// for the standard `Panic(uint256)` case prefer [`Self::expect_panic`].
+    /// Note: a `#[method]` called *directly* (not through dispatch) returns
+    /// `Err(e)` as a plain value and makes no host call — that is not a revert;
+    /// assert on the `Result` instead.
     pub fn expect_revert<F: FnOnce()>(&self, f: F) -> ReturnValue {
         match self.run_until_halt(f) {
             Some(Halt::Revert) => self
@@ -698,11 +713,8 @@ impl HostApi for MockHost {
         output.fill(0);
     }
 
-    fn return_value(&self, flags: ReturnFlags, data: &[u8]) {
-        self.state.borrow_mut().return_value = Some(ReturnValue {
-            flags,
-            data: data.to_vec(),
-        });
+    fn return_value(&self, data: &[u8]) {
+        self.record_return(ReturnFlags::empty(), data);
     }
 
     fn consume_all_gas(&self) -> ! {
@@ -715,21 +727,40 @@ impl HostApi for MockHost {
         }))
     }
 
-    fn revert(&self, flags: ReturnFlags, data: &[u8]) -> ! {
-        // Record the payload first so `take_return_value()` can assert the
-        // exact ABI bytes — same recording `return_value` does. The
-        // `borrow_mut` is a statement-scoped temporary, dropped at the `;`
-        // before `panic_any` unwinds, so no `MockState` borrow is held across
-        // the unwind.
-        self.state.borrow_mut().return_value = Some(ReturnValue {
-            flags,
-            data: data.to_vec(),
-        });
+    fn revert(&self, data: &[u8]) -> ! {
+        // Record the payload first so `take_return_value()` can assert the exact
+        // ABI bytes. `record_return` drops the `MockState` borrow before we
+        // return, so no borrow is held across the `panic_any` unwind below.
+        self.record_return(ReturnFlags::REVERT, data);
         std::panic::panic_any(HaltPanic(Halt::Revert))
     }
 }
 
 impl MockHost {
+    /// Record the frame's exit payload into the single `return_value` slot,
+    /// tagged with `flags`. Shared by the two exit doors — the success door
+    /// ([`HostApi::return_value`], empty flags) and the failure door
+    /// ([`HostApi::revert`], `ReturnFlags::REVERT`) — so both record the bytes
+    /// byte-identically; they differ only in the flag and whether they diverge.
+    ///
+    /// Does **not** diverge: `revert` calls this and then panics separately, so
+    /// the `borrow_mut` here is released before any unwind.
+    fn record_return(&self, flags: ReturnFlags, data: &[u8]) {
+        // Single-exit invariant: on-chain the frame halts at the first exit
+        // syscall, so a second exit before the previous payload is consumed is a
+        // bug (or a test that forgot to `take_return_value()` between runs).
+        debug_assert!(
+            self.state.borrow().return_value.is_none(),
+            "MockHost: exit recorded twice without an intervening \
+             take_return_value(); on-chain the frame would have halted at the \
+             first exit"
+        );
+        self.state.borrow_mut().return_value = Some(ReturnValue {
+            flags,
+            data: data.to_vec(),
+        });
+    }
+
     /// Shared logic for `call`, `call_evm`, `delegate_call`, `delegate_call_evm`.
     /// Uses borrow-drop-immediately pattern to stay re-entrancy-safe.
     fn resolve_call(&self, callee: &[u8; 20], output: Option<&mut &mut [u8]>) -> HostResult {

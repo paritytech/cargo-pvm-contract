@@ -48,10 +48,36 @@ fn wrap(mock: &Rc<MockHost>) -> Host {
     Host::from_dyn(mock.clone())
 }
 
-fn drive(mock: &Rc<MockHost>) -> ReturnValue {
+/// Drive the default `builder()` through `dispatch_impl` on a success path,
+/// returning the captured success payload.
+fn dispatch_ok(mock: &Rc<MockHost>) -> ReturnValue {
     builder().dispatch_impl::<256>(&wrap(mock));
     mock.take_return_value()
         .expect("dispatch should call return_value")
+}
+
+/// Drive the default `builder()` expecting a revert, returning the captured
+/// revert payload. `dispatch_impl` reverts via `host.revert(...)`, which
+/// unwinds on host targets — so it must be caught with `expect_revert`.
+fn dispatch_revert(mock: &Rc<MockHost>) -> ReturnValue {
+    dispatch_revert_with(builder(), mock)
+}
+
+/// Drive an arbitrary builder expecting a revert, returning the captured
+/// payload — same unwind-capture as [`dispatch_revert`], for tests that build a
+/// one-off contract instead of the shared [`builder()`].
+fn dispatch_revert_with(b: ContractBuilder, mock: &Rc<MockHost>) -> ReturnValue {
+    mock.expect_revert(|| {
+        b.dispatch_impl::<256>(&wrap(mock));
+    })
+}
+
+/// Assert an arbitrary `&Host`-taking operation (e.g. a guard like
+/// [`assert_non_payable_deploy`]) reverts, returning the captured payload. The
+/// operation aborts via `host.revert(...)`, which unwinds on host targets, so
+/// it is caught with `expect_revert`.
+fn expect_revert_of(mock: &Rc<MockHost>, op: impl FnOnce(&Host)) -> ReturnValue {
+    mock.expect_revert(|| op(&wrap(mock)))
 }
 
 #[test]
@@ -61,7 +87,7 @@ fn double_returns_doubled_value() {
             .calldata(encode_call_double(21))
             .build(),
     );
-    let rv = drive(&mock);
+    let rv = dispatch_ok(&mock);
     assert_eq!(rv.flags, ReturnFlags::empty());
     assert_eq!(u32::decode_at(&rv.data, 0).unwrap(), 42);
 }
@@ -73,7 +99,7 @@ fn ping_returns_empty_success() {
             .calldata(PING_SELECTOR.to_vec())
             .build(),
     );
-    let rv = drive(&mock);
+    let rv = dispatch_ok(&mock);
     assert_eq!(rv.flags, ReturnFlags::empty());
     assert_eq!(rv.data.len(), 0);
 }
@@ -85,8 +111,7 @@ fn unknown_selector_reverts() {
             .calldata(vec![0xde, 0xad, 0xbe, 0xef])
             .build(),
     );
-    let rv = drive(&mock);
-    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    let rv = dispatch_revert(&mock);
     assert_eq!(
         rv.data,
         pvm_contract_types::framework_errors::UNKNOWN_SELECTOR.as_slice()
@@ -96,8 +121,7 @@ fn unknown_selector_reverts() {
 #[test]
 fn short_calldata_reverts() {
     let mock = Rc::new(MockHostBuilder::new().calldata(vec![0x00]).build());
-    let rv = drive(&mock);
-    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    let rv = dispatch_revert(&mock);
     assert_eq!(
         rv.data,
         pvm_contract_types::framework_errors::NO_SELECTOR.as_slice()
@@ -122,14 +146,10 @@ fn handler_revert_is_reflected_in_outcome() {
             .build(),
     );
 
-    ContractBuilder::new()
-        .method(FAIL_SELECTOR, always_fails)
-        .dispatch_impl::<256>(&wrap(&mock));
-
-    let rv = mock
-        .take_return_value()
-        .expect("dispatch called return_value");
-    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    let rv = dispatch_revert_with(
+        ContractBuilder::new().method(FAIL_SELECTOR, always_fails),
+        &mock,
+    );
     assert_eq!(rv.data, b"not allowed");
 }
 
@@ -170,12 +190,7 @@ fn deploy_guard_reverts_when_value_attached() {
     value[31] = 1;
     let mock = Rc::new(MockHostBuilder::new().value_transferred(value).build());
 
-    assert_non_payable_deploy(&wrap(&mock));
-
-    let rv = mock
-        .take_return_value()
-        .expect("deploy guard must call return_value on non-zero value");
-    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    let rv = expect_revert_of(&mock, assert_non_payable_deploy);
     assert_eq!(
         rv.data,
         pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED.as_slice()

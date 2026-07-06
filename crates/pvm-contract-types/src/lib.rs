@@ -336,10 +336,11 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
 ///
 /// Each contract module gets a generated `impl Router for Contract`
 /// that delegates to a free `mod_name::route(this, selector, input)` function.
-/// Dispatch arms call `host.return_value(...)` directly — `-> !` on `riscv64`
-/// (terminates execution), `-> ()` on host targets (captures into
-/// [`MockHost`](super::MockHost) for tests to inspect via
-/// [`MockHost::take_return_value`](super::MockHost::take_return_value)).
+/// On success, dispatch arms call `host.return_value(...)` — `-> !` on `riscv64`
+/// (terminates execution), `-> ()` on host targets (captures into `MockHost`
+/// for tests to inspect via `MockHost::take_return_value`). On failure they call
+/// `host.revert(...)`, which diverges on both targets; host-target tests recover
+/// the payload with `MockHost::expect_revert`.
 ///
 /// # Composition and inheritance
 ///
@@ -573,9 +574,9 @@ pub trait SolError: Sized {
 /// The Solidity compiler emits these for runtime failures.
 /// Each variant maps to a well-known panic code that Ethereum tools recognize.
 ///
-/// Solidity defines 10 panic codes (0x00-0x51). We implement the two
-/// needed for safe math. Likely future additions: 0x01 (assert failure)
-/// and 0x32 (out-of-bounds access).
+/// All of Solidity's standard panic codes (0x00–0x51) are represented, plus an
+/// [`Panic::Unknown`] catch-all for any other single-byte code encountered when
+/// decoding. `code() <-> decode_at` round-trips every variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panic {
     /// 0x00 - Used for generic compiler inserted panics.
@@ -682,7 +683,7 @@ impl SolError for Panic {
 pub fn panic_revert(host: &Host, code: Panic) -> ! {
     let mut buf = [0u8; 36];
     let n = code.encode_to(&mut buf);
-    host.revert(ReturnFlags::REVERT, &buf[..n])
+    host.revert(&buf[..n])
 }
 
 /// Pre-built error enum for methods that only use standard Solidity errors.

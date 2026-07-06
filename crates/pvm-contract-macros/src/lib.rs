@@ -116,15 +116,18 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// The macro generates the following **inside** the contract module:
 ///
 /// - `pub fn route(this: &mut Contract, selector: [u8; 4], input: &[u8])
-///   -> Option<()>` — selector dispatch. Each matched arm encodes the
-///   result and calls `this.host().return_value(flags, data)` directly:
-///   `-> !` (diverging syscall) on `riscv64`, captured into `MockHost`
-///   on host targets. Returns `Some(())` on a matched selector and `None`
-///   on no match (caller can chain or revert).
+///   -> Option<()>` — selector dispatch. On success a matched arm encodes the
+///   result and calls `this.host().return_value(data)`; on failure it calls
+///   `this.host().revert(data)`. Both are `-> !` (diverging syscall) on
+///   `riscv64`; on host targets a success is captured into `MockHost` (returns)
+///   and a revert unwinds (caught by `expect_revert`). Returns `Some(())` on a
+///   matched selector that succeeded and `None` on no match (caller can chain
+///   or revert).
 /// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point (riscv64-only)
 /// - `pub extern "C" fn call()` — PolkaVM call entry point (riscv64-only);
 ///   reads calldata, calls `route()`, falls through to fallback or
-///   `return_value(REVERT, UNKNOWN_SELECTOR)` when `route()` returns `None`.
+///   `return_value(REVERT, UNKNOWN_SELECTOR)` (raw uAPI boundary) when `route()`
+///   returns `None`.
 ///
 /// Outside the module, a `Router` trait impl is generated:
 ///
@@ -143,20 +146,21 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// The contract holds a concrete `Host` whose internals are cfg-gated:
 /// on riscv64 it's a zero-sized type wrapping `PolkaVmHost` (zero overhead), on the
 /// host target it wraps `Rc<dyn HostApi>` so tests can inject a `MockHost`.
-/// `HostApi::return_value` itself has a cfg-gated signature: `-> !` on
-/// `riscv64` (the `pallet_revive_uapi` syscall), `-> ()` on host targets
-/// (captures into `MockHost`). The generated dispatch code has no
-/// `cfg(target_arch)` gate — the same path serves production and native
-/// unit tests.
+/// `HostApi::return_value` (the success door) has a cfg-gated signature: `-> !`
+/// on `riscv64` (the `pallet_revive_uapi` syscall), `-> ()` on host targets
+/// (captures into `MockHost`). `HostApi::revert` (the failure door) is `-> !`
+/// on both targets. The generated dispatch code has no `cfg(target_arch)` gate
+/// — the same path serves production and native unit tests.
 ///
 /// All generated items are gated behind `#[cfg(not(feature = "abi-gen"))]`.
 ///
 /// ### Composition and inheritance
 ///
-/// `route()` returns `Option<()>` — `Some(())` if the selector matched (and
-/// the arm has already called `return_value`, which on `riscv64` means
-/// execution has terminated); `None` if the selector did not match. Chain
-/// multiple routers via `Option::or_else`:
+/// `route()` returns `Option<()>` — `Some(())` if the selector matched and
+/// succeeded (the arm has already called `return_value`, which on `riscv64`
+/// means execution has terminated; a failed arm calls `revert`, which diverges
+/// on both targets and never returns `Some`); `None` if the selector did not
+/// match. Chain multiple routers via `Option::or_else`:
 ///
 /// ```ignore
 /// pub extern "C" fn call() {
@@ -164,7 +168,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///     if my_extension::route(&mut this, selector, input).is_some() { return; }
 ///     if erc20_base::route(&mut this, selector, input).is_some() { return; }
 ///     // fallback or revert
-///     HostFnImpl::return_value(ReturnFlags::REVERT, &UNKNOWN_SELECTOR);
+///     this.host().revert(&UNKNOWN_SELECTOR);
 /// }
 /// ```
 ///
@@ -193,16 +197,22 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// `route()` with raw calldata and read the captured `ReturnValue`:
 ///
 /// ```ignore
+/// // Success: route() returns and records the payload.
 /// let outcome = my_token::route(&mut contract, BALANCE_OF_SELECTOR, &input);
 /// assert_eq!(outcome, Some(())); // selector matched
 /// let rv = mock.take_return_value().expect("contract called return_value");
 /// assert_eq!(rv.flags, ReturnFlags::empty());
 /// // decode and assert on rv.data
+///
+/// // Revert: route() calls host.revert(...), which unwinds — catch it.
+/// let rv = mock.expect_revert(|| { my_token::route(&mut contract, sel, &input); });
+/// // decode and assert on rv.data (rv.flags == REVERT)
 /// ```
 ///
-/// `take_return_value` consumes the capture so each `route()` call must be
-/// followed by exactly one `take_return_value()` — stale state cannot leak
-/// across calls on the same mock.
+/// On success, `take_return_value` consumes the capture so each `route()` call
+/// must be followed by exactly one `take_return_value()` — stale state cannot
+/// leak across calls on the same mock. On a revert, prefer `expect_revert`,
+/// which recovers the payload after the unwind.
 ///
 /// ## Error Handling
 ///
@@ -286,15 +296,12 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///             // balanceOf(address) -> uint256  (non-payable)
 ///             __SEL_balance_of => {
 ///                 if __has_value {
-///                     this.host().return_value(
-///                         ::pvm_contract_sdk::ReturnFlags::REVERT,
+///                     this.host().revert(
 ///                         &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
 ///                 }
 ///                 if input.len() < <Address as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE {
-///                     this.host().return_value(
-///                         ::pvm_contract_sdk::ReturnFlags::REVERT,
+///                     this.host().revert(
 ///                         &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
-///                     return ::core::option::Option::Some(());
 ///                 }
 ///                 let mut __decode_offset: usize = 0;
 ///                 let account = /* decode … */;
@@ -303,16 +310,14 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     <U256 as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE;
 ///                 let mut __buf = [0u8; __LEN];
 ///                 <U256 as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-///                 this.host().return_value(
-///                     ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
+///                 this.host().return_value(&__buf);
 ///                 return ::core::option::Option::Some(());
 ///             }
 ///
 ///             // transfer(address,uint256) — fallible, non-payable
 ///             __SEL_transfer => {
 ///                 if __has_value {
-///                     this.host().return_value(
-///                         ::pvm_contract_sdk::ReturnFlags::REVERT,
+///                     this.host().revert(
 ///                         &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
 ///                 }
 ///                 // ... size check + decode ...
@@ -321,18 +326,14 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                     ::core::convert::Into::into(amount),
 ///                 ) {
 ///                     Ok(()) => {
-///                         this.host().return_value(
-///                             ::pvm_contract_sdk::ReturnFlags::empty(), &[]);
+///                         this.host().return_value(&[]);
 ///                         return ::core::option::Option::Some(());
 ///                     }
 ///                     Err(e) => {
 ///                         let mut __revert_buf = [0u8; 256];
 ///                         let __revert_len =
 ///                             e.encode_to(&mut __revert_buf);
-///                         this.host().return_value(
-///                             ::pvm_contract_sdk::ReturnFlags::REVERT,
-///                             &__revert_buf[..__revert_len]);
-///                         return ::core::option::Option::Some(());
+///                         this.host().revert(&__revert_buf[..__revert_len]);
 ///                     }
 ///                 }
 ///             }
@@ -350,15 +351,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn deploy() {
-///         // Non-payable constructor: reject value
-///         let mut __value_buf = [0u8; 32];
-///         pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
-///         let __has_value = __value_buf != [0u8; 32];
-///         if __has_value {
-///             pallet_revive_uapi::HostFnImpl::return_value(
-///                 pallet_revive_uapi::ReturnFlags::REVERT,
-///                 &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-///         }
+///         let host = ::pvm_contract_sdk::Host::new();
+///         let mut this = Contract { /* #[slot(N)] fields, */ host };
+///         // Non-payable constructor: reject value (reverts via this.host().revert)
+///         __pvm_assert_non_payable(this.host());
 ///         // ... read constructor calldata, decode, call new() ...
 ///     }
 ///
@@ -373,7 +369,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         let call_data_len = HostFnImpl::call_data_size() as usize;
 ///         let mut call_data = [0u8; 512];
 ///         if call_data_len > 512 {
-///             HostFnImpl::return_value(ReturnFlags::REVERT,
+///             this.host().revert(
 ///                 &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
 ///         }
 ///         HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -388,18 +384,18 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 return;
 ///             }
 ///             // With #[fallback]: calls fallback. Without: reverts with NoSelector.
-///             HostFnImpl::return_value(ReturnFlags::REVERT,
+///             this.host().revert(
 ///                 &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
 ///         }
 ///
 ///         let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
 ///         let input = &call_data[4..call_data_len];
 ///
-///         // route() either calls return_value (diverges on riscv64) or returns
+///         // route() either returns/reverts (diverges on riscv64) or returns
 ///         // None for an unmatched selector. Falling through means: unmatched.
 ///         if route(&mut this, selector, input).is_none() {
 ///             // With #[fallback]: calls fallback. Without: UnknownSelector.
-///             HostFnImpl::return_value(ReturnFlags::REVERT,
+///             this.host().revert(
 ///                 &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
 ///         }
 ///     }
@@ -659,8 +655,7 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// // 0) Non-payable guard — revert if value was transferred
 /// if __has_value {
-///     pallet_revive_uapi::HostFnImpl::return_value(
-///         pallet_revive_uapi::ReturnFlags::REVERT,
+///     this.host().revert(
 ///         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
 /// }
 ///
@@ -679,8 +674,7 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // 3) Encode and return via encode_to (smart top-level encoding)
 /// let mut __buf = [0u8; <U256 as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE];
 /// <U256 as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-/// ::pvm_contract_sdk::PolkaVmHost::return_value(
-///     ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
+/// ::pvm_contract_sdk::PolkaVmHost::return_value(&__buf);
 /// ```
 ///
 /// ## Payable method — `#[payable]` attribute
@@ -703,8 +697,7 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // No __has_value guard — this method is payable
 ///
 /// if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
-///     pallet_revive_uapi::HostFnImpl::return_value(
-///         pallet_revive_uapi::ReturnFlags::REVERT,
+///     this.host().revert(
 ///         &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
 /// }
 /// let mut __decode_offset: usize = 0;
@@ -736,13 +729,11 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// if <String as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
 ///     let mut __buf = alloc::vec![0u8; __len];
 ///     <String as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-///     ::pvm_contract_sdk::PolkaVmHost::return_value(
-///         ::pvm_contract_sdk::ReturnFlags::empty(), &__buf);
+///     ::pvm_contract_sdk::PolkaVmHost::return_value(&__buf);
 /// } else {
 ///     let mut __buf = [0u8; <String as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
 ///     <String as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-///     ::pvm_contract_sdk::PolkaVmHost::return_value(
-///         ::pvm_contract_sdk::ReturnFlags::empty(), &__buf[..__len]);
+///     ::pvm_contract_sdk::PolkaVmHost::return_value(&__buf[..__len]);
 /// }
 /// ```
 #[proc_macro_attribute]
@@ -818,8 +809,7 @@ pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
 /// let __has_value = __value_buf != [0u8; 32];
 /// if __has_value {
-///     pallet_revive_uapi::HostFnImpl::return_value(
-///         pallet_revive_uapi::ReturnFlags::REVERT,
+///     this.host().revert(
 ///         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
 /// }
 /// ```
