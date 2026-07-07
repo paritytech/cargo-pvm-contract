@@ -1,18 +1,23 @@
 //! Reentrancy guard primitives backing the `#[non_reentrant]` modifier.
 //!
-//! The lock lives at a fixed, namespaced storage key
-//! (`keccak256("pvm.guards.reentrancy")`, ERC-7201 style) — **not** in the
-//! contract's declared storage layout. This keeps it out of the auto-numbered
-//! slot chain and the `storageLayout` ABI, and makes it collision-free with
-//! user storage. Presence (a non-zero value) means "locked".
+//! The lock lives in transient storage (EIP-1153) at a fixed, namespaced key
+//! (`keccak256("pvm.guards.reentrancy")`, ERC-7201 style), outside the contract's
+//! declared storage layout, so it stays out of the auto-numbered slot chain and
+//! the `storageLayout` ABI and can't collide with user storage. Presence (a
+//! non-zero value) means "locked". Transient is the right fit: it's shared across
+//! the call stack within a transaction (a re-entrant frame sees the lock), cheaper
+//! than a persistent `SSTORE`, and auto-cleared at transaction end, so a stuck
+//! lock can't brick the contract across transactions. It must be on-chain, not an
+//! in-memory flag: PVM gives each call fresh memory, so only a storage write is
+//! visible to a re-entrant frame.
 //!
-//! **The lock must live in storage, not an in-memory flag:** PVM gives each call
-//! fresh memory, so only the on-chain write is visible to a re-entrant frame.
-//!
-//! **The lock is cleared by the dispatch codegen before `return_value`, never via
-//! `Drop`.** On-chain `return_value` terminates the call without unwinding, so a
-//! `Drop` guard would never run and the lock would stay set forever, bricking the
-//! contract. See the `#[non_reentrant]` codegen in `pvm-contract-macros`.
+//! Cleared explicitly before `return_value`, not via `Drop`: on-chain
+//! `return_value` diverges without unwinding, so a `Drop` guard would never run.
+//! The explicit clear is still needed because transient persists across
+//! *sequential* (non-nested) calls within a transaction, so a guarded call must
+//! release the lock on exit or a later guarded call in the same transaction would
+//! revert spuriously (as in OpenZeppelin's `ReentrancyGuardTransient`). See the
+//! `#[non_reentrant]` codegen in `pvm-contract-macros`.
 
 use crate::{DecodeError, Host, HostApi, SolError, StorageFlags, const_keccak256, const_selector};
 
@@ -69,14 +74,14 @@ impl SolError for ReentrancyGuardReentrantCall {
 #[doc(hidden)]
 pub fn __reentrancy_is_locked(host: &Host) -> bool {
     let mut buf = [0u8; 32];
-    host.get_storage_or_zero(StorageFlags::empty(), &REENTRANCY_KEY, &mut buf);
+    host.get_storage_or_zero(StorageFlags::TRANSIENT, &REENTRANCY_KEY, &mut buf);
     buf != UNLOCKED
 }
 
 /// Set the reentrancy lock (full-guard entry, after the not-locked check).
 #[doc(hidden)]
 pub fn __reentrancy_lock(host: &Host) {
-    let _ = host.set_storage_or_clear(StorageFlags::empty(), &REENTRANCY_KEY, &LOCKED);
+    let _ = host.set_storage_or_clear(StorageFlags::TRANSIENT, &REENTRANCY_KEY, &LOCKED);
 }
 
 /// Clear the reentrancy lock (full-guard exit).
@@ -85,5 +90,5 @@ pub fn __reentrancy_lock(host: &Host) {
 /// before the `return_value`.
 #[doc(hidden)]
 pub fn __reentrancy_unlock(host: &Host) {
-    let _ = host.set_storage_or_clear(StorageFlags::empty(), &REENTRANCY_KEY, &UNLOCKED);
+    let _ = host.set_storage_or_clear(StorageFlags::TRANSIENT, &REENTRANCY_KEY, &UNLOCKED);
 }
