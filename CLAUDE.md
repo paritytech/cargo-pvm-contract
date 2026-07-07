@@ -311,12 +311,21 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 
 ### Storage on the contract struct
 
-Declare storage fields directly on the contract struct. Two modes:
+Declare storage fields directly on the contract struct. Three modes:
 
 - **Auto-numbering (default).** Drop the `#[slot]` attribute and let the macro assign slots in declaration order via `layout_step`. Sub-word siblings pack into the same slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, sharing slot 0). Accepts every storage type.
 - **Explicit pinning (`#[slot(N)]`).** Restricted to full-slot types — `Mapping`, `Lazy<U256>`, `Lazy<String>`, `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and `#[storage]` sub-structs (anything with `StorageComponent::PACKED_BYTES == 32`). Sub-word types are rejected at compile time (explicit mode would place them at byte 0 of the slot while solc places them right-aligned). Use auto-numbering for sub-word packing or wrap the field in a `#[storage]` sub-struct if you need to pin the group at a specific slot. The primary reason to reach for `#[slot(N)]` over auto-numbering is `#[cfg(...)]`-gated storage variants — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
+- **Raw external slots (`#[slot(raw = KEY)]`).** Bind a typed field to a fixed, externally-known 32-byte slot (`KEY: [u8; 32]`) that lives *outside* the compiler-assigned sequential range — e.g. an [EIP-1967](https://eips.ethereum.org/EIPS/eip-1967) proxy slot (`keccak256("eip1967.proxy.implementation") - 1`). Because it's a real typed field, `get`/`set` stay gated by the borrow checker's `&self`/`&mut self` (view-vs-mutating) rule — no raw `host.get_storage` call and no `unsafe`. Sub-word types are **accepted** here (unlike `#[slot(N)]`) and placed right-aligned at `offset = 32 - PACKED_BYTES`, matching solc, so a slot written by a real Solidity proxy decodes identically. The field binds via `StorageComponent::new_at(StorageKey::from_raw(KEY), …)` with `alone = true` (an external pseudo-random slot has no packing neighbours). Raw slots are omitted from the abi-gen `storageLayout` (solc doesn't emit them either). Define the `KEY` constant in the contract/example, not the SDK. Example:
+  ```rust
+  const IMPLEMENTATION_SLOT: [u8; 32] = /* keccak256("eip1967.proxy.implementation") - 1 */;
 
-Mixing the two modes is not supported (either all fields are explicit or all are auto-numbered).
+  pub struct Proxy {
+      #[slot(raw = IMPLEMENTATION_SLOT)]
+      impl_addr: Lazy<Address>,
+  }
+  ```
+
+**Mixing modes.** Numeric `#[slot(N)]` and auto-numbering are mutually exclusive — either all non-raw fields pin a numeric slot or all are auto-numbered. **`#[slot(raw = KEY)]` is exempt** and may coexist with either mode: its key is pseudo-random and outside the sequential range, so it can't collide with a numeric or auto slot, and auto-numbered siblings keep their solc-style sub-word packing. (The caller owns raw-key correctness — a deliberately colliding `KEY` isn't checked.)
 
 The `#[contract]` macro constructs each field with a `StorageKey` and a clone of the host handle. Methods access storage via `self`:
 

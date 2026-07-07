@@ -181,9 +181,21 @@ pub(super) fn generate_layout_emit(
     }
 }
 
-/// Extract the `#[slot(N)]` attribute value from a field, if present.
+/// A parsed `#[slot(...)]` attribute value.
+#[derive(Debug, Clone)]
+pub(super) enum SlotAttr {
+    /// `#[slot(N)]` — a numeric slot index in the compiler-assigned range.
+    Numeric(u64),
+    /// `#[slot(raw = EXPR)]` — bind the field to a fixed, externally-known
+    /// 32-byte slot (e.g. an EIP-1967 proxy slot). `EXPR` must evaluate to a
+    /// `[u8; 32]`; it is quoted verbatim into the field initializer.
+    Raw(syn::Expr),
+}
+
+/// Extract the `#[slot(...)]` attribute value from a field, if present.
+/// Accepts either `#[slot(N)]` (numeric) or `#[slot(raw = EXPR)]`.
 /// Returns `None` when the field has no `#[slot]` attribute.
-pub(super) fn extract_optional_slot_attr(field: &syn::Field) -> syn::Result<Option<u64>> {
+pub(super) fn extract_optional_slot_attr(field: &syn::Field) -> syn::Result<Option<SlotAttr>> {
     let mut found: Option<&syn::Attribute> = None;
     for attr in &field.attrs {
         if attr.path().is_ident("slot") {
@@ -199,6 +211,21 @@ pub(super) fn extract_optional_slot_attr(field: &syn::Field) -> syn::Result<Opti
     let Some(attr) = found else {
         return Ok(None);
     };
-    let slot: syn::LitInt = attr.parse_args()?;
-    Ok(Some(slot.base10_parse::<u64>()?))
+    let parsed = attr.parse_args_with(|input: syn::parse::ParseStream| {
+        if input.peek(syn::Ident) {
+            let ident: syn::Ident = input.parse()?;
+            if ident != "raw" {
+                return Err(syn::Error::new_spanned(
+                    &ident,
+                    "expected an integer slot literal or `raw = <[u8; 32] expr>`",
+                ));
+            }
+            input.parse::<syn::Token![=]>()?;
+            Ok(SlotAttr::Raw(input.parse::<syn::Expr>()?))
+        } else {
+            let slot: syn::LitInt = input.parse()?;
+            Ok(SlotAttr::Numeric(slot.base10_parse::<u64>()?))
+        }
+    })?;
+    Ok(Some(parsed))
 }
