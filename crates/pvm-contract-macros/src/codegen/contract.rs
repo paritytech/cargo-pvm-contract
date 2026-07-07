@@ -10,7 +10,10 @@ use super::dispatch::{
 };
 use super::storage_layout::extract_optional_slot_attr;
 use crate::signature::{SolType, compute_selector};
-use crate::utils::{compute_function_signature, to_snake_case};
+use crate::utils::{
+    compute_function_signature, extract_selector_rename, to_camel_case, to_snake_case,
+    validate_sol_identifier,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -318,6 +321,11 @@ fn check_signature_compatibility(
 }
 
 fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
+    // Canonical spelling: `#[selector(name = "...")]` (shared with #[interface_id]).
+    if let Some(name) = extract_selector_rename(attrs)? {
+        return Ok(Some(name));
+    }
+    // Alias: `#[method(rename = "...")]`.
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -328,28 +336,11 @@ fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
             && let Some(name) = args.rename
             && !name.is_empty()
         {
-            if !is_valid_solidity_identifier(&name) {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    format!(
-                        "Invalid Solidity identifier `{name}`. \
-                         Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
-                    ),
-                ));
-            }
+            validate_sol_identifier(&name, attr)?;
             return Ok(Some(name));
         }
     }
     Ok(None)
-}
-
-fn is_valid_solidity_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
@@ -424,24 +415,6 @@ fn collect_error_type(
             }
         }
     }
-}
-
-fn to_camel_case(snake: &str) -> String {
-    let mut result = String::new();
-    let mut next_upper = false;
-    for (i, c) in snake.chars().enumerate() {
-        if c == '_' {
-            next_upper = true;
-        } else if i == 0 {
-            result.push(c);
-        } else if next_upper {
-            result.push(c.to_ascii_uppercase());
-            next_upper = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
@@ -1695,12 +1668,22 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                     if let syn::ImplItem::Fn(func) = impl_item {
                         func.attrs.retain(|attr| {
                             let segments: Vec<_> = attr.path().segments.iter().collect();
-                            !(segments.len() == 2
+                            // `#[selector(name = "...")]` — the rename override,
+                            // consumed here (bare or prefixed).
+                            let is_selector = segments
+                                .last()
+                                .is_some_and(|s| s.ident == "selector")
+                                && (segments.len() == 1
+                                    || (segments.len() == 2
+                                        && VALID_PREFIXES
+                                            .contains(&segments[0].ident.to_string().as_str())));
+                            let is_pvm_method = segments.len() == 2
                                 && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
                                 && (segments[1].ident == "method"
                                     || segments[1].ident == "constructor"
                                     || segments[1].ident == "fallback"
-                                    || segments[1].ident == "receive"))
+                                    || segments[1].ident == "receive");
+                            !(is_selector || is_pvm_method)
                         });
                     }
                 }

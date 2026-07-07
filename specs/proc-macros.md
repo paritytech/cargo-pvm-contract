@@ -100,7 +100,7 @@ call()    — called on every subsequent interaction
 
 ## Method, Constructor, Fallback, Receive
 
-- `#[method]` — public contract method. Optional `#[method(rename = "name")]` overrides the Solidity name (default: `snake_case` → `camelCase`).
+- `#[method]` — public contract method. `#[selector(name = "name")]` overrides the Solidity name (default: `snake_case` to `camelCase`); `#[method(rename = "name")]` is a supported alias.
 - `#[constructor]` — runs once at deployment. Must take `&mut self`; pure/view constructors are rejected because they cannot initialize storage.
 - `#[fallback]` — invoked when no method selector matches (or calldata is 1..=3 bytes).
 - `#[receive]` — invoked on plain value transfers (empty calldata). Must take `&mut self` and no other arguments. Implicitly payable; `#[payable]` is rejected as redundant.
@@ -322,6 +322,32 @@ pub fn transfer(&mut self, to: Address, value: U256) {
 ```
 
 `#[indexed]` fields become topics (max 3 after the signature topic); the rest are ABI-encoded into the data payload.
+
+## Interfaces (`#[interface_id]`)
+
+`#[interface_id]` on a trait declares it as an on-chain interface and generates its ERC-165 interface ID — the XOR of the 4-byte selectors of its methods — as a defaulted associated constant:
+
+```rust,ignore
+#[pvm_contract_sdk::interface_id]
+pub trait IErc20 {
+    fn total_supply(&self) -> U256;
+    fn balance_of(&self, account: Address) -> U256;
+    #[selector(name = "transfer")]
+    fn transfer(&mut self, to: Address, amount: U256) -> bool;
+    // ...
+}
+
+// generated:
+// const INTERFACE_ID: [u8; 4];
+```
+
+`INTERFACE_ID` is a defaulted associated const, so read it through a concrete implementor: `<MyToken as IErc20>::INTERFACE_ID`. This is the value a contract returns from `supportsInterface(bytes4)`.
+
+- Each method's selector is `keccak256` of its canonical Solidity signature. The Solidity name defaults to the `camelCase` of the Rust name and is overridden with `#[selector(name = "...")]` — the same attribute used on `#[method]`.
+- Parameter types are resolved through their `SolEncode::SOL_NAME` at const-eval, so custom types (`#[derive(SolType)]` structs) work as parameters.
+- Adding the associated const makes the trait non-object-safe (it can no longer be used behind `dyn`).
+
+Compile errors: an empty trait, a generic method (its selector is undefined), a trait that already declares `INTERFACE_ID`, or two methods that produce the same selector (they would silently cancel in the XOR — rename one with `#[selector(name = "...")]`).
 
 ## ABI Generation
 
