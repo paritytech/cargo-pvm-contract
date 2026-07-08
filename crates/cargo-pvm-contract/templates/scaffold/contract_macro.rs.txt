@@ -29,10 +29,12 @@ mod contract {
             Ok(())
         }
 
-        #[pvm_contract_sdk::fallback]
-        pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
-            Ok(())
-        }
+        // Optional: add a #[fallback] to handle calls whose selector matches no
+        // method. Without one, unknown selectors revert (Solidity-standard).
+        // #[pvm_contract_sdk::fallback]
+        // pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
+        //     Ok(())
+        // }
 
 {% if let Some(sol_file_name) = sol_file_name %}
          // TODO: Implement the following methods from {{ sol_file_name }}:
@@ -50,5 +52,31 @@ mod contract {
         //     Ok(param)
         // }
 {% endif %}
+    }
+}
+
+// `with_host` is only generated for host (non-`abi-gen`) builds, so gate the
+// tests to match — `cargo pvm-contract test` builds without `abi-gen`.
+#[cfg(all(test, not(feature = "abi-gen")))]
+mod tests {
+    use super::contract::Contract;
+    use pvm_contract_sdk::MockHostBuilder;
+
+    // Unit tests run on the host against a `MockHost` — no chain needed.
+    // Run them with `cargo pvm-contract test`.
+    //
+    // `Contract::with_host` wires an instance to the mock host. Seed any
+    // required state on the mock, then call methods directly and assert on
+    // their typed return values, e.g.:
+    //
+    //     let mock = MockHostBuilder::new().caller([0x11; 20]).build();
+    //     let mut contract = Contract::with_host(mock.clone());
+    //     assert!(contract.my_method(/* ... */).is_ok());
+
+    #[test]
+    fn constructor_succeeds() {
+        let mock = MockHostBuilder::new().build();
+        let mut contract = Contract::with_host(mock);
+        assert!(contract.new().is_ok());
     }
 }

@@ -1411,6 +1411,13 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// - Out-of-bounds `get`/`set` revert with solc's ABI-encoded `Panic(0x32)`
 ///   (array out-of-bounds access), matching Solidity — off-chain callers can
 ///   decode the `0x32` code. Use `try_get` for a non-reverting read.
+/// - The length is read as a `u64`; a stored length exceeding `u64::MAX`
+///   (unreachable through this API — only via corrupted state or raw uAPI)
+///   reverts with `Panic(0x22)` ("incorrectly encoded storage byte array")
+///   rather than silently truncating. This length check runs on every
+///   length-touching accessor — including `try_get`/`first`/`last`/`is_empty`
+///   — so those revert on a corrupt length even though they never revert for
+///   an ordinary out-of-bounds index.
 ///
 /// # Element shapes supported
 ///

@@ -37,12 +37,40 @@ pub fn run_tests(args: TestArgs) -> Result<()> {
     // targeting polkavm, passing `--target <host>` still takes precedence.
     let host_target = host_target_triple()?;
 
-    let mut cmd = Command::new(env!("CARGO"));
-    cmd.arg("test")
+    // Run the test build from the project directory so rustup resolves the
+    // project's pinned toolchain (`rust-toolchain.toml` / inherited
+    // `RUSTUP_TOOLCHAIN`). `manifest_path` is already canonical, so it stays
+    // valid regardless of the working directory.
+    let project_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("manifest path has no parent directory: {manifest_path:?}"))?
+        .to_path_buf();
+
+    // Invoke `cargo` from PATH (the rustup proxy), not `env!("CARGO")`: the
+    // latter bakes in the absolute path of whatever toolchain built this CLI
+    // and bypasses the proxy. Run from `project_dir` so the proxy honors the
+    // project's `rust-toolchain.toml` by default — but, unlike `build` (which
+    // *requires* the pinned nightly for `-Zbuild-std=core,alloc`), we do NOT
+    // force the pin: host unit tests run on the prebuilt host `std` and aren't
+    // bound to the build toolchain, so an explicit `RUSTUP_TOOLCHAIN` override
+    // is respected.
+    //
+    //   - `RUSTC_BOOTSTRAP=1` unlocks `-Z` on any channel, so this works
+    //     whether the resolved toolchain is stable, beta, or nightly.
+    //   - `-Zbuild-std=` (empty) overrides the scaffold's `.cargo/config.toml`
+    //     `-Zbuild-std=core,alloc`. Host unit tests link the real prebuilt
+    //     `std` (the crate is not `no_std` under `cfg(test)`), so a build-std
+    //     `alloc` would collide with std's `alloc` (duplicate `exchange_malloc`
+    //     lang item).
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(&project_dir)
+        .arg("test")
         .arg("--manifest-path")
         .arg(&manifest_path)
         .arg("--target")
         .arg(&host_target)
+        .arg("-Zbuild-std=")
+        .env("RUSTC_BOOTSTRAP", "1")
         .env_remove("CARGO_BUILD_TARGET");
 
     if !args.features.is_empty() {
