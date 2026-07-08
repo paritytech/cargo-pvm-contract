@@ -305,8 +305,36 @@ When a contract method returns `Err(e)`, the SDK encodes the error as ABI-compat
 
 | Error            | Selector     | Signature        | When                                  |
 | ---------------- | ------------ | ---------------- | ------------------------------------- |
-| `Error(string)`  | `0x08c379a0` | `Error(string)`  | Explicit revert with a message        |
-| `Panic(uint256)` | `0x4e487b71` | `Panic(uint256)` | Arithmetic overflow, division by zero |
+| `Error(string)`  | `0x08c379a0` | `Error(string)`  | Explicit revert with a message (`RevertString`) |
+| `Panic(uint256)` | `0x4e487b71` | `Panic(uint256)` | Runtime failures — see the code table below |
+
+
+### Panic Codes
+
+`Panic(uint256)` is `0x4e487b71` followed by a 32-byte code (big-endian). The
+SDK reverts with the following solc-compatible codes; the code byte occupies the
+last byte of the 32-byte word:
+
+| Code   | Meaning                                        | Emitted by |
+| ------ | ---------------------------------------------- | ---------- |
+| `0x00` | Generic / compiler-inserted panic              | the `#[contract]` panic handler (uncaught Rust panic) |
+| `0x01` | `assert(false)`                                | user code via `Panic::AssertFalse` |
+| `0x11` | Arithmetic overflow / underflow                | checked-math paths, storage slot-index arithmetic |
+| `0x12` | Division or modulo by zero                     | user code via `Panic::DivisionByZero` |
+| `0x21` | Invalid enum conversion                         | user code |
+| `0x22` | Incorrectly encoded storage byte array          | `StorageVec` on a corrupt/over-range (`> u64::MAX`) length |
+| `0x31` | `.pop()` on an empty array                       | user code |
+| `0x32` | Array / bytes out-of-bounds access              | `StorageVec::get` / `set` out of bounds |
+| `0x41` | Allocated too much memory / array too large     | `StorageVec::push`/`grow` past `u64::MAX` |
+| `0x51` | Call to a zero-initialised internal function    | user code |
+
+**Auto-revert:** storage guards and the dispatch layer revert *automatically*
+with the correct code — e.g. `self.items.get(i)` reverts `Panic(0x32)` on an
+out-of-bounds index, matching solc, so contract authors don't hand-roll bounds
+checks. All of these go through the diverging `HostApi::revert` door (the shared
+`panic_revert(host, code)` encoder), distinct from the non-diverging success
+door `HostApi::return_value`; on `riscv64` both are the same
+`return_value(flags, data)` syscall differing only by the `REVERT` flag.
 
 
 ### Custom Errors

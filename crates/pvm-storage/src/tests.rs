@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use pvm_contract_types::Address;
 #[cfg(feature = "alloc")]
 use pvm_contract_types::Bytes;
-use pvm_contract_types::{MockHost, MockHostBuilder};
+use pvm_contract_types::{MockHost, MockHostBuilder, assert_panics};
 use ruint::aliases::U256;
 
 /// Fresh isolated `Host` backed by a new `MockHost` in an `Rc`.
@@ -2177,24 +2177,14 @@ fn storage_vec_iter_reverse() {
 fn storage_vec_get_oob_reverts_panic_0x32() {
     let (host, mock) = host_and_mock();
     let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
-    assert_eq!(
-        mock.expect_panic(|| {
-            let _ = v.get(0);
-        }),
-        Panic::OutOfBoundsAccess
-    );
+    assert_panics!(mock, Panic::OutOfBoundsAccess, v.get(0));
 }
 
 #[test]
 fn storage_vec_set_oob_reverts_panic_0x32() {
     let (host, mock) = host_and_mock();
     let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
-    assert_eq!(
-        mock.expect_panic(|| {
-            v.set(0, &U256::from(1u64));
-        }),
-        Panic::OutOfBoundsAccess
-    );
+    assert_panics!(mock, Panic::OutOfBoundsAccess, v.set(0, &U256::from(1u64)));
 }
 
 #[test]
@@ -2208,12 +2198,38 @@ fn storage_vec_len_corrupt_high_byte_reverts_panic_0x22() {
     let mut corrupt = [0u8; 32];
     corrupt[0] = 1; // non-zero in the high 24 bytes
     mock.set_raw_storage(v.root.as_bytes().to_vec(), corrupt.to_vec());
-    assert_eq!(
-        mock.expect_panic(|| {
-            let _ = v.len();
-        }),
-        Panic::StorageByteArrayEncoding
-    );
+    assert_panics!(mock, Panic::StorageByteArrayEncoding, v.len());
+}
+
+#[test]
+fn storage_vec_corrupt_length_reads_as_empty_for_non_reverting_accessors() {
+    // The non-reverting read family must NOT revert on a malformed length —
+    // they read it as empty. (`len`/`get` still revert `Panic(0x22)`, covered
+    // above.) A revert here would unwind and fail the test.
+    let (host, mock) = host_and_mock();
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    let mut corrupt = [0u8; 32];
+    corrupt[0] = 1; // non-zero in the high 24 bytes
+    mock.set_raw_storage(v.root.as_bytes().to_vec(), corrupt.to_vec());
+    assert_eq!(v.try_get(0), None);
+    assert!(v.is_empty());
+    assert_eq!(v.first(), None);
+    assert_eq!(v.last(), None);
+    assert_eq!(v.iter().next(), None);
+}
+
+#[test]
+fn nested_storage_vec_corrupt_length_reads_as_empty_for_non_reverting_accessors() {
+    let (host, mock) = host_and_mock();
+    let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
+    let mut corrupt = [0u8; 32];
+    corrupt[0] = 1;
+    mock.set_raw_storage(outer.root.as_bytes().to_vec(), corrupt.to_vec());
+    assert!(outer.try_get(0).is_none());
+    assert!(outer.is_empty());
+    assert!(outer.first().is_none());
+    assert!(outer.last().is_none());
+    assert!(outer.iter().next().is_none());
 }
 
 #[test]
@@ -2224,12 +2240,7 @@ fn storage_vec_push_at_max_len_reverts_panic_0x41() {
     let mut max_len = [0u8; 32];
     max_len[24..32].copy_from_slice(&u64::MAX.to_be_bytes());
     mock.set_raw_storage(v.root.as_bytes().to_vec(), max_len.to_vec());
-    assert_eq!(
-        mock.expect_panic(|| {
-            v.push(&U256::from(1u64));
-        }),
-        Panic::OOM
-    );
+    assert_panics!(mock, Panic::OOM, v.push(&U256::from(1u64)));
 }
 
 #[test]
@@ -3263,12 +3274,7 @@ fn nested_storage_vec_get_reverts_panic_0x32() {
     let (host, mock) = host_and_mock();
     let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
     // len == 0: any index is OOB.
-    assert_eq!(
-        mock.expect_panic(|| {
-            let _ = outer.get(0);
-        }),
-        Panic::OutOfBoundsAccess
-    );
+    assert_panics!(mock, Panic::OutOfBoundsAccess, outer.get(0));
 }
 
 #[test]
@@ -3277,12 +3283,7 @@ fn nested_storage_vec_entry_reverts_panic_0x32() {
     let mut outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
     outer.grow();
     // len == 1: index 1 is OOB.
-    assert_eq!(
-        mock.expect_panic(|| {
-            let _ = outer.entry(1);
-        }),
-        Panic::OutOfBoundsAccess
-    );
+    assert_panics!(mock, Panic::OutOfBoundsAccess, outer.entry(1));
 }
 
 #[test]

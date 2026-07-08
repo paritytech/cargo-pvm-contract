@@ -156,7 +156,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, assert_panics, assert_reverts};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;

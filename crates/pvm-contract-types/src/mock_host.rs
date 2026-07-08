@@ -57,6 +57,52 @@ use std::rc::Rc;
 
 use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, ReturnFlags, StorageFlags};
 
+/// Assert that `$body` reverts with exactly `$expected` ABI bytes, returning the
+/// captured [`ReturnValue`] for any further inspection.
+///
+/// A thin, assertion-style wrapper over [`MockHost::expect_revert`] that hides
+/// the `catch_unwind` closure so the call site reads like `assert_eq!`.
+/// `$expected` is anything sliceable to `[u8]` (a `framework_errors` constant,
+/// `&[u8]`, `Vec<u8>`, a byte string). Panics the test — with the actual outcome
+/// — if `$body` doesn't revert, and with a byte diff if the data mismatches.
+///
+/// ```ignore
+/// assert_reverts!(mock, framework_errors::UNKNOWN_SELECTOR, route(&mut c, sel, &input));
+/// ```
+#[cfg(feature = "std")]
+#[macro_export]
+macro_rules! assert_reverts {
+    ($mock:expr, $expected:expr, $body:expr $(,)?) => {{
+        let rv = $mock.expect_revert(|| {
+            // `let _ =` (not a bare `;`) so a `#[must_use]` body (e.g. `Result`)
+            // doesn't trip `unused_must_use` at the call site.
+            let _ = $body;
+        });
+        ::core::assert_eq!(rv.data.as_slice(), &($expected)[..], "revert data mismatch");
+        rv
+    }};
+}
+
+/// Assert that `$body` reverts with Solidity `Panic(uint256)` equal to
+/// `$expected`, returning the decoded [`Panic`](crate::Panic).
+///
+/// A thin, assertion-style wrapper over [`MockHost::expect_panic`].
+///
+/// ```ignore
+/// assert_panics!(mock, Panic::OutOfBoundsAccess, v.get(0));
+/// ```
+#[cfg(feature = "std")]
+#[macro_export]
+macro_rules! assert_panics {
+    ($mock:expr, $expected:expr, $body:expr $(,)?) => {{
+        let got = $mock.expect_panic(|| {
+            let _ = $body;
+        });
+        ::core::assert_eq!(got, $expected);
+        got
+    }};
+}
+
 /// Return value for mocked external calls.
 ///
 /// `Ok(data)` — call succeeds; `data` is written to the output buffer.
@@ -310,6 +356,26 @@ impl MockHost {
                 .expect("revert should have recorded a ReturnValue"),
             Some(other) => panic!("expected a revert, but the closure halted via {other:?}"),
             None => panic!("expected a revert, but the closure returned normally"),
+        }
+    }
+
+    /// Run `f`, asserting it returns successfully (records a `return_value`
+    /// without reverting or otherwise halting), and return the captured
+    /// [`ReturnValue`]. The success counterpart to [`Self::expect_revert`].
+    ///
+    /// Works for both the `#[contract]` macro `route()` and the DSL
+    /// `dispatch_impl` — both record via [`HostApi::return_value`] then return
+    /// normally on success. Panics the test if `f` unexpectedly halts (e.g.
+    /// reverts), naming the actual halt, or if it returned without recording a
+    /// value (e.g. an unmatched selector).
+    pub fn expect_return<F: FnOnce()>(&self, f: F) -> ReturnValue {
+        match self.run_until_halt(f) {
+            None => self
+                .take_return_value()
+                .expect("expected a successful return, but no return_value was recorded"),
+            Some(halt) => {
+                panic!("expected a successful return, but the closure halted via {halt:?}")
+            }
         }
     }
 
@@ -749,7 +815,10 @@ impl MockHost {
         // Single-exit invariant: on-chain the frame halts at the first exit
         // syscall, so a second exit before the previous payload is consumed is a
         // bug (or a test that forgot to `take_return_value()` between runs).
-        debug_assert!(
+        // A hard `assert!` (not `debug_assert!`) so the check also holds under
+        // `cargo test --release`, where a silent second-exit-wins would
+        // otherwise invert the on-chain first-exit-wins semantics.
+        assert!(
             self.state.borrow().return_value.is_none(),
             "MockHost: exit recorded twice without an intervening \
              take_return_value(); on-chain the frame would have halted at the \
@@ -1402,6 +1471,17 @@ mod tests {
         let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
         let got = mock.expect_panic(|| crate::panic_revert(&host, crate::Panic::Overflow));
         assert_eq!(got, crate::Panic::Overflow);
+    }
+
+    #[test]
+    fn expect_panic_decodes_generic_0x00() {
+        // The `#[contract]` panic handler emits `Panic::Generic` (0x00) for
+        // uncaught Rust panics, but that handler is riscv-only — this pins the
+        // 0x00 wire byte on a host target without needing the handler.
+        let mock = MockHostBuilder::new().build();
+        let host = crate::Host::from_dyn(std::rc::Rc::new(mock.clone()));
+        let got = mock.expect_panic(|| crate::panic_revert(&host, crate::Panic::Generic));
+        assert_eq!(got, crate::Panic::Generic);
     }
 
     #[test]

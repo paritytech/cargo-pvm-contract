@@ -283,9 +283,8 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         input: &[u8],
 ///     ) -> ::core::option::Option<()> {
 ///         // Value-transfer hoist — read once, used by all non-payable arms
-///         let mut __value_buf = [0u8; 32];
-///         this.host().value_transferred(&mut __value_buf);
-///         let __has_value = __value_buf != [0u8; 32];
+///         let __has_value =
+///             ::pvm_contract_sdk::value_transferred_is_nonzero(this.host());
 ///
 ///         // Selector consts — precomputed from .sol, or derived via SOL_NAME
 ///         const __SEL_balance_of: [u8; 4] = [0x70, 0xa0, 0x82, 0x31];
@@ -295,31 +294,28 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///         match selector {
 ///             // balanceOf(address) -> uint256  (non-payable)
 ///             __SEL_balance_of => {
-///                 if __has_value {
-///                     this.host().revert(
-///                         &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-///                 }
-///                 if input.len() < <Address as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE {
-///                     this.host().revert(
+///                 // Non-payable guard (shared helper) — reverts if msg.value > 0
+///                 __pvm_assert_value_zero(this.host(), __has_value);
+///                 if input.len() < <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE {
+///                     <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+///                         this.host(),
 ///                         &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
 ///                 }
 ///                 let mut __decode_offset: usize = 0;
-///                 let account = /* decode … */;
+///                 let account = /* unsafe StaticDecode::decode_unchecked … */;
 ///                 let result = this.balance_of(::core::convert::Into::into(account));
 ///                 const __LEN: usize =
 ///                     <U256 as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE;
 ///                 let mut __buf = [0u8; __LEN];
 ///                 <U256 as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-///                 this.host().return_value(&__buf);
-///                 return ::core::option::Option::Some(());
+///                 <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+///                     this.host(), &__buf);
+///                 #[allow(unreachable_code)] return ::core::option::Option::Some(());
 ///             }
 ///
 ///             // transfer(address,uint256) — fallible, non-payable
 ///             __SEL_transfer => {
-///                 if __has_value {
-///                     this.host().revert(
-///                         &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-///                 }
+///                 __pvm_assert_value_zero(this.host(), __has_value);
 ///                 // ... size check + decode ...
 ///                 match this.transfer(
 ///                     ::core::convert::Into::into(to),
@@ -637,9 +633,7 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// // Hoisted at the top of route() — shared by all arms
-/// let mut __value_buf = [0u8; 32];
-/// pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
-/// let __has_value = __value_buf != [0u8; 32];
+/// let __has_value = ::pvm_contract_sdk::value_transferred_is_nonzero(this.host());
 /// ```
 ///
 /// ## Static return (U256) — non-payable
@@ -653,17 +647,21 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// // Generated dispatch arm (inside the module):
 ///
-/// // 0) Non-payable guard — revert if value was transferred
-/// if __has_value {
-///     this.host().revert(
-///         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-/// }
+/// // 0) Non-payable guard (shared helper) — reverts if value was transferred
+/// __pvm_assert_value_zero(this.host(), __has_value);
 ///
-/// // 1) Decode input parameters (uniform trait dispatch)
+/// // 1) Size check + decode (static params use the no-alloc fast path)
+/// if input.len() < <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE {
+///     <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+///         this.host(),
+///         &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
+/// }
 /// let mut __decode_offset: usize = 0;
 /// let account = {
-///     let __value = <Address as ::pvm_contract_sdk::SolDecode>::decode_at(
-///         &input, __decode_offset);
+///     let __value = unsafe {
+///         <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
+///             &input, __decode_offset)
+///     };
 ///     __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
 ///     __value
 /// };
@@ -674,7 +672,8 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// // 3) Encode and return via encode_to (smart top-level encoding)
 /// let mut __buf = [0u8; <U256 as ::pvm_contract_sdk::StaticEncodedLen>::ENCODED_SIZE];
 /// <U256 as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-/// ::pvm_contract_sdk::PolkaVmHost::return_value(&__buf);
+/// <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(this.host(), &__buf);
+/// #[allow(unreachable_code)] return ::core::option::Option::Some(());
 /// ```
 ///
 /// ## Payable method — `#[payable]` attribute
@@ -696,15 +695,18 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// // No __has_value guard — this method is payable
 ///
-/// if input.len() < <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE {
-///     this.host().revert(
-///         &::pvm_contract_types::framework_errors::INVALID_CALLDATA);
+/// if input.len() < <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE {
+///     <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+///         this.host(),
+///         &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
 /// }
 /// let mut __decode_offset: usize = 0;
 /// let to = {
-///     let __value = <Address as ::pvm_contract_types::SolDecode>::decode_at(
-///         &input, __decode_offset);
-///     __decode_offset += <Address as ::pvm_contract_types::SolEncode>::HEAD_SIZE;
+///     let __value = unsafe {
+///         <Address as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(
+///             &input, __decode_offset)
+///     };
+///     __decode_offset += <Address as ::pvm_contract_sdk::SolEncode>::SLOT_SIZE;
 ///     __value
 /// };
 ///
@@ -729,12 +731,13 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// if <String as ::pvm_contract_sdk::SolEncode>::IS_DYNAMIC {
 ///     let mut __buf = alloc::vec![0u8; __len];
 ///     <String as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf);
-///     ::pvm_contract_sdk::PolkaVmHost::return_value(&__buf);
+///     <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(this.host(), &__buf);
 /// } else {
 ///     let mut __buf = [0u8; <String as ::pvm_contract_sdk::SolEncode>::HEAD_SIZE];
 ///     <String as ::pvm_contract_sdk::SolEncode>::encode_to(&result, &mut __buf[..__len]);
-///     ::pvm_contract_sdk::PolkaVmHost::return_value(&__buf[..__len]);
+///     <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(this.host(), &__buf[..__len]);
 /// }
+/// #[allow(unreachable_code)] return ::core::option::Option::Some(());
 /// ```
 #[proc_macro_attribute]
 pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -804,14 +807,8 @@ pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// value is attached to the call:
 ///
 /// ```ignore
-/// // Generated for a non-payable fallback:
-/// let mut __value_buf = [0u8; 32];
-/// pallet_revive_uapi::HostFnImpl::value_transferred(&mut __value_buf);
-/// let __has_value = __value_buf != [0u8; 32];
-/// if __has_value {
-///     this.host().revert(
-///         &::pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
-/// }
+/// // Generated for a non-payable fallback (shared helper reads value + reverts):
+/// __pvm_assert_non_payable(this.host());
 /// ```
 ///
 /// To accept value in the fallback, add `#[payable]`:

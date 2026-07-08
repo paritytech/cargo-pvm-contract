@@ -20,7 +20,7 @@
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, Router, SolDecode, SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
@@ -234,13 +234,10 @@ fn route_ok(
     sel: [u8; 4],
     input: &[u8],
 ) -> Vec<u8> {
-    let outcome = mini_token::route(contract, sel, input);
-    assert_eq!(outcome, Some(()), "expected matched selector");
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::empty(), "expected success flags");
-    rv.data
+    mock.expect_return(|| {
+        mini_token::route(contract, sel, input);
+    })
+    .data
 }
 
 /// Call `route()`, expect a revert, and return the captured revert payload.

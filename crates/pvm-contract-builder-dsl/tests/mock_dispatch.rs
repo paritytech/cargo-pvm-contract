@@ -51,9 +51,9 @@ fn wrap(mock: &Rc<MockHost>) -> Host {
 /// Drive the default `builder()` through `dispatch_impl` on a success path,
 /// returning the captured success payload.
 fn dispatch_ok(mock: &Rc<MockHost>) -> ReturnValue {
-    builder().dispatch_impl::<256>(&wrap(mock));
-    mock.take_return_value()
-        .expect("dispatch should call return_value")
+    mock.expect_return(|| {
+        builder().dispatch_impl::<256>(&wrap(mock));
+    })
 }
 
 /// Drive the default `builder()` expecting a revert, returning the captured

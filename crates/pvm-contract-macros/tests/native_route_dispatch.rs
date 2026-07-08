@@ -11,7 +11,8 @@
 //! catches it with [`MockHost::expect_revert`] and inspects the payload.
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
+    StaticEncodedLen, assert_reverts,
 };
 use ruint::aliases::U256;
 
@@ -111,12 +112,10 @@ fn route_short_input_reverts_with_invalid_calldata() {
     let sel = selector("double(uint64)");
     let short_input = [0u8; 1]; // need at least 32 bytes for u64
 
-    let rv = mock.expect_revert(|| {
-        my_token::route(&mut contract, sel, &short_input);
-    });
-    assert_eq!(
-        rv.data,
-        pvm_contract_types::framework_errors::INVALID_CALLDATA.as_slice()
+    assert_reverts!(
+        mock,
+        pvm_contract_types::framework_errors::INVALID_CALLDATA,
+        my_token::route(&mut contract, sel, &short_input)
     );
 }
 
