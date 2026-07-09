@@ -18,6 +18,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `pvm-bump-allocator` | Simple bump allocator for PVM smart contracts (backs `allocator = "bump"`) |
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
 | `pvm-contract-e2e-tests` | End-to-end + integration test harness |
+| `pvm-solc-differential` | Differential tests of on-chain storage representation vs real solc (executed on `revm`); `solc-tests` feature |
 
 ## How It Works
 
