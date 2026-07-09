@@ -15,7 +15,7 @@
 //! ```toml
 //! [dependencies]
 //! pvm-contract-sdk = "0.3"
-//! polkavm-derive = "0.34"
+//! polkavm-derive = "0.35"
 //! ```
 //!
 //! ```ignore

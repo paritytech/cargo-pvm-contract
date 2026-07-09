@@ -3,50 +3,9 @@
 #[cfg(not(test))]
 extern crate alloc;
 
-struct BumpAllocator;
-
-const BUMP_HEAP_SIZE: usize = 1024;
-static BUMP_OFFSET: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-static mut BUMP_HEAP: [u8; BUMP_HEAP_SIZE] = [0u8; BUMP_HEAP_SIZE];
-
-unsafe impl core::alloc::GlobalAlloc for BumpAllocator {
-    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        let align = layout.align();
-        let size = layout.size();
-
-        let mut current = BUMP_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
-
-        loop {
-            let aligned = (current + align - 1) & !(align - 1);
-            let Some(next) = aligned.checked_add(size) else {
-                return core::ptr::null_mut();
-            };
-
-            if next > BUMP_HEAP_SIZE {
-                return core::ptr::null_mut();
-            }
-
-            match BUMP_OFFSET.compare_exchange_weak(
-                current,
-                next,
-                core::sync::atomic::Ordering::SeqCst,
-                core::sync::atomic::Ordering::SeqCst,
-            ) {
-                Ok(_) => {
-                    let heap = core::ptr::addr_of_mut!(BUMP_HEAP) as *mut u8;
-                    return heap.wrapping_add(aligned);
-                }
-                Err(observed) => current = observed,
-            }
-        }
-    }
-
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: core::alloc::Layout) {}
-}
-
 #[cfg(not(test))]
 #[global_allocator]
-static ALLOC: BumpAllocator = BumpAllocator;
+static ALLOC: pvm_bump_allocator::BumpAllocator<1024> = pvm_bump_allocator::BumpAllocator::new();
 {% endif %}
 
 use pvm_contract_builder_dsl::{
@@ -127,3 +86,41 @@ fn {{ func.name_snake }}_handler(
 }
 {% endfor %}
 {% endif %}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    // `Host` and `ContractBuilder` come in via `super::*`; only the std-gated
+    // test helpers need an explicit import.
+    use pvm_contract_builder_dsl::pvm_contract_types::{MockHostBuilder, ReturnFlags};
+    use std::rc::Rc;
+
+    // DSL contracts are tested at the dispatch level: build a `MockHost` with
+    // the calldata you want to send, drive it through a `ContractBuilder`, then
+    // read back the captured return value. Run with `cargo pvm-contract test`.
+    //
+    // To exercise a real method, register its handler and send its selector:
+    //
+    //     let mut calldata = MY_METHOD_SELECTOR.to_vec();
+    //     // calldata.extend_from_slice(&encoded_args);
+    //     let mock = Rc::new(MockHostBuilder::new().calldata(calldata).build());
+    //     ContractBuilder::new()
+    //         .method(MY_METHOD_SELECTOR, my_method_handler)
+    //         .dispatch_impl::<256>(&Host::from_dyn(mock.clone()));
+    //     let rv = mock.take_return_value().expect("dispatch should return");
+    //     assert_eq!(rv.flags, ReturnFlags::empty());
+
+    #[test]
+    fn unknown_selector_reverts() {
+        let mock = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xde, 0xad, 0xbe, 0xef])
+                .build(),
+        );
+        ContractBuilder::new().dispatch_impl::<256>(&Host::from_dyn(mock.clone()));
+        let rv = mock
+            .take_return_value()
+            .expect("dispatch should call return_value");
+        assert_eq!(rv.flags, ReturnFlags::REVERT);
+    }
+}

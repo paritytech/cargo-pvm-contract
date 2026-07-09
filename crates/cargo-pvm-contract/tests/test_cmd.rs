@@ -531,6 +531,14 @@ fn cli_test_supports_manifest_path_from_outside_project_dir() {
     run_cli_test_with_manifest(&manifest_path, temp_dir.path());
 }
 
+#[test]
+fn cli_test_is_end_to_end_for_scaffolded_dsl_project() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let project_dir = scaffold_new_contract(&temp_dir, "cli-test-dsl", "dsl", None);
+
+    run_cli_test(&project_dir);
+}
+
 /// Remove the standalone `[workspace]` table that the scaffold template adds
 /// to each member's `Cargo.toml`, so the crate can be included in a parent
 /// workspace. Parsing with `toml_edit` keeps this robust against template

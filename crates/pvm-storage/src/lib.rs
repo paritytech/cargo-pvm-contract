@@ -1409,6 +1409,9 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 ///   (no `core::fmt` in the bytecode), **not** solc's ABI-encoded
 ///   `Panic(0x32)` — off-chain callers won't see the `0x32` code. Use
 ///   `try_get` to avoid the trap.
+/// - The length is read as a `u64`; a stored length exceeding `u64::MAX`
+///   (unreachable through this API — only via corrupted state or raw uAPI)
+///   traps intentionally rather than silently truncating to a smaller value.
 ///
 /// # Element shapes supported
 ///
