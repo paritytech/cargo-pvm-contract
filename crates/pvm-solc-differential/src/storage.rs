@@ -1044,3 +1044,222 @@ contract Spill {
     c.populate();
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Spill"));
 }
+
+// ---------------------------------------------------------------------------
+// Nested collections: T[][] and mapping(K => T[]).
+// ---------------------------------------------------------------------------
+
+/// `uint256[][]` — a `StorageVec` of `StorageVec`. Each inner row's length
+/// lives at `keccak256(outer_slot) + row`, its elements at
+/// `keccak256(that inner slot) + i`.
+#[pvm_contract_sdk::contract]
+mod nested_vec {
+    use super::*;
+    pub struct NestedVec {
+        pub rows: StorageVec<StorageVec<U256>>,
+    }
+    impl NestedVec {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            {
+                let mut r0 = self.rows.grow();
+                r0.push(&U256::from(1u64));
+                r0.push(&U256::from(2u64));
+            }
+            {
+                let mut r1 = self.rows.grow();
+                r1.push(&U256::from(3u64));
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_storage_vec_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract Matrix {
+    uint256[][] rows;   // slot 0
+    function populate() external {
+        rows.push(); rows[0].push(1); rows[0].push(2);
+        rows.push(); rows[1].push(3);
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = nested_vec::NestedVec::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Matrix"));
+}
+
+/// `mapping(address => uint256[])` — each key derives a `StorageVec` root at
+/// `keccak256(pad(key) ++ pad(slot))`; its length + elements follow from there.
+#[pvm_contract_sdk::contract]
+mod mapping_vec {
+    use super::*;
+    pub struct MappingVec {
+        pub buckets: Mapping<Address, StorageVec<U256>>,
+    }
+    impl MappingVec {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            {
+                let mut a = self.buckets.entry(&Address::from(ADDR_A));
+                a.push(&U256::from(11u64));
+                a.push(&U256::from(22u64));
+            }
+            self.buckets
+                .entry(&Address::from(ADDR_B))
+                .push(&U256::from(33u64));
+        }
+    }
+}
+
+#[test]
+fn mapping_to_storage_vec_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract Buckets {
+    mapping(address => uint256[]) buckets;   // slot 0
+    function populate() external {
+        buckets[address(uint160(0x00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA))].push(11);
+        buckets[address(uint160(0x00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA))].push(22);
+        buckets[address(uint160(0x00BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB))].push(33);
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = mapping_vec::MappingVec::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Buckets"));
+}
+
+// ---------------------------------------------------------------------------
+// More StorageVec write ops: clear() the whole vector, set(i) an existing
+// index, pop() a packed element.
+// ---------------------------------------------------------------------------
+
+/// `delete v` (whole-vector clear): length slot + every element slot are
+/// deleted; a sentinel proves `clear()` doesn't over-delete.
+#[pvm_contract_sdk::contract]
+mod vec_clear {
+    use super::*;
+    pub struct VecClear {
+        pub v: StorageVec<U256>,
+        pub sentinel: Lazy<U256>,
+    }
+    impl VecClear {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            for n in [11u64, 22, 33] {
+                self.v.push(&U256::from(n));
+            }
+            self.v.clear();
+            self.sentinel.set(&U256::from(7u64));
+        }
+    }
+}
+
+#[test]
+fn storage_vec_clear_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecClear {
+    uint256[] v;       // slot 0
+    uint256 sentinel;  // slot 1
+    function populate() external {
+        v.push(11); v.push(22); v.push(33);
+        delete v;
+        sentinel = 7;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_clear::VecClear::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecClear"));
+}
+
+/// `v[i] = x` (overwrite an existing index) — read-modify-write of one element
+/// slot, length and neighbour element unchanged.
+#[pvm_contract_sdk::contract]
+mod vec_set {
+    use super::*;
+    pub struct VecSet {
+        pub v: StorageVec<U256>,
+    }
+    impl VecSet {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.v.push(&U256::from(11u64));
+            self.v.push(&U256::from(22u64));
+            self.v.set(0, &U256::from(99u64));
+        }
+    }
+}
+
+#[test]
+fn storage_vec_set_index_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecSet {
+    uint256[] v;   // slot 0
+    function populate() external {
+        v.push(11); v.push(22);
+        v[0] = 99;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_set::VecSet::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecSet"));
+}
+
+/// `pop()` a PACKED element: `uint128[]` fits two per element slot. Popping the
+/// third element clears its (sole-occupant) body slot; the first two stay
+/// packed in the base element slot.
+#[pvm_contract_sdk::contract]
+mod vec_pop_packed {
+    use super::*;
+    pub struct VecPopPacked {
+        pub v: StorageVec<u128>,
+    }
+    impl VecPopPacked {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            for n in [1u128, 2, 3] {
+                self.v.push(&n);
+            }
+            self.v.pop();
+        }
+    }
+}
+
+#[test]
+fn storage_vec_pop_packed_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecPopPacked {
+    uint128[] v;   // slot 0 (two elements per body slot)
+    function populate() external {
+        v.push(1); v.push(2); v.push(3);
+        v.pop();
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_pop_packed::VecPopPacked::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecPopPacked"));
+}

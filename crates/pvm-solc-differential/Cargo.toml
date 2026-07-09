@@ -20,7 +20,7 @@ ruint = { workspace = true, default-features = false }
 # Ground-truth execution of solc output (storage representation). Optional so
 # the default build (and `cargo test --workspace`) stays free of revm's heavy
 # dependency tree; enabled only by `solc-tests`, which also needs `solc` on PATH.
-revm = { version = "40", optional = true }
+revm = { workspace = true, optional = true }
 alloy-core = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

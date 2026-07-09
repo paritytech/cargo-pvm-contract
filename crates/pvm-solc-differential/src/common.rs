@@ -13,7 +13,10 @@ pub fn run_solc(source: &str, outputs: &[&str]) -> serde_json::Value {
         "sources": { "C.sol": { "content": source } },
         "settings": {
             "outputSelection": { "*": { "*": outputs } },
-            "optimizer": { "enabled": false }
+            "optimizer": { "enabled": false },
+            // Pin the EVM version so bytecode is deterministic across solc
+            // releases and targets a hardfork `revm` supports.
+            "evmVersion": "cancun"
         }
     });
 
