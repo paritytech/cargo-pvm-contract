@@ -4925,6 +4925,7 @@ name = "pvm-solc-differential"
 version = "0.3.0"
 dependencies = [
  "alloy-core",
+ "proptest",
  "pvm-contract-sdk",
  "pvm-contract-types",
  "revm",
