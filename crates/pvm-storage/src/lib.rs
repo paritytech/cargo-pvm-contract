@@ -197,18 +197,36 @@ fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
     }
 }
 
-/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian), or
-/// `None` if the stored length is malformed.
+/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian),
+/// reverting with `Panic(0x22)` ("incorrectly encoded storage byte array") if
+/// the stored length is malformed.
 ///
 /// Solidity stores array lengths as `uint256`; we cap support at `u64::MAX`
 /// elements (more than enough for any real-world contract). If the upper 24
 /// bytes are non-zero the stored length is malformed — corrupt state or a
-/// length written via raw uAPI beyond our supported range — and this returns
-/// `None`. This is the single raw reader: the reverting view (`len()`) turns
-/// `None` into `Panic(0x22)` ("incorrectly encoded storage byte array"), while
-/// the non-reverting view (`checked_len()`) surfaces it as `None` so the
-/// `try_*` accessors never revert.
-fn read_len_u64(host: &Host, slot_key: &[u8; 32]) -> Option<u64> {
+/// length written via raw uAPI beyond our supported range.
+///
+/// This is the reverting reader used by the plain accessors (`len`, `get`,
+/// `push`, ...); the `try_*` accessors use [`try_read_len`] instead, which
+/// surfaces a malformed length as `None` rather than reverting. Keeping the two
+/// paths as separate readers avoids threading an `Option` through the common
+/// reverting path (which measurably grows the bytecode).
+fn read_len(host: &Host, slot_key: &[u8; 32]) -> u64 {
+    let buf = storage_get_32(host, slot_key);
+    if !buf[..24].iter().all(|&b| b == 0) {
+        panic_revert(host, Panic::StorageByteArrayEncoding);
+    }
+    u64::from_be_bytes([
+        buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+    ])
+}
+
+/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian), or
+/// `None` if the stored length is malformed.
+///
+/// The non-reverting counterpart of [`read_len`], used by the `try_*`
+/// accessors so a corrupt length slot reads as "empty" instead of reverting.
+fn try_read_len(host: &Host, slot_key: &[u8; 32]) -> Option<u64> {
     let buf = storage_get_32(host, slot_key);
     if !buf[..24].iter().all(|&b| b == 0) {
         return None;
@@ -1569,15 +1587,14 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// non-reverting variant.
     pub fn len(&self) -> u64 {
         let () = Self::_SHAPE_CHECK;
-        read_len_u64(&self.host, self.root.as_bytes())
-            .unwrap_or_else(|| panic_revert(&self.host, Panic::StorageByteArrayEncoding))
+        read_len(&self.host, self.root.as_bytes())
     }
 
     /// The length, or `None` if the stored length is malformed. Backs the
     /// non-reverting `try_*` accessors so a corrupt slot reads as "empty"
     /// rather than reverting.
     fn checked_len(&self) -> Option<u64> {
-        read_len_u64(&self.host, self.root.as_bytes())
+        try_read_len(&self.host, self.root.as_bytes())
     }
 
     /// Return `true` if the array contains no elements. Non-reverting: a
@@ -1991,14 +2008,13 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     /// Reverts with `Panic(0x22)` if the stored length is malformed; see
     /// [`checked_len`](Self::checked_len) for the non-reverting variant.
     pub fn len(&self) -> u64 {
-        read_len_u64(&self.host, self.root.as_bytes())
-            .unwrap_or_else(|| panic_revert(&self.host, Panic::StorageByteArrayEncoding))
+        read_len(&self.host, self.root.as_bytes())
     }
 
     /// The length, or `None` if the stored length is malformed. Backs the
     /// non-reverting `try_*` accessors.
     fn checked_len(&self) -> Option<u64> {
-        read_len_u64(&self.host, self.root.as_bytes())
+        try_read_len(&self.host, self.root.as_bytes())
     }
 
     /// `true` if no inner arrays have been appended. Non-reverting: a malformed
