@@ -37,4 +37,11 @@ abi-gen = ["pvm-contract-sdk/abi-gen"]
 # Run the differential test: needs `solc` on PATH and pulls revm to execute
 # solc's bytecode. Gated so the default build / `cargo test --workspace` stays
 # revm-free.
-solc-tests = ["dep:revm", "dep:alloy-core", "dep:serde_json", "dep:proptest"]
+solc-tests = [
+    "dep:revm",
+    "dep:alloy-core",
+    "dep:serde_json",
+    "dep:proptest",
+    # ruint's proptest `Arbitrary` for `U256` (unsigned only; `I256` is wrapped).
+    "ruint/proptest",
+]

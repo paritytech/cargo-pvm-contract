@@ -1226,6 +1226,53 @@ contract VecClear {
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecClear"));
 }
 
+/// `pop` all the way to empty: distinct code path from `clear()`. Each `pop`
+/// must zero its element slot, and emptying must delete the length slot — a
+/// stale element or length slot would show up as an extra nonzero entry. The
+/// `witness` proves the tx ran (both sides otherwise collapse to just it).
+#[pvm_contract_sdk::contract]
+mod vec_pop_empty {
+    use super::*;
+    pub struct VecPopEmpty {
+        pub v: StorageVec<U256>,
+        pub witness: Lazy<U256>,
+    }
+    impl VecPopEmpty {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            for n in [11u64, 22, 33] {
+                self.v.push(&U256::from(n));
+            }
+            self.v.pop();
+            self.v.pop();
+            self.v.pop();
+            self.witness.set(&U256::from(9u64));
+        }
+    }
+}
+
+#[test]
+fn storage_vec_pop_to_empty_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecPopEmpty {
+    uint256[] v;      // slot 0
+    uint256 witness;  // slot 1 (positive control)
+    function populate() external {
+        v.push(11); v.push(22); v.push(33);
+        v.pop(); v.pop(); v.pop();
+        witness = 9;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_pop_empty::VecPopEmpty::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecPopEmpty"));
+}
+
 /// `v[i] = x` (overwrite an existing index) — read-modify-write of one element
 /// slot, length and neighbour element unchanged.
 #[pvm_contract_sdk::contract]
@@ -1342,16 +1389,12 @@ fn calldata<T: SolEncode>(sig: &str, args: &T) -> Vec<u8> {
     cd
 }
 
-/// Strategy generating an arbitrary full-width `U256` (proptest has no built-in
-/// `Arbitrary` for ruint types).
-fn any_u256() -> impl Strategy<Value = U256> {
-    proptest::array::uniform32(any::<u8>()).prop_map(|b| U256::from_be_bytes::<32>(b))
-}
-
-/// Strategy generating an arbitrary `I256` across the full two's-complement
-/// range (the top bit of the random 32 bytes decides the sign).
+/// Strategy for an arbitrary `I256`. `U256` gets its `Arbitrary` from ruint's
+/// `proptest` feature, but `I256` is the SDK's own newtype (ruint has no signed
+/// type), so wrap a generated `U256` — the bit pattern is a full-range
+/// two's-complement value (top bit is the sign).
 fn any_i256() -> impl Strategy<Value = I256> {
-    proptest::array::uniform32(any::<u8>()).prop_map(|b| I256::from_be_slice(&b))
+    any::<U256>().prop_map(I256::from_raw)
 }
 
 // Two `uint128` packed into slot 0 (lo @ offset 0, hi @ offset 16). Exercises
@@ -1553,6 +1596,72 @@ contract B {
     (normalize_mock(&mock), want)
 }
 
+// `bytes` overwrite fixture: sets the value twice, so a shrinking overwrite
+// (long → short) must free the now-unused keccak body slots, matching solc.
+#[pvm_contract_sdk::contract]
+mod prop_bytes_ov {
+    use super::*;
+    pub struct Bov {
+        pub b: Lazy<Bytes>,
+    }
+    impl Bov {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self, first: Bytes, second: Bytes) {
+            self.b.set(&first);
+            self.b.set(&second);
+        }
+    }
+}
+
+/// Deterministic inline↔spill boundary coverage for `bytes`. The randomized
+/// range test hits these lengths only ~half the time, but 31 (max inline), 32
+/// (min spill), and 64/65 (body-slot boundary) are the codec's most bug-prone
+/// points, so pin them.
+#[test]
+fn bytes_boundary_lengths_match_solc() {
+    for len in [31usize, 32, 33, 64, 65] {
+        let data = vec![0xAB; len];
+        let (got, want) = bytes_storage_maps(&data);
+        assert_eq!(got, want, "bytes length {len} diverged from solc");
+    }
+}
+
+/// Overwriting a spilled `bytes` with a shorter value must zero the now-unused
+/// keccak body slots exactly as solc does; a stale-tail bug would leave extra
+/// nonzero slots that the diff catches.
+#[test]
+fn bytes_shrink_overwrite_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract Bov {
+    bytes b;
+    function populate(bytes calldata first, bytes calldata second) external {
+        b = first;
+        b = second;
+    }
+}
+"#;
+    for (first_len, second_len) in [(70usize, 5usize), (70, 40), (64, 32), (33, 31)] {
+        let first = vec![0xCD; first_len];
+        let second = vec![0xEF; second_len];
+        let mock = MockHostBuilder::new().build();
+        let mut c = prop_bytes_ov::Bov::with_host(mock.clone());
+        c.populate(Bytes(first.clone()), Bytes(second.clone()));
+        let want = solc_storage_calldata(
+            SOL,
+            "Bov",
+            calldata("populate(bytes,bytes)", &(Bytes(first), Bytes(second))),
+        );
+        assert_eq!(
+            normalize_mock(&mock),
+            want,
+            "shrink {first_len} -> {second_len} diverged from solc"
+        );
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(48))]
 
@@ -1639,7 +1748,7 @@ contract S {
     }
 
     #[test]
-    fn prop_u256_full_slot_matches_solc(x in any_u256()) {
+    fn prop_u256_full_slot_matches_solc(x in any::<U256>()) {
         const SOL: &str = r#"
 pragma solidity ^0.8.26;
 contract W {
@@ -1656,7 +1765,7 @@ contract W {
 
     #[test]
     fn prop_vec_u32_matches_solc(
-        xs in proptest::collection::vec(any::<u32>(), 0usize..=16),
+        xs in proptest::collection::vec(any::<u32>(), 1usize..=16),
     ) {
         const SOL: &str = r#"
 pragma solidity ^0.8.26;
@@ -1677,7 +1786,7 @@ contract V {
     #[test]
     fn prop_mapping_addr_u256_matches_solc(
         who in proptest::array::uniform20(any::<u8>()),
-        v in any_u256(),
+        v in any::<U256>(),
     ) {
         const SOL: &str = r#"
 pragma solidity ^0.8.26;
