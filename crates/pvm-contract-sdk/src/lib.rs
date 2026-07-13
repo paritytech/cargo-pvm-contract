@@ -80,6 +80,8 @@ pub use pvm_contract_types::{
     HostApi,
     HostResult,
     I256,
+    OutSink,
+    Outcome,
     Panic,
     ParseI256Error,
     PolkaVmHost,
@@ -108,6 +110,8 @@ pub use pvm_contract_types::{
     checked_sum,
     const_keccak256,
     const_selector,
+    // Dispatch outcome lowering (single exit for the selector-dispatch path)
+    finalize_outcome,
     // Framework errors
     framework_errors,
     keccak256,

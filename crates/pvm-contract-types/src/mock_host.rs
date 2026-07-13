@@ -34,10 +34,10 @@
 //! Two different mechanisms, by role:
 //!
 //! - [`HostApi::return_value`](super::HostApi::return_value) is the **success**
-//!   door, called only from macro/DSL dispatch glue on a successful return. On
-//!   host targets `MockHost` captures `data` into a [`ReturnValue`] (tagged with
-//!   empty flags) and returns normally; the dispatch wrapper exits via its
-//!   generated `return Some(())` and tests inspect the result via
+//!   door, called from the single-exit lowering (`finalize_outcome` / DSL
+//!   `finalize_response`) on a successful return. On host targets `MockHost`
+//!   captures `data` into a [`ReturnValue`] (tagged with empty flags) and
+//!   returns normally; tests inspect the result via
 //!   [`MockHost::take_return_value`].
 //!
 //! - [`HostApi::revert`](super::HostApi::revert),
@@ -66,8 +66,18 @@ use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, ReturnFlags, 
 /// `&[u8]`, `Vec<u8>`, a byte string). Panics the test — with the actual outcome
 /// — if `$body` doesn't revert, and with a byte diff if the data mismatches.
 ///
+/// Use it for a diverging revert: a mid-expression abort during a macro
+/// `route()` (size check / decode / payable guard / storage `Panic`), a revert
+/// lowered through `finalize_outcome`, or a DSL `dispatch_impl` revert. (A macro
+/// method's own `Err(e)` is returned as `Outcome::Revert` data — match on the
+/// `Outcome` for that, rather than this.)
+///
 /// ```ignore
-/// assert_reverts!(mock, framework_errors::UNKNOWN_SELECTOR, route(&mut c, sel, &input));
+/// // Macro path — a short-calldata size-check revert diverges during route():
+/// let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+/// let mut out: &mut [u8] = &mut buf;
+/// assert_reverts!(mock, framework_errors::INVALID_CALLDATA,
+///     my_token::route(&mut c, sel, &short_input, &mut out));
 /// ```
 #[cfg(feature = "std")]
 #[macro_export]
@@ -192,8 +202,9 @@ struct MockState {
     /// Captured `return_value` (success) or `revert` (failure) payload from the
     /// contract. On host targets, `HostApi::return_value` does not diverge; it
     /// records the encoded success result here so route-driving tests can read
-    /// it after `route()` returns. `HostApi::revert` records the revert payload
-    /// here too (before unwinding) so it survives to `take_return_value()`.
+    /// it after the dispatch lowering (`finalize_outcome` / `dispatch_impl`)
+    /// runs. `HostApi::revert` records the revert payload here too (before
+    /// unwinding) so it survives to `take_return_value()`.
     return_value: Option<ReturnValue>,
 
     // --- Mock configuration ---
@@ -291,11 +302,12 @@ impl MockHost {
     /// call on this mock, leaving the slot empty. Returns `None` if neither
     /// has been called since the last `take_return_value`.
     ///
-    /// On host targets, successful dispatch arms call `host.return_value(...)`,
-    /// which records the encoded result here instead of diverging. For reverts,
-    /// prefer [`Self::expect_revert`], which recovers the payload after the
-    /// unwind. Consuming the value rather than cloning prevents stale captures
-    /// from leaking across calls on the same mock.
+    /// On host targets, the dispatch lowering (`finalize_outcome` / DSL
+    /// `dispatch_impl`) calls `host.return_value(...)`, which records the encoded
+    /// result here instead of diverging. For reverts, prefer
+    /// [`Self::expect_revert`], which recovers the payload after the unwind.
+    /// Consuming the value rather than cloning prevents stale captures from
+    /// leaking across calls on the same mock.
     pub fn take_return_value(&self) -> Option<ReturnValue> {
         self.state.borrow_mut().return_value.take()
     }
@@ -333,12 +345,16 @@ impl MockHost {
     /// captured [`ReturnValue`] (`flags == REVERT` plus the ABI-encoded revert
     /// `data`).
     ///
-    /// Because [`HostApi::revert`] is the sole revert door, this catches every
-    /// revert: dispatch-arm custom errors and `RevertString` (macro `route()` /
-    /// DSL `dispatch_impl`) as well as `panic_revert`-driven `Panic(uint256)`
-    /// from storage. Drive the contract through `route()` / `dispatch_impl` (or
-    /// call a reverting helper) inside `f`, then decode `rv.data` yourself; for
-    /// the standard `Panic(uint256)` case prefer [`Self::expect_panic`].
+    /// Because [`HostApi::revert`] is the sole diverging revert door, this
+    /// catches: mid-expression aborts during a macro `route()` (the size check,
+    /// malformed-calldata decode, the payable guard, and `panic_revert`-driven
+    /// `Panic(uint256)` from storage), any revert once lowered through
+    /// `finalize_outcome`, and every DSL `dispatch_impl` revert. Note: a macro
+    /// method's own `Err(e)` is returned as `Outcome::Revert` *data* — `route()`
+    /// alone does not diverge on it, so either lower it via `finalize_outcome(..)`
+    /// inside `f` or assert on the returned `Outcome` directly. Drive the
+    /// contract inside `f`, then decode `rv.data`; for the standard
+    /// `Panic(uint256)` case prefer [`Self::expect_panic`].
     ///
     /// Panics the test with a clear message if `f` returned normally or halted
     /// some other way (terminate / consume-all-gas). Genuine bug panics from
@@ -363,11 +379,13 @@ impl MockHost {
     /// without reverting or otherwise halting), and return the captured
     /// [`ReturnValue`]. The success counterpart to [`Self::expect_revert`].
     ///
-    /// Works for both the `#[contract]` macro `route()` and the DSL
-    /// `dispatch_impl` — both record via [`HostApi::return_value`] then return
-    /// normally on success. Panics the test if `f` unexpectedly halts (e.g.
-    /// reverts), naming the actual halt, or if it returned without recording a
-    /// value (e.g. an unmatched selector).
+    /// For the DSL `dispatch_impl` this works directly — it records via
+    /// [`HostApi::return_value`] then returns normally. For the `#[contract]`
+    /// macro, `route()` returns an `Outcome` *without* calling the host, so lower
+    /// it via `finalize_outcome(..)` inside `f` (or assert on the returned
+    /// `Outcome` directly instead of using this). Panics the test if `f`
+    /// unexpectedly halts (e.g. reverts), naming the actual halt, or if it
+    /// returned without recording a value (e.g. an unmatched selector).
     pub fn expect_return<F: FnOnce()>(&self, f: F) -> ReturnValue {
         match self.run_until_halt(f) {
             None => self

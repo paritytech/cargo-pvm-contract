@@ -196,9 +196,9 @@ pub trait HostApi {
     /// give success a non-diverging capture seam (see below).
     ///
     /// This is the **success** door — it never carries a revert, and it is
-    /// **macro-internal**: only the generated dispatch glue calls it (right
-    /// before its `return Some(())`). Contract authors fail a frame via
-    /// [`Self::revert`], not by calling this.
+    /// **internal**: only the single-exit lowering (`finalize_outcome`, or the
+    /// DSL's `finalize_response`) calls it, from an encoded `Outcome::Return`.
+    /// Contract authors fail a frame via [`Self::revert`], not by calling this.
     ///
     /// On `riscv64` this is the `return_value` syscall (with empty flags) and
     /// never returns. On host targets the test mock captures the call as a

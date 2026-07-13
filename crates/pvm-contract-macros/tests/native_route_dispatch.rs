@@ -4,17 +4,19 @@
 //! fully runnable off-target.
 //!
 //! These tests bypass `call()` / `deploy()` (riscv64-only) and invoke the
-//! generated `route()` directly. On host targets, a successful dispatch arm
-//! calls `host.return_value(...)`, which captures into the `MockHost` rather
-//! than diverging — the test reads the captured [`ReturnValue`] after `route()`
-//! returns. A reverting arm calls `host.revert(...)`, which unwinds — the test
-//! catches it with [`MockHost::expect_revert`] and inspects the payload.
+//! generated `route()` directly. `route()` encodes any result into the
+//! caller-owned output buffer (`&mut [u8]`, via the [`OutSink`] trait) and
+//! returns an [`Outcome`] — so a return-position result (success or a method's
+//! own `Err`) can be asserted on directly, without going through the host. A
+//! mid-expression abort (the size-check revert here) still diverges via
+//! `host.revert(...)` and is caught with [`assert_reverts!`].
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode,
-    StaticEncodedLen, assert_reverts,
+    Address, Host, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router, SolDecode,
+    SolEncode, StaticEncodedLen, assert_reverts, finalize_outcome,
 };
 use ruint::aliases::U256;
+use std::rc::Rc;
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
 #[pvm_contract_macros::contract]
@@ -66,44 +68,42 @@ fn new_contract() -> (my_token::MyContract, MockHost) {
 
 #[test]
 fn route_matches_selector_and_returns_encoded_u64() {
-    let (mut contract, mock) = new_contract();
+    let (mut contract, _mock) = new_contract();
     let sel = selector("double(uint64)");
     let input = encode_u64(21);
 
-    let outcome = my_token::route(&mut contract, sel, &input);
-    assert_eq!(outcome, Some(()));
+    let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = my_token::route(&mut contract, sel, &input, &mut out);
 
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::empty());
-    let returned = u64::decode_at(&rv.data, 0).unwrap();
+    let Outcome::Return(n) = outcome else {
+        panic!("expected Return, got {outcome:?}");
+    };
+    let returned = u64::decode_at(out.view(n), 0).unwrap();
     assert_eq!(returned, 42);
 }
 
 #[test]
 fn route_void_method_returns_empty_ok() {
-    let (mut contract, mock) = new_contract();
+    let (mut contract, _mock) = new_contract();
     let sel = selector("noop()");
 
-    let outcome = my_token::route(&mut contract, sel, &[]);
-    assert_eq!(outcome, Some(()));
+    let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = my_token::route(&mut contract, sel, &[], &mut out);
 
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::empty());
-    assert_eq!(rv.data, &[] as &[u8]);
+    assert_eq!(outcome, Outcome::Return(0));
 }
 
 #[test]
 fn route_unknown_selector_returns_unhandled() {
-    let (mut contract, mock) = new_contract();
+    let (mut contract, _mock) = new_contract();
 
-    let outcome = my_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[]);
+    let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = my_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[], &mut out);
 
-    assert_eq!(outcome, None);
-    assert!(mock.take_return_value().is_none());
+    assert_eq!(outcome, Outcome::Unhandled);
 }
 
 #[test]
@@ -112,28 +112,79 @@ fn route_short_input_reverts_with_invalid_calldata() {
     let sel = selector("double(uint64)");
     let short_input = [0u8; 1]; // need at least 32 bytes for u64
 
+    // The size check is a mid-expression abort: it diverges via `host.revert`
+    // (unwinds on host targets) rather than returning `Outcome::Revert`.
+    let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
     assert_reverts!(
         mock,
         pvm_contract_types::framework_errors::INVALID_CALLDATA,
-        my_token::route(&mut contract, sel, &short_input)
+        my_token::route(&mut contract, sel, &short_input, &mut out)
     );
 }
 
 #[test]
 fn router_trait_impl_delegates_to_module_route() {
-    let (mut contract, mock) = new_contract();
+    let (mut contract, _mock) = new_contract();
     // Rust `balance_of` becomes Solidity `balanceOf` (snake_case → camelCase).
     let sel = selector("balanceOf(address)");
     let input = encode_address(Address::from([0xAA; 20]));
 
     // Call through the Router trait rather than the free function.
-    let outcome = <my_token::MyContract as Router>::route(&mut contract, sel, &input);
-    assert_eq!(outcome, Some(()));
+    let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = <my_token::MyContract as Router>::route(&mut contract, sel, &input, &mut out);
 
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::empty());
-    let returned = U256::decode_at(&rv.data, 0).unwrap();
+    let Outcome::Return(n) = outcome else {
+        panic!("expected Return, got {outcome:?}");
+    };
+    let returned = U256::decode_at(out.view(n), 0).unwrap();
     assert_eq!(returned, U256::from(42u64));
+}
+
+// The `route()` tests above assert on the returned `Outcome` directly. The
+// tests below exercise the *other half* of dispatch — `finalize_outcome`, the
+// single exit `call()` uses to lower an `Outcome` to the host doors — since a
+// swapped `Return`/`Revert` mapping or wrong flags would otherwise be invisible
+// to the return-position assertions.
+
+#[test]
+fn finalize_outcome_maps_return_to_success_and_revert_to_revert() {
+    let mock = MockHostBuilder::new().build();
+    let host = Host::from_dyn(Rc::new(mock.clone()));
+
+    let mut buf = [0u8; 8];
+    buf[..4].copy_from_slice(&[1, 2, 3, 4]);
+    let out: &mut [u8] = &mut buf;
+
+    // Return(n) → return_value with empty (success) flags.
+    finalize_outcome(&host, Outcome::Return(4), &out);
+    let rv = mock.take_return_value().expect("return_value recorded");
+    assert_eq!(rv.flags, ReturnFlags::empty());
+    assert_eq!(rv.data, &[1, 2, 3, 4]);
+
+    // Revert(n) → revert with REVERT flags; diverges on host, so catch it.
+    let rv = mock.expect_revert(|| {
+        finalize_outcome(&host, Outcome::Revert(4), &out);
+    });
+    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    assert_eq!(rv.data, &[1, 2, 3, 4]);
+}
+
+#[test]
+fn route_then_finalize_records_return_value_end_to_end() {
+    let (mut contract, mock) = new_contract();
+    let host = Host::from_dyn(Rc::new(mock.clone()));
+    let sel = selector("double(uint64)");
+    let input = encode_u64(21);
+
+    let mut buf = [0u8; my_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = my_token::route(&mut contract, sel, &input, &mut out);
+
+    // The full call()-path lowering: route() → finalize_outcome → host door.
+    finalize_outcome(&host, outcome, &out);
+    let rv = mock.take_return_value().expect("return_value recorded");
+    assert_eq!(rv.flags, ReturnFlags::empty());
+    assert_eq!(u64::decode_at(&rv.data, 0).unwrap(), 42);
 }

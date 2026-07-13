@@ -332,35 +332,126 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
     }
 }
 
+/// The outcome of a selector dispatch through [`Router::route`].
+///
+/// Dispatch arms no longer call the host exit themselves. They encode their
+/// result into the caller-owned [`OutSink`] and return one of these variants; a
+/// single call site (`call()` on-chain, or a test harness) lowers the outcome
+/// to the host via [`finalize_outcome`]. This keeps the return-position exit at
+/// one place (smaller bytecode) and lets host-target tests assert on the
+/// returned value without going through an unwind.
+///
+/// `Return(n)` / `Revert(n)` carry the number of bytes written to the buffer.
+/// `Unhandled` means the selector did not match — the caller tries a parent
+/// router or falls back to revert.
+///
+/// Mid-expression aborts (storage OOB, malformed-calldata decode failure, the
+/// payable guard) still diverge through [`HostApi::revert`] and never surface as
+/// an `Outcome` — only a method's own return-position result does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Return(usize),
+    Revert(usize),
+    Unhandled,
+}
+
+/// Caller-owned output buffer handed to [`Router::route`].
+///
+/// `route` is generic over the sink so it monomorphizes to zero-overhead,
+/// fully-inlined buffer access — no enum discriminant, no `dyn` vtable. No-alloc
+/// contracts pass a `&mut [u8]` stack slice (the blanket impl below); alloc
+/// contracts pass a macro-generated `Vec`-backed wrapper (with an inline stack
+/// fast path). `pvm-contract-types` never names `alloc::vec::Vec`, so a no-alloc
+/// contract pulls in no allocator symbols through this trait.
+pub trait OutSink {
+    /// Reserve exactly `len` bytes and return a mutable slice to encode into.
+    fn reserve(&mut self, len: usize) -> &mut [u8];
+    /// The first `len` bytes previously written, for the exit lowering to read.
+    fn view(&self, len: usize) -> &[u8];
+}
+
+impl OutSink for &mut [u8] {
+    #[inline(always)]
+    fn reserve(&mut self, len: usize) -> &mut [u8] {
+        // The macro sizes the backing array to `MAX_RETURN_LEN`, so this always
+        // fits for a single-module `call()`. The `debug_assert` gives a legible
+        // message (rather than a bare slice-index panic) if a hand-rolled or
+        // composed caller under-sizes the buffer; it is compiled out in release.
+        debug_assert!(
+            len <= self.len(),
+            "OutSink buffer too small: need {len} bytes, have {}; size it to the routed module's MAX_RETURN_LEN",
+            self.len(),
+        );
+        &mut self[..len]
+    }
+    #[inline(always)]
+    fn view(&self, len: usize) -> &[u8] {
+        &self[..len]
+    }
+}
+
+/// Lower a dispatch [`Outcome`] to the host: success returns, revert reverts.
+///
+/// The single exit for the selector-dispatch path. `Return`/`Revert` call the
+/// two shipped doors ([`HostApi::return_value`] / [`HostApi::revert`]);
+/// `Unhandled` is a no-op (the caller handles parent/fallback fallthrough). On
+/// `riscv64` both doors are `-> !`; on host targets `return_value` records into
+/// the `MockHost` and returns, while `revert` unwinds — so a test can drive
+/// `route(...)` + `finalize_outcome(...)` and then inspect via
+/// `take_return_value()` / `expect_revert`.
+#[inline(always)]
+pub fn finalize_outcome<B: OutSink>(host: &Host, outcome: Outcome, out: &B) {
+    match outcome {
+        Outcome::Return(n) => <Host as HostApi>::return_value(host, out.view(n)),
+        Outcome::Revert(n) => <Host as HostApi>::revert(host, out.view(n)),
+        Outcome::Unhandled => {}
+    }
+}
+
 /// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
-/// Each contract module gets a generated `impl Router for Contract`
-/// that delegates to a free `mod_name::route(this, selector, input)` function.
-/// On success, dispatch arms call `host.return_value(...)` — `-> !` on `riscv64`
-/// (terminates execution), `-> ()` on host targets (captures into `MockHost`
-/// for tests to inspect via `MockHost::take_return_value`). On failure they call
-/// `host.revert(...)`, which diverges on both targets; host-target tests recover
-/// the payload with `MockHost::expect_revert`.
+/// Each contract module gets a generated `impl Router for Contract` that
+/// delegates to a free `mod_name::route(this, selector, input, out)` function.
+/// A matched arm encodes its result into `out` and returns [`Outcome::Return`]
+/// / [`Outcome::Revert`]; an unmatched selector returns [`Outcome::Unhandled`].
+/// The caller lowers the outcome via [`finalize_outcome`].
 ///
 /// # Composition and inheritance
 ///
-/// Chain routers via `Option::or_else` — the same idiom as `main`:
+/// Chain routers by trying each in turn and matching `Unhandled`. The shared
+/// output buffer must be sized to the **max** `MAX_RETURN_LEN` across every
+/// module in the chain — each module's const covers only its own returns, so a
+/// buffer sized to just one would index-panic if a larger sibling matches:
 ///
 /// ```ignore
 /// pub extern "C" fn call() {
 ///     let mut this = Composed::default();
-///     if my_extension::route(&mut this, sel, input).is_some() { return; }
-///     if erc20::route(&mut this.parent, sel, input).is_some() { return; }
-///     // fallback or revert
+///     const CAP: usize = if my_extension::MAX_RETURN_LEN > erc20::MAX_RETURN_LEN {
+///         my_extension::MAX_RETURN_LEN
+///     } else {
+///         erc20::MAX_RETURN_LEN
+///     };
+///     let mut storage = [0u8; CAP];
+///     let mut out: &mut [u8] = &mut storage;
+///     match my_extension::route(&mut this, sel, input, &mut out) {
+///         Outcome::Unhandled => {} // fall through to the parent
+///         outcome => return finalize_outcome(this.host(), outcome, &out),
+///     }
+///     match erc20::route(&mut this, sel, input, &mut out) {
+///         Outcome::Unhandled => this.host().revert(&UNKNOWN_SELECTOR),
+///         outcome => finalize_outcome(this.host(), outcome, &out),
+///     }
 /// }
 /// ```
+///
+/// Note: making `route` generic over the buffer removes object safety — there is
+/// no `dyn Router`. Router chains are resolved statically (call each module's
+/// `route` directly), which is the only supported composition and the cheaper
+/// one (no vtable).
 pub trait Router {
-    /// Dispatch `selector` against `input`. Returns `Some(())` if the selector
-    /// was handled (the dispatch arm has already called `host.return_value(...)`,
-    /// which on `riscv64` means execution has terminated). Returns `None` if
-    /// the selector did not match — the caller can try parent routers or
-    /// fall back to revert.
-    fn route(&mut self, selector: [u8; 4], input: &[u8]) -> Option<()>;
+    /// Dispatch `selector` against `input`, encoding any result into `out`.
+    /// Returns [`Outcome::Unhandled`] if the selector did not match.
+    fn route<B: OutSink>(&mut self, selector: [u8; 4], input: &[u8], out: &mut B) -> Outcome;
 }
 
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.

@@ -1480,7 +1480,10 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
     let (route_items, router_impl) =
         generate_router(&parsed.methods, mod_name, struct_name, use_alloc);
-    let RouteItems { route_fn } = route_items;
+    let RouteItems {
+        max_return_const,
+        route_fn,
+    } = route_items;
     let router_impl = router_impl.tokens;
 
     // When `#[receive]` is present, the empty-calldata case dispatches to it
@@ -1550,10 +1553,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     // `call()` is the riscv64 boundary: read calldata, dispatch via `route()`.
-    // Each matched dispatch arm calls `host.return_value(...)` directly
-    // (diverges via syscall) — no buffer round-trip, no result enum to
-    // translate. If `route()` returns `None`, no selector matched and we
-    // fall through to the fallback or unknown-selector handler.
+    // `route()` encodes any result into the caller-owned `out` buffer and
+    // returns an `Outcome`; the single `finalize_outcome` call lowers
+    // `Return`/`Revert` to the host doors. `Outcome::Unhandled` means no
+    // selector matched — fall through to the fallback or unknown-selector
+    // handler. (Size-check / decode / payable-guard reverts inside `route`
+    // still diverge directly and never reach here.)
     let call_fn = if use_alloc {
         quote! {
             #[cfg(target_arch = "riscv64")]
@@ -1573,8 +1578,43 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                if route(&mut this, selector, input).is_none() {
-                    #unknown_selector_handler
+                // Inline stack buffer (sized to the max static return via
+                // `MAX_RETURN_LEN`) with heap spill: static returns stay on the
+                // stack — matching the pre-unification per-arm fast path — while
+                // only returns whose runtime length exceeds it (large dynamic
+                // returns, oversized errors) allocate.
+                struct __OutBuf {
+                    stack: [u8; MAX_RETURN_LEN],
+                    spill: alloc::vec::Vec<u8>,
+                }
+                impl ::pvm_contract_sdk::OutSink for __OutBuf {
+                    #[inline(always)]
+                    fn reserve(&mut self, len: usize) -> &mut [u8] {
+                        if len <= self.stack.len() {
+                            &mut self.stack[..len]
+                        } else {
+                            self.spill.resize(len, 0);
+                            &mut self.spill[..len]
+                        }
+                    }
+                    #[inline(always)]
+                    fn view(&self, len: usize) -> &[u8] {
+                        if len <= self.stack.len() {
+                            &self.stack[..len]
+                        } else {
+                            &self.spill[..len]
+                        }
+                    }
+                }
+                let mut __out = __OutBuf {
+                    stack: [0u8; MAX_RETURN_LEN],
+                    spill: alloc::vec::Vec::new(),
+                };
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        #unknown_selector_handler
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         }
@@ -1602,8 +1642,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                if route(&mut this, selector, input).is_none() {
-                    #unknown_selector_handler
+                let mut __out_storage = [0u8; MAX_RETURN_LEN];
+                let mut __out: &mut [u8] = &mut __out_storage;
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        #unknown_selector_handler
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         }
@@ -1633,6 +1678,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             #payable_helpers_fn
+
+            #[cfg(not(feature = "abi-gen"))]
+            #max_return_const
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
@@ -2751,20 +2799,23 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Generated route() takes a `&mut Contract` and returns Option<()>
+        // Generated route() encodes into the caller-owned buffer and returns an
+        // `Outcome`.
         assert!(
             output.contains("fn route"),
             "route() function should be generated"
         );
-        // The Router trait impl is emitted (no generic parameter).
+        // The Router trait impl is emitted.
         assert!(
             output.contains(":: pvm_contract_sdk :: Router"),
             "Router impl should be generated"
         );
-        // call() delegates to route() with the constructed `this` and falls
-        // through to the unknown-selector handler when the Option is None.
-        assert!(output.contains("route (& mut this , selector , input)"));
-        assert!(output.contains("is_none ()"));
+        // call() drives route() with the constructed `this` + output buffer and
+        // lowers the returned `Outcome` via `finalize_outcome`, falling through
+        // to the unknown-selector handler on `Outcome::Unhandled`.
+        assert!(output.contains("route (& mut this , selector , input , & mut __out)"));
+        assert!(output.contains(":: pvm_contract_sdk :: finalize_outcome"));
+        assert!(output.contains(":: pvm_contract_sdk :: Outcome :: Unhandled"));
     }
 
     #[test]
@@ -4010,11 +4061,16 @@ mod tests {
                 }
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
-                if route(&mut this, selector, input).is_none() {
-                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
-                        this.host(),
-                        &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
-                    );
+                let mut __out_storage = [0u8; MAX_RETURN_LEN];
+                let mut __out: &mut [u8] = &mut __out_storage;
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                            this.host(),
+                            &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
+                        );
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         "##]];
