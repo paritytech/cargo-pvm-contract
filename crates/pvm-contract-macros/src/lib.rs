@@ -920,6 +920,13 @@ pub fn payable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// Only relevant for contracts that opt into `CallFlags::ALLOW_REENTRY`;
 /// pallet-revive rejects reentrancy by default otherwise.
+///
+/// The lock lives in transient storage (EIP-1153) and is released on every exit
+/// path, including a body that diverges via a raw `self.host().return_value(..)`:
+/// the SDK clears it inside `return_value` (the one function every exit routes
+/// through) when the current frame holds it. So a guarded method may exit either
+/// by returning normally or via a raw `return_value` without leaving the lock set
+/// for the rest of the transaction.
 #[proc_macro_attribute]
 pub fn non_reentrant(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Marker attribute: `#[contract]` scans for its presence at expansion time.

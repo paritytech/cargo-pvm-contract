@@ -11,20 +11,41 @@
 //! in-memory flag: PVM gives each call fresh memory, so only a storage write is
 //! visible to a re-entrant frame.
 //!
-//! Cleared explicitly before `return_value`, not via `Drop`: on-chain
-//! `return_value` diverges without unwinding, so a `Drop` guard would never run.
-//! The explicit clear is still needed because transient persists across
-//! *sequential* (non-nested) calls within a transaction, so a guarded call must
-//! release the lock on exit or a later guarded call in the same transaction would
-//! revert spuriously (as in OpenZeppelin's `ReentrancyGuardTransient`). See the
-//! `#[non_reentrant]` codegen in `pvm-contract-macros`.
+//! The lock must be released when a guarded call exits: transient storage
+//! persists across *sequential* (non-nested) calls within a transaction, so a
+//! stale lock would make a later guarded call in the same transaction revert
+//! spuriously (as in OpenZeppelin's `ReentrancyGuardTransient`).
+//!
+//! Two mechanisms release it. The `#[non_reentrant]` codegen emits an explicit
+//! unlock after the user body; this covers a normal return, and is the only
+//! path on host targets. A body can also exit by calling `return_value` itself
+//! (a diverging `-> !` syscall), which skips that trailing unlock; a `Drop`
+//! guard can't help either, since the syscall diverges without unwinding so no
+//! destructor runs. To cover that on-chain, entry raises a frame-local flag
+//! (`REENTRANCY_LOCK_HELD`) and `return_value` releases the lock when the flag
+//! is still set, catching a divergent exit that skipped the trailing unlock.
+//! PVM gives each call a fresh memory image, so the flag is `false` at the top
+//! of every frame and marks exactly the frame that took the lock, with no key
+//! derivation or depth counter. This flag path is riscv64-only: on host a
+//! process-global `static` would leak across parallel tests, and there
+//! `return_value` returns normally so the explicit unlock already suffices.
 
 use crate::{DecodeError, Host, HostApi, SolError, StorageFlags, const_keccak256, const_selector};
+
+/// Frame-local "this frame owns the lock" flag (see module docs). Reset to
+/// `false` by PVM's fresh per-call memory image, so no explicit init is needed.
+///
+/// A plain `static mut` (not an atomic): on-chain execution is single-threaded,
+/// and a plain flag stays transparent to the optimizer. In a guardless contract
+/// (which never calls [`__reentrancy_lock`]) LTO then dead-code-eliminates the
+/// whole clear branch, so it pays nothing.
+#[cfg(target_arch = "riscv64")]
+static mut REENTRANCY_LOCK_HELD: bool = false;
 
 /// Fixed storage slot for the reentrancy lock (ERC-7201-style namespaced key).
 const REENTRANCY_KEY: [u8; 32] = const_keccak256(b"pvm.guards.reentrancy");
 
-/// Non-zero marker written to lock the guard. Reading back non-zero ⇒ locked.
+/// Non-zero marker written to lock the guard. Reading back non-zero means locked.
 const LOCKED: [u8; 32] = [1u8; 32];
 
 /// All-zero value: `set_storage_or_clear` auto-deletes the slot, so the lock
@@ -81,6 +102,11 @@ pub fn __reentrancy_is_locked(host: &Host) -> bool {
 /// Set the reentrancy lock (full-guard entry, after the not-locked check).
 #[doc(hidden)]
 pub fn __reentrancy_lock(host: &Host) {
+    // SAFETY: single-threaded on-chain execution; no concurrent access.
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        REENTRANCY_LOCK_HELD = true;
+    }
     let _ = host.set_storage_or_clear(StorageFlags::TRANSIENT, &REENTRANCY_KEY, &LOCKED);
 }
 
@@ -90,5 +116,30 @@ pub fn __reentrancy_lock(host: &Host) {
 /// before the `return_value`.
 #[doc(hidden)]
 pub fn __reentrancy_unlock(host: &Host) {
+    // SAFETY: single-threaded on-chain execution; no concurrent access.
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        REENTRANCY_LOCK_HELD = false;
+    }
     let _ = host.set_storage_or_clear(StorageFlags::TRANSIENT, &REENTRANCY_KEY, &UNLOCKED);
+}
+
+/// On-chain safety net for a body that exits via a raw diverging `return_value`,
+/// skipping the codegen's post-body [`__reentrancy_unlock`]. Called from inside
+/// `return_value`, which every contract exit routes through: if this frame holds
+/// the lock, release it before diverging. A no-op for any frame that never took
+/// the lock. In a guardless contract the whole branch is dead-code eliminated
+/// under LTO.
+#[cfg(target_arch = "riscv64")]
+#[doc(hidden)]
+pub fn __reentrancy_clear_if_held(host: &impl HostApi) {
+    // SAFETY: single-threaded on-chain execution; no concurrent access. In a
+    // guardless contract `__reentrancy_lock` is never linked, so LTO proves this
+    // is always `false` and eliminates the whole branch.
+    if unsafe { REENTRANCY_LOCK_HELD } {
+        unsafe {
+            REENTRANCY_LOCK_HELD = false;
+        }
+        let _ = host.set_storage_or_clear(StorageFlags::TRANSIENT, &REENTRANCY_KEY, &UNLOCKED);
+    }
 }

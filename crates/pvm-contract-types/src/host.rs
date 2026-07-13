@@ -448,6 +448,12 @@ impl HostApi for PolkaVmHost {
     }
     #[inline(always)]
     fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+        // Every contract exit routes through `return_value` (both the dispatch's
+        // normal return and a raw call in a user body), so release the reentrancy
+        // lock here if this frame holds it. This covers a body that exits via a
+        // raw `return_value`, which would otherwise skip the codegen's post-body
+        // unlock.
+        crate::reentrancy::__reentrancy_clear_if_held(self);
         pallet_revive_uapi::HostFnImpl::return_value(flags, data)
     }
     #[inline(always)]

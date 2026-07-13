@@ -309,8 +309,11 @@ pub fn generate_dispatch_arm(
     };
 
     // `#[non_reentrant]`: wrap the body with the guard, with the mode inferred
-    // from the receiver below. The lock is cleared explicitly before
-    // `return_value`, never via `Drop`.
+    // from the receiver below. This emits an explicit unlock after the body for
+    // the normal-return path; a body that diverges via a raw `return_value`
+    // skips it and is instead released inside `return_value` itself (see
+    // `pvm-contract-types::reentrancy`). `Drop` can't cover either path:
+    // `return_value` diverges without unwinding, so no destructor runs.
     //
     // The revert is emitted inline rather than from the `__reentrancy_*` helpers
     // because, like every dispatch arm, it must `return` from `route`, which a
