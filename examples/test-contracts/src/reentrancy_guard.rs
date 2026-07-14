@@ -127,9 +127,11 @@ mod reentrancy_guard {
         }
 
         /// Guarded. Calls out to a separate `attacker` contract, which re-enters
-        /// this contract's `protected()`. The re-entrant call carries
-        /// `ALLOW_REENTRY` (set by the attacker), so the SDK guard, not
-        /// pallet-revive's default reject, must block it. Forwards the revert.
+        /// this contract's `protected()`. This outbound call sets `ALLOW_REENTRY`
+        /// so *this* contract permits being re-entered (pallet-revive keys the
+        /// reentry decision on the re-entered contract's own outbound flag, not
+        /// on the attacker's callback), letting the SDK guard — not
+        /// pallet-revive's default reject — block it. Forwards the revert.
         #[pvm_contract_sdk::method]
         #[pvm_contract_sdk::non_reentrant]
         pub fn protected_calls_out(&mut self, attacker: Address) -> Result<(), Error> {
@@ -142,7 +144,7 @@ mod reentrancy_guard {
             calldata[16..36].copy_from_slice(&own);
 
             let res = self.host().call_evm(
-                CallFlags::empty(),
+                CallFlags::ALLOW_REENTRY,
                 &attacker.0,
                 u64::MAX,
                 &[0u8; 32],
