@@ -44,7 +44,7 @@ extern crate self as pvm_contract_sdk;
 
 pub use pvm_contract_macros::{
     SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback,
-    interface_id, method, payable, receive, selector, storage,
+    interface_id, method, non_reentrant, payable, receive, selector, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,8 @@ pub use pvm_contract_types::{
     Panic,
     ParseI256Error,
     PolkaVmHost,
+    // Reentrancy guard error (OZ-compatible).
+    ReentrancyGuardReentrantCall,
     ReturnErrorCode,
     ReturnFlags,
     RevertString,
@@ -116,6 +118,11 @@ pub use pvm_contract_types::{
     read_word_offset,
     value_transferred_is_nonzero,
 };
+
+/// Reentrancy guard helpers emitted by the `#[non_reentrant]` codegen.
+/// Not part of the public API surface.
+#[doc(hidden)]
+pub use pvm_contract_types::{__reentrancy_is_locked, __reentrancy_lock, __reentrancy_unlock};
 
 /// Sealing module re-exported for the `#[contract]` macro to implement on
 /// generated storage structs. External users have no reason to import this.

@@ -93,6 +93,8 @@ pub struct MethodInfo {
     pub mutability: StateMutability,
     /// When set, the selector is precomputed (e.g. from a `.sol` file).
     pub precomputed_selector: Option<[u8; 4]>,
+    /// `#[non_reentrant]`: emit a reentrancy guard.
+    pub is_non_reentrant: bool,
 }
 
 pub(super) struct ParamDecoding {
@@ -304,6 +306,101 @@ pub fn generate_dispatch_arm(
             #[allow(unreachable_code)]
             return ::core::option::Option::Some(());
         }
+    };
+
+    // `#[non_reentrant]`: wrap the body with the guard, with the mode inferred
+    // from the receiver below. This emits an explicit unlock after the body for
+    // the normal-return path; a body that diverges via a raw `return_value`
+    // skips it and is instead released inside `return_value` itself (see
+    // `pvm-contract-types::reentrancy`). `Drop` can't cover either path:
+    // `return_value` diverges without unwinding, so no destructor runs.
+    //
+    // The revert is emitted inline rather than from the `__reentrancy_*` helpers
+    // because, like every dispatch arm, it must `return` from `route`, which a
+    // helper can't do.
+    let revert_if_locked = quote! {
+        if ::pvm_contract_sdk::__reentrancy_is_locked(this.host()) {
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                this.host(),
+                ::pvm_contract_sdk::ReturnFlags::REVERT,
+                &<::pvm_contract_sdk::ReentrancyGuardReentrantCall as ::pvm_contract_sdk::SolError>::SELECTOR,
+            );
+            #[allow(unreachable_code)]
+            return ::core::option::Option::Some(());
+        }
+    };
+
+    let body = if method.is_non_reentrant {
+        match method.mutability {
+            // `&self` read-only check (`nonReentrantView`): revert if a guarded
+            // section is in progress; no lock/unlock, body unchanged.
+            StateMutability::View => quote! {
+                #revert_if_locked
+                #body
+            },
+            // `&mut self` full guard: check, lock, run body, unlock before returning.
+            StateMutability::NonPayable | StateMutability::Payable => {
+                if method.returns_result {
+                    if has_return {
+                        quote! {
+                            #revert_if_locked
+                            ::pvm_contract_sdk::__reentrancy_lock(this.host());
+                            let __r = #invoke(#(#call_args),*);
+                            ::pvm_contract_sdk::__reentrancy_unlock(this.host());
+                            match __r {
+                                Ok(result) => { #encode_and_return }
+                                Err(e) => { #revert_err }
+                            }
+                        }
+                    } else {
+                        quote! {
+                            #revert_if_locked
+                            ::pvm_contract_sdk::__reentrancy_lock(this.host());
+                            let __r = #invoke(#(#call_args),*);
+                            ::pvm_contract_sdk::__reentrancy_unlock(this.host());
+                            match __r {
+                                Ok(()) => {
+                                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                                        this.host(),
+                                        ::pvm_contract_sdk::ReturnFlags::empty(),
+                                        &[],
+                                    );
+                                    #[allow(unreachable_code)]
+                                    return ::core::option::Option::Some(());
+                                }
+                                Err(e) => { #revert_err }
+                            }
+                        }
+                    }
+                } else if has_return {
+                    quote! {
+                        #revert_if_locked
+                        ::pvm_contract_sdk::__reentrancy_lock(this.host());
+                        let result = #invoke(#(#call_args),*);
+                        ::pvm_contract_sdk::__reentrancy_unlock(this.host());
+                        #encode_and_return
+                    }
+                } else {
+                    quote! {
+                        #revert_if_locked
+                        ::pvm_contract_sdk::__reentrancy_lock(this.host());
+                        #invoke(#(#call_args),*);
+                        ::pvm_contract_sdk::__reentrancy_unlock(this.host());
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                            this.host(),
+                            ::pvm_contract_sdk::ReturnFlags::empty(),
+                            &[],
+                        );
+                        #[allow(unreachable_code)]
+                        return ::core::option::Option::Some(());
+                    }
+                }
+            }
+            // Pure has no receiver/host and is rejected at parse time; passthrough.
+            StateMutability::Pure => body,
+        }
+    } else {
+        body
     };
 
     let match_arm = quote! {
@@ -547,6 +644,7 @@ mod tests {
             returns_result: false,
             mutability,
             precomputed_selector: Some([0xde, 0xad, 0xbe, 0xef]),
+            is_non_reentrant: false,
         }
     }
 

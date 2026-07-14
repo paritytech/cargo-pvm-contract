@@ -105,6 +105,7 @@ call()    — called on every subsequent interaction
 - `#[fallback]` — invoked when no method selector matches (or calldata is 1..=3 bytes).
 - `#[receive]` — invoked on plain value transfers (empty calldata). Must take `&mut self` and no other arguments. Implicitly payable; `#[payable]` is rejected as redundant.
 - `#[payable]` — marks a method as payable. Must be combined with `&mut self`. Adding it to a no-receiver or `&self` method is a compile error.
+- `#[non_reentrant]` — emits an OpenZeppelin-compatible reentrancy guard on a `#[method]`. Mode is inferred from the receiver: `&mut self` gives a full guard (OZ `nonReentrant`), `&self` a read-only check (OZ `nonReentrantView`). On re-entry the method reverts with the `ReentrancyGuardReentrantCall` error (OZ v5 selector). Only valid on a `#[method]` with a receiver — applying it to a pure method, constructor, fallback, or receive handler is a compile error. Only meaningful for contracts that opt into `CallFlags::ALLOW_REENTRY` (pallet-revive rejects reentrancy by default).
 
 When both `#[receive]` and `#[fallback]` are present, `receive` fires first on empty calldata.
 

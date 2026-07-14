@@ -266,6 +266,26 @@ fn generate_abi_gen_impl(
         })
         .collect();
 
+    // A `#[non_reentrant]` method reverts with `ReentrancyGuardReentrantCall`,
+    // which is injected by the guard codegen and so is not in any method's
+    // `Result` error type. Register its (parameterless) signature in the ABI so
+    // tooling can decode the revert. Modeled on the framework-error path — no
+    // `__split_params` needed since it has no parameters.
+    let reentrancy_error_entry = if parsed.methods.iter().any(|m| m.is_non_reentrant) {
+        let sig = "ReentrancyGuardReentrantCall()";
+        quote! {
+            if !__seen_errors.iter().any(|s| *s == #sig) {
+                __seen_errors.push(#sig);
+                __items.push(::pvm_contract_sdk::AbiItem::Error {
+                    name: "ReentrancyGuardReentrantCall".into(),
+                    inputs: ::std::vec::Vec::new(),
+                });
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let helper = quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
@@ -282,6 +302,8 @@ fn generate_abi_gen_impl(
             #receive_entry
 
             #(#error_entries)*
+
+            #reentrancy_error_entry
 
             #(#event_entries)*
 
@@ -514,6 +536,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::View,
             precomputed_selector: None,
+            is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -535,6 +558,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::Pure,
             precomputed_selector: None,
+            is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);

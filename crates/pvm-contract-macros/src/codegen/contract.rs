@@ -870,6 +870,14 @@ fn parse_contract(
                 continue;
             };
 
+            if has_pvm_attr(&func.attrs, "non_reentrant") && !has_pvm_attr(&func.attrs, "method") {
+                return Err(syn::Error::new_spanned(
+                    func,
+                    "`#[non_reentrant]` is only supported on `#[method]`s; \
+                     it cannot be applied to a constructor, fallback, or receive handler",
+                ));
+            }
+
             if has_pvm_attr(&func.attrs, "constructor") {
                 has_constructor = true;
                 constructor_name = Some(func.sig.ident.clone());
@@ -948,6 +956,14 @@ fn parse_contract(
                 let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
                 let is_payable = has_pvm_attr(&func.attrs, "payable");
                 let inferred_mutability = infer_method_mutability(func, is_payable)?;
+                let is_non_reentrant = has_pvm_attr(&func.attrs, "non_reentrant");
+                if is_non_reentrant && inferred_mutability == StateMutability::Pure {
+                    return Err(syn::Error::new_spanned(
+                        func,
+                        "`#[non_reentrant]` requires `&self` or `&mut self`; a pure method \
+                         (no receiver) has no host access and nothing to guard",
+                    ));
+                }
                 let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
                 let param_types: Vec<syn::Type> =
                     typed_params.into_iter().map(|(_, t)| t).collect();
@@ -1045,6 +1061,7 @@ fn parse_contract(
                     returns_result,
                     mutability,
                     precomputed_selector,
+                    is_non_reentrant,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             }
@@ -1682,7 +1699,8 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                                 && (segments[1].ident == "method"
                                     || segments[1].ident == "constructor"
                                     || segments[1].ident == "fallback"
-                                    || segments[1].ident == "receive");
+                                    || segments[1].ident == "receive"
+                                    || segments[1].ident == "non_reentrant");
                             !(is_selector || is_pvm_method)
                         });
                     }

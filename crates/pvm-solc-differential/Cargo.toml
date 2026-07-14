@@ -1,0 +1,47 @@
+[package]
+name = "pvm-solc-differential"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Differential test of the SDK's on-chain storage representation against real solc (executed on revm)"
+publish = false
+
+[dependencies]
+# Our SDK surface + the host mock that captures storage writes. Light, always
+# built.
+pvm-contract-sdk = { path = "../pvm-contract-sdk", features = ["alloc", "std"] }
+pvm-contract-types = { path = "../pvm-contract-types", features = [
+    "alloc",
+    "std",
+] }
+ruint = { workspace = true, default-features = false }
+
+# Ground-truth execution of solc output (storage representation). Optional so
+# the default build (and `cargo test --workspace`) stays free of revm's heavy
+# dependency tree; enabled only by `solc-tests`, which also needs `solc` on PATH.
+revm = { workspace = true, optional = true }
+alloy-core = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+# Property-based generation of storage values for the differential test.
+# Optional so the default build stays free of it; pulled in by `solc-tests`.
+proptest = { version = "1", optional = true }
+
+[features]
+default = []
+# Declared (kept off) only so the `#[derive(SolStorage)]`-emitted
+# `#[cfg(feature = "abi-gen")]` code is a recognized cfg — silences the
+# `unexpected_cfgs` lint. The storage-representation test doesn't use the
+# layout-JSON accessor, so it never needs this enabled.
+abi-gen = ["pvm-contract-sdk/abi-gen"]
+# Run the differential test: needs `solc` on PATH and pulls revm to execute
+# solc's bytecode. Gated so the default build / `cargo test --workspace` stays
+# revm-free.
+solc-tests = [
+    "dep:revm",
+    "dep:alloy-core",
+    "dep:serde_json",
+    "dep:proptest",
+    # ruint's proptest `Arbitrary` for `U256` (unsigned only; `I256` is wrapped).
+    "ruint/proptest",
+]

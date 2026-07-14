@@ -46,6 +46,8 @@ jobs:
         run: cargo test -p pvm-contract-types --features alloc && cargo test -p pvm-contract-macros && cargo test -p pvm-storage --features alloc
       - name: Run solc differential storage-layout tests
         run: cargo test -p pvm-contract-macros --features solc-tests --test solc_differential
+      - name: Run solc differential storage-representation tests
+        run: cargo test -p pvm-solc-differential --features solc-tests
       - name: Run integration tests
         run: cargo test -p cargo-pvm-contract -- --test-threads=1
       - name: Cache revive-dev-node

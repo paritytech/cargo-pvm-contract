@@ -205,6 +205,20 @@ impl MockHost {
         self.state.borrow_mut().storage.insert(key, value);
     }
 
+    /// Snapshot of the entire storage map as `(key, value)` pairs — for tests
+    /// that need to enumerate every written slot (e.g. diffing the full storage
+    /// representation against another implementation), not just point-lookup a
+    /// known key. Zero-valued slots are already absent: `set_storage_or_clear`
+    /// deletes on a zero write, matching solc's SSTORE-of-zero semantics.
+    pub fn storage_dump(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.state
+            .borrow()
+            .storage
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    }
+
     /// Take the [`ReturnValue`] captured by the most recent
     /// [`HostApi::return_value`] call on this mock, leaving the slot empty.
     /// Returns `None` if no `return_value` has been called since the last

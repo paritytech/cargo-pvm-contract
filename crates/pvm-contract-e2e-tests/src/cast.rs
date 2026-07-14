@@ -341,6 +341,23 @@ impl CastClient {
         cmd.output().expect("cast send failed to execute")
     }
 
+    /// The 4-byte selector (lowercase hex, no `0x`) for a function or error
+    /// signature, computed as `keccak256(sig)[..4]` via `cast keccak`.
+    pub fn selector(&self, sig: &str) -> String {
+        let output = Command::new("cast")
+            .args(["keccak", sig])
+            .output()
+            .expect("cast keccak failed to execute");
+        assert!(
+            output.status.success(),
+            "cast keccak '{sig}' failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let hash = String::from_utf8(output.stdout).unwrap();
+        let hash = hash.trim().trim_start_matches("0x");
+        hash[..8].to_lowercase()
+    }
+
     /// Get logs for a specific event signature.
     pub fn logs(&self, contract: &str, event_sig: &str) -> String {
         let output = Command::new("cast")
