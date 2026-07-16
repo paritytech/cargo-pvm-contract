@@ -149,7 +149,7 @@ pub use pvm_contract_types::Bytes;
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_contract_types::{
-    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName, StorageLayoutTypeEntry,
     abi_to_json, parse_type_str, storage_layout_to_json,
 };
 

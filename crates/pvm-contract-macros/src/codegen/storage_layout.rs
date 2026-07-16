@@ -177,6 +177,7 @@ pub(super) fn generate_layout_emit(
             #solc_offset,
             &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
             entries,
+            types,
         );
     }
 }

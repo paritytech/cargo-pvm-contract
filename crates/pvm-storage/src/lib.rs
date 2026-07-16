@@ -549,11 +549,18 @@ pub trait StorageLayoutEmit {
     /// string at top level). `offset` is non-zero only for packed sub-word
     /// leaf fields sharing a slot with neighbours; multi-slot composites and
     /// `#[storage]` sub-structs always start a fresh slot and ignore it.
+    ///
+    /// Struct-typed leaves (a `#[storage]` sub-struct, or a `Lazy`/`Mapping`
+    /// value whose type derives `SolStorage`) push exactly one entry into
+    /// `out` and register their own member breakdown into `types`, keyed by
+    /// their solc-style type name (e.g. `"struct Outer.Inner"`), instead of
+    /// flattening into `out`.
     fn emit_entries(
         base: u64,
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        types: &mut std::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
     );
 }
 
@@ -932,7 +939,9 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        types: &mut alloc::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
     ) {
+        let _ = types;
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
@@ -1114,7 +1123,9 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        types: &mut alloc::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
     ) {
+        let _ = types;
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
@@ -1860,7 +1871,9 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        types: &mut alloc::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
     ) {
+        let _ = types;
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),

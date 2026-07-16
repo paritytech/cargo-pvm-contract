@@ -511,8 +511,6 @@ fn fixed_array_layout_matches_solc() {
 // its members — instead of the inline tuple SOL_NAME (`(uint64,uint64)`).
 // Currently FAILS only on the `type` field; label/slot/offset already match.
 #[test]
-#[ignore = "known divergence: SolType struct value emits inline tuple type name, \
-            not a solc `struct ...` type — enable after generator fix"]
 fn soltype_struct_value_layout_matches_solc() {
     assert_eq!(
         ours(&soltype_value::__storage_layout_json()),
@@ -525,8 +523,6 @@ fn soltype_struct_value_layout_matches_solc() {
 // flattening their leaves into dotted-label entries (`inner.a`, `inner.b`).
 // Currently FAILS on entry count and labels (we emit N entries, solc emits 1).
 #[test]
-#[ignore = "known divergence: #[storage] sub-struct flattens to dotted-label \
-            entries, solc emits one struct-typed entry — enable after generator fix"]
 fn substruct_layout_matches_solc() {
     assert_eq!(
         ours(&substruct::__storage_layout_json()),

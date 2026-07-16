@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
 
 /// A parameter in a Solidity ABI function signature.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -96,10 +97,19 @@ pub struct StorageLayoutEntry {
     pub ty: String,
 }
 
+// Adding the below derive to have it in sync with other declarations
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageLayoutTypeEntry {
+    pub label: String,                  // "struct Outer.Inner"
+    pub number_of_bytes: String,
+    pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
+}
+
 /// The top-level `storageLayout` object.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayout {
     pub storage: Vec<StorageLayoutEntry>,
+    pub types: BTreeMap<String, StorageLayoutTypeEntry>,
 }
 
 /// Type-name resolver used by the storage-layout JSON emitter.
@@ -324,6 +334,7 @@ mod tests {
                     ty: "mapping(address => uint256)".into(),
                 },
             ],
+            types: Default::default(),
         };
         let json = storage_layout_to_json(&layout);
 
@@ -390,6 +401,7 @@ mod tests {
                     ty: "uint256".into(),
                 },
             ],
+            types: Default::default(),
         };
         let json = storage_layout_to_json(&layout);
         assert_eq!(

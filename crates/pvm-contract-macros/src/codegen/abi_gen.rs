@@ -115,9 +115,12 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
             #(#auto_slot_consts)*
             let mut storage: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                 ::std::vec::Vec::new();
+            let mut types_owned: ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry> =
+                ::std::collections::BTreeMap::new();
             let entries = &mut storage;
+            let types = &mut types_owned;
             #(#layout_emits)*
-            let layout = ::pvm_contract_sdk::StorageLayout { storage };
+            let layout = ::pvm_contract_sdk::StorageLayout { storage, types: types_owned };
             ::pvm_contract_sdk::storage_layout_to_json(&layout)
         }
     }

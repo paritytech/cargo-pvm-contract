@@ -25,7 +25,7 @@ pub use revert_string_alloc::RevertString;
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
 pub use abi_gen::{
-    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName, StorageLayoutTypeEntry,
     abi_to_json, parse_type_str, storage_layout_to_json,
 };
 

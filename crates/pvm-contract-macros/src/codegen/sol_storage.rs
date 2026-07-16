@@ -319,10 +319,41 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 offset: u8,
                 name_prefix: &str,
                 entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
+                types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
             ) {
-                let _ = offset;
-                #(#offset_consts_for_layout)*
-                #(#layout_emits)*
+                let type_name = format!("struct {}", <Self as ::pvm_contract_sdk::StorageTypeName>::name());
+
+                // One entry for the whole sub-struct — no flattening.
+                entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                    // label: ::pvm_contract_sdk::join_label(name_prefix),
+                    label: ::std::string::String::from(name_prefix),
+                    slot: base.to_string(),
+                    offset,
+                    ty: type_name.clone(),
+                });
+
+                // Register the struct's own shape in `types`, once per distinct type.
+                if !types.contains_key(&type_name) {
+                    let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                        ::std::vec::Vec::new();
+                    {
+                        // Shadow `entries`/`name_prefix` so the existing per-field
+                        // codegen (unchanged) pushes into our local buffer instead of
+                        // the caller's list, with prefixes reset to bare field names.
+                        let entries = &mut member_entries;
+                        let name_prefix = "";
+                        #(#offset_consts_for_layout)*
+                        #(#layout_emits)*
+                    }
+                    types.insert(
+                        type_name.clone(),
+                        ::pvm_contract_sdk::StorageLayoutTypeEntry {
+                            label: type_name.clone(),
+                            number_of_bytes: "32".to_string(),
+                            members: member_entries,
+                        },
+                    );
+                }
             }
         }
 
