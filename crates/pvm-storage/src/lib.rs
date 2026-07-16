@@ -939,7 +939,10 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
-        types: &mut alloc::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
+        types: &mut alloc::collections::BTreeMap<
+            String,
+            pvm_contract_types::StorageLayoutTypeEntry,
+        >,
     ) {
         let _ = types;
         out.push(pvm_contract_types::StorageLayoutEntry {
@@ -1123,7 +1126,10 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
-        types: &mut alloc::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
+        types: &mut alloc::collections::BTreeMap<
+            String,
+            pvm_contract_types::StorageLayoutTypeEntry,
+        >,
     ) {
         let _ = types;
         out.push(pvm_contract_types::StorageLayoutEntry {
@@ -1871,7 +1877,10 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
-        types: &mut alloc::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
+        types: &mut alloc::collections::BTreeMap<
+            String,
+            pvm_contract_types::StorageLayoutTypeEntry,
+        >,
     ) {
         let _ = types;
         out.push(pvm_contract_types::StorageLayoutEntry {

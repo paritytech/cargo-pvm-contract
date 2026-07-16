@@ -1,8 +1,8 @@
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 
 /// A parameter in a Solidity ABI function signature.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -100,7 +100,7 @@ pub struct StorageLayoutEntry {
 // Adding the below derive to have it in sync with other declarations
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayoutTypeEntry {
-    pub label: String,                  // "struct Outer.Inner"
+    pub label: String, // "struct Outer.Inner"
     pub number_of_bytes: String,
     pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
 }
