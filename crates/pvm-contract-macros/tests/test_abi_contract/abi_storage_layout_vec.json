@@ -58,17 +58,31 @@
         "type": "mapping(address => uint256[])"
       },
       {
-        "label": "pool.owner",
+        "label": "pool",
         "offset": 0,
         "slot": "4",
-        "type": "address"
-      },
-      {
-        "label": "pool.entries",
-        "offset": 0,
-        "slot": "5",
-        "type": "uint256[]"
+        "type": "struct PoolState"
       }
-    ]
+    ],
+    "types": {
+      "struct PoolState": {
+        "label": "struct PoolState",
+        "members": [
+          {
+            "label": "owner",
+            "offset": 0,
+            "slot": "4",
+            "type": "address"
+          },
+          {
+            "label": "entries",
+            "offset": 0,
+            "slot": "5",
+            "type": "uint256[]"
+          }
+        ],
+        "number_of_bytes": "32"
+      }
+    }
   }
 }
