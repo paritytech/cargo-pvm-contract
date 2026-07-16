@@ -349,6 +349,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                         type_name.clone(),
                         ::pvm_contract_sdk::StorageLayoutTypeEntry {
                             label: type_name.clone(),
+                            // TODO: need to calculate the actual packed size of the struct, not just hardcode 32. This is a placeholder until we implement proper size calculation for structs.
                             number_of_bytes: "32".to_string(),
                             members: member_entries,
                         },
