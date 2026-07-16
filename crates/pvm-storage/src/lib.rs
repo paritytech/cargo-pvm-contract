@@ -944,13 +944,14 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
             pvm_contract_types::StorageLayoutTypeEntry,
         >,
     ) {
-        let _ = types;
+        let type_name = <T as pvm_contract_types::StorageTypeName>::name();
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: <T as pvm_contract_types::StorageTypeName>::name(),
+            ty: type_name.clone(),
         });
+        let _ = types;
     }
 }
 
