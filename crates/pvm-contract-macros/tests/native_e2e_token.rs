@@ -20,8 +20,8 @@
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, OutSink, Outcome, Router, SolDecode, SolEncode,
-    StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router, SolDecode,
+    SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
@@ -243,22 +243,23 @@ fn route_ok(
     }
 }
 
-/// Call `route()` for a method whose own `Err(e)` reverts at the return
-/// position — surfaced as `Outcome::Revert(n)` (data, no unwind) — and return
-/// the encoded revert payload. Mid-expression aborts (e.g. a size-check
-/// revert) diverge instead and are asserted inline with `expect_revert`.
+/// Call `route()` for a method whose own `Err(e)` reverts, and return the
+/// encoded revert payload. A revert diverges through the `revert` door (`-> !`),
+/// which unwinds on host, so it's caught with `expect_revert` — the same idiom
+/// as every other revert (size check, storage `Panic`, …).
 fn route_revert(
     contract: &mut mini_token::MiniToken,
-    _mock: &MockHost,
+    mock: &MockHost,
     sel: [u8; 4],
     input: &[u8],
 ) -> Vec<u8> {
     let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
     let mut out: &mut [u8] = &mut buf;
-    match mini_token::route(contract, sel, input, &mut out) {
-        Outcome::Revert(n) => out.view(n).to_vec(),
-        other => panic!("expected Revert, got {other:?}"),
-    }
+    let rv = mock.expect_revert(|| {
+        mini_token::route(contract, sel, input, &mut out);
+    });
+    assert_eq!(rv.flags, ReturnFlags::REVERT);
+    rv.data
 }
 
 // --- Tests ---
@@ -405,8 +406,8 @@ fn short_input_reverts_with_framework_invalid_calldata() {
 
     let short = [0u8; 10]; // need 64 bytes for (Address, U256)
 
-    // Size-check failure is a mid-expression abort: it diverges via
-    // `host.revert` (unwinds on host) rather than returning `Outcome::Revert`.
+    // Size-check failure diverges via `host.revert` (unwinds on host) — caught
+    // with `expect_revert`, like every revert.
     let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
     let mut out: &mut [u8] = &mut buf;
     let rv = mock.expect_revert(|| {

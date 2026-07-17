@@ -66,11 +66,11 @@ use super::host::{CallFlags, HostApi, HostResult, ReturnErrorCode, ReturnFlags, 
 /// `&[u8]`, `Vec<u8>`, a byte string). Panics the test — with the actual outcome
 /// — if `$body` doesn't revert, and with a byte diff if the data mismatches.
 ///
-/// Use it for a diverging revert: a mid-expression abort during a macro
-/// `route()` (size check / decode / payable guard / storage `Panic`), a revert
-/// lowered through `finalize_outcome`, or a DSL `dispatch_impl` revert. (A macro
-/// method's own `Err(e)` is returned as `Outcome::Revert` data — match on the
-/// `Outcome` for that, rather than this.)
+/// Use it for any revert — they all diverge: a method's own `Err(e)`, the input
+/// size check, a malformed-calldata decode, the payable guard, and storage
+/// `Panic`, on both the macro `route()` and DSL `dispatch_impl` paths. (Only a
+/// non-reverting result is returned as data — assert on `Outcome::Return` for
+/// that.)
 ///
 /// ```ignore
 /// // Macro path — a short-calldata size-check revert diverges during route():
@@ -345,16 +345,12 @@ impl MockHost {
     /// captured [`ReturnValue`] (`flags == REVERT` plus the ABI-encoded revert
     /// `data`).
     ///
-    /// Because [`HostApi::revert`] is the sole diverging revert door, this
-    /// catches: mid-expression aborts during a macro `route()` (the size check,
-    /// malformed-calldata decode, the payable guard, and `panic_revert`-driven
-    /// `Panic(uint256)` from storage), any revert once lowered through
-    /// `finalize_outcome`, and every DSL `dispatch_impl` revert. Note: a macro
-    /// method's own `Err(e)` is returned as `Outcome::Revert` *data* — `route()`
-    /// alone does not diverge on it, so either lower it via `finalize_outcome(..)`
-    /// inside `f` or assert on the returned `Outcome` directly. Drive the
-    /// contract inside `f`, then decode `rv.data`; for the standard
-    /// `Panic(uint256)` case prefer [`Self::expect_panic`].
+    /// Because [`HostApi::revert`] is the sole revert door, this catches **every**
+    /// revert: a method's own `Err(e)`, the input size check, a malformed-calldata
+    /// decode, the payable guard, and `panic_revert`-driven `Panic(uint256)` from
+    /// storage — on both the macro `route()` and DSL `dispatch_impl` paths (they
+    /// all diverge). Drive the contract inside `f`, then decode `rv.data`; for the
+    /// standard `Panic(uint256)` case prefer [`Self::expect_panic`].
     ///
     /// Panics the test with a clear message if `f` returned normally or halted
     /// some other way (terminate / consume-all-gas). Genuine bug panics from

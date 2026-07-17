@@ -390,22 +390,27 @@ impl ContractBuilderWithHandlers {
     }
 }
 
-/// Hand a [`HandlerResult`] to the host by lowering it through the shared
-/// [`pvm_contract_types::finalize_outcome`] exit — the same single door the
-/// `#[contract]` macro's dispatch uses — so the DSL and macro paths don't carry
-/// two copies of the `return_value`/`revert` transition.
+/// Hand a [`HandlerResult`] to the host: success is lowered through the shared
+/// [`pvm_contract_types::finalize_outcome`] success exit — the same door the
+/// `#[contract]` macro uses — while a revert diverges directly through
+/// [`HostApi::revert`], matching the macro path (all reverts diverge; only the
+/// non-reverting result flows as an `Outcome`).
 ///
-/// The length is clamped to the buffer *before* lowering: a [`MethodHandler`]
-/// is a user-supplied `fn` (untrusted), so a bad `n` must not index past
-/// `output`. The macro path skips this clamp because its `Outcome` lengths come
-/// from trusted codegen.
+/// The length is clamped to the buffer first: a [`MethodHandler`] is a
+/// user-supplied `fn` (untrusted), so a bad `n` must not index past `output`.
+/// The macro path skips this clamp because its lengths come from trusted codegen.
 #[inline(always)]
 fn finalize_response(host: &Host, output: &mut [u8], result: HandlerResult) {
-    let outcome = match result {
-        HandlerResult::Ok(n) => pvm_contract_types::Outcome::Return(n.min(output.len())),
-        HandlerResult::Revert(n) => pvm_contract_types::Outcome::Revert(n.min(output.len())),
-    };
-    pvm_contract_types::finalize_outcome(host, outcome, &output);
+    match result {
+        HandlerResult::Ok(n) => {
+            let outcome = pvm_contract_types::Outcome::Return(n.min(output.len()));
+            pvm_contract_types::finalize_outcome(host, outcome, &output);
+        }
+        HandlerResult::Revert(n) => {
+            let len = n.min(output.len());
+            host.revert(&output[..len]);
+        }
+    }
 }
 
 #[cfg(test)]

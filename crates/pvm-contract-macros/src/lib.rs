@@ -120,12 +120,13 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///   path).
 /// - `pub fn route<B: OutSink>(this: &mut Contract, selector: [u8; 4],
 ///   input: &[u8], out: &mut B) -> Outcome` — selector dispatch. A matched arm
-///   encodes its result into `out` and returns `Outcome::Return(len)`, or (for a
-///   method's own `Err(e)`) `Outcome::Revert(len)`; an unmatched selector
-///   returns `Outcome::Unhandled`. Arms no longer call the host — the single
-///   `finalize_outcome` exit does. (Mid-expression aborts — size check,
-///   malformed-calldata decode, the payable guard — still diverge via
-///   `this.host().revert(...)`, `-> !`, and never surface as an `Outcome`.)
+///   that succeeds encodes its result into `out` and returns
+///   `Outcome::Return(len)`; an unmatched selector returns `Outcome::Unhandled`.
+///   The single `finalize_outcome` exit lowers a `Return` to `return_value`.
+///   Reverts never become an `Outcome`: a method's own `Err(e)` and every
+///   framework abort (size check, malformed-calldata decode, payable guard,
+///   storage `Panic`) diverge via `this.host().revert(...)` (`-> !`) at the point
+///   they occur.
 /// - `pub extern "C" fn deploy()` — PolkaVM deploy entry point (riscv64-only)
 /// - `pub extern "C" fn call()` — PolkaVM call entry point (riscv64-only);
 ///   reads calldata, drives `route()` with an output buffer, and lowers the
@@ -160,10 +161,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///
 /// ### Composition and inheritance
 ///
-/// `route()` returns an `Outcome`: `Return(len)` / `Revert(len)` when the
-/// selector matched (the arm encoded `len` bytes into `out`), or `Unhandled`
-/// when it did not. Chain multiple routers by trying each in turn and matching
-/// `Unhandled`, then lowering the first non-`Unhandled` outcome once:
+/// `route()` returns an `Outcome`: `Return(len)` when the selector matched and
+/// succeeded (the arm encoded `len` bytes into `out`), or `Unhandled` when it
+/// did not match (a matched arm that reverts diverges and does not return).
+/// Chain multiple routers by trying each in turn and matching `Unhandled`, then
+/// lowering the first `Return` once:
 ///
 /// The shared buffer must be sized to the **max** `MAX_RETURN_LEN` across every
 /// module in the chain (each const covers only its own module's returns):
@@ -342,11 +344,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 ///                 ) {
 ///                     Ok(()) => ::pvm_contract_sdk::Outcome::Return(0),
 ///                     Err(e) => {
-///                         // A method's own Err is a return-position revert: it is
-///                         // returned as data, not diverged.
-///                         let __revert_buf = out.reserve(256);
-///                         let __revert_len = e.encode_to(__revert_buf);
-///                         ::pvm_contract_sdk::Outcome::Revert(__revert_len)
+///                         // A revert diverges: encode into `out`, then revert.
+///                         let __n = { let b = out.reserve(256); e.encode_to(b) };
+///                         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+///                             this.host(), out.view(__n))   // -> !
 ///                     }
 ///                 }
 ///             }

@@ -12,8 +12,8 @@
 //! `host.revert(...)` and is caught with [`assert_reverts!`].
 
 use pvm_contract_types::{
-    Address, Host, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router, SolDecode,
-    SolEncode, StaticEncodedLen, assert_reverts, finalize_outcome,
+    Address, Host, HostApi, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router,
+    SolDecode, SolEncode, StaticEncodedLen, assert_reverts, finalize_outcome,
 };
 use ruint::aliases::U256;
 use std::rc::Rc;
@@ -112,8 +112,8 @@ fn route_short_input_reverts_with_invalid_calldata() {
     let sel = selector("double(uint64)");
     let short_input = [0u8; 1]; // need at least 32 bytes for u64
 
-    // The size check is a mid-expression abort: it diverges via `host.revert`
-    // (unwinds on host targets) rather than returning `Outcome::Revert`.
+    // The size check diverges via `host.revert` (unwinds on host targets) —
+    // like every revert, caught with `assert_reverts!`.
     let mut buf = [0u8; my_token::MAX_RETURN_LEN];
     let mut out: &mut [u8] = &mut buf;
     assert_reverts!(
@@ -142,14 +142,14 @@ fn router_trait_impl_delegates_to_module_route() {
     assert_eq!(returned, U256::from(42u64));
 }
 
-// The `route()` tests above assert on the returned `Outcome` directly. The
-// tests below exercise the *other half* of dispatch — `finalize_outcome`, the
-// single exit `call()` uses to lower an `Outcome` to the host doors — since a
-// swapped `Return`/`Revert` mapping or wrong flags would otherwise be invisible
-// to the return-position assertions.
+// The `route()` tests above assert on the returned `Outcome::Return` directly.
+// The test below covers the two host-lowering primitives: `finalize_outcome`
+// (success → `return_value`, empty flags) and the diverging `revert` door that
+// every revert now uses (REVERT flags). A swapped mapping or wrong flags would
+// otherwise be invisible to the return-position assertions.
 
 #[test]
-fn finalize_outcome_maps_return_to_success_and_revert_to_revert() {
+fn finalize_lowers_return_to_success_and_revert_door_carries_revert_flags() {
     let mock = MockHostBuilder::new().build();
     let host = Host::from_dyn(Rc::new(mock.clone()));
 
@@ -157,15 +157,16 @@ fn finalize_outcome_maps_return_to_success_and_revert_to_revert() {
     buf[..4].copy_from_slice(&[1, 2, 3, 4]);
     let out: &mut [u8] = &mut buf;
 
-    // Return(n) → return_value with empty (success) flags.
+    // Success: finalize_outcome(Return) → return_value with empty flags.
     finalize_outcome(&host, Outcome::Return(4), &out);
     let rv = mock.take_return_value().expect("return_value recorded");
     assert_eq!(rv.flags, ReturnFlags::empty());
     assert_eq!(rv.data, &[1, 2, 3, 4]);
 
-    // Revert(n) → revert with REVERT flags; diverges on host, so catch it.
+    // Revert: reverts do not flow through `Outcome` — they diverge via the
+    // revert door, which records REVERT flags and unwinds on host.
     let rv = mock.expect_revert(|| {
-        finalize_outcome(&host, Outcome::Revert(4), &out);
+        host.revert(&[1, 2, 3, 4]);
     });
     assert_eq!(rv.flags, ReturnFlags::REVERT);
     assert_eq!(rv.data, &[1, 2, 3, 4]);

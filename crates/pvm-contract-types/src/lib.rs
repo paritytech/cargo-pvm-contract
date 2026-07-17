@@ -334,24 +334,20 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
 
 /// The outcome of a selector dispatch through [`Router::route`].
 ///
-/// Dispatch arms no longer call the host exit themselves. They encode their
-/// result into the caller-owned [`OutSink`] and return one of these variants; a
-/// single call site (`call()` on-chain, or a test harness) lowers the outcome
-/// to the host via [`finalize_outcome`]. This keeps the return-position exit at
-/// one place (smaller bytecode) and lets host-target tests assert on the
-/// returned value without going through an unwind.
+/// A matched arm encodes its **success** result into the caller-owned
+/// [`OutSink`] and returns `Return(n)`; the single [`finalize_outcome`] exit
+/// lowers it to `return_value`. `Unhandled` means the selector did not match —
+/// the caller tries a parent router or falls back to revert.
 ///
-/// `Return(n)` / `Revert(n)` carry the number of bytes written to the buffer.
-/// `Unhandled` means the selector did not match — the caller tries a parent
-/// router or falls back to revert.
-///
-/// Mid-expression aborts (storage OOB, malformed-calldata decode failure, the
-/// payable guard) still diverge through [`HostApi::revert`] and never surface as
-/// an `Outcome` — only a method's own return-position result does.
+/// There is deliberately **no `Revert` variant**: every revert — a method's own
+/// `Err(e)`, the input size check, a malformed-calldata decode, the payable
+/// guard, storage OOB — diverges directly through [`HostApi::revert`] (`-> !`),
+/// so it never flows back as an `Outcome`. One revert path, one test idiom
+/// (`expect_revert` / `assert_reverts!`); `Outcome` only ever describes the
+/// non-reverting result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Return(usize),
-    Revert(usize),
     Unhandled,
 }
 
@@ -390,20 +386,19 @@ impl OutSink for &mut [u8] {
     }
 }
 
-/// Lower a dispatch [`Outcome`] to the host: success returns, revert reverts.
+/// Lower a successful dispatch [`Outcome`] to the host.
 ///
-/// The single exit for the selector-dispatch path. `Return`/`Revert` call the
-/// two shipped doors ([`HostApi::return_value`] / [`HostApi::revert`]);
-/// `Unhandled` is a no-op (the caller handles parent/fallback fallthrough). On
-/// `riscv64` both doors are `-> !`; on host targets `return_value` records into
-/// the `MockHost` and returns, while `revert` unwinds — so a test can drive
-/// `route(...)` + `finalize_outcome(...)` and then inspect via
-/// `take_return_value()` / `expect_revert`.
+/// The single **success** exit for the selector-dispatch path: `Return(n)` calls
+/// the [`HostApi::return_value`] success door; `Unhandled` is a no-op (the caller
+/// handles parent/fallback fallthrough). Reverts never reach here — they diverge
+/// directly through [`HostApi::revert`] at the point they occur. On `riscv64`
+/// `return_value` is `-> !`; on host targets it records into the `MockHost` and
+/// returns, so a test can drive `route(...)` + `finalize_outcome(...)` and then
+/// inspect via `take_return_value()`.
 #[inline(always)]
 pub fn finalize_outcome<B: OutSink>(host: &Host, outcome: Outcome, out: &B) {
     match outcome {
         Outcome::Return(n) => <Host as HostApi>::return_value(host, out.view(n)),
-        Outcome::Revert(n) => <Host as HostApi>::revert(host, out.view(n)),
         Outcome::Unhandled => {}
     }
 }
@@ -412,9 +407,10 @@ pub fn finalize_outcome<B: OutSink>(host: &Host, outcome: Outcome, out: &B) {
 ///
 /// Each contract module gets a generated `impl Router for Contract` that
 /// delegates to a free `mod_name::route(this, selector, input, out)` function.
-/// A matched arm encodes its result into `out` and returns [`Outcome::Return`]
-/// / [`Outcome::Revert`]; an unmatched selector returns [`Outcome::Unhandled`].
-/// The caller lowers the outcome via [`finalize_outcome`].
+/// A matched arm that succeeds encodes its result into `out` and returns
+/// [`Outcome::Return`]; an unmatched selector returns [`Outcome::Unhandled`]. A
+/// matched arm that reverts diverges through [`HostApi::revert`] and does not
+/// return. The caller lowers a returned outcome via [`finalize_outcome`].
 ///
 /// # Composition and inheritance
 ///

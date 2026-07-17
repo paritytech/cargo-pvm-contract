@@ -12,7 +12,7 @@ use super::decode::{calculate_min_input_size, generate_decode_params};
 /// Used only at the `deploy()` / `#[receive]` / `#[fallback]` entry-point
 /// boundaries (constructor / receive / fallback error paths). These are
 /// **deliberately not** migrated to the `Outcome`-return convention that the
-/// `#[method]` dispatch arms use (see [`generate_revert_outcome`]):
+/// `#[method]` dispatch arms use (see [`generate_arm_revert`]):
 /// - `deploy()` and `call()` are `#[cfg(target_arch = "riscv64")]`, so these
 ///   boundaries are never host-reachable — routing them through `Outcome` /
 ///   `finalize_outcome` would add **no** host-testability (the reason `Outcome`
@@ -23,7 +23,7 @@ use super::decode::{calculate_min_input_size, generate_decode_params};
 ///   test to guard the change.
 ///
 /// A `#[method]`'s own `Err(e)` is the return-position case that *is* worth
-/// surfacing as inspectable data — that path uses [`generate_revert_outcome`].
+/// surfacing as inspectable data — that path uses [`generate_arm_revert`].
 pub(super) fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
@@ -49,28 +49,33 @@ pub(super) fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     }
 }
 
-/// Generate a return-position revert for a dispatch arm — encodes the error `e`
-/// into the caller-owned `out` buffer and evaluates to `Outcome::Revert(len)`.
-/// Unlike [`generate_revert_via_host`] (which diverges and is used at the
-/// `deploy()`/receive/fallback boundaries), this hands the revert back to the
-/// single `finalize_outcome` exit as data, so host-target tests can inspect it
-/// without an unwind. No-alloc caps the payload at 256 bytes (matching the old
-/// fixed error buffer); alloc sizes it exactly.
-pub(super) fn generate_revert_outcome(use_alloc: bool) -> TokenStream {
+/// Generate a dispatch-arm revert for a method's own `Err(e)` — encodes the
+/// error into the caller-owned `out` buffer and **diverges** via
+/// `host.revert(out.view(n))` (`-> !`). Like every other revert in the SDK
+/// (size check, decode, guard, storage `Panic`, and the
+/// [`generate_revert_via_host`] boundaries), a method error diverges rather than
+/// flowing back as data — one revert path, one test idiom. It differs from
+/// `generate_revert_via_host` only in reusing the arm's `out` buffer instead of
+/// a local one. No-alloc caps the payload at 256 bytes; alloc sizes it exactly.
+pub(super) fn generate_arm_revert(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {{
             use ::pvm_contract_sdk::SolError;
             let __revert_len = e.encoded_size();
-            let __revert_buf = out.reserve(__revert_len);
-            e.encode_to(__revert_buf);
-            ::pvm_contract_sdk::Outcome::Revert(__revert_len)
+            { let __revert_buf = out.reserve(__revert_len); e.encode_to(__revert_buf); }
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                this.host(),
+                out.view(__revert_len),
+            )
         }}
     } else {
         quote! {{
             use ::pvm_contract_sdk::SolError;
-            let __revert_buf = out.reserve(256);
-            let __revert_len = e.encode_to(__revert_buf);
-            ::pvm_contract_sdk::Outcome::Revert(__revert_len)
+            let __revert_len = { let __revert_buf = out.reserve(256); e.encode_to(__revert_buf) };
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                this.host(),
+                out.view(__revert_len),
+            )
         }}
     }
 }
@@ -234,7 +239,7 @@ pub fn generate_dispatch_arm(
     let has_return = !method.return_types.is_empty();
     let encode_and_return = generate_encode_and_return(&method.return_types, use_alloc);
 
-    let revert_err = generate_revert_outcome(use_alloc);
+    let revert_err = generate_arm_revert(use_alloc);
 
     let payable_guard = if guard_hoisted || method.mutability == StateMutability::Payable {
         quote! {}
@@ -315,14 +320,14 @@ pub struct RouterImpl {
 /// Generate the `route` function, its `MAX_RETURN_LEN` const, and the `Router`
 /// trait impl for a contract module.
 ///
-/// `route(this, selector, input, out) -> Outcome`. A matched arm encodes its
-/// result into the caller-owned `out` buffer and evaluates to
-/// `Outcome::Return(len)` (success) or `Outcome::Revert(len)` (a method's own
-/// `Err(e)`); an unmatched selector yields `Outcome::Unhandled`. The single
-/// `finalize_outcome` exit (in `call()`) lowers the outcome to the host doors.
-/// Mid-expression aborts — the size check, the malformed-calldata decode
-/// `let-else`, and the payable guard — still diverge through `host.revert(...)`
-/// (`-> !`), so they never fall through and never surface as an `Outcome`.
+/// `route(this, selector, input, out) -> Outcome`. A matched arm that succeeds
+/// encodes its result into the caller-owned `out` buffer and evaluates to
+/// `Outcome::Return(len)`; an unmatched selector yields `Outcome::Unhandled`.
+/// The single `finalize_outcome` exit (in `call()`) lowers a `Return` to the
+/// `return_value` success door. Reverts never become an `Outcome`: a method's
+/// own `Err(e)` (see [`generate_arm_revert`]) and every framework abort — the
+/// size check, the malformed-calldata decode `let-else`, the payable guard —
+/// diverge through `host.revert(...)` (`-> !`) at the point they occur.
 ///
 /// For no-alloc contracts a `pub const MAX_RETURN_LEN` is emitted so `call()`
 /// (and any hand-written composed router) can size the fixed output buffer to
