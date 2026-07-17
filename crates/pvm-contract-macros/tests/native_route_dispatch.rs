@@ -188,3 +188,45 @@ fn route_then_finalize_records_return_value_end_to_end() {
     assert_eq!(rv.flags, ReturnFlags::empty());
     assert_eq!(u64::decode_at(&rv.data, 0).unwrap(), 42);
 }
+
+// Regression: a payable `#[fallback]` alongside only non-payable `#[method]`s.
+// The router's non-payable guard must not be hoisted before the selector match
+// in this case, or a value-bearing unmatched-selector call would revert in
+// `route()`'s prelude before reaching the payable fallback.
+#[allow(dead_code)] // `new()`/`any()` run only through deploy()/call() (riscv64-gated)
+#[pvm_contract_macros::contract]
+mod payable_fallback_c {
+    use super::*;
+
+    pub struct C;
+
+    impl C {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+
+        #[pvm_contract_macros::method]
+        pub fn get(&self) -> u64 {
+            7
+        }
+
+        #[pvm_contract_macros::fallback]
+        #[pvm_contract_macros::payable]
+        pub fn any(&mut self) {}
+    }
+}
+
+#[test]
+fn payable_fallback_not_pre_reverted_by_hoisted_guard() {
+    // Non-zero msg.value + an unmatched selector: `route()` must return
+    // `Outcome::Unhandled` (letting `call()` reach the payable fallback), NOT
+    // revert in its prelude. With the pre-fix hoisted `__pvm_assert_non_payable`
+    // this diverged instead, and the assert below would never be reached.
+    let mock = MockHostBuilder::new().value_transferred([0x11; 32]).build();
+    let mut contract = payable_fallback_c::C::with_host(mock.clone());
+
+    let mut buf = [0u8; payable_fallback_c::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = payable_fallback_c::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[], &mut out);
+
+    assert_eq!(outcome, Outcome::Unhandled);
+}

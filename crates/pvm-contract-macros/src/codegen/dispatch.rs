@@ -3,13 +3,27 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 
-/// Generate revert encoding — encodes the error `e` and calls `host.revert(...)`
-/// on the contract's instance host. Used by both dispatch arms (`route()`) and
-/// the `call()` / `deploy()` boundaries (constructor / fallback / receive
-/// revert paths). `revert` is `-> !`: on `riscv64` it diverges via the syscall;
-/// on host targets it records the payload into the `MockHost` and unwinds so
-/// `expect_revert` catches it. Because it diverges, no trailing `return` is
-/// needed — the arm never falls through.
+/// Generate a **diverging** revert — encodes the error `e` and calls
+/// `host.revert(...)` on the contract's instance host. `revert` is `-> !`: on
+/// `riscv64` it diverges via the syscall; on host targets it records the payload
+/// into the `MockHost` and unwinds so `expect_revert` catches it. Because it
+/// diverges, no trailing `return` is needed.
+///
+/// Used only at the `deploy()` / `#[receive]` / `#[fallback]` entry-point
+/// boundaries (constructor / receive / fallback error paths). These are
+/// **deliberately not** migrated to the `Outcome`-return convention that the
+/// `#[method]` dispatch arms use (see [`generate_revert_outcome`]):
+/// - `deploy()` and `call()` are `#[cfg(target_arch = "riscv64")]`, so these
+///   boundaries are never host-reachable — routing them through `Outcome` /
+///   `finalize_outcome` would add **no** host-testability (the reason `Outcome`
+///   exists is the host-testable `route()` layer), only churn.
+/// - receive/fallback *success* is a bare `return;` (implicit empty-success at
+///   the frame boundary); rerouting through `finalize_outcome`'s explicit
+///   `return_value(&[])` would change riscv64 runtime behaviour with no host
+///   test to guard the change.
+///
+/// A `#[method]`'s own `Err(e)` is the return-position case that *is* worth
+/// surfacing as inspectable data — that path uses [`generate_revert_outcome`].
 pub(super) fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
@@ -319,13 +333,22 @@ pub struct RouterImpl {
 /// single `__pvm_assert_non_payable()` call before the match. Mixed payability
 /// reads `value_transferred` once into `__has_value` and each non-payable arm
 /// calls `__pvm_assert_value_zero(host, __has_value)`.
+///
+/// A **payable `#[fallback]`** forces the per-arm shape even when every named
+/// method is non-payable: the hoisted assert runs before the `match`, so an
+/// unmatched value-bearing call would otherwise revert here (in `route()`'s
+/// prelude) before reaching the fallback — which is supposed to accept the
+/// value. Per-arm guards fire only on matched non-payable methods, leaving the
+/// `Outcome::Unhandled` → payable-fallback path free of the pre-assert.
 pub fn generate_router(
     methods: &[MethodInfo],
     mod_name: &syn::Ident,
     struct_name: &syn::Ident,
     use_alloc: bool,
+    fallback_is_payable: bool,
 ) -> (RouteItems, RouterImpl) {
-    let all_non_payable = !methods.is_empty()
+    let all_non_payable = !fallback_is_payable
+        && !methods.is_empty()
         && methods
             .iter()
             .all(|m| m.mutability != StateMutability::Payable);

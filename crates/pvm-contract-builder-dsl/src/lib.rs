@@ -267,7 +267,7 @@ impl ContractBuilder {
                 let mut output = [0u8; BUF_SIZE];
 
                 if let Some(result) = self.try_route(host, selector, input, &mut output) {
-                    finalize_response(host, &output, result);
+                    finalize_response(host, &mut output, result);
                 } else {
                     host.revert(&pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
                 }
@@ -358,7 +358,7 @@ impl ContractBuilderWithHandlers {
             && let Some(receive) = self.receive
         {
             let result = receive(host, &[], &mut output);
-            finalize_response(host, &output, result);
+            finalize_response(host, &mut output, result);
             return;
         }
 
@@ -368,7 +368,7 @@ impl ContractBuilderWithHandlers {
             let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
             let input = &calldata[4..call_data_len];
             if let Some(result) = self.inner.try_route(host, selector, input, &mut output) {
-                finalize_response(host, &output, result);
+                finalize_response(host, &mut output, result);
                 return;
             }
             &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR
@@ -382,7 +382,7 @@ impl ContractBuilderWithHandlers {
                 host.revert(&output[..4]);
             }
             let result = handler(host, &calldata[..call_data_len], &mut output);
-            finalize_response(host, &output, result);
+            finalize_response(host, &mut output, result);
             return;
         }
 
@@ -390,22 +390,22 @@ impl ContractBuilderWithHandlers {
     }
 }
 
-/// Hand a [`HandlerResult`] to the host: `Ok` returns successfully, `Revert`
-/// reverts. Both clamp the reported length to the output buffer. On host
-/// targets the success path returns (captured for `take_return_value`); the
-/// revert path unwinds (caught by `expect_revert`).
+/// Hand a [`HandlerResult`] to the host by lowering it through the shared
+/// [`pvm_contract_types::finalize_outcome`] exit — the same single door the
+/// `#[contract]` macro's dispatch uses — so the DSL and macro paths don't carry
+/// two copies of the `return_value`/`revert` transition.
+///
+/// The length is clamped to the buffer *before* lowering: a [`MethodHandler`]
+/// is a user-supplied `fn` (untrusted), so a bad `n` must not index past
+/// `output`. The macro path skips this clamp because its `Outcome` lengths come
+/// from trusted codegen.
 #[inline(always)]
-fn finalize_response(host: &Host, output: &[u8], result: HandlerResult) {
-    match result {
-        HandlerResult::Ok(n) => {
-            let len = if n > output.len() { output.len() } else { n };
-            host.return_value(&output[..len]);
-        }
-        HandlerResult::Revert(n) => {
-            let len = if n > output.len() { output.len() } else { n };
-            host.revert(&output[..len]);
-        }
-    }
+fn finalize_response(host: &Host, output: &mut [u8], result: HandlerResult) {
+    let outcome = match result {
+        HandlerResult::Ok(n) => pvm_contract_types::Outcome::Return(n.min(output.len())),
+        HandlerResult::Revert(n) => pvm_contract_types::Outcome::Revert(n.min(output.len())),
+    };
+    pvm_contract_types::finalize_outcome(host, outcome, &output);
 }
 
 #[cfg(test)]

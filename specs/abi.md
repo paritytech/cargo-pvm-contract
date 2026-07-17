@@ -317,7 +317,7 @@ last byte of the 32-byte word:
 
 | Code   | Meaning                                        | Emitted by |
 | ------ | ---------------------------------------------- | ---------- |
-| `0x00` | Generic / compiler-inserted panic              | the `#[contract]` panic handler (uncaught Rust panic) |
+| `0x00` | Generic / compiler-inserted panic              | explicit `Panic::Generic`; best-effort `#[contract]` panic-handler catch-all (see caveat) |
 | `0x01` | `assert(false)`                                | user code via `Panic::AssertFalse` |
 | `0x11` | Arithmetic overflow / underflow                | checked-math paths, storage slot-index arithmetic |
 | `0x12` | Division or modulo by zero                     | user code via `Panic::DivisionByZero` |
@@ -335,6 +335,17 @@ checks. All of these go through the diverging `HostApi::revert` door (the shared
 `panic_revert(host, code)` encoder), distinct from the non-diverging success
 door `HostApi::return_value`; on `riscv64` both are the same
 `return_value(flags, data)` syscall differing only by the `REVERT` flag.
+
+**Panic-handler caveat (`0x00`):** the `#[contract]` panic handler maps an
+otherwise-uncaught Rust panic to `Panic(0x00)`, but release builds compile with
+`-Cpanic=immediate-abort` (for bytecode size), which lowers *implicit* panics —
+`unwrap`, slice out-of-bounds, an oversized error encode — straight to a trap
+**without** invoking the handler; the caller then sees a bare `ContractTrapped`
+with no revert data. Only the *explicit* `panic_revert` sites (storage
+bounds/length checks and user `Panic::*`) reliably emit decodable `Panic` data.
+Don't rely on the `0x00` catch-all for structured revert data — keep derived
+`SolError` payloads within the buffer and use explicit checks where you need a
+decodable revert.
 
 
 ### Custom Errors
