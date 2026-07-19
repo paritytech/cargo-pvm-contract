@@ -16,17 +16,14 @@ mod caller_check {
 
         #[pvm_contract_sdk::method]
         pub fn get_caller(&self) -> Address {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            caller.into()
+           self.env().caller()
         }
 
         #[pvm_contract_sdk::method]
         pub fn record_caller(&mut self) {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
+            let caller = self.env().caller();
             let mut buf = [0u8; 32];
-            buf[12..32].copy_from_slice(&caller);
+            buf[12..32].copy_from_slice(&caller.0);
             self.host().set_storage(StorageFlags::empty(), &LAST_CALLER_KEY, &buf);
         }
 
