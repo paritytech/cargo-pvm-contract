@@ -1646,4 +1646,38 @@ mod tests {
         assert_eq!(mock.get_raw_storage(&key), Some(vec![0xaa; 32]));
         assert!(mock.events().is_empty());
     }
+
+    #[test]
+    fn env_accessors_via_host() {
+        use std::rc::Rc;
+        use crate::host::Host;
+
+        let mut block = [0u8; 32];
+        block[0] = 5;
+
+        let mut ts = [0u8; 32];
+        ts[0] = 99;
+
+        let mut val = [0u8; 32];
+        val[0] = 77;
+
+        let mut cid = [0u8; 32];
+        cid[0] = 42;
+
+        let mock = MockHostBuilder::new()
+            .caller([0xAA; 20])
+            .block_number(block)
+            .block_timestamp(ts)
+            .value_transferred(val)
+            .chain_id(cid)
+            .build();
+        let host = Host::from_dyn(Rc::new(mock));
+        let env = host.env();
+
+        assert_eq!(env.caller().0, [0xAA; 20]);
+        assert_eq!(env.block_number(), 5);
+        assert_eq!(env.timestamp(), 99);
+        assert_eq!(env.value(), crate::U256::from(77u64));
+        assert_eq!(env.chain_id(), crate::U256::from(42u64));
+    }
 }

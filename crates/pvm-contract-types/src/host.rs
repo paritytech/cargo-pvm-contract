@@ -1169,3 +1169,61 @@ impl HostApi for Host {
         match self._never {}
     }
 }
+
+#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+pub struct Env(Host);
+
+#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+impl Env {
+    #[doc(hidden)]
+    #[inline(always)]
+    pub fn new(host: Host) -> Self {
+        Env(host)
+    }
+
+    #[inline(always)]
+    pub fn caller(&self) -> crate::Address {
+        let mut b = [0u8; 20];
+        self.0.caller(&mut b);
+        crate::Address(b)
+    }
+
+    #[inline(always)]
+    pub fn value(&self) -> crate::U256 {
+        let mut b = [0u8; 32];
+        self.0.value_transferred(&mut b);
+        crate::U256::from_be_bytes(b)
+    }
+
+    #[inline(always)]
+    pub fn block_number(&self) -> u64 {
+        let mut b = [0u8; 32];
+        self.0.block_number(&mut b);
+        u64::from_be_bytes(b[24..].try_into().unwrap())
+    }
+
+    #[inline(always)]
+    pub fn timestamp(&self) -> u64 {
+        let mut b = [0u8; 32];
+        self.0.now(&mut b);
+        u64::from_be_bytes(b[24..].try_into().unwrap())
+    }
+
+    #[inline(always)]
+    pub fn chain_id(&self) -> crate::U256 {
+        let mut b = [0u8; 32];
+        self.0.chain_id(&mut b);
+        crate::U256::from_be_bytes(b)
+    }
+}
+
+#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+impl Host {
+    /// Return a read-only environment accessor.
+    ///
+    /// Usage: `self.env().caller()` on macro contracts, `host.env().caller()` on DSL handlers.
+    #[inline(always)]
+    pub fn env(&self) -> Env {
+        Env::new(self.clone())
+    }
+}
