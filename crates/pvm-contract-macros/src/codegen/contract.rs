@@ -322,10 +322,10 @@ fn check_signature_compatibility(
 
 fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
     // Canonical spelling: `#[selector(name = "...")]` (shared with #[interface_id]).
-    if let Some(name) = extract_selector_rename(attrs)? {
-        return Ok(Some(name));
-    }
+    let selector_rename = extract_selector_rename(attrs)?;
+
     // Alias: `#[method(rename = "...")]`.
+    let mut method_rename: Option<(String, &Attribute)> = None;
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -337,10 +337,21 @@ fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
             && !name.is_empty()
         {
             validate_sol_identifier(&name, attr)?;
-            return Ok(Some(name));
+            method_rename = Some((name, attr));
         }
     }
-    Ok(None)
+
+    // Both spellings set the Solidity name; picking one silently would drop the
+    // other. Reject the conflict instead.
+    match (selector_rename, method_rename) {
+        (Some(_), Some((_, attr))) => Err(syn::Error::new_spanned(
+            attr,
+            "conflicting renames: set the Solidity name with either \
+             `#[selector(name = \"...\")]` or `#[method(rename = \"...\")]`, not both",
+        )),
+        (Some(name), None) | (None, Some((name, _))) => Ok(Some(name)),
+        (None, None) => Ok(None),
+    }
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
@@ -992,11 +1003,24 @@ fn parse_contract(
                         }
                     } {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)?
+                    let explicit_rename = extract_method_rename(&func.attrs)?;
+                    let rename = explicit_rename
+                        .clone()
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .body.iter().find_map(|f| match f {
-                            syn_solidity::Item::Function(item_function)  if item_function.name.as_ref().is_some_and(|name| name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name) => Some(item_function),
+                            // With an explicit `#[selector(name = "...")]` (or its
+                            // `#[method(rename)]` alias), match the interface function of
+                            // exactly that name. Falling back to the Rust-name heuristic
+                            // here would silently ignore the rename and dispatch under the
+                            // interface's own name instead.
+                            syn_solidity::Item::Function(item_function) if item_function.name.as_ref().is_some_and(|name| {
+                                if explicit_rename.is_some() {
+                                    name.as_string() == rename
+                                } else {
+                                    name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                                }
+                            }) => Some(item_function),
                            _ => None
                         })
                         .ok_or_else(|| {

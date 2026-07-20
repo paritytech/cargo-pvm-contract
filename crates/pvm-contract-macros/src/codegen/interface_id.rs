@@ -81,6 +81,21 @@ pub fn expand_interface_id(mut input: ItemTrait) -> syn::Result<TokenStream> {
             ));
         }
 
+        // Proc-macros run before `#[cfg]` stripping, so a conditionally-compiled
+        // method still contributes its selector to the XOR even when it is
+        // configured out. That yields an INTERFACE_ID that doesn't match the
+        // active method set — reject it, like the generic-interface case above.
+        for attr in &f.attrs {
+            if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+                return Err(syn::Error::new_spanned(
+                    attr,
+                    "#[interface_id]: `#[cfg]` / `#[cfg_attr]` on interface methods is \
+                     not supported; a conditionally-compiled method would still \
+                     contribute its selector to the interface ID",
+                ));
+            }
+        }
+
         // `impl Trait` in argument position isn't a `sig.generics` param, so the
         // check above misses it; reject it here for a clear diagnostic.
         for arg in &f.sig.inputs {

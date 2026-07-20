@@ -1,0 +1,58 @@
+#![cfg(not(feature = "abi-gen"))]
+//! `#[selector(name = "...")]` on the `.sol`-interface path binds the Rust method
+//! to the interface function of exactly that name. This must work even when the
+//! Rust name does not snake-case to the interface name (the auto heuristic), and
+//! an explicit rename that matches no interface function must be a hard error
+//! (see `tests/ui/sol_selector_rename_no_match.rs`) rather than a silent fallback.
+
+use pvm_contract_sdk::U256;
+
+#[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
+#[pvm_contract_macros::contract("tests/fixtures/SelectorRenameOk.sol")]
+mod c {
+    use super::U256;
+
+    pub struct C;
+
+    impl C {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+
+        // Rust name `xfer` does NOT snake-case to `transferTokens`, so this only
+        // resolves through the explicit `#[selector(name)]` match.
+        #[pvm_contract_macros::method]
+        #[pvm_contract_macros::selector(name = "transferTokens")]
+        pub fn xfer(&mut self) {}
+
+        // No rename: `balance_of` matches `balanceOf` via the snake_case heuristic.
+        #[pvm_contract_macros::method]
+        pub fn balance_of(&self) -> U256 {
+            U256::ZERO
+        }
+    }
+}
+
+fn selector(sig: &str) -> [u8; 4] {
+    pvm_contract_types::const_selector(sig)
+}
+
+#[test]
+fn explicit_rename_binds_to_named_sol_function() {
+    let mock = pvm_contract_types::MockHostBuilder::new().build();
+    let mut contract = c::C::with_host(mock);
+
+    // Dispatches under the interface name, not the Rust name.
+    assert_eq!(
+        c::route(&mut contract, selector("transferTokens()"), &[]),
+        Some(())
+    );
+    assert_eq!(c::route(&mut contract, selector("xfer()"), &[]), None);
+}
+
+#[test]
+fn auto_snake_case_match_still_works() {
+    let mock = pvm_contract_types::MockHostBuilder::new().build();
+    let mut contract = c::C::with_host(mock);
+
+    assert!(c::route(&mut contract, selector("balanceOf()"), &[]).is_some());
+}
