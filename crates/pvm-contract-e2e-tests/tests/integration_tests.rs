@@ -698,3 +698,87 @@ fn receive_dsl_accumulates_multiple_transfers() {
     let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
     assert_eq!(count, "3");
 }
+
+// --- `#[non_reentrant]` modifier: the SDK guard catches a re-entrant call ---
+
+#[test]
+fn non_reentrant_guard_blocks_reentry() {
+    let (_anvil, cast, addr) = deploy("reentrancy_guard");
+
+    // attemptReentry() makes a real re-entrant call with ALLOW_REENTRY set, so
+    // the SDK guard rather than pallet-revive's default reject must catch it.
+    let out = cast.send_expect_revert(&addr, "attemptReentry()", &[], DEFAULT_PRIVATE_KEY);
+    assert!(
+        !out.status.success(),
+        "re-entry was not blocked by the guard"
+    );
+
+    // Check the revert is the reentrancy error.
+    let reentrancy_selector = cast.selector("ReentrancyGuardReentrantCall()");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.to_lowercase().contains(&reentrancy_selector),
+        "revert should carry the ReentrancyGuardReentrantCall selector (0x{reentrancy_selector}); got:\n{combined}"
+    );
+}
+
+// --- `#[non_reentrant]`: the lock is released even when a guarded body exits
+// via a raw diverging `return_value`, so a later guarded call in the same
+// transaction still succeeds (regression test for the divergence hole). ---
+
+#[test]
+fn non_reentrant_guard_unaffected_by_return_value() {
+    let (_anvil, cast, addr) = deploy("reentrancy_guard");
+
+    // sequentialGuardedCalls() first invokes a guarded method that exits via a
+    // raw return_value (skipping the codegen's post-body unlock), then invokes a
+    // guarded method again. The second call must succeed; it would revert with
+    // ReentrancyGuardReentrantCall if the divergent exit left the lock set.
+    cast.send(&addr, "sequentialGuardedCalls()", &[], DEFAULT_PRIVATE_KEY);
+
+    // Both guarded calls ran their bodies to completion: the diverging one
+    // (which commits on its success `return_value`) and the second one after the
+    // lock was released.
+    assert_eq!(cast.call(&addr, "count()(uint256)", &[]), "2");
+}
+
+// --- `#[non_reentrant]`: the guard blocks a genuine cross-contract re-entry
+// (A -> attacker -> A.protected()), where the callback carries ALLOW_REENTRY so
+// the SDK guard, not pallet-revive's default reject, is what stops it. ---
+
+#[test]
+fn non_reentrant_guard_blocks_cross_contract_reentry() {
+    let (_anvil, cast, guard_addr) = deploy("reentrancy_guard");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("reentrancy_attacker", "release");
+    let attacker_addr = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+
+    // protectedCallsOut(attacker) holds the lock, calls attacker.reenter(self),
+    // and the attacker calls back into protected() with ALLOW_REENTRY. The
+    // re-entrant call must be rejected by the guard, reverting the whole tx.
+    let out = cast.send_expect_revert(
+        &guard_addr,
+        "protectedCallsOut(address)",
+        &[&attacker_addr],
+        DEFAULT_PRIVATE_KEY,
+    );
+    assert!(
+        !out.status.success(),
+        "cross-contract re-entry was not blocked by the guard"
+    );
+
+    let reentrancy_selector = cast.selector("ReentrancyGuardReentrantCall()");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.to_lowercase().contains(&reentrancy_selector),
+        "revert should carry the ReentrancyGuardReentrantCall selector (0x{reentrancy_selector}); got:\n{combined}"
+    );
+}

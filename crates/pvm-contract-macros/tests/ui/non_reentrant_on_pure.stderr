@@ -1,0 +1,9 @@
+error: `#[non_reentrant]` requires `&self` or `&mut self`; a pure method (no receiver) has no host access and nothing to guard
+  --> tests/ui/non_reentrant_on_pure.rs:15:9
+   |
+15 | /         #[pvm_contract_macros::method]
+16 | |         #[pvm_contract_macros::non_reentrant]
+17 | |         pub fn pure_guarded(a: u64) -> u64 {
+18 | |             a
+19 | |         }
+   | |_________^

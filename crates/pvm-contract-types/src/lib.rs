@@ -40,6 +40,11 @@ pub use host::{
     ReturnFlags, StorageFlags,
 };
 
+mod reentrancy;
+pub use reentrancy::ReentrancyGuardReentrantCall;
+#[doc(hidden)]
+pub use reentrancy::{__reentrancy_is_locked, __reentrancy_lock, __reentrancy_unlock};
+
 /// Sealing marker for traits that should only be implemented by code in this
 /// workspace (specifically: macro-generated contract structs and [`Context`]).
 /// External users have no reason to import this module.

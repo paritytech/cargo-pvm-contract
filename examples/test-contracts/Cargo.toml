@@ -24,6 +24,14 @@ name = "flipper_delegate"
 path = "src/flipper_delegate.rs"
 
 [[bin]]
+name = "reentrancy_guard"
+path = "src/reentrancy_guard.rs"
+
+[[bin]]
+name = "reentrancy_attacker"
+path = "src/reentrancy_attacker.rs"
+
+[[bin]]
 name = "error_caller"
 path = "src/error_caller.rs"
 
