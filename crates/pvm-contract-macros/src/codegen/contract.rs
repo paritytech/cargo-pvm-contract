@@ -1575,12 +1575,12 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     };
 
     // `call()` is the riscv64 boundary: read calldata, dispatch via `route()`.
-    // `route()` encodes any result into the caller-owned `out` buffer and
-    // returns an `Outcome`; the single `finalize_outcome` call lowers
-    // `Return`/`Revert` to the host doors. `Outcome::Unhandled` means no
-    // selector matched — fall through to the fallback or unknown-selector
-    // handler. (Size-check / decode / payable-guard reverts inside `route`
-    // still diverge directly and never reach here.)
+    // On success `route()` encodes the result into the caller-owned `out` buffer
+    // and returns `Outcome::Return`; the single `finalize_outcome` call lowers it
+    // to the `return_value` success door. `Outcome::Unhandled` means no selector
+    // matched — fall through to the fallback or unknown-selector handler. Every
+    // revert (a method's own `Err`, size check, decode, payable guard, storage
+    // `Panic`) diverges directly inside `route` and never reaches here.
     let call_fn = if use_alloc {
         quote! {
             #[cfg(target_arch = "riscv64")]

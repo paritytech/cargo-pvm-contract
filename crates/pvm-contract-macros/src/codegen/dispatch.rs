@@ -299,18 +299,16 @@ pub fn generate_dispatch_arm(
     // `pvm-contract-types::reentrancy`). `Drop` can't cover either path:
     // `return_value` diverges without unwinding, so no destructor runs.
     //
-    // The revert is emitted inline rather than from the `__reentrancy_*` helpers
-    // because, like every dispatch arm, it must `return` from `route`, which a
-    // helper can't do.
+    // On re-entry (lock already held) revert with the OZ-compatible error. Like
+    // every revert in dispatch it diverges via `host.revert(...)` (`-> !`), so no
+    // trailing `return` is needed, and it never clears the outer frame's lock
+    // (this frame's `REENTRANCY_LOCK_HELD` flag is `false` — it never locked).
     let revert_if_locked = quote! {
         if ::pvm_contract_sdk::__reentrancy_is_locked(this.host()) {
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                 this.host(),
-                ::pvm_contract_sdk::ReturnFlags::REVERT,
                 &<::pvm_contract_sdk::ReentrancyGuardReentrantCall as ::pvm_contract_sdk::SolError>::SELECTOR,
             );
-            #[allow(unreachable_code)]
-            return ::core::option::Option::Some(());
         }
     };
 
@@ -343,15 +341,7 @@ pub fn generate_dispatch_arm(
                             let __r = #invoke(#(#call_args),*);
                             ::pvm_contract_sdk::__reentrancy_unlock(this.host());
                             match __r {
-                                Ok(()) => {
-                                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                                        this.host(),
-                                        ::pvm_contract_sdk::ReturnFlags::empty(),
-                                        &[],
-                                    );
-                                    #[allow(unreachable_code)]
-                                    return ::core::option::Option::Some(());
-                                }
+                                Ok(()) => ::pvm_contract_sdk::Outcome::Return(0),
                                 Err(e) => { #revert_err }
                             }
                         }
@@ -370,13 +360,7 @@ pub fn generate_dispatch_arm(
                         ::pvm_contract_sdk::__reentrancy_lock(this.host());
                         #invoke(#(#call_args),*);
                         ::pvm_contract_sdk::__reentrancy_unlock(this.host());
-                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
-                            this.host(),
-                            ::pvm_contract_sdk::ReturnFlags::empty(),
-                            &[],
-                        );
-                        #[allow(unreachable_code)]
-                        return ::core::option::Option::Some(());
+                        ::pvm_contract_sdk::Outcome::Return(0)
                     }
                 }
             }

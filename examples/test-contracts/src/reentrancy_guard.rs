@@ -65,7 +65,7 @@ mod reentrancy_guard {
                 let size = self.host().return_data_size() as usize;
                 let mut buf = alloc::vec![0u8; size];
                 self.host().return_data_copy(&mut buf.as_mut_slice(), 0);
-                self.host().return_value(ReturnFlags::REVERT, &buf);
+                self.host().revert(&buf);
             }
 
             Ok(())
@@ -78,7 +78,7 @@ mod reentrancy_guard {
         #[pvm_contract_sdk::non_reentrant]
         pub fn protected_diverging(&mut self) -> Result<(), Error> {
             self.count.set(&(self.count.get() + U256::from(1u64)));
-            self.host().return_value(ReturnFlags::empty(), &[]);
+            self.host().return_value(&[]);
             #[allow(unreachable_code)]
             Ok(())
         }
@@ -120,7 +120,7 @@ mod reentrancy_guard {
                 let size = self.host().return_data_size() as usize;
                 let mut buf = alloc::vec![0u8; size];
                 self.host().return_data_copy(&mut buf.as_mut_slice(), 0);
-                self.host().return_value(ReturnFlags::REVERT, &buf);
+                self.host().revert(&buf);
             }
 
             Ok(())
@@ -156,7 +156,7 @@ mod reentrancy_guard {
                 let size = self.host().return_data_size() as usize;
                 let mut buf = alloc::vec![0u8; size];
                 self.host().return_data_copy(&mut buf.as_mut_slice(), 0);
-                self.host().return_value(ReturnFlags::REVERT, &buf);
+                self.host().revert(&buf);
             }
 
             Ok(())

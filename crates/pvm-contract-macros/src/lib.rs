@@ -213,21 +213,22 @@ use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
 /// you need initial state.
 ///
 /// **Dispatch-level** (selector routing, ABI revert encoding) — drive
-/// `route()` with raw calldata and assert on the returned `Outcome` + buffer,
-/// without going through the host:
+/// `route()` with raw calldata: a success comes back as `Outcome::Return`
+/// (no host call, no unwind), while every revert diverges and is caught with
+/// `assert_reverts!`:
 ///
 /// ```ignore
 /// let mut buf = [0u8; my_token::MAX_RETURN_LEN];
 /// let mut out: &mut [u8] = &mut buf;
 ///
-/// // Success (or a method's own Err) is returned as data — no host, no unwind.
+/// // Success: returned as data — no host call, no unwind.
 /// match my_token::route(&mut contract, BALANCE_OF_SELECTOR, &input, &mut out) {
 ///     Outcome::Return(n) => { /* decode and assert on out.view(n) */ }
 ///     other => panic!("expected Return, got {other:?}"),
 /// }
 ///
-/// // A mid-expression abort (size check, decode failure, storage OOB) still
-/// // diverges via host.revert(...) — catch it with `assert_reverts!`.
+/// // Any revert — a method's own `Err`, size check, decode failure, storage
+/// // OOB — diverges via host.revert(...); catch it with `assert_reverts!`.
 /// assert_reverts!(mock, INVALID_CALLDATA,
 ///     my_token::route(&mut contract, sel, &short_input, &mut out));
 /// ```
