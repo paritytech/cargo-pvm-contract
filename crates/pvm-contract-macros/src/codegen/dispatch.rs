@@ -28,12 +28,13 @@ pub(super) fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {
             use ::pvm_contract_sdk::SolError;
-            let __revert_len = e.encoded_size();
-            let mut __revert_buf = alloc::vec![0u8; __revert_len];
-            e.encode_to(&mut __revert_buf);
+            let mut __revert_buf = alloc::vec![0u8; e.encoded_size()];
+            // Trust `encode_to`'s returned byte count, not `encoded_size()`, so
+            // an impl that writes fewer bytes can't leave trailing garbage.
+            let __revert_len = e.encode_to(&mut __revert_buf);
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                 this.host(),
-                &__revert_buf,
+                &__revert_buf[..__revert_len],
             )
         }
     } else {
@@ -61,8 +62,12 @@ pub(super) fn generate_arm_revert(use_alloc: bool) -> TokenStream {
     if use_alloc {
         quote! {{
             use ::pvm_contract_sdk::SolError;
-            let __revert_len = e.encoded_size();
-            { let __revert_buf = out.reserve(__revert_len); e.encode_to(__revert_buf); }
+            // Reserve `encoded_size()` capacity, but use `encode_to`'s returned
+            // byte count as the length so a short write can't forward garbage.
+            let __revert_len = {
+                let __revert_buf = out.reserve(e.encoded_size());
+                e.encode_to(__revert_buf)
+            };
             <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                 this.host(),
                 out.view(__revert_len),
