@@ -322,11 +322,17 @@ last byte of the 32-byte word:
 | `0x11` | Arithmetic overflow / underflow                | checked-math paths, storage slot-index arithmetic |
 | `0x12` | Division or modulo by zero                     | user code via `Panic::DivisionByZero` |
 | `0x21` | Invalid enum conversion                         | user code |
-| `0x22` | Incorrectly encoded storage byte array          | `StorageVec` on a corrupt/over-range (`> u64::MAX`) length |
+| `0x22` | Incorrectly encoded storage byte array          | `StorageVec` on a corrupt length; **†** also on an over-range length `> u64::MAX` |
 | `0x31` | `.pop()` on an empty array                       | user code |
 | `0x32` | Array / bytes out-of-bounds access              | `StorageVec::get` / `set` out of bounds |
-| `0x41` | Allocated too much memory / array too large     | `StorageVec::push`/`grow` past `u64::MAX` |
+| `0x41` | Allocated too much memory / array too large     | **†** `StorageVec::push` / `grow` past `u64::MAX` |
 | `0x51` | Call to a zero-initialised internal function    | user code |
+
+**† SDK-specific (not solc parity):** the `> u64::MAX` length case of `0x22` and
+the `push`/`grow`-past-`u64::MAX` case of `0x41` are SDK caps — `StorageVec`
+lengths and indices are `u64`. solc supports full `uint256` collection lengths
+and would neither revert at that bound nor use these codes there. (`0x22` for a
+genuinely *corrupt* length encoding, and every other row, do match solc.)
 
 **Auto-revert:** storage guards and the dispatch layer revert *automatically*
 with the correct code — e.g. `self.items.get(i)` reverts `Panic(0x32)` on an

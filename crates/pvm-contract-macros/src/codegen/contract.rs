@@ -1495,14 +1495,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let (route_items, router_impl) =
-        generate_router(
-            &parsed.methods,
-            mod_name,
-            struct_name,
-            use_alloc,
-            parsed.fallback_is_payable,
-        );
+    let (route_items, router_impl) = generate_router(
+        &parsed.methods,
+        mod_name,
+        struct_name,
+        use_alloc,
+        parsed.fallback_is_payable,
+    );
     let RouteItems {
         max_return_const,
         route_fn,
