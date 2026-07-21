@@ -5,7 +5,7 @@ use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, StateMutability, generate_param_decoding, generate_revert_via_host,
+    MethodInfo, RevertBuf, RouteItems, StateMutability, generate_param_decoding, generate_revert,
     generate_router, size_check,
 };
 use super::storage_layout::extract_optional_slot_attr;
@@ -1452,7 +1452,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
 
         let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
-        let revert_err = generate_revert_via_host(use_alloc);
+        let revert_err = generate_revert(RevertBuf::Local, use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -1514,7 +1514,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let receive_dispatch = if parsed.has_receive {
         let receive_name = parsed.receive_name.as_ref().unwrap();
         if parsed.receive_returns_result {
-            let revert_err = generate_revert_via_host(use_alloc);
+            let revert_err = generate_revert(RevertBuf::Local, use_alloc);
             quote! {
                 if call_data_len == 0 {
                     match this.#receive_name() {
@@ -1541,7 +1541,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
 
         let handler = if parsed.fallback_returns_result {
-            let revert_err = generate_revert_via_host(use_alloc);
+            let revert_err = generate_revert(RevertBuf::Local, use_alloc);
             quote! {
                 #fallback_assert
                 match this.#fallback_name() {

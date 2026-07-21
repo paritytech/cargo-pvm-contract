@@ -39,8 +39,6 @@ mod reentrancy_attacker {
                 let size = self.host().return_data_size() as usize;
                 let mut buf = alloc::vec![0u8; size];
                 self.host().return_data_copy(&mut buf.as_mut_slice(), 0);
-                // Forward the callee's revert payload through the diverging
-                // revert door (`-> !`).
                 self.host().revert(&buf);
             }
             Ok(())

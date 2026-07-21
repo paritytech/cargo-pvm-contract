@@ -3,86 +3,79 @@ use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
 
-/// Generate a **diverging** revert — encodes the error `e` and calls
-/// `host.revert(...)` on the contract's instance host. `revert` is `-> !`: on
-/// `riscv64` it diverges via the syscall; on host targets it records the payload
-/// into the `MockHost` and unwinds so `expect_revert` catches it. Because it
-/// diverges, no trailing `return` is needed.
+/// Generate a **diverging** revert — encode the error `e`, then
+/// `host.revert(..)` (`-> !`: the syscall on `riscv64`; a recorded unwind on
+/// host so `expect_revert` catches it). Because it diverges, no trailing
+/// `return` is needed. The revert length is `encode_to`'s returned byte count,
+/// not `encoded_size()`, so an impl that writes fewer bytes can't forward
+/// trailing garbage.
 ///
-/// Used only at the `deploy()` / `#[receive]` / `#[fallback]` entry-point
-/// boundaries (constructor / receive / fallback error paths). These are
-/// **deliberately not** migrated to the `Outcome`-return convention that the
-/// `#[method]` dispatch arms use (see [`generate_arm_revert`]):
-/// - `deploy()` and `call()` are `#[cfg(target_arch = "riscv64")]`, so these
-///   boundaries are never host-reachable — routing them through `Outcome` /
-///   `finalize_outcome` would add **no** host-testability (the reason `Outcome`
-///   exists is the host-testable `route()` layer), only churn.
-/// - receive/fallback *success* is a bare `return;` (implicit empty-success at
-///   the frame boundary); rerouting through `finalize_outcome`'s explicit
-///   `return_value(&[])` would change riscv64 runtime behaviour with no host
-///   test to guard the change.
+/// The only thing that varies between call sites is **where the payload is
+/// encoded**, selected by `dst`:
+/// - [`RevertBuf::Out`] — reuse the dispatch arm's caller-owned `out`
+///   ([`OutSink`]). Used by `#[method]` `Err(e)` arms inside `route()`.
+/// - [`RevertBuf::Local`] — a fresh local buffer (`Vec` under alloc, a `[u8;
+///   256]` otherwise). Used at the `deploy()` / `#[receive]` / `#[fallback]`
+///   boundaries, which have no `out` in scope.
 ///
-/// A `#[method]`'s own `Err(e)` is the return-position case that *is* worth
-/// surfacing as inspectable data — that path uses [`generate_arm_revert`].
-pub(super) fn generate_revert_via_host(use_alloc: bool) -> TokenStream {
-    if use_alloc {
-        quote! {
-            use ::pvm_contract_sdk::SolError;
-            let mut __revert_buf = alloc::vec![0u8; e.encoded_size()];
-            // Trust `encode_to`'s returned byte count, not `encoded_size()`, so
-            // an impl that writes fewer bytes can't leave trailing garbage.
-            let __revert_len = e.encode_to(&mut __revert_buf);
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
-                this.host(),
-                &__revert_buf[..__revert_len],
-            )
-        }
-    } else {
-        quote! {
-            use ::pvm_contract_sdk::SolError;
-            let mut __revert_buf = [0u8; 256];
-            let __revert_len = e.encode_to(&mut __revert_buf);
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
-                this.host(),
-                &__revert_buf[..__revert_len],
-            )
-        }
-    }
+/// Those boundaries are **deliberately not** on the `Outcome`-return path: they
+/// live in `#[cfg(target_arch = "riscv64")]` `deploy()`/`call()` (never
+/// host-reachable, so `Outcome` would add no testability), and receive/fallback
+/// *success* is a bare `return;` whose semantics we don't want to change.
+///
+/// # Assumes in scope
+/// `e` (the error) and `this` (the contract) always; plus `out` (an [`OutSink`])
+/// when `dst == RevertBuf::Out`. These are established by the enclosing generated
+/// `route()` / `deploy()` / `call()` body.
+#[derive(Clone, Copy)]
+pub(super) enum RevertBuf {
+    /// Encode into the arm's caller-owned `out` buffer.
+    Out,
+    /// Encode into a fresh local buffer (no `out` at this site).
+    Local,
 }
 
-/// Generate a dispatch-arm revert for a method's own `Err(e)` — encodes the
-/// error into the caller-owned `out` buffer and **diverges** via
-/// `host.revert(out.view(n))` (`-> !`). Like every other revert in the SDK
-/// (size check, decode, guard, storage `Panic`, and the
-/// [`generate_revert_via_host`] boundaries), a method error diverges rather than
-/// flowing back as data — one revert path, one test idiom. It differs from
-/// `generate_revert_via_host` only in reusing the arm's `out` buffer instead of
-/// a local one. No-alloc caps the payload at 256 bytes; alloc sizes it exactly.
-pub(super) fn generate_arm_revert(use_alloc: bool) -> TokenStream {
-    if use_alloc {
-        quote! {{
-            use ::pvm_contract_sdk::SolError;
-            // Reserve `encoded_size()` capacity, but use `encode_to`'s returned
-            // byte count as the length so a short write can't forward garbage.
-            let __revert_len = {
-                let __revert_buf = out.reserve(e.encoded_size());
-                e.encode_to(__revert_buf)
-            };
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
-                this.host(),
-                out.view(__revert_len),
-            )
-        }}
+pub(super) fn generate_revert(dst: RevertBuf, use_alloc: bool) -> TokenStream {
+    // Capacity to reserve: the exact encoded size under alloc, or the fixed
+    // 256-byte cap in no-alloc mode.
+    let cap = if use_alloc {
+        quote! { e.encoded_size() }
     } else {
-        quote! {{
-            use ::pvm_contract_sdk::SolError;
-            let __revert_len = { let __revert_buf = out.reserve(256); e.encode_to(__revert_buf) };
-            <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
-                this.host(),
-                out.view(__revert_len),
-            )
-        }}
-    }
+        quote! { 256 }
+    };
+    let (encode, data) = match dst {
+        RevertBuf::Out => (
+            quote! {
+                let __revert_len = {
+                    let __revert_buf = out.reserve(#cap);
+                    e.encode_to(__revert_buf)
+                };
+            },
+            quote! { out.view(__revert_len) },
+        ),
+        RevertBuf::Local if use_alloc => (
+            quote! {
+                let mut __revert_buf = alloc::vec![0u8; #cap];
+                let __revert_len = e.encode_to(&mut __revert_buf);
+            },
+            quote! { &__revert_buf[..__revert_len] },
+        ),
+        RevertBuf::Local => (
+            quote! {
+                let mut __revert_buf = [0u8; #cap];
+                let __revert_len = e.encode_to(&mut __revert_buf);
+            },
+            quote! { &__revert_buf[..__revert_len] },
+        ),
+    };
+    quote! {{
+        use ::pvm_contract_sdk::SolError;
+        #encode
+        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+            this.host(),
+            #data,
+        )
+    }}
 }
 
 /// Solidity's state mutability classifications. Mutually exclusive.
@@ -246,7 +239,7 @@ pub fn generate_dispatch_arm(
     let has_return = !method.return_types.is_empty();
     let encode_and_return = generate_encode_and_return(&method.return_types, use_alloc);
 
-    let revert_err = generate_arm_revert(use_alloc);
+    let revert_err = generate_revert(RevertBuf::Out, use_alloc);
 
     let payable_guard = if guard_hoisted || method.mutability == StateMutability::Payable {
         quote! {}
@@ -411,7 +404,7 @@ pub struct RouterImpl {
 /// `Outcome::Return(len)`; an unmatched selector yields `Outcome::Unhandled`.
 /// The single `finalize_outcome` exit (in `call()`) lowers a `Return` to the
 /// `return_value` success door. Reverts never become an `Outcome`: a method's
-/// own `Err(e)` (see [`generate_arm_revert`]) and every framework abort — the
+/// own `Err(e)` (see [`generate_revert`]) and every framework abort — the
 /// size check, the malformed-calldata decode `let-else`, the payable guard —
 /// diverge through `host.revert(...)` (`-> !`) at the point they occur.
 ///

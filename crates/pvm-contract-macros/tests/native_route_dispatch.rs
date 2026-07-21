@@ -197,8 +197,6 @@ fn route_then_finalize_records_return_value_end_to_end() {
 #[allow(dead_code)] // `new()`/`any()` run only through deploy()/call() (riscv64-gated)
 #[pvm_contract_macros::contract]
 mod payable_fallback_c {
-    use super::*;
-
     pub struct C;
 
     impl C {
