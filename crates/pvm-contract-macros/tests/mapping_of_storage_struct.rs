@@ -101,10 +101,7 @@ fn mapping_of_storage_struct_layout_matches_solc_derivation() {
         unsafe { Mapping::<Address, VaultData>::new(StorageKey::from_slot(0), host.clone()) };
     let vault = Address([0x11; 20]);
 
-    vaults
-        .entry(&vault)
-        .total_shares
-        .set(&U256::from(99_999));
+    vaults.entry(&vault).total_shares.set(&U256::from(99_999));
 
     // solc-equivalent derivation: the struct lives at derived =
     // keccak256(pad32(vault) ++ pad32(0)), and total_shares (field 0)
@@ -173,9 +170,7 @@ fn nested_mapping_via_generalized_storage_typed_impl() {
     let spender = Address([0xBB; 20]);
 
     // `view_mut(owner)` → RefMut<Mapping<Address, U256>>, then .insert via DerefMut.
-    allowances
-        .entry(&owner)
-        .insert(&spender, &U256::from(500));
+    allowances.entry(&owner).insert(&spender, &U256::from(500));
 
     // Read via `view(owner)` → Ref<Mapping<Address, U256>>, then .get via Deref.
     assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));

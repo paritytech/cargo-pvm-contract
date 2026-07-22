@@ -1134,6 +1134,112 @@ contract Matrix {
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Matrix"));
 }
 
+/// `mapping(uint256 => uint256)[]` — a dynamic array of mappings, one of the
+/// shapes newly composable via the `StorageType` unification (issue #108).
+/// solc lays the outer length at slot `S`, each element mapping's root at
+/// `keccak256(pad(S)) + i` (the mapping itself stores nothing there), and its
+/// entries at `keccak256(pad(k) ++ (keccak256(pad(S)) + i))`.
+#[pvm_contract_sdk::contract]
+mod vec_of_map {
+    use super::*;
+    pub struct VecOfMap {
+        pub arr: StorageVec<Mapping<U256, U256>>,
+    }
+    impl VecOfMap {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            // Two `push()`-equivalents (mappings can't be pushed by value).
+            self.arr.grow();
+            self.arr.grow();
+            self.arr
+                .entry(0)
+                .insert(&U256::from(1u64), &U256::from(111u64));
+            self.arr
+                .entry(1)
+                .insert(&U256::from(2u64), &U256::from(222u64));
+            self.arr
+                .entry(1)
+                .insert(&U256::from(3u64), &U256::from(333u64));
+        }
+    }
+}
+
+#[test]
+fn vec_of_mapping_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecOfMap {
+    mapping(uint256 => uint256)[] arr;   // slot 0
+    function populate() external {
+        arr.push();
+        arr.push();
+        arr[0][1] = 111;
+        arr[1][2] = 222;
+        arr[1][3] = 333;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_of_map::VecOfMap::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecOfMap"));
+}
+
+/// Nested-array `delete` parity (issue #108, fix C2): after populating a
+/// `uint256[][]` and then clearing it, solc's `delete` recursively zeroes every
+/// inner element; the SDK's `clear` must do the same (no stranded inner
+/// storage). A `keep` field is left set so the comparison isn't a trivial
+/// empty-vs-empty — a leak would show up as extra non-zero inner slots.
+#[pvm_contract_sdk::contract]
+mod nested_vec_clear {
+    use super::*;
+    pub struct NestedVecClear {
+        pub rows: StorageVec<StorageVec<U256>>,
+        pub keep: Lazy<U256>,
+    }
+    impl NestedVecClear {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            {
+                let mut r0 = self.rows.grow();
+                r0.push(&U256::from(1u64));
+                r0.push(&U256::from(2u64));
+            }
+            {
+                let mut r1 = self.rows.grow();
+                r1.push(&U256::from(3u64));
+            }
+            self.rows.clear();
+            self.keep.set(&U256::from(9u64));
+        }
+    }
+}
+
+#[test]
+fn nested_vec_clear_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract NestedVecClear {
+    uint256[][] rows;   // slot 0
+    uint256 keep;       // slot 1
+    function populate() external {
+        rows.push(); rows[0].push(1); rows[0].push(2);
+        rows.push(); rows[1].push(3);
+        delete rows;
+        keep = 9;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = nested_vec_clear::NestedVecClear::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "NestedVecClear"));
+}
+
 /// `mapping(address => uint256[])` — each key derives a `StorageVec` root at
 /// `keccak256(pad(key) ++ pad(slot))`; its length + elements follow from there.
 #[pvm_contract_sdk::contract]

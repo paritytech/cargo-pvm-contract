@@ -1755,7 +1755,11 @@ impl<S: StorageType> StorageVec<S> {
     pub fn get(&self, index: u64) -> S::Get<'_> {
         let () = Self::_SHAPE_CHECK;
         assert!(index < self.len(), "StorageVec::get: index out of bounds");
-        S::get_at(self.element_slot(index), Self::element_offset(index), &self.host)
+        S::get_at(
+            self.element_slot(index),
+            Self::element_offset(index),
+            &self.host,
+        )
     }
 
     /// Read the element at `index`, returning `None` if out of bounds.
@@ -1799,10 +1803,7 @@ impl<S: StorageType> StorageVec<S> {
     /// Panics (reverts) if `index >= len()`.
     pub fn entry(&mut self, index: u64) -> S::GetMut<'_> {
         let () = Self::_SHAPE_CHECK;
-        assert!(
-            index < self.len(),
-            "StorageVec::entry: index out of bounds"
-        );
+        assert!(index < self.len(), "StorageVec::entry: index out of bounds");
         self.elem_mut(index)
     }
 
@@ -1905,7 +1906,14 @@ impl<S: StorageType> StorageVec<S> {
         let alone = Self::per_slot() == 1;
         // SAFETY: `&mut self` proves mutating access through the parent borrow;
         // the returned guard's lifetime ties it to that borrow.
-        unsafe { S::get_mut_at(self.element_slot(i), Self::element_offset(i), alone, &self.host) }
+        unsafe {
+            S::get_mut_at(
+                self.element_slot(i),
+                Self::element_offset(i),
+                alone,
+                &self.host,
+            )
+        }
     }
 
     /// Clear the storage for element `i` (no bounds check). For sub-word
@@ -1918,7 +1926,14 @@ impl<S: StorageType> StorageVec<S> {
             true
         };
         // SAFETY: `&mut self`; see `elem_mut`.
-        unsafe { S::clear_at(self.element_slot(i), Self::element_offset(i), alone, &self.host) }
+        unsafe {
+            S::clear_at(
+                self.element_slot(i),
+                Self::element_offset(i),
+                alone,
+                &self.host,
+            )
+        }
     }
 }
 
@@ -1995,7 +2010,10 @@ impl<S: StorageType> StorageComponent for StorageVec<S> {
     const PACKED_BYTES: usize = 32;
 
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
-        debug_assert_eq!(offset, 0, "StorageVec<S> always full-slot; offset must be 0");
+        debug_assert_eq!(
+            offset, 0,
+            "StorageVec<S> always full-slot; offset must be 0"
+        );
         // Full-slot component: the length header always owns its slot and
         // elements live at derived keys, so `offset` / `alone` are irrelevant.
         let _ = (offset, alone);

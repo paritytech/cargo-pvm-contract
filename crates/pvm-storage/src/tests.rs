@@ -301,9 +301,7 @@ fn nested_mapping_allowances() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    allowances
-        .entry(&owner)
-        .insert(&spender, &U256::from(500));
+    allowances.entry(&owner).insert(&spender, &U256::from(500));
     assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
 }
 
@@ -3055,7 +3053,11 @@ fn nested_storage_vec_clear_zeros_inner_element_storage() {
     // Outer length header cleared.
     assert_eq!(outer.len(), 0);
     // Inner length headers cleared.
-    assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32], "inner[1] len");
+    assert_eq!(
+        storage_get_32(&host, &inner1_root),
+        [0u8; 32],
+        "inner[1] len"
+    );
     // Inner ELEMENT storage cleared — the leak the recursive-clear fix closes.
     assert_eq!(
         storage_get_32(&host, &inner1_body),
