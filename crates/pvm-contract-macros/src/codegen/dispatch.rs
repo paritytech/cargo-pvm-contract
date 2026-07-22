@@ -68,9 +68,25 @@ pub(super) fn generate_revert(dst: RevertBuf, use_alloc: bool) -> TokenStream {
             quote! { &__revert_buf[..__revert_len] },
         ),
     };
+    // Under alloc the buffer is sized to exactly `encoded_size()`, so a correct
+    // `SolError::encode_to` must write that many bytes; assert it in debug builds
+    // to catch an impl that under-writes (which would forward stale/zero bytes).
+    // No-alloc caps at 256 where a long `RevertString` legitimately truncates, so
+    // the equality does not hold there and the assert is omitted.
+    let assert_len = if use_alloc {
+        quote! {
+            debug_assert!(
+                __revert_len == e.encoded_size(),
+                "SolError::encode_to wrote a different length than encoded_size() reported",
+            );
+        }
+    } else {
+        quote! {}
+    };
     quote! {{
         use ::pvm_contract_sdk::SolError;
         #encode
+        #assert_len
         <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
             this.host(),
             #data,

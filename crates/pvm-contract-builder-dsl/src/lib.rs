@@ -342,7 +342,6 @@ impl ContractBuilderWithHandlers {
     /// Dispatch entry point — semantics described on
     /// [`ContractBuilderWithHandlers`].
     #[inline]
-    #[allow(unreachable_code)]
     pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &Host) {
         let call_data_len = host.call_data_size() as usize;
 
