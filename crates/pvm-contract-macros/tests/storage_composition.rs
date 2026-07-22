@@ -39,6 +39,25 @@ pub struct MetadataState {
 // Pull `alloc` into the test crate for the `String` type.
 extern crate alloc;
 
+/// A sub-storage struct with sub-word packable fields. solc packs the two
+/// `uint128` into a single 32-byte slot, so `SLOTS` must be 1 (the walker's
+/// packed count), NOT 2 (the naive per-field sum). Regression guard for the
+/// `#[storage]` `SLOTS` computation.
+#[pvm_contract_sdk::storage]
+pub struct PackedPair {
+    pub a: Lazy<u128>,
+    pub b: Lazy<u128>,
+}
+
+/// Packable fields followed by a full-slot field: `a`/`b` pack into slot 0,
+/// `c` claims slot 1, so `SLOTS = 2`.
+#[pvm_contract_sdk::storage]
+pub struct PackedThenFull {
+    pub a: Lazy<u128>,
+    pub b: Lazy<u128>,
+    pub c: Lazy<U256>,
+}
+
 /// SLOTS counts at the type level should match what we expect.
 #[test]
 fn storage_component_slots_are_field_sums() {
@@ -46,6 +65,16 @@ fn storage_component_slots_are_field_sums() {
     assert_eq!(<MetadataState as StorageComponent>::SLOTS, 2);
     assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
     assert_eq!(<Mapping<Address, U256> as StorageComponent>::SLOTS, 1);
+}
+
+/// Packed sub-word fields share a slot, so `SLOTS` is the walker's packed
+/// count, not the naive sum of per-field `SLOTS`.
+#[test]
+fn storage_component_slots_pack_sub_word_fields() {
+    // Naive sum would be 2 here — solc packs both uint128 into one slot.
+    assert_eq!(<PackedPair as StorageComponent>::SLOTS, 1);
+    // a/b pack into slot 0; c takes slot 1. Naive sum would be 3.
+    assert_eq!(<PackedThenFull as StorageComponent>::SLOTS, 2);
 }
 
 fn fresh_host() -> Host {
@@ -174,9 +203,9 @@ fn composed_contract_layout_matches_hand_constructed() {
     };
     let bob = Address([0xBB; 20]);
     allowances_via_outer
-        .view_mut(&alice)
+        .entry(&alice)
         .insert(&bob, &U256::from(7));
-    assert_eq!(erc20.allowances.view(&alice).get(&bob), U256::from(7));
+    assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
 
     let name_slot =
         unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), 0, host.clone()) };

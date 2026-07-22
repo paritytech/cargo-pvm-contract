@@ -170,13 +170,25 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         .collect();
     let field_types: Vec<&syn::Type> = named.named.iter().map(|f| &f.ty).collect();
 
-    // The SLOTS const sums every field's contribution.
+    // The SLOTS const is the walker's packed slot count, NOT the naive sum of
+    // per-field SLOTS. Sub-word siblings (e.g. two `Lazy<u128>`) pack into one
+    // slot, so the sum overcounts. This matches both the field-placement chain
+    // below (`layout_step_component`) and the `#[derive(SolStorage)]` value path
+    // (`__STORAGE_LAYOUT.1 = step.next_slot + 1`), and is required for a correct
+    // element stride when a `#[storage]` struct is used as a `StorageVec` element.
     let slots_expr = {
-        let terms: Vec<TokenStream> = field_types
+        let steps: Vec<TokenStream> = field_types
             .iter()
-            .map(|ty| quote! { <#ty as ::pvm_contract_sdk::StorageComponent>::SLOTS })
+            .map(|ty| {
+                quote! { step = ::pvm_contract_sdk::layout_step_component::<#ty>(step); }
+            })
             .collect();
-        quote! { #(#terms)+* }
+        quote! {{
+            let mut step: ::pvm_contract_sdk::LayoutStep =
+                ::pvm_contract_sdk::LayoutStep::FIRST;
+            #(#steps)*
+            step.next_slot + 1
+        }}
     };
 
     // Per-field offset const chain (relative to base). Shared with `#[contract]`
@@ -298,6 +310,72 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             /// `#[storage]` sub-structs recurse.
             fn clear(&mut self) {
                 #(#field_clears)*
+            }
+        }
+
+        // Container `StorageType` so this `#[storage]` struct can be a value of
+        // `Mapping<K, Self>` / element of `StorageVec<Self>`: `get`/`entry`
+        // hand out a `Ref`/`RefMut<Self>` guard that gates mutation, mirroring
+        // the built-in container components. Construction reuses the safe
+        // `StorageComponent::new_at` door.
+        impl #impl_generics ::pvm_contract_sdk::StorageType
+            for #struct_name #ty_generics
+        #where_clause
+        {
+            const SLOTS: u64 = <Self as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+            const PACKED_BYTES: usize = 32;
+            const HAS_DYNAMIC_BODY: bool = false;
+            // Fields may own storage at derived keys / dynamic bodies, so
+            // clearing recurses through `StorageComponent::clear`.
+            const NEEDS_RECURSIVE_CLEAR: bool = true;
+
+            type Get<'a>
+                = ::pvm_contract_sdk::Ref<'a, Self>
+            where
+                Self: 'a;
+            type GetMut<'a>
+                = ::pvm_contract_sdk::RefMut<'a, Self>
+            where
+                Self: 'a;
+
+            fn get_at(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                host: &::pvm_contract_sdk::Host,
+            ) -> ::pvm_contract_sdk::Ref<'_, Self> {
+                let _ = offset;
+                ::pvm_contract_sdk::Ref::new(
+                    <Self as ::pvm_contract_sdk::StorageComponent>::new_at(
+                        key, 0, true, host.clone(),
+                    ),
+                )
+            }
+
+            unsafe fn get_mut_at(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                alone: bool,
+                host: &::pvm_contract_sdk::Host,
+            ) -> ::pvm_contract_sdk::RefMut<'_, Self> {
+                let _ = (offset, alone);
+                ::pvm_contract_sdk::RefMut::new(
+                    <Self as ::pvm_contract_sdk::StorageComponent>::new_at(
+                        key, 0, true, host.clone(),
+                    ),
+                )
+            }
+
+            unsafe fn clear_at(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                alone: bool,
+                host: &::pvm_contract_sdk::Host,
+            ) {
+                let _ = (offset, alone);
+                let mut handle = <Self as ::pvm_contract_sdk::StorageComponent>::new_at(
+                    key, 0, true, host.clone(),
+                );
+                <Self as ::pvm_contract_sdk::StorageComponent>::clear(&mut handle);
             }
         }
 
@@ -659,6 +737,100 @@ fn generate_sol_storage_impls(
         };
     };
 
+    // Leaf `StorageType` + `SimpleStorageType` so a value struct can be a
+    // `Mapping<K, Self>` value / `StorageVec<Self>` element (and `Lazy<Self>`).
+    // Delegates to `Lazy` exactly like the built-in scalar/tuple/array leaves.
+    // Emitted identically for the static and dynamic branches (a value struct
+    // is a by-value leaf either way).
+    let value_storage_type = quote! {
+        impl ::pvm_contract_sdk::StorageType for #name {
+            const SLOTS: u64 = <#name as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS as u64;
+            const PACKED_BYTES: usize =
+                <#name as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES;
+            const HAS_DYNAMIC_BODY: bool =
+                <#name as ::pvm_contract_sdk::StorageEncode>::HAS_DYNAMIC_BODY;
+            const NEEDS_RECURSIVE_CLEAR: bool =
+                <#name as ::pvm_contract_sdk::StorageEncode>::HAS_DYNAMIC_BODY;
+
+            type Get<'a> = #name where Self: 'a;
+            type GetMut<'a> = ::pvm_contract_sdk::Lazy<#name> where Self: 'a;
+
+            fn get_at(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                host: &::pvm_contract_sdk::Host,
+            ) -> #name {
+                unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }.get()
+            }
+
+            unsafe fn get_mut_at(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                alone: bool,
+                host: &::pvm_contract_sdk::Host,
+            ) -> ::pvm_contract_sdk::Lazy<#name> {
+                if alone {
+                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new_alone(key, offset, host.clone()) }
+                } else {
+                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }
+                }
+            }
+
+            unsafe fn clear_at(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                alone: bool,
+                host: &::pvm_contract_sdk::Host,
+            ) {
+                let mut cell = if alone {
+                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new_alone(key, offset, host.clone()) }
+                } else {
+                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }
+                };
+                <::pvm_contract_sdk::Lazy<#name> as ::pvm_contract_sdk::StorageComponent>::clear(
+                    &mut cell,
+                );
+            }
+        }
+
+        impl ::pvm_contract_sdk::SimpleStorageType for #name {
+            type Value = #name;
+
+            fn read_value(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                host: &::pvm_contract_sdk::Host,
+            ) -> #name {
+                <#name as ::pvm_contract_sdk::StorageType>::get_at(key, offset, host)
+            }
+
+            fn try_read_value(
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                host: &::pvm_contract_sdk::Host,
+            ) -> ::core::option::Option<#name> {
+                let _ = offset;
+                <#name as ::pvm_contract_sdk::StorageDecode>::try_read_from_storage(
+                    host,
+                    key.as_bytes(),
+                )
+            }
+
+            fn write_value(
+                value: &#name,
+                key: ::pvm_contract_sdk::StorageKey,
+                offset: u8,
+                alone: bool,
+                host: &::pvm_contract_sdk::Host,
+            ) {
+                let mut cell = unsafe {
+                    <#name as ::pvm_contract_sdk::StorageType>::get_mut_at(key, offset, alone, host)
+                };
+                cell.set(value);
+            }
+        }
+    };
+
     if has_dynamic {
         // Dynamic struct: custom write/clear/read/try_read with per-field
         // static/dynamic split.
@@ -739,6 +911,8 @@ fn generate_sol_storage_impls(
             // fires under `cargo check` (visible to trybuild) instead of
             // only firing when a trait method is monomorphized.
             #slot_count_assert_item
+
+            #value_storage_type
 
             impl #name {
                 #layout_const
@@ -850,6 +1024,8 @@ fn generate_sol_storage_impls(
             // method is monomorphized.
             #slot_count_assert_item
 
+            #value_storage_type
+
             impl #name {
                 #layout_const
             }
@@ -959,10 +1135,11 @@ mod tests {
             "struct should be preserved: {output}"
         );
 
-        // SLOTS sums each field's SLOTS.
+        // SLOTS is the walker's packed slot count (`step.next_slot + 1`), not
+        // the naive per-field sum — so sub-word siblings share a slot.
         assert!(
-            output.contains("const SLOTS : u64 = < Lazy < U256 > as :: pvm_contract_sdk :: StorageComponent > :: SLOTS + < Mapping < Address , U256 > as :: pvm_contract_sdk :: StorageComponent > :: SLOTS"),
-            "SLOTS const should sum field SLOTS. Got: {output}"
+            output.contains("const SLOTS : u64 = { let mut step : :: pvm_contract_sdk :: LayoutStep = :: pvm_contract_sdk :: LayoutStep :: FIRST ; step = :: pvm_contract_sdk :: layout_step_component :: < Lazy < U256 > > (step) ; step = :: pvm_contract_sdk :: layout_step_component :: < Mapping < Address , U256 > > (step) ; step . next_slot + 1 }"),
+            "SLOTS const should be the walker packed count. Got: {output}"
         );
 
         // First field seeds from LayoutStep::FIRST via layout_step.

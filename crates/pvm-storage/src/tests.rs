@@ -302,9 +302,9 @@ fn nested_mapping_allowances() {
     let spender = Address([0xBB; 20]);
 
     allowances
-        .view_mut(&owner)
+        .entry(&owner)
         .insert(&spender, &U256::from(500));
-    assert_eq!(allowances.view(&owner).get(&spender), U256::from(500));
+    assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
 }
 
 // --- Tuple keys ---
@@ -320,7 +320,7 @@ fn tuple_key_matches_chaining() {
     let mut chained = unsafe {
         Mapping::<Address, Mapping<Address, U256>>::new(StorageKey::from_slot(2), host.clone())
     };
-    chained.view_mut(&owner).insert(&spender, &amount);
+    chained.entry(&owner).insert(&spender, &amount);
 
     // Read via tuple key (same slot, same host state)
     let tuple_map =
@@ -1370,17 +1370,17 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
     let k2 = Address([0xBB; 20]);
     let v: u128 = 0x1234_5678_90AB_CDEFu128;
 
-    m1.view_mut(&k1).entry(&k2).set(&v);
-    m2.view_mut(&k1).insert(&k2, &v);
+    m1.entry(&k1).entry(&k2).set(&v);
+    m2.entry(&k1).insert(&k2, &v);
 
     // Outer view → Ref<inner>, inner .get(k2) → V.
     assert_eq!(
-        m1.view(&k1).get(&k2),
+        m1.get(&k1).get(&k2),
         v,
         "nested: view_mut/entry/set then view/get"
     );
     assert_eq!(
-        m2.view(&k1).get(&k2),
+        m2.get(&k1).get(&k2),
         v,
         "nested: view_mut/insert then view/get"
     );
@@ -1388,8 +1388,8 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
     // Inspect the deepest derived slot via the inner mapping's slot_of
     // (which is reachable through Ref<Mapping<K2, V>>::slot_of since
     // slot_of takes `&self`).
-    let inner_slot_1 = m1.view(&k1).slot_of(&k2);
-    let inner_slot_2 = m2.view(&k1).slot_of(&k2);
+    let inner_slot_1 = m1.get(&k1).slot_of(&k2);
+    let inner_slot_2 = m2.get(&k1).slot_of(&k2);
     let slot1 = storage_get_32(&host, inner_slot_1.as_bytes());
     let slot2 = storage_get_32(&host, inner_slot_2.as_bytes());
     assert_eq!(slot1, slot2, "nested: entry vs insert produce same bytes");
@@ -1424,10 +1424,19 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
 /// `slot[32 - PACKED_BYTES .. 32]` after a canonical write.
 fn check_packing_parity<V>(name: &str, sample: V, tail: &[u8])
 where
-    V: StorageEncode + StorageDecode + Copy + PartialEq + core::fmt::Debug,
+    V: StorageEncode
+        + StorageDecode
+        + SimpleStorageType<Value = V>
+        + Copy
+        + PartialEq
+        + core::fmt::Debug
+        + 'static,
+    // Leaf values bind `Get = V` and `GetMut = Lazy<V>`; pin both so
+    // `get()`/`entry().set()/get()/clear()` resolve on the generic GATs.
+    for<'a> V: StorageType<Get<'a> = V, GetMut<'a> = Lazy<V>>,
 {
     let host = h();
-    let canonical = (32 - V::PACKED_BYTES) as u8;
+    let canonical = (32 - <V as StorageEncode>::PACKED_BYTES) as u8;
 
     // --- Four write paths into distinct slots ---
     let key_lazy_new = StorageKey::from_slot(0);
@@ -1474,7 +1483,7 @@ where
     );
 
     // --- Invariant 3: solc canonical placement ---
-    let off = 32 - V::PACKED_BYTES;
+    let off = 32 - <V as StorageEncode>::PACKED_BYTES;
     assert_eq!(
         &s_map_insert[off..32],
         tail,
@@ -1744,12 +1753,12 @@ fn erc20_storage_example() {
     assert_eq!(balances.get(&bob), U256::from(300));
 
     // Approve: alice approves bob for 500
-    allowances.view_mut(&alice).insert(&bob, &U256::from(500));
+    allowances.entry(&alice).insert(&bob, &U256::from(500));
 
     // Read allowance via chaining
-    assert_eq!(allowances.view(&alice).get(&bob), U256::from(500));
+    assert_eq!(allowances.get(&alice).get(&bob), U256::from(500));
     // Other direction is zero
-    assert_eq!(allowances.view(&bob).get(&alice), U256::ZERO);
+    assert_eq!(allowances.get(&bob).get(&alice), U256::ZERO);
 }
 
 #[test]
@@ -1795,7 +1804,7 @@ fn nested_mapping_slot_matches_solidity() {
     let spender = Address([0xBB; 20]);
 
     // Derive via chaining: view(&owner) returns Ref<inner>, then slot_of(&spender)
-    let inner = allowances.view(&owner);
+    let inner = allowances.get(&owner);
     let slot = inner.slot_of(&spender);
 
     let expected = [
@@ -3012,6 +3021,54 @@ fn nested_storage_vec_matches_solc_layout() {
     inc_be_32(&mut inner2_e1_key);
     let inner2_e1 = storage_get_32(&host, &inner2_e1_key);
     assert_eq!(U256::from_be_bytes(inner2_e1), U256::from(0x3333u64));
+}
+
+/// Regression for the recursive-clear fix (issue #108, fix C2): clearing a
+/// `StorageVec<StorageVec<T>>` must recurse into each inner vec and zero its
+/// *element* slots, not merely the inner length slots. A naive bulk-zero of
+/// the outer body (which holds inner length headers) would leave inner element
+/// data stranded in storage — a leak and a divergence from solc's `delete`.
+#[test]
+fn nested_storage_vec_clear_zeros_inner_element_storage() {
+    let host = h();
+    let mut outer =
+        unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(11), host.clone()) };
+    outer.grow();
+    outer.grow();
+    outer.entry(0).push(&U256::from(0x1111u64));
+    outer.entry(1).push(&U256::from(0x2222u64));
+    outer.entry(1).push(&U256::from(0x3333u64));
+
+    // Locate inner[1]'s first element slot and confirm it holds data now.
+    let outer_body = storage_derive_body_base(&host, StorageKey::from_slot(11).as_bytes());
+    let mut inner1_root = outer_body;
+    inc_slot_by(&mut inner1_root, 1);
+    let inner1_body = storage_derive_body_base(&host, &inner1_root);
+    assert_ne!(
+        storage_get_32(&host, &inner1_body),
+        [0u8; 32],
+        "precondition: inner[1] element 0 should be populated"
+    );
+
+    outer.clear();
+
+    // Outer length header cleared.
+    assert_eq!(outer.len(), 0);
+    // Inner length headers cleared.
+    assert_eq!(storage_get_32(&host, &inner1_root), [0u8; 32], "inner[1] len");
+    // Inner ELEMENT storage cleared — the leak the recursive-clear fix closes.
+    assert_eq!(
+        storage_get_32(&host, &inner1_body),
+        [0u8; 32],
+        "inner[1] element 0 must be zeroed by recursive clear (no leak)"
+    );
+    let mut inner1_e1 = inner1_body;
+    inc_be_32(&mut inner1_e1);
+    assert_eq!(
+        storage_get_32(&host, &inner1_e1),
+        [0u8; 32],
+        "inner[1] element 1 must be zeroed"
+    );
 }
 
 #[test]

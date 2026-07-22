@@ -302,7 +302,7 @@ mod maps {
             self.balances
                 .insert(&Address::from(ADDR_A), &U256::from(1000u64));
             self.allowances
-                .view_mut(&Address::from(ADDR_A))
+                .entry(&Address::from(ADDR_A))
                 .insert(&Address::from(ADDR_B), &U256::from(777u64));
         }
     }
