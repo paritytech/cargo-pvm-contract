@@ -118,3 +118,14 @@ fn storage_layout_vec_produces_valid_abi() {
     expect_test::expect_file!("./test_abi_contract/abi_storage_layout_vec.json")
         .assert_eq(&cargo_run_abi("storage-layout-vec"))
 }
+
+/// Contract mixing a numeric `#[slot(N)]` field with a raw external
+/// (`#[slot(raw = KEY)]`) field. Verifies the contract compiles under
+/// `--features abi-gen` and that the raw external slot is OMITTED from
+/// `storageLayout` (like solc, which doesn't emit EIP-1967-style slots),
+/// while the sequential field is still present.
+#[test]
+fn storage_layout_raw_slot_omits_external_slot() {
+    expect_test::expect_file!("./test_abi_contract/abi_proxy_raw_slot.json")
+        .assert_eq(&cargo_run_abi("proxy-raw-slot"))
+}

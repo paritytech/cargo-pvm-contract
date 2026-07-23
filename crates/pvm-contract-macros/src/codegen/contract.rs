@@ -8,7 +8,7 @@ use super::dispatch::{
     MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
     generate_revert_encoding_boundary, generate_router,
 };
-use super::storage_layout::extract_optional_slot_attr;
+use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
 use crate::signature::{SolType, compute_selector};
 use crate::utils::{compute_function_signature, to_snake_case};
 
@@ -208,6 +208,13 @@ pub(super) enum Slot {
     /// (`PACKED_BYTES == 32`); sub-word types must use auto-numbering.
     /// See [`SlotField`] for the rationale.
     Explicit(u64),
+    /// Explicit `#[slot(raw = EXPR)]`: bind the field to a fixed,
+    /// externally-known 32-byte slot (e.g. an EIP-1967 proxy slot), outside the
+    /// compiler-assigned sequential range. Unlike numeric `#[slot(N)]` this
+    /// accepts sub-word types and places them right-aligned (`offset =
+    /// 32 - PACKED_BYTES`) to match solc, since a pseudo-random external slot
+    /// has no sibling fields to pack with.
+    ExplicitRaw(syn::Expr),
     /// Auto-numbered: position among auto-numbered fields is taken from
     /// declaration order during the slot-chain build. Packs sub-word
     /// siblings via `layout_step`.
@@ -262,11 +269,14 @@ fn auto_chain_fields(slot_fields: &[SlotField]) -> Vec<super::storage_layout::Ch
 }
 
 impl SlotField {
-    /// Explicit slot value, or `None` if auto-numbered.
+    /// Explicit *numeric* slot value, or `None` if auto-numbered or bound to a
+    /// raw external slot. Raw slots return `None` because they live outside the
+    /// compiler-assigned sequential range and don't participate in the
+    /// numeric overlap / full-slot-only checks.
     pub(super) fn explicit_slot(&self) -> Option<u64> {
         match self.slot {
             Slot::Explicit(n) => Some(n),
-            Slot::Auto => None,
+            Slot::ExplicitRaw(_) | Slot::Auto => None,
         }
     }
 }
@@ -1315,19 +1325,35 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let name = &sf.name;
             let ty = &sf.ty;
             let cfgs = &sf.cfg_attrs;
-            let (slot_expr, offset_expr, alone_expr): (TokenStream, TokenStream, TokenStream) =
-                match sf.slot {
+            let (key_expr, offset_expr, alone_expr): (TokenStream, TokenStream, TokenStream) =
+                match &sf.slot {
                     // Explicit `#[slot(N)]` is restricted to full-slot types
                     // elsewhere in this file (`explicit_slot_full_slot_only_checks`).
                     // Full-slot components ignore `alone`, so the literal `true`
                     // is purely cosmetic — it would behave identically as `false`
                     // for `Mapping`/`Lazy<U256>`/etc.
-                    Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }, quote! { true }),
+                    Slot::Explicit(n) => (
+                        quote! { ::pvm_contract_sdk::StorageKey::from_slot(#n) },
+                        quote! { 0u8 },
+                        quote! { true },
+                    ),
+                    // `#[slot(raw = EXPR)]` binds the field to a fixed external
+                    // 32-byte slot. Sub-word types are placed right-aligned at
+                    // `32 - PACKED_BYTES` (matching solc), and `alone = true`
+                    // because a pseudo-random external slot has no sibling
+                    // sub-word fields to preserve on write.
+                    Slot::ExplicitRaw(expr) => (
+                        quote! { ::pvm_contract_sdk::StorageKey::from_raw(#expr) },
+                        quote! {
+                            (32 - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES) as u8
+                        },
+                        quote! { true },
+                    ),
                     Slot::Auto => {
                         let const_ident = quote::format_ident!("{}{}", AUTO_SLOT_PREFIX, name);
                         let alone_ident = quote::format_ident!("{}{}", AUTO_ALONE_PREFIX, name);
                         (
-                            quote! { #const_ident.slot },
+                            quote! { ::pvm_contract_sdk::StorageKey::from_slot(#const_ident.slot) },
                             quote! { #const_ident.offset },
                             quote! { #alone_ident },
                         )
@@ -1336,7 +1362,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {
                 #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
-                    ::pvm_contract_sdk::StorageKey::from_slot(#slot_expr),
+                    #key_expr,
                     #offset_expr,
                     #alone_expr,
                     host.clone(),
@@ -1870,7 +1896,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     struct Raw {
         name: Ident,
         ty: syn::Type,
-        explicit: Option<u64>,
+        explicit: Option<SlotAttr>,
         cfg_attrs: Vec<syn::Attribute>,
         original_field: syn::Field,
     }
@@ -1911,26 +1937,32 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
         return Ok(vec![]);
     }
 
-    // Mode decision: either ALL fields have `#[slot(N)]` (explicit mode, the
-    // original behavior) or NONE do (auto-numbered, the new behavior). Mixing
-    // is rejected so users don't end up with surprising slot assignments where
-    // an explicit slot collides with an auto-assigned one.
-    let any_explicit = raws.iter().any(|r| r.explicit.is_some());
-    let all_explicit = raws.iter().all(|r| r.explicit.is_some());
+    // Mode decision: numeric `#[slot(N)]` and auto-numbering are mutually
+    // exclusive — either ALL non-raw fields pin a numeric slot or NONE do —
+    // so users can't end up with a numeric slot colliding with an auto-assigned
+    // one. Raw external slots (`#[slot(raw = KEY)]`) are exempt: their keys are
+    // pseudo-random and live outside the sequential range, so they can't collide
+    // with numeric or auto slots and freely coexist with either mode (including
+    // auto-numbered sub-word fields that pack solc-style).
+    let has_numeric = raws
+        .iter()
+        .any(|r| matches!(r.explicit, Some(SlotAttr::Numeric(_))));
+    let has_auto = raws.iter().any(|r| r.explicit.is_none());
 
-    if any_explicit && !all_explicit {
+    if has_numeric && has_auto {
         // Find the first un-annotated field to attach the error span.
         let offender = raws
             .iter()
             .find(|r| r.explicit.is_none())
-            .expect("checked any_explicit && !all_explicit");
+            .expect("checked has_numeric && has_auto");
         return Err(syn::Error::new_spanned(
             &offender.original_field,
             format!(
                 "field `{}` is missing `#[slot(N)]`. \
-                 Storage fields must all be annotated with `#[slot(N)]`, or all \
-                 left un-annotated for auto-numbering by declaration order. \
-                 Mixing the two modes is not supported.",
+                 Fields must either all pin a numeric slot with `#[slot(N)]`, or all \
+                 be left un-annotated for auto-numbering by declaration order. \
+                 Mixing the two modes is not supported. (`#[slot(raw = KEY)]` fields \
+                 are exempt and may coexist with either mode.)",
                 offender.name,
             ),
         ));
@@ -1938,8 +1970,14 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
 
     let mut fields = Vec::new();
     for raw in raws {
-        let slot = if let Some(n) = raw.explicit {
-            Slot::Explicit(n)
+        let slot = if let Some(attr) = raw.explicit {
+            match attr {
+                SlotAttr::Numeric(n) => Slot::Explicit(n),
+                // Raw external slots carry an unevaluated `[u8; 32]` expression;
+                // like numeric explicit slots they may carry `#[cfg]` (they don't
+                // shift any later field's slot), so no cfg gate here.
+                SlotAttr::Raw(expr) => Slot::ExplicitRaw(expr),
+            }
         } else {
             // Auto-numbered fields share a const chain across slot consts;
             // a #[cfg]-disabled field in the middle of the chain would break
@@ -3276,6 +3314,216 @@ mod tests {
             !output.contains("# [slot"),
             "Slot attributes should be stripped from the struct output.\n\
              Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_field_constructs_from_raw_key_right_aligned() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_proxy {
+                const IMPL_SLOT: [u8; 32] = [0u8; 32];
+                pub struct MyProxy {
+                    #[slot(raw = IMPL_SLOT)]
+                    impl_addr: Lazy<Address>,
+                }
+                impl MyProxy {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn implementation(&self) -> Address {
+                        self.impl_addr.get()
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Raw-slot fields bind to StorageKey::from_raw(EXPR), not from_slot.
+        assert!(
+            output.contains(":: StorageKey :: from_raw (IMPL_SLOT)"),
+            "raw slot field should pass StorageKey::from_raw(IMPL_SLOT).\n\
+             Expanded output:\n{output}"
+        );
+        assert!(
+            !output.contains("from_slot"),
+            "a raw-only contract should emit no from_slot calls.\n\
+             Expanded output:\n{output}"
+        );
+        // Sub-word types are placed right-aligned at 32 - PACKED_BYTES.
+        assert!(
+            output.contains("(32 - < Lazy < Address > as :: pvm_contract_sdk :: StorageComponent > :: PACKED_BYTES) as u8"),
+            "raw sub-word field should be right-aligned at 32 - PACKED_BYTES.\n\
+             Expanded output:\n{output}"
+        );
+        // The #[slot(raw = ...)] attribute must be stripped from the struct.
+        assert!(
+            !output.contains("# [slot"),
+            "Slot attributes should be stripped from the struct output.\n\
+             Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_full_slot_type_offset_is_zero_expr() {
+        // A full-slot raw type (`Lazy<U256>`, PACKED_BYTES == 32) still emits the
+        // `32 - PACKED_BYTES` offset expr (which evaluates to 0) and from_raw.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    #[slot(raw = K)]
+                    admin: Lazy<U256>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn admin(&self) -> U256 { self.admin.get() }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        assert!(
+            output.contains(":: StorageKey :: from_raw (K)"),
+            "full-slot raw field should bind via from_raw.\nExpanded:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_mixes_with_numeric_explicit() {
+        // Raw and numeric `#[slot(...)]` are both "explicit", so mixing them is
+        // allowed (all fields explicit) — no auto-numbering collision risk.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    #[slot(0)]
+                    total: Lazy<U256>,
+                    #[slot(raw = K)]
+                    impl_addr: Lazy<Address>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn total(&self) -> U256 { self.total.get() }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        assert!(
+            output.contains(":: StorageKey :: from_slot (0u64)")
+                && output.contains(":: StorageKey :: from_raw (K)"),
+            "mixed numeric + raw slots should each bind correctly.\nExpanded:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_missing_value_is_error() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                pub struct C {
+                    #[slot(raw)]
+                    a: Lazy<U256>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let err = expand_contract(ContractArgs::default(), item).unwrap_err();
+        assert!(
+            err.to_string().contains("expected"),
+            "bare `#[slot(raw)]` should be a parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn slot_unknown_keyword_is_error() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    #[slot(rawww = K)]
+                    a: Lazy<U256>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let err = expand_contract(ContractArgs::default(), item).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected an integer slot literal or `raw ="),
+            "unknown `#[slot(<ident> = ...)]` keyword should error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_coexists_with_auto_numbered_fields() {
+        // A raw external slot must NOT force siblings to be explicit: it's
+        // exempt from the numeric-vs-auto rule, so auto-numbered fields keep
+        // auto-numbering (and solc-style sub-word packing). Two sub-word auto
+        // fields here pack into slot 0 while the raw field binds its own key.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    flag: Lazy<bool>,
+                    count: Lazy<u32>,
+                    #[slot(raw = K)]
+                    impl_addr: Lazy<Address>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn count(&self) -> u32 { self.count.get() }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        // Auto fields keep their auto slot-const chain (packing) …
+        assert!(
+            output.contains("__pvm_storage_slot_flag")
+                && output.contains("__pvm_storage_slot_count"),
+            "auto fields must still auto-number when a raw field is present.\nExpanded:\n{output}"
+        );
+        // … and the raw field binds its external key.
+        assert!(
+            output.contains(":: StorageKey :: from_raw (K)"),
+            "raw field must bind via from_raw alongside auto fields.\nExpanded:\n{output}"
         );
     }
 
