@@ -337,34 +337,122 @@ pub fn value_transferred_is_nonzero<H: HostApi>(host: &H) -> bool {
     }
 }
 
+/// The outcome of a selector dispatch through [`Router::route`].
+///
+/// A matched arm encodes its **success** result into the caller-owned
+/// [`OutSink`] and returns `Return(n)`; the single [`finalize_outcome`] exit
+/// lowers it to `return_value`. `Unhandled` means the selector did not match —
+/// the caller tries a parent router or falls back to revert.
+///
+/// There is deliberately **no `Revert` variant**: every revert — a method's own
+/// `Err(e)`, the input size check, a malformed-calldata decode, the payable
+/// guard, storage OOB — diverges directly through [`HostApi::revert`] (`-> !`),
+/// so it never flows back as an `Outcome`. One revert path, one test idiom
+/// (`expect_revert` / `assert_reverts!`); `Outcome` only ever describes the
+/// non-reverting result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Return(usize),
+    Unhandled,
+}
+
+/// Caller-owned output buffer handed to [`Router::route`].
+///
+/// `route` is generic over the sink so it monomorphizes to zero-overhead,
+/// fully-inlined buffer access — no enum discriminant, no `dyn` vtable. No-alloc
+/// contracts pass a `&mut [u8]` stack slice (the blanket impl below); alloc
+/// contracts pass a macro-generated `Vec`-backed wrapper (with an inline stack
+/// fast path). `pvm-contract-types` never names `alloc::vec::Vec`, so a no-alloc
+/// contract pulls in no allocator symbols through this trait.
+pub trait OutSink {
+    /// Reserve exactly `len` bytes and return a mutable slice to encode into.
+    fn reserve(&mut self, len: usize) -> &mut [u8];
+    /// The first `len` bytes previously written, for the exit lowering to read.
+    fn view(&self, len: usize) -> &[u8];
+}
+
+impl OutSink for &mut [u8] {
+    #[inline(always)]
+    fn reserve(&mut self, len: usize) -> &mut [u8] {
+        // The macro sizes the backing array to `MAX_RETURN_LEN`, so this always
+        // fits for a single-module `call()`. The `debug_assert` gives a legible
+        // message (rather than a bare slice-index panic) if a hand-rolled or
+        // composed caller under-sizes the buffer; it is compiled out in release.
+        debug_assert!(
+            len <= self.len(),
+            "OutSink buffer too small: need {len} bytes, have {}; size it to the routed module's MAX_RETURN_LEN",
+            self.len(),
+        );
+        &mut self[..len]
+    }
+    #[inline(always)]
+    fn view(&self, len: usize) -> &[u8] {
+        &self[..len]
+    }
+}
+
+/// Lower a successful dispatch [`Outcome`] to the host.
+///
+/// The single **success** exit for the selector-dispatch path: `Return(n)` calls
+/// the [`HostApi::return_value`] success door; `Unhandled` is a no-op (the caller
+/// handles parent/fallback fallthrough). Reverts never reach here — they diverge
+/// directly through [`HostApi::revert`] at the point they occur. On `riscv64`
+/// `return_value` is `-> !`; on host targets it records into the `MockHost` and
+/// returns, so a test can drive `route(...)` + `finalize_outcome(...)` and then
+/// inspect via `take_return_value()`.
+#[inline(always)]
+pub fn finalize_outcome<B: OutSink>(host: &Host, outcome: Outcome, out: &B) {
+    match outcome {
+        Outcome::Return(n) => <Host as HostApi>::return_value(host, out.view(n)),
+        Outcome::Unhandled => {}
+    }
+}
+
 /// Selector-based dispatch trait for composable `#[contract]` routing.
 ///
-/// Each contract module gets a generated `impl Router for Contract`
-/// that delegates to a free `mod_name::route(this, selector, input)` function.
-/// Dispatch arms call `host.return_value(...)` directly — `-> !` on `riscv64`
-/// (terminates execution), `-> ()` on host targets (captures into
-/// [`MockHost`](super::MockHost) for tests to inspect via
-/// [`MockHost::take_return_value`](super::MockHost::take_return_value)).
+/// Each contract module gets a generated `impl Router for Contract` that
+/// delegates to a free `mod_name::route(this, selector, input, out)` function.
+/// A matched arm that succeeds encodes its result into `out` and returns
+/// [`Outcome::Return`]; an unmatched selector returns [`Outcome::Unhandled`]. A
+/// matched arm that reverts diverges through [`HostApi::revert`] and does not
+/// return. The caller lowers a returned outcome via [`finalize_outcome`].
 ///
 /// # Composition and inheritance
 ///
-/// Chain routers via `Option::or_else` — the same idiom as `main`:
+/// Chain routers by trying each in turn and matching `Unhandled`. The shared
+/// output buffer must be sized to the **max** `MAX_RETURN_LEN` across every
+/// module in the chain — each module's const covers only its own returns, so a
+/// buffer sized to just one would index-panic if a larger sibling matches:
 ///
 /// ```ignore
 /// pub extern "C" fn call() {
 ///     let mut this = Composed::default();
-///     if my_extension::route(&mut this, sel, input).is_some() { return; }
-///     if erc20::route(&mut this.parent, sel, input).is_some() { return; }
-///     // fallback or revert
+///     const CAP: usize = if my_extension::MAX_RETURN_LEN > erc20::MAX_RETURN_LEN {
+///         my_extension::MAX_RETURN_LEN
+///     } else {
+///         erc20::MAX_RETURN_LEN
+///     };
+///     let mut storage = [0u8; CAP];
+///     let mut out: &mut [u8] = &mut storage;
+///     match my_extension::route(&mut this, sel, input, &mut out) {
+///         Outcome::Unhandled => {} // fall through to the parent
+///         outcome => return finalize_outcome(this.host(), outcome, &out),
+///     }
+///     match erc20::route(&mut this, sel, input, &mut out) {
+///         Outcome::Unhandled => this.host().revert(&UNKNOWN_SELECTOR),
+///         outcome => finalize_outcome(this.host(), outcome, &out),
+///     }
 /// }
 /// ```
+///
+/// Note: making `route` generic over the buffer removes object safety — there is
+/// no `dyn Router`. Router chains are resolved statically (call each module's
+/// `route` directly), which is the only supported composition and the cheaper
+/// one (no vtable).
 pub trait Router {
-    /// Dispatch `selector` against `input`. Returns `Some(())` if the selector
-    /// was handled (the dispatch arm has already called `host.return_value(...)`,
-    /// which on `riscv64` means execution has terminated). Returns `None` if
-    /// the selector did not match — the caller can try parent routers or
-    /// fall back to revert.
-    fn route(&mut self, selector: [u8; 4], input: &[u8]) -> Option<()>;
+    /// Dispatch `selector` against `input`, encoding any result into `out`.
+    /// Returns [`Outcome::Unhandled`] if the selector did not match.
+    fn route<B: OutSink>(&mut self, selector: [u8; 4], input: &[u8], out: &mut B) -> Outcome;
 }
 
 /// Trait for encoding Rust types to Solidity ABI-encoded bytes.
@@ -578,9 +666,9 @@ pub trait SolError: Sized {
 /// The Solidity compiler emits these for runtime failures.
 /// Each variant maps to a well-known panic code that Ethereum tools recognize.
 ///
-/// Solidity defines 10 panic codes (0x00-0x51). We implement the two
-/// needed for safe math. Likely future additions: 0x01 (assert failure)
-/// and 0x32 (out-of-bounds access).
+/// All of Solidity's standard panic codes (0x00–0x51) are represented, plus an
+/// [`Panic::Unknown`] catch-all for any other single-byte code encountered when
+/// decoding. `code() <-> decode_at` round-trips every variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panic {
     /// 0x00 - Used for generic compiler inserted panics.
@@ -670,6 +758,24 @@ impl SolError for Panic {
             Ok(None)
         }
     }
+}
+
+/// Encode `code` as a Solidity `Panic(uint256)` and revert with it.
+///
+/// Diverges on both targets: on `riscv64` it is the `return_value` syscall
+/// with [`ReturnFlags::REVERT`]; on host targets it records the bytes on the
+/// mock and diverges via [`HostApi::revert`]. This is the single shared
+/// encoder for storage-layer panics so the on-chain bytes and
+/// [`Panic::decode_at`] stay in lock-step.
+///
+/// `#[cold]`/`#[inline(never)]` keep one out-of-line copy across all call
+/// sites, minimizing bytecode duplication.
+#[cold]
+#[inline(never)]
+pub fn panic_revert(host: &Host, code: Panic) -> ! {
+    let mut buf = [0u8; 36];
+    let n = code.encode_to(&mut buf);
+    host.revert(&buf[..n])
 }
 
 /// Pre-built error enum for methods that only use standard Solidity errors.

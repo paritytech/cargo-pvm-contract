@@ -80,6 +80,8 @@ pub use pvm_contract_types::{
     HostApi,
     HostResult,
     I256,
+    OutSink,
+    Outcome,
     Panic,
     ParseI256Error,
     PolkaVmHost,
@@ -110,11 +112,15 @@ pub use pvm_contract_types::{
     checked_sum,
     const_keccak256,
     const_selector,
+    // Dispatch outcome lowering (single exit for the selector-dispatch path)
+    finalize_outcome,
     // Framework errors
     framework_errors,
     keccak256,
     // Storage-layout walker wrapper (StorageEncode family) used by codegen
     layout_step_encode,
+    // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
+    panic_revert,
     read_word_offset,
     value_transferred_is_nonzero,
 };
@@ -161,7 +167,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, assert_panics, assert_reverts};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;

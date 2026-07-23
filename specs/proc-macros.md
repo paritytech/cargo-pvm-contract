@@ -224,7 +224,7 @@ impl Registry {
 }
 ```
 
-Out-of-bounds `get` / `set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` for a non-panicking read.
+Out-of-bounds `get` / `set` revert with solc's ABI-encoded `Panic(0x32)` (array out-of-bounds), matching Solidity; use `try_get` for a non-panicking read.
 
 **Nested and composite shapes.** Because an inner collection is a *handle* (not a `StorageEncode` value), the nested accessors return borrow guards (`Ref` / `RefMut`) rather than the inner collection by value — which also enforces the view gate (a `&self` outer can only hand out a read-only `Ref`):
 

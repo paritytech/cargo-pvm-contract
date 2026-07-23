@@ -1255,7 +1255,7 @@ fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
         }
     } else {
         // Spilled: whole slot encodes `len * 2 + 1` as big-endian u256.
-        // A dynamic value has no fixed upper bound — like solc (and Stylus) it
+        // A dynamic value has no fixed upper bound — like solc it
         // stripes across as many 32-byte slots as `len` needs, so the header
         // length is authoritative. Storage is per-contract isolated (the header
         // is always self-written) and the read loop is gas-bounded on-chain, so
@@ -1437,8 +1437,7 @@ impl StorageEncode for alloc::string::String {
 impl StorageDecode for alloc::string::String {
     fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self {
         let bytes = read_dynamic_bytes(host, base_key);
-        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Matches
-        // Stylus's `StorageString::get_string`. Trapping on invalid bytes
+        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Trapping on invalid bytes
         // would be a DoS vector when storage is shared with a Solidity
         // contract that doesn't validate. For byte-exact roundtrips use
         // `Lazy<Bytes>` / `Mapping<K, Bytes>` instead.
@@ -1664,7 +1663,7 @@ mod tests {
     #[test]
     fn dynamic_bytes_above_old_cap_roundtrips() {
         // Regression guard: a value well past the old 416-byte clamp must
-        // roundtrip. Dynamic values have no fixed cap — like solc/Stylus they
+        // roundtrip. Dynamic values have no fixed cap — like solc they
         // stripe across as many 32-byte slots as the length needs.
         let host = mock_host();
         let slot = [11u8; 32];
