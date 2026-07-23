@@ -466,12 +466,17 @@ fn collect_items<'a>(items: &'a [syn_solidity::Item], out: &mut Vec<&'a syn_soli
 }
 
 fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &CustomMap) -> AbiParam {
-    let name = decl
-        .name
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let name = decl.name.as_ref().map(unraw).unwrap_or_default();
     type_to_abi_param(&name, &decl.ty, structs, &mut Vec::new())
+}
+
+/// Render a syn-solidity identifier as its ABI name. syn-solidity stores an
+/// identifier that collides with a Rust keyword (e.g. a Solidity field named
+/// `ref`) as a raw identifier (`r#ref`); strip the `r#` so the ABI matches the
+/// Solidity source.
+fn unraw<T: std::fmt::Display>(ident: T) -> String {
+    let s = ident.to_string();
+    s.strip_prefix("r#").map(str::to_string).unwrap_or(s)
 }
 
 /// Build an [`AbiParam`] for a `name: ty` declaration, expanding named structs
@@ -542,11 +547,7 @@ fn type_to_abi_param(
                     active.push(custom);
                     let mut components = Vec::with_capacity(def.fields.len());
                     for field in def.fields.iter() {
-                        let field_name = field
-                            .name
-                            .as_ref()
-                            .map(|n| n.to_string())
-                            .unwrap_or_default();
+                        let field_name = field.name.as_ref().map(unraw).unwrap_or_default();
                         components.push(type_to_abi_param(&field_name, &field.ty, structs, active));
                     }
                     active.pop();
@@ -757,6 +758,49 @@ interface Tokens {
             .unwrap();
         assert_eq!(inputs[0].param_type, "uint8");
         assert_eq!(inputs[1].param_type, "uint256");
+    }
+
+    #[test]
+    fn unraw_strips_raw_identifier_prefix() {
+        assert_eq!(unraw("r#ref"), "ref");
+        assert_eq!(unraw("amount"), "amount");
+    }
+
+    #[test]
+    fn generate_abi_from_sol_struct_field_keyword_name_is_not_raw() {
+        // A struct field whose name is a Rust keyword (`ref`) parses as a raw
+        // identifier; the ABI must report the plain Solidity name, not `r#ref`.
+        let (_d, path) = write_sol(
+            "Kw.sol",
+            r#"pragma solidity ^0.8.0;
+
+struct Order {
+    address from;
+    uint256 ref;
+    uint256 amount;
+}
+
+interface Kw {
+    function place(Order o) external;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function { name, inputs, .. } if name == "place" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let field_names: Vec<&str> = inputs[0]
+            .components
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(field_names, vec!["from", "ref", "amount"]);
     }
 
     fn write_sol(name: &str, body: &str) -> (TempDir, std::path::PathBuf) {

@@ -232,7 +232,9 @@ pub trait SolError: Sized {
 
 ### Scaffolder type mapping
 
-The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (tuples, non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a non-tuple parameter shape.
+The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a different parameter shape.
+
+Solidity `struct` parameters/returns (ABI `tuple`) are supported on the **macro** path: `abi_param_rust_type` walks the ABI `components` and generates a `#[derive(SolType)]` struct for each named struct (deduped by `internalType`, nested structs emitted before their parents), handling `Point`, `Point[]`, and `Point[N]` shapes. The **DSL** path still rejects tuples (it can't emit the `SolType` derive it would need) with a message pointing at `--api-style macro`.
 
 ### Type Support Matrix
 
