@@ -1138,11 +1138,15 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// If any field is not yet storage-compatible (nested SolType structs,
-/// `Vec<T>` for `T != u8`, fixed arrays of non-`u8`, tuples), the derive
-/// emits a `compile_error!` at expansion time — visible to `cargo check`
-/// and `trybuild`, unlike the prior `const STORAGE_SLOTS = panic!(...)`
-/// stub that only fired during MIR const-eval at `cargo build` time.
+/// Dynamic fields are supported: `String`, `Bytes`, and — as of issue #93 —
+/// `Vec<T>` for `T: StorageArrayElement` (e.g. `Vec<U256>`, `Vec<StaticStruct>`),
+/// which lays out as Solidity's `T[]` member (length inline, body at
+/// `keccak256(slot)`). If any field is still not storage-compatible (nested
+/// `#[derive(SolType)]` structs, fixed arrays of non-`u8`, tuples, or `Vec<u8>`
+/// / `Vec<String>`), the derive emits a `compile_error!` at expansion time —
+/// visible to `cargo check` and `trybuild`, unlike the prior
+/// `const STORAGE_SLOTS = panic!(...)` stub that only fired during MIR
+/// const-eval at `cargo build` time.
 ///
 /// [`StorageEncode`]: pvm_contract_sdk::StorageEncode
 /// [`StorageDecode`]: pvm_contract_sdk::StorageDecode

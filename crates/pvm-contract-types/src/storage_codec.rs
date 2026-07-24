@@ -956,6 +956,15 @@ impl<T: crate::SolArrayElement, const N: usize> crate::StorageTypeName for [T; N
     }
 }
 
+/// `Vec<T>` as a storage value (issue #93) is Solidity `T[]`; its layout-JSON
+/// type name is the ABI `SOL_NAME` (`"uint256[]"`, `"(…)[]"`, …).
+#[cfg(all(feature = "abi-gen", feature = "alloc"))]
+impl<T: crate::SolEncode> crate::StorageTypeName for alloc::vec::Vec<T> {
+    fn name() -> alloc::string::String {
+        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Fixed-size arrays `[T; N]` for T != u8.
 //
@@ -1115,6 +1124,180 @@ impl<T: StorageArrayElement, const N: usize> StaticStorageDecode for [T; N] {
                 T::from_slots(&slots[start..start + T::STORAGE_SLOTS])
             }
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vec<T> as a storage VALUE — Solidity's dynamic array `T[]` (issue #93).
+//
+// Layout (matches solc): the element count lives at the value's own slot
+// (`base_key`) as a big-endian `uint256`; the body lives at
+// `keccak256(base_key)` with the SAME per-slot packing/stride rules as the
+// fixed-array `[T; N]` impl above (sub-word elements pack `32 / PACKED_BYTES`
+// per slot; multi-slot static elements stride `STORAGE_SLOTS`). This makes
+// `Vec<T>` a first-class value inside `Lazy<Vec<T>>` / `Mapping<K, Vec<T>>` and
+// as a field of a `#[derive(SolStorage)]` struct.
+//
+// Bound on `StorageArrayElement` (not `StorageEncode`): it excludes `u8` — so
+// `Vec<u8>` stays rejected as a storage value (its ABI name is `uint8[]`; use
+// `Bytes` for `bytes`) — and excludes dynamic-body elements (no `Vec<String>`
+// yet; solc's per-element header+body routing for those isn't provided here).
+// Same crate as the marker, so the `u8`-exclusion coherence reasoning is local.
+// ---------------------------------------------------------------------------
+
+/// Body slots occupied by a `T[]` of `len` elements (0 when empty).
+#[cfg(feature = "alloc")]
+const fn array_body_slots<T: StorageArrayElement>(len: u64) -> u64 {
+    if len == 0 {
+        0
+    } else if T::PACKED_BYTES < 32 {
+        let density = (32 / T::PACKED_BYTES) as u64;
+        len.div_ceil(density)
+    } else {
+        len * T::STORAGE_SLOTS as u64
+    }
+}
+
+/// Read a `T[]` length header (low 8 bytes, big-endian). Panics if the value
+/// exceeds `u64::MAX` — unreachable through this API. Mirrors `StorageVec`.
+#[cfg(feature = "alloc")]
+fn read_array_len(host: &Host, slot: &[u8; 32]) -> u64 {
+    let mut buf = [0u8; 32];
+    host.get_storage_or_zero(StorageFlags::empty(), slot, &mut buf);
+    assert!(
+        buf[..24].iter().all(|&b| b == 0),
+        "Vec<T> length exceeds u64::MAX"
+    );
+    u64::from_be_bytes([
+        buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+    ])
+}
+
+/// Encode body slot `slot_idx` of a `T[]` from the element slice — same packing
+/// as `[T; N]::encode_slot`, generalized to a runtime-length slice.
+#[cfg(feature = "alloc")]
+fn encode_array_body_slot<T: StorageArrayElement>(elems: &[T], slot_idx: usize, buf: &mut [u8; 32]) {
+    *buf = [0u8; 32];
+    let n = elems.len();
+    if T::PACKED_BYTES < 32 {
+        let density = 32 / T::PACKED_BYTES;
+        let start = slot_idx * density;
+        let end = ((slot_idx + 1) * density).min(n);
+        let elem_start = 32 - T::PACKED_BYTES;
+        for (within, elem) in elems[start..end].iter().enumerate() {
+            let offset = 32 - T::PACKED_BYTES * (within + 1);
+            let mut tmp = [0u8; 32];
+            elem.encode_slot(0, &mut tmp);
+            buf[offset..offset + T::PACKED_BYTES]
+                .copy_from_slice(&tmp[elem_start..elem_start + T::PACKED_BYTES]);
+        }
+    } else if T::STORAGE_SLOTS == 1 {
+        elems[slot_idx].encode_slot(0, buf);
+    } else {
+        let elem_idx = slot_idx / T::STORAGE_SLOTS;
+        let within_elem = slot_idx % T::STORAGE_SLOTS;
+        elems[elem_idx].encode_slot(within_elem, buf);
+    }
+}
+
+/// Decode element `i` of a `T[]` from the read-back body slots — inverse of
+/// [`encode_array_body_slot`], same shape as `[T; N]::from_slots`.
+#[cfg(feature = "alloc")]
+fn decode_array_elem<T: StorageArrayElement>(slots: &[[u8; 32]], i: usize) -> T {
+    if T::PACKED_BYTES < 32 {
+        let density = 32 / T::PACKED_BYTES;
+        let slot_idx = i / density;
+        let within = i % density;
+        let offset = 32 - T::PACKED_BYTES * (within + 1);
+        let mut tmp = [0u8; 32];
+        let elem_start = 32 - T::PACKED_BYTES;
+        tmp[elem_start..elem_start + T::PACKED_BYTES]
+            .copy_from_slice(&slots[slot_idx][offset..offset + T::PACKED_BYTES]);
+        T::from_slots(&[tmp])
+    } else if T::STORAGE_SLOTS == 1 {
+        T::from_slots(&slots[i..i + 1])
+    } else {
+        let start = i * T::STORAGE_SLOTS;
+        T::from_slots(&slots[start..start + T::STORAGE_SLOTS])
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: StorageArrayElement> StorageEncode for alloc::vec::Vec<T> {
+    /// One slot for the length header; elements live off-layout at
+    /// `keccak256(slot) + j` and consume no additional in-struct slots.
+    const STORAGE_SLOTS: usize = 1;
+    /// Always a fresh slot (matches solc's `T[]` field layout).
+    const PACKED_BYTES: usize = 32;
+    /// The element body spills to `keccak256(slot)`.
+    const HAS_DYNAMIC_BODY: bool = true;
+
+    fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
+        let old_len = read_array_len(host, base_key);
+        let new_len = self.len() as u64;
+        let old_slots = array_body_slots::<T>(old_len);
+        let new_slots = array_body_slots::<T>(new_len);
+
+        let mut body = dyn_body_root(host, base_key);
+        // Write the new body slots.
+        for j in 0..new_slots {
+            let mut buf = [0u8; 32];
+            encode_array_body_slot::<T>(self, j as usize, &mut buf);
+            host.set_storage_or_clear(StorageFlags::empty(), &body, &buf);
+            inc_be_32(&mut body);
+        }
+        // Clear stale tail slots left by a longer previous value.
+        for _ in new_slots..old_slots {
+            host.set_storage_or_clear(StorageFlags::empty(), &body, &[0u8; 32]);
+            inc_be_32(&mut body);
+        }
+        // Write (or delete, when zero) the length header.
+        let mut len_buf = [0u8; 32];
+        len_buf[24..32].copy_from_slice(&new_len.to_be_bytes());
+        host.set_storage_or_clear(StorageFlags::empty(), base_key, &len_buf);
+    }
+
+    fn clear_storage(host: &Host, base_key: &[u8; 32]) {
+        let len = read_array_len(host, base_key);
+        let slots = array_body_slots::<T>(len);
+        let mut body = dyn_body_root(host, base_key);
+        for _ in 0..slots {
+            host.set_storage_or_clear(StorageFlags::empty(), &body, &[0u8; 32]);
+            inc_be_32(&mut body);
+        }
+        host.set_storage_or_clear(StorageFlags::empty(), base_key, &[0u8; 32]);
+    }
+}
+
+#[cfg(feature = "alloc")]
+impl<T: StorageArrayElement> StorageDecode for alloc::vec::Vec<T> {
+    fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self {
+        let len = read_array_len(host, base_key);
+        if len == 0 {
+            return alloc::vec::Vec::new();
+        }
+        let slots_count = array_body_slots::<T>(len);
+        let mut slots = alloc::vec::Vec::with_capacity(slots_count as usize);
+        let mut body = dyn_body_root(host, base_key);
+        for _ in 0..slots_count {
+            let mut c = [0u8; 32];
+            host.get_storage_or_zero(StorageFlags::empty(), &body, &mut c);
+            slots.push(c);
+            inc_be_32(&mut body);
+        }
+        (0..len as usize)
+            .map(|i| decode_array_elem::<T>(&slots, i))
+            .collect()
+    }
+
+    fn try_read_from_storage(host: &Host, base_key: &[u8; 32]) -> Option<Self> {
+        // Solidity conflates empty and never-written arrays (length slot 0);
+        // an empty `Vec` therefore reads back as `None`.
+        if read_array_len(host, base_key) == 0 {
+            None
+        } else {
+            Some(Self::read_from_storage(host, base_key))
+        }
     }
 }
 

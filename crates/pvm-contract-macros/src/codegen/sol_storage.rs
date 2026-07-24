@@ -484,17 +484,21 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         | SolType::Uint(_)
         | SolType::Int(_)
         | SolType::Bytes(_) => StorageFieldKind::Packable,
-        SolType::String | SolType::DynBytes => StorageFieldKind::Dynamic,
-        // Custom types (nested structs) are not yet supported as a *packed
-        // value* field of a `SolStorage` struct — that would need atomic
-        // multi-field packed codegen which isn't implemented. This is an
-        // optimization gap, NOT a solc-parity gap: a nested struct in storage
-        // already works today (with byte-identical solc layout) via the
-        // `#[storage]` attribute + `.view()/.view_mut()` composition path. The
-        // rejection hint in `generate_sol_storage_impls` points users there.
-        //
-        // `Array<T>` (T != u8), `FixedArray`, `Tuple` in struct fields: deferred.
-        SolType::Custom(_) | SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
+        // `string` / `bytes` and now `T[]` (`Vec<T>`, issue #93) are dynamic
+        // fields: they occupy one in-struct slot (the length/header) and spill
+        // their body to `keccak256(slot)`. The `Dynamic` arm routes through the
+        // field type's `StorageEncode`/`StorageDecode`, so a `Vec<T>` field
+        // works via the `Vec<T>` storage codec (`T: StorageArrayElement`;
+        // `Vec<u8>` and `Vec<String>` therefore still error, with the codec's
+        // `on_unimplemented` hint).
+        SolType::String | SolType::DynBytes | SolType::Array(_) => StorageFieldKind::Dynamic,
+        // Nested `#[derive(SolType)]` structs (`Custom`), `FixedArray`, and
+        // tuples as *packed value* fields still need atomic multi-field packed
+        // codegen that isn't implemented. This is an optimization gap, not a
+        // solc-parity gap: nest via the `#[storage]` attribute + `get`/`entry`
+        // composition path instead (byte-identical solc layout). The rejection
+        // hint in `generate_sol_storage_impls` points users there.
+        SolType::Custom(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
             StorageFieldKind::Unsupported
         }
     }

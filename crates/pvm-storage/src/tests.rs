@@ -3418,3 +3418,39 @@ fn probe_nested_entry_grows_inner_independently() {
     assert_eq!(m.get(0).get(1), U256::from(2u64));
     assert_eq!(m.get(1).get(0), U256::from(9u64));
 }
+
+// --- Vec<T> as a stored value (issue #93) ---
+
+#[test]
+fn lazy_vec_value_roundtrip() {
+    let host = h();
+    let mut cell = unsafe { Lazy::<Vec<U256>>::new(StorageKey::from_slot(0), 0, host.clone()) };
+    assert!(cell.try_get().is_none(), "empty/unset reads as None");
+    let v = alloc::vec![U256::from(10u64), U256::from(20u64), U256::from(30u64)];
+    cell.set(&v);
+    assert_eq!(cell.get(), v);
+    // Overwrite with a shorter vec — stale tail element must be cleared.
+    let short = alloc::vec![U256::from(99u64)];
+    cell.set(&short);
+    assert_eq!(cell.get(), short);
+    cell.clear();
+    assert_eq!(cell.get(), Vec::<U256>::new());
+    assert!(cell.try_get().is_none());
+}
+
+#[test]
+fn mapping_vec_value_roundtrip_and_subword() {
+    let host = h();
+    // Full-slot element type.
+    let mut m = unsafe { Mapping::<Address, Vec<U256>>::new(StorageKey::from_slot(1), host.clone()) };
+    let a = Address([0xAA; 20]);
+    m.insert(&a, &alloc::vec![U256::from(1u64), U256::from(2u64)]);
+    assert_eq!(m.get(&a), alloc::vec![U256::from(1u64), U256::from(2u64)]);
+    // Sub-word element type: packs multiple per slot (u32 → 8/slot).
+    let mut mu = unsafe { Mapping::<u64, Vec<u32>>::new(StorageKey::from_slot(2), host.clone()) };
+    let packed: Vec<u32> = (0u32..10).collect();
+    mu.insert(&7u64, &packed);
+    assert_eq!(mu.get(&7u64), packed);
+    m.remove(&a);
+    assert_eq!(m.get(&a), Vec::<U256>::new());
+}

@@ -751,6 +751,26 @@ where
     simple_storage_type_body!([T; N]);
 }
 
+// Dynamic arrays `Vec<T>` (Solidity `T[]`) as by-value leaves (issue #93):
+// `Lazy<Vec<T>>`, `Mapping<K, Vec<T>>`, and `Vec<T>` fields of `#[derive(SolStorage)]`
+// structs. The codec (`StorageEncode`/`StorageDecode for Vec<T>`, in
+// `pvm-contract-types`) is gated on `T: StorageArrayElement`, so `Vec<u8>` stays
+// rejected — the `where Vec<T>: StorageEncode + StorageDecode` clause mirrors that.
+#[cfg(feature = "alloc")]
+impl<T> StorageType for alloc::vec::Vec<T>
+where
+    alloc::vec::Vec<T>: StorageEncode + StorageDecode,
+{
+    leaf_storage_type_body!(alloc::vec::Vec<T>);
+}
+#[cfg(feature = "alloc")]
+impl<T> SimpleStorageType for alloc::vec::Vec<T>
+where
+    alloc::vec::Vec<T>: StorageEncode + StorageDecode,
+{
+    simple_storage_type_body!(alloc::vec::Vec<T>);
+}
+
 // ---------------------------------------------------------------------------
 // StorageLayoutEmit: per-struct hook for emitting layout JSON leaves.
 // ---------------------------------------------------------------------------
