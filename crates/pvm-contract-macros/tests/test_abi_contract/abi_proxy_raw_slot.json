@@ -1,0 +1,74 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "count",
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "implementation",
+      "outputs": [
+        {
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidCalldata",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "CalldataTooLarge",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnknownSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NonPayableValueReceived",
+      "type": "error"
+    }
+  ],
+  "storageLayout": {
+    "storage": [
+      {
+        "label": "flag",
+        "offset": 0,
+        "slot": "0",
+        "type": "bool"
+      },
+      {
+        "label": "count",
+        "offset": 1,
+        "slot": "0",
+        "type": "uint32"
+      }
+    ]
+  }
+}

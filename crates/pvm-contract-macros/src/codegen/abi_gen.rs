@@ -78,9 +78,13 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
 
     let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
-        .map(|sf| {
-            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+        .filter_map(|sf| {
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match &sf.slot {
                 Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
+                // Raw external slots (e.g. EIP-1967) live outside solc's
+                // sequential storage layout — solc doesn't emit them in
+                // `storageLayout` either, so omit them here.
+                Slot::ExplicitRaw(_) => return None,
                 Slot::Auto => {
                     let const_ident =
                         quote::format_ident!("{}{}", super::contract::AUTO_SLOT_PREFIX, &sf.name);
@@ -95,12 +99,12 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
                 quote! { "" },
             );
             let cfgs = &sf.cfg_attrs;
-            quote! {
+            Some(quote! {
                 #(#cfgs)*
                 {
                     #emit
                 }
-            }
+            })
         })
         .collect();
 
