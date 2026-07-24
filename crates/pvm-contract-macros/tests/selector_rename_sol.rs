@@ -6,6 +6,7 @@
 //! (see `tests/ui/sol_selector_rename_no_match.rs`) rather than a silent fallback.
 
 use pvm_contract_sdk::U256;
+use pvm_contract_types::Outcome;
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
 #[pvm_contract_macros::contract("tests/fixtures/SelectorRenameOk.sol")]
@@ -40,19 +41,32 @@ fn selector(sig: &str) -> [u8; 4] {
 fn explicit_rename_binds_to_named_sol_function() {
     let mock = pvm_contract_types::MockHostBuilder::new().build();
     let mut contract = c::C::with_host(mock);
+    let mut buf = [0u8; c::MAX_RETURN_LEN];
 
-    // Dispatches under the interface name, not the Rust name.
+    // Dispatches under the interface name, not the Rust name. `xfer` is a void
+    // method (`Return(0)`); the Rust-name selector must not match.
+    let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        c::route(&mut contract, selector("transferTokens()"), &[]),
-        Some(())
+        c::route(&mut contract, selector("transferTokens()"), &[], &mut out),
+        Outcome::Return(0)
     );
-    assert_eq!(c::route(&mut contract, selector("xfer()"), &[]), None);
+    let mut out: &mut [u8] = &mut buf;
+    assert_eq!(
+        c::route(&mut contract, selector("xfer()"), &[], &mut out),
+        Outcome::Unhandled
+    );
 }
 
 #[test]
 fn auto_snake_case_match_still_works() {
     let mock = pvm_contract_types::MockHostBuilder::new().build();
     let mut contract = c::C::with_host(mock);
+    let mut buf = [0u8; c::MAX_RETURN_LEN];
 
-    assert!(c::route(&mut contract, selector("balanceOf()"), &[]).is_some());
+    // `balanceOf` returns a U256 (32 bytes).
+    let mut out: &mut [u8] = &mut buf;
+    assert_eq!(
+        c::route(&mut contract, selector("balanceOf()"), &[], &mut out),
+        Outcome::Return(32)
+    );
 }

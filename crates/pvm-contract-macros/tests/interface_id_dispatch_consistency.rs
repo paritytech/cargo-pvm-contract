@@ -9,7 +9,7 @@
 //! A single-method interface is used so `INTERFACE_ID` is that one selector,
 //! which can then be fed straight to the contract's `route()`.
 
-use pvm_contract_types::StaticEncodedLen;
+use pvm_contract_types::{Outcome, StaticEncodedLen};
 use ruint::aliases::U256;
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
@@ -52,11 +52,21 @@ fn interface_id_selector_matches_contract_dispatch() {
     // Value is irrelevant; just enough bytes to clear the decode size check.
     let input = [0u8; <pvm_contract_sdk::Address as StaticEncodedLen>::ENCODED_SIZE];
 
-    assert_eq!(token::route(&mut contract, selector, &input), Some(()));
+    let mut buf = [0u8; token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    // A matched selector encodes the U256 return and returns `Return`.
+    let outcome = token::route(&mut contract, selector, &input, &mut out);
+    let Outcome::Return(_) = outcome else {
+        panic!("expected Return, got {outcome:?}");
+    };
 
     // Negative control: a different selector must not route, so the assert above
-    // is proving the match, not that route() returns Some for anything.
+    // is proving the match, not that route() handles anything.
     let mut bogus = selector;
     bogus[0] ^= 0xff;
-    assert_eq!(token::route(&mut contract, bogus, &input), None);
+    let mut out: &mut [u8] = &mut buf;
+    assert_eq!(
+        token::route(&mut contract, bogus, &input, &mut out),
+        Outcome::Unhandled
+    );
 }
