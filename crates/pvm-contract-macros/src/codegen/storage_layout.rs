@@ -176,6 +176,7 @@ pub(super) fn generate_layout_emit(
             #slot_expr,
             #solc_offset,
             &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
+            contract_name,
             entries,
             types,
         );

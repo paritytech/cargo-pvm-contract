@@ -559,6 +559,7 @@ pub trait StorageLayoutEmit {
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         types: &mut std::collections::BTreeMap<String, pvm_contract_types::StorageLayoutTypeEntry>,
     );
@@ -932,26 +933,46 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
 /// `Lazy<T>` as a layout-emit leaf — a single entry at `(base, offset)`.
 /// `offset` carries the packed sub-word placement (e.g. a `Lazy<u128>`
 /// sharing a slot lands at offset 16) so the rendered layout matches solc.
+///
+/// When `T::IS_STRUCT` is true (a `#[derive(SolStorage)]` struct value),
+/// the entry's `type` is the solc-style qualified name
+/// (`"struct Contract.Name"`), and the struct's own member breakdown is
+/// registered into `types` (once per distinct type) via
+/// `T::emit_members`. Plain primitives (`IS_STRUCT == false`) keep their
+/// bare `StorageTypeName::name()` and never touch `types`.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
     fn emit_entries(
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         types: &mut alloc::collections::BTreeMap<
             String,
             pvm_contract_types::StorageLayoutTypeEntry,
         >,
     ) {
-        let type_name = <T as pvm_contract_types::StorageTypeName>::name();
+        let type_name = if T::IS_STRUCT {
+            let qualified = alloc::format!(
+                "struct {}.{}",
+                contract_name,
+                <T as pvm_contract_types::StorageTypeName>::name(),
+            );
+            if !types.contains_key(&qualified) {
+                T::emit_members(types, contract_name);
+            }
+            qualified
+        } else {
+            <T as pvm_contract_types::StorageTypeName>::name()
+        };
+
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: type_name.clone(),
+            ty: type_name,
         });
-        let _ = types;
     }
 }
 
@@ -1118,6 +1139,11 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
 /// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K => V)` entry.
 /// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
 /// is always `0` here; it is threaded through for signature uniformity.
+///
+/// Register V's struct shape into `types` if needed — the mapping's
+/// OWN type string (`mapping(K => V)`) still uses V's bare name via
+/// StorageTypeName, matching solc; only V's *own* entry in `types`
+/// needs the qualified name.
 #[cfg(feature = "abi-gen")]
 impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeName>
     StorageLayoutEmit for Mapping<K, V>
@@ -1126,13 +1152,27 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         types: &mut alloc::collections::BTreeMap<
             String,
             pvm_contract_types::StorageLayoutTypeEntry,
         >,
     ) {
-        let _ = types;
+        // Register V's struct shape into `types` if needed — the mapping's
+        // OWN type string (`mapping(K => V)`) still uses V's bare name via
+        // StorageTypeName, matching solc; only V's *own* entry in `types`
+        // needs the qualified name.
+        if V::IS_STRUCT {
+            let qualified = alloc::format!(
+                "struct {}.{}",
+                contract_name,
+                <V as pvm_contract_types::StorageTypeName>::name(),
+            );
+            if !types.contains_key(&qualified) {
+                V::emit_members(types, contract_name);
+            }
+        }
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
@@ -1871,19 +1911,33 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
 /// always `0`; it is threaded through for signature uniformity. The generic
 /// `T` covers the nested `StorageVec<StorageVec<U256>>` shape too, since the
 /// inner `StorageVec<U256>` itself implements `StorageTypeName` above.
+/// 
+/// Register T's struct shape into `types` if needed — StorageVec's OWN
+/// type string ("T[]") still uses T's bare name via StorageTypeName,
+/// matching solc; only T's *own* entry in `types` needs the qualified name.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T> {
     fn emit_entries(
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         types: &mut alloc::collections::BTreeMap<
             String,
             pvm_contract_types::StorageLayoutTypeEntry,
         >,
     ) {
-        let _ = types;
+        if T::IS_STRUCT {
+            let qualified = alloc::format!(
+                "struct {}.{}",
+                contract_name,
+                <T as pvm_contract_types::StorageTypeName>::name(),
+            );
+            if !types.contains_key(&qualified) {
+                T::emit_members(types, contract_name);
+            }
+        }
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),

@@ -25,16 +25,16 @@ pub struct MetadataState {
 /// Verifies that storageLayout JSON dotted-label flattening works through
 /// `StorageLayoutEmit::emit_entries`.
 #[pvm_contract_sdk::contract]
-mod composed {
+mod composed_contract {
     use super::*;
 
-    pub struct Composed {
+    pub struct ComposedContract {
         pub erc20: Erc20State,
         pub metadata: MetadataState,
         pub paused: Lazy<bool>,
     }
 
-    impl Composed {
+    impl ComposedContract {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self) {}
     }

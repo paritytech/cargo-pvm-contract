@@ -109,6 +109,7 @@ pub struct StorageLayoutTypeEntry {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayout {
     pub storage: Vec<StorageLayoutEntry>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
     pub types: BTreeMap<String, StorageLayoutTypeEntry>,
 }
 
@@ -148,6 +149,21 @@ pub trait StorageTypeName {
     /// structs via `#[derive(SolStorage)]` and `#[storage]`, container
     /// handles via `pvm-storage`.
     fn name() -> String;
+
+    /// `true` for `#[derive(SolStorage)]` structs; `false` for everything
+    /// else (primitives, `#[storage]` sub-structs, container handles).
+    /// Structs need a solc-style `"struct Contract.Name"` type reference
+    /// plus a `types` table entry; everything else stays as a bare name.
+    const IS_STRUCT: bool = false;
+
+    /// Push this type's own member entries into `types`, keyed by its
+    /// solc-style qualified name. No-op default — only `#[derive(SolStorage)]`
+    /// structs override this.
+    fn emit_members(
+        _types: &mut BTreeMap<String, StorageLayoutTypeEntry>,
+        _contract_name: &str,
+    ) {
+    }
 }
 
 /// Serialize a [`StorageLayout`] to a JSON string.

@@ -578,7 +578,7 @@ fn sol_storage_value_struct_uses_struct_name_in_layout_json() {
     // ident; without it the type would render as the ABI tuple
     // `"(uint64,uint64)"`.
     assert_eq!(
-        origin["type"], "PackedPoint",
+        origin["type"], "struct PointRegistry.PackedPoint",
         "Lazy<PackedPoint> should report struct ident, not ABI tuple notation. Got layout: {layout}",
     );
 

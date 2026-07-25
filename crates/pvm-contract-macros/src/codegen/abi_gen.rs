@@ -33,7 +33,12 @@ pub fn generate_abi_gen(
         // .sol path with storage: builder gets ABI from .sol, but needs
         // main() to output storage layout from the Rust side.
         let mod_name = &parsed.mod_name;
-        let helper = storage_layout_helper(slot_fields);
+        let contract_name_str = parsed
+                .struct_name
+                .as_ref()
+                .map(|ident| ident.to_string())
+                .unwrap_or_else(|| parsed.mod_name.to_string());
+        let helper = storage_layout_helper(slot_fields, &contract_name_str);
         let main_fn = if no_main {
             quote! {}
         } else {
@@ -69,7 +74,7 @@ pub fn generate_abi_gen(
 /// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
 /// `#[storage]` sub-structs dispatch through `StorageLayoutEmit::emit_entries`
 /// to recursively flatten their leaves with dotted labels.
-fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
+fn storage_layout_helper(slot_fields: &[SlotField], contract_name_str: &str) -> TokenStream {
     use super::contract::Slot;
 
     // Layout JSON only needs the slot consts (no `alone` flags here), so the
@@ -119,6 +124,7 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
                 ::std::collections::BTreeMap::new();
             let entries = &mut storage;
             let types = &mut types_owned;
+            let contract_name = #contract_name_str;
             #(#layout_emits)*
             let layout = ::pvm_contract_sdk::StorageLayout { storage, types: types_owned };
             ::pvm_contract_sdk::storage_layout_to_json(&layout)
@@ -295,11 +301,16 @@ fn generate_abi_gen_impl(
     };
 
     let mod_name = &parsed.mod_name;
+    let contract_name_str = parsed
+                .struct_name
+                .as_ref()
+                .map(|ident| ident.to_string())
+                .unwrap_or_else(|| parsed.mod_name.to_string());
 
     let combined_helper = if slot_fields.is_empty() {
         helper
     } else {
-        let sh = storage_layout_helper(slot_fields);
+        let sh = storage_layout_helper(slot_fields, &contract_name_str);
         quote! { #helper #sh }
     };
 
@@ -723,7 +734,7 @@ mod tests {
             slot: crate::codegen::contract::Slot::Explicit(0),
             cfg_attrs: vec![cfg_attr],
         }];
-        let helper = storage_layout_helper(&slot_fields);
+        let helper = storage_layout_helper(&slot_fields, "MyContract");
         let helper_str = helper.to_string();
         assert!(
             helper_str.contains("feature") && helper_str.contains("v2"),

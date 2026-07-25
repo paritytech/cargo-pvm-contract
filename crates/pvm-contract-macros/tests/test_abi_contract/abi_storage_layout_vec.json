@@ -61,12 +61,12 @@
         "label": "pool",
         "offset": 0,
         "slot": "4",
-        "type": "struct PoolState"
+        "type": "struct StorageVecContract.PoolState"
       }
     ],
     "types": {
-      "struct PoolState": {
-        "label": "struct PoolState",
+      "struct StorageVecContract.PoolState": {
+        "label": "struct StorageVecContract.PoolState",
         "members": [
           {
             "label": "owner",

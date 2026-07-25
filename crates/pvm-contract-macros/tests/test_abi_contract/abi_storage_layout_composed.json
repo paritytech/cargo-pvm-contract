@@ -37,13 +37,13 @@
         "label": "erc20",
         "offset": 0,
         "slot": "0",
-        "type": "struct Erc20State"
+        "type": "struct ComposedContract.Erc20State"
       },
       {
         "label": "metadata",
         "offset": 0,
         "slot": "3",
-        "type": "struct MetadataState"
+        "type": "struct ComposedContract.MetadataState"
       },
       {
         "label": "paused",
@@ -53,8 +53,8 @@
       }
     ],
     "types": {
-      "struct Erc20State": {
-        "label": "struct Erc20State",
+      "struct ComposedContract.Erc20State": {
+        "label": "struct ComposedContract.Erc20State",
         "members": [
           {
             "label": "total_supply",
@@ -77,8 +77,8 @@
         ],
         "number_of_bytes": "32"
       },
-      "struct MetadataState": {
-        "label": "struct MetadataState",
+      "struct ComposedContract.MetadataState": {
+        "label": "struct ComposedContract.MetadataState",
         "members": [
           {
             "label": "name",

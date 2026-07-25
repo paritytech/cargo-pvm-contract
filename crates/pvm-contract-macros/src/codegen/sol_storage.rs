@@ -318,10 +318,15 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 base: u64,
                 offset: u8,
                 name_prefix: &str,
+                contract_name: &str,
                 entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
                 types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
             ) {
-                let type_name = format!("struct {}", <Self as ::pvm_contract_sdk::StorageTypeName>::name());
+                let type_name = format!(
+                    "struct {}.{}",
+                    contract_name,
+                    <Self as ::pvm_contract_sdk::StorageTypeName>::name(),
+                );
 
                 // One entry for the whole sub-struct — no flattening.
                 entries.push(::pvm_contract_sdk::StorageLayoutEntry {
@@ -337,11 +342,10 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                     let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                         ::std::vec::Vec::new();
                     {
-                        // Shadow `entries`/`name_prefix` so the existing per-field
-                        // codegen (unchanged) pushes into our local buffer instead of
-                        // the caller's list, with prefixes reset to bare field names.
                         let entries = &mut member_entries;
                         let name_prefix = "";
+                        // contract_name is not shadowed, coz members inside this struct
+                        // still has the same contract name
                         #(#offset_consts_for_layout)*
                         #(#layout_emits)*
                     }
@@ -766,6 +770,53 @@ fn generate_sol_storage_impls(
             Fields::Unit => quote! { Self },
         };
 
+        let member_emit_pushes: Vec<TokenStream> = field_info
+        .iter()
+        .enumerate()
+        .map(|(i, (field_name, _))| {
+            let field_ty = field_types[i];
+            let label = match field_name {
+                Some(ident) => ident.to_string(),
+                None => i.to_string(),
+            };
+            quote! {
+                {
+                    let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
+                    member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                        label: ::std::string::String::from(#label),
+                        slot: __s.to_string(),
+                        offset: __o as u8,
+                        ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
+                    });
+                }
+            }
+        })
+        .collect(); 
+
+        let emit_members_body = quote! {
+            fn emit_members(
+                types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
+                contract_name: &str,
+            ) {
+                let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
+                if types.contains_key(&qualified) {
+                    return;
+                }
+                let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                    ::std::vec::Vec::new();
+                #(#member_emit_pushes)*
+                types.insert(
+                    qualified.clone(),
+                    ::pvm_contract_sdk::StorageLayoutTypeEntry {
+                        label: qualified,
+                        // TODO: need to calculate the actual packed size of the struct, not just hardcode 32. This is a placeholder until we implement proper size calculation for structs.
+                        number_of_bytes: "32".to_string(),
+                        members: member_entries,
+                    },
+                );
+            }
+        };
+
         Ok(quote! {
             // Eager type-check-time slot-count guard. Module-scope so it
             // fires under `cargo check` (visible to trybuild) instead of
@@ -871,9 +922,59 @@ fn generate_sol_storage_impls(
                 fn name() -> ::std::string::String {
                     ::std::string::String::from(stringify!(#name))
                 }
+
+                const IS_STRUCT: bool = true;
+
+                #emit_members_body
             }
         })
     } else {
+        let member_emit_pushes: Vec<TokenStream> = field_info
+        .iter()
+        .enumerate()
+        .map(|(i, (field_name, _))| {
+            let field_ty = field_types[i];
+            let label = match field_name {
+                Some(ident) => ident.to_string(),
+                None => i.to_string(),
+            };
+            quote! {
+                {
+                    let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
+                    member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                        label: ::std::string::String::from(#label),
+                        slot: __s.to_string(),
+                        offset: __o as u8,
+                        ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
+                    });
+                }
+            }
+        })
+        .collect();
+
+        let emit_members_body = quote! {
+            fn emit_members(
+                types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
+                contract_name: &str,
+            ) {
+                let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
+                if types.contains_key(&qualified) {
+                    return;
+                }
+                let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                    ::std::vec::Vec::new();
+                #(#member_emit_pushes)*
+                types.insert(
+                    qualified.clone(),
+                    ::pvm_contract_sdk::StorageLayoutTypeEntry {
+                        label: qualified,
+                        // TODO: need to calculate the actual packed size of the struct, not just hardcode 32. This is a placeholder until we implement proper size calculation for structs.
+                        number_of_bytes: "32".to_string(),
+                        members: member_entries,
+                    },
+                );
+            }
+        };
         // Static struct: universal trait methods delegate to shared helpers;
         // encode_slot + from_slots live on Static* refinement.
         Ok(quote! {
@@ -960,6 +1061,10 @@ fn generate_sol_storage_impls(
                 fn name() -> ::std::string::String {
                     ::std::string::String::from(stringify!(#name))
                 }
+
+                const IS_STRUCT: bool = true;
+
+                #emit_members_body
             }
         })
     }
