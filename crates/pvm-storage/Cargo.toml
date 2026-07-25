@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Typed storage helpers for PVM smart contracts with Solidity-compatible slot layout"
 
 [dependencies]
-pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
+pvm-contract-types = { path = "../pvm-contract-types", version = "0.4.0", default-features = false }
 
 [dev-dependencies]
 pvm-contract-types = { path = "../pvm-contract-types", features = ["std"] }

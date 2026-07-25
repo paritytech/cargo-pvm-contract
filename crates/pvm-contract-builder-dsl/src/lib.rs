@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../specs/builder-dsl.md")]
+#![doc = include_str!("../builder-dsl.md")]
 #![no_std]
 
 pub use pallet_revive_uapi;
