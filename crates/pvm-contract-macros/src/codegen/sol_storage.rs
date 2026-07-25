@@ -771,27 +771,27 @@ fn generate_sol_storage_impls(
         };
 
         let member_emit_pushes: Vec<TokenStream> = field_info
-        .iter()
-        .enumerate()
-        .map(|(i, (field_name, _))| {
-            let field_ty = field_types[i];
-            let label = match field_name {
-                Some(ident) => ident.to_string(),
-                None => i.to_string(),
-            };
-            quote! {
-                {
-                    let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
-                    member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                        label: ::std::string::String::from(#label),
-                        slot: __s.to_string(),
-                        offset: __o as u8,
-                        ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
-                    });
+            .iter()
+            .enumerate()
+            .map(|(i, (field_name, _))| {
+                let field_ty = field_types[i];
+                let label = match field_name {
+                    Some(ident) => ident.to_string(),
+                    None => i.to_string(),
+                };
+                quote! {
+                    {
+                        let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
+                        member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                            label: ::std::string::String::from(#label),
+                            slot: __s.to_string(),
+                            offset: __o as u8,
+                            ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
+                        });
+                    }
                 }
-            }
-        })
-        .collect(); 
+            })
+            .collect();
 
         let emit_members_body = quote! {
             fn emit_members(
@@ -930,27 +930,27 @@ fn generate_sol_storage_impls(
         })
     } else {
         let member_emit_pushes: Vec<TokenStream> = field_info
-        .iter()
-        .enumerate()
-        .map(|(i, (field_name, _))| {
-            let field_ty = field_types[i];
-            let label = match field_name {
-                Some(ident) => ident.to_string(),
-                None => i.to_string(),
-            };
-            quote! {
-                {
-                    let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
-                    member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                        label: ::std::string::String::from(#label),
-                        slot: __s.to_string(),
-                        offset: __o as u8,
-                        ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
-                    });
+            .iter()
+            .enumerate()
+            .map(|(i, (field_name, _))| {
+                let field_ty = field_types[i];
+                let label = match field_name {
+                    Some(ident) => ident.to_string(),
+                    None => i.to_string(),
+                };
+                quote! {
+                    {
+                        let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
+                        member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                            label: ::std::string::String::from(#label),
+                            slot: __s.to_string(),
+                            offset: __o as u8,
+                            ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
+                        });
+                    }
                 }
-            }
-        })
-        .collect();
+            })
+            .collect();
 
         let emit_members_body = quote! {
             fn emit_members(

@@ -159,11 +159,7 @@ pub trait StorageTypeName {
     /// Push this type's own member entries into `types`, keyed by its
     /// solc-style qualified name. No-op default — only `#[derive(SolStorage)]`
     /// structs override this.
-    fn emit_members(
-        _types: &mut BTreeMap<String, StorageLayoutTypeEntry>,
-        _contract_name: &str,
-    ) {
-    }
+    fn emit_members(_types: &mut BTreeMap<String, StorageLayoutTypeEntry>, _contract_name: &str) {}
 }
 
 /// Serialize a [`StorageLayout`] to a JSON string.

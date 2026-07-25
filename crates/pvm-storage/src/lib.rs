@@ -1911,7 +1911,7 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
 /// always `0`; it is threaded through for signature uniformity. The generic
 /// `T` covers the nested `StorageVec<StorageVec<U256>>` shape too, since the
 /// inner `StorageVec<U256>` itself implements `StorageTypeName` above.
-/// 
+///
 /// Register T's struct shape into `types` if needed — StorageVec's OWN
 /// type string ("T[]") still uses T's bare name via StorageTypeName,
 /// matching solc; only T's *own* entry in `types` needs the qualified name.

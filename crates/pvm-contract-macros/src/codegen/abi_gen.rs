@@ -34,10 +34,10 @@ pub fn generate_abi_gen(
         // main() to output storage layout from the Rust side.
         let mod_name = &parsed.mod_name;
         let contract_name_str = parsed
-                .struct_name
-                .as_ref()
-                .map(|ident| ident.to_string())
-                .unwrap_or_else(|| parsed.mod_name.to_string());
+            .struct_name
+            .as_ref()
+            .map(|ident| ident.to_string())
+            .unwrap_or_else(|| parsed.mod_name.to_string());
         let helper = storage_layout_helper(slot_fields, &contract_name_str);
         let main_fn = if no_main {
             quote! {}
@@ -302,10 +302,10 @@ fn generate_abi_gen_impl(
 
     let mod_name = &parsed.mod_name;
     let contract_name_str = parsed
-                .struct_name
-                .as_ref()
-                .map(|ident| ident.to_string())
-                .unwrap_or_else(|| parsed.mod_name.to_string());
+        .struct_name
+        .as_ref()
+        .map(|ident| ident.to_string())
+        .unwrap_or_else(|| parsed.mod_name.to_string());
 
     let combined_helper = if slot_fields.is_empty() {
         helper
