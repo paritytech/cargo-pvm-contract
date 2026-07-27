@@ -1,3 +1,5 @@
+// TODO: change the types comparison for struct, once we update types as per solc convention: t_struct(<struct_name>)_<incremental_pseudo_astId>_storage
+
 //! Differential storage-layout tests against the real Solidity compiler.
 //!
 //! Every other storage-layout test in this crate is a *snapshot* test: it
