@@ -178,7 +178,7 @@ pub(super) fn generate_layout_emit(
             &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
             contract_name,
             entries,
-            types,
+            registry,
         );
     }
 }

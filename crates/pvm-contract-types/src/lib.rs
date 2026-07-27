@@ -26,7 +26,7 @@ mod abi_gen;
 #[cfg(feature = "abi-gen")]
 pub use abi_gen::{
     AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry,
-    StorageLayoutTypeEntry, StorageTypeName, abi_to_json, parse_type_str, storage_layout_to_json,
+    StorageLayoutTypeEntry, LayoutTypesRegistry, StorageTypeName, abi_to_json, parse_type_str, storage_layout_to_json,
 };
 
 use framework_errors::INVALID_CALLDATA;

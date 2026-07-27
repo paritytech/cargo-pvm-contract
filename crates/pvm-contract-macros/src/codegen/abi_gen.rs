@@ -109,10 +109,11 @@ fn storage_layout_helper(slot_fields: &[SlotField], contract_name_str: &str) -> 
         })
         .collect();
 
-    // `storage` owns the Vec. `entries` is a `&mut Vec` alias used by the
-    // generated `layout_emits` so leaf pushes (`entries.push(...)`) and trait
-    // recursions (`StorageLayoutEmit::emit_entries(..., entries)`) compile
-    // identically inside both this function and the per-`#[storage]` impl.
+    // `storage` owns the Vec; `entries` is a `&mut Vec` alias. `types_registry`
+    // owns the LayoutTypesRegistry; `registry` is a `&mut` alias. Both alias
+    // names match what the generated `layout_emits` calls expect
+    // (`entries.push(...)`, `StorageLayoutEmit::emit_entries(..., entries, registry)`),
+    // so this compiles identically inside this function and the per-`#[storage]` impl.
     quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
@@ -120,13 +121,12 @@ fn storage_layout_helper(slot_fields: &[SlotField], contract_name_str: &str) -> 
             #(#auto_slot_consts)*
             let mut storage: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                 ::std::vec::Vec::new();
-            let mut types_owned: ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry> =
-                ::std::collections::BTreeMap::new();
+            let mut types_registry = ::pvm_contract_sdk::LayoutTypesRegistry::new();
             let entries = &mut storage;
-            let types = &mut types_owned;
+            let registry = &mut types_registry;
             let contract_name = #contract_name_str;
             #(#layout_emits)*
-            let layout = ::pvm_contract_sdk::StorageLayout { storage, types: types_owned };
+            let layout = ::pvm_contract_sdk::StorageLayout { storage, types: types_registry.types };
             ::pvm_contract_sdk::storage_layout_to_json(&layout)
         }
     }

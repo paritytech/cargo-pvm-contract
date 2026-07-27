@@ -320,7 +320,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 name_prefix: &str,
                 contract_name: &str,
                 entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
-                types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
+                registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
             ) {
                 let type_name = format!(
                     "struct {}.{}",
@@ -330,7 +330,6 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
 
                 // One entry for the whole sub-struct — no flattening.
                 entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                    // label: ::pvm_contract_sdk::join_label(name_prefix),
                     label: ::std::string::String::from(name_prefix),
                     slot: base.to_string(),
                     offset,
@@ -338,7 +337,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 });
 
                 // Register the struct's own shape in `types`, once per distinct type.
-                if !types.contains_key(&type_name) {
+                if !registry.types.contains_key(&type_name) {
                     let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                         ::std::vec::Vec::new();
                     {
@@ -349,7 +348,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                         #(#offset_consts_for_layout)*
                         #(#layout_emits)*
                     }
-                    types.insert(
+                    registry.types.insert(
                         type_name.clone(),
                         ::pvm_contract_sdk::StorageLayoutTypeEntry {
                             label: type_name.clone(),
@@ -795,17 +794,17 @@ fn generate_sol_storage_impls(
 
         let emit_members_body = quote! {
             fn emit_members(
-                types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
+                registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
                 contract_name: &str,
             ) {
                 let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
-                if types.contains_key(&qualified) {
+                if registry.types.contains_key(&qualified) {
                     return;
                 }
                 let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                     ::std::vec::Vec::new();
                 #(#member_emit_pushes)*
-                types.insert(
+                registry.types.insert(
                     qualified.clone(),
                     ::pvm_contract_sdk::StorageLayoutTypeEntry {
                         label: qualified,
@@ -954,17 +953,17 @@ fn generate_sol_storage_impls(
 
         let emit_members_body = quote! {
             fn emit_members(
-                types: &mut ::std::collections::BTreeMap<::std::string::String, ::pvm_contract_sdk::StorageLayoutTypeEntry>,
+                registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
                 contract_name: &str,
             ) {
                 let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
-                if types.contains_key(&qualified) {
+                if registry.types.contains_key(&qualified) {
                     return;
                 }
                 let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                     ::std::vec::Vec::new();
                 #(#member_emit_pushes)*
-                types.insert(
+                registry.types.insert(
                     qualified.clone(),
                     ::pvm_contract_sdk::StorageLayoutTypeEntry {
                         label: qualified,

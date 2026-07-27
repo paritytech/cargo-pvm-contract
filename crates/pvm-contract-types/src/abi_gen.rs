@@ -2,6 +2,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 /// A parameter in a Solidity ABI function signature.
@@ -105,6 +106,56 @@ pub struct StorageLayoutTypeEntry {
     pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
 }
 
+
+pub struct LayoutTypesRegistry {
+    pub types: BTreeMap<String, StorageLayoutTypeEntry>,
+    next_struct_id: u64,
+}
+
+impl LayoutTypesRegistry {
+    pub fn new() -> Self {
+        Self { types: BTreeMap::new(), next_struct_id: 0 }
+    }
+
+    /// Primitives: deterministic key, no counter, idempotent.
+    pub fn register_primitive(&mut self, sol_name: &str, number_of_bytes: &str) -> String {
+        let key = alloc::format!("t_{sol_name}");
+        self.types.entry(key.clone()).or_insert_with(|| StorageLayoutTypeEntry {
+            label: sol_name.to_string(),
+            members: Vec::new(),
+            number_of_bytes: number_of_bytes.to_string(),
+        });
+        key
+    }
+
+    /// Structs: counter-based key, dedup by label (not by key).
+    pub fn register_struct(
+        &mut self,
+        struct_name: &str,
+        label: String,
+        members: Vec<StorageLayoutEntry>,
+        number_of_bytes: String,
+    ) -> String {
+        if let Some((k, _)) = self.types.iter().find(|(_, v)| v.label == label) {
+            return k.clone();
+        }
+        let id = self.next_struct_id;
+        // Irrespective of how the astIds and hece the naming for struct works. 
+        // Due to implemnentation barriers, we would be having incremental astIds
+        self.next_struct_id += 1;
+        let key = alloc::format!("t_struct({struct_name})_{id}_storage");
+        self.types.insert(key.clone(), StorageLayoutTypeEntry { label, members, number_of_bytes });
+        key
+    }
+}
+
+// Default added since clippy will flag a manual new() with no args otherwise
+impl Default for LayoutTypesRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The top-level `storageLayout` object.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayout {
@@ -159,7 +210,7 @@ pub trait StorageTypeName {
     /// Push this type's own member entries into `types`, keyed by its
     /// solc-style qualified name. No-op default — only `#[derive(SolStorage)]`
     /// structs override this.
-    fn emit_members(_types: &mut BTreeMap<String, StorageLayoutTypeEntry>, _contract_name: &str) {}
+    fn emit_members(_types: &mut LayoutTypesRegistry, _contract_name: &str) {}
 }
 
 /// Serialize a [`StorageLayout`] to a JSON string.
