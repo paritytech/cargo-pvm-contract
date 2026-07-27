@@ -1,0 +1,5 @@
+error: #[cfg] / #[cfg_attr] on a folded interface method is not supported; use an inherent `#[method]` for feature-gated entry points
+  --> tests/ui/implements_cfg_folded_method.rs:24:9
+   |
+24 |         #[cfg(feature = "extra")]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^

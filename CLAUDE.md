@@ -106,6 +106,7 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 | `allocator = "pico"` | none | Use picoalloc heap allocator (enables dynamic types in returns) |
 | `allocator = "bump"` | none | Use bump allocator |
 | `allocator_size = N` | 1024 | Heap size in bytes for allocator modes |
+| `implements(ITrait, ...)` | none | Fold the methods of each in-module `impl ITrait for Contract` block into dispatch as real entry points (see [Interface Composition](#interface-composition)). Optional per-trait `<Error = Ty>` binds the trait's associated error. |
 
 ### Method Attribute
 
@@ -163,6 +164,53 @@ This matches Solidity's `pure` rules — solc rejects the same operations in a `
 - `#[receive]` — invoked on plain value transfers (empty calldata). Must take `&mut self` and no other arguments. Implicitly payable (mirrors Solidity's `receive() external payable`); `#[payable]` is rejected as redundant. Return type must be `()` or `Result<(), E>`.
 
 When both are present, receive fires first on empty calldata; fallback handles non-empty calldata that doesn't match a selector. Contracts without `#[receive]` pay zero bytecode cost — the empty-calldata branch is omitted entirely.
+
+## Interface Composition
+
+`#[contract(implements(ITrait, ...))]` folds the methods of each in-module `impl ITrait for Contract` block into the dispatch table as real entry points. This replaces the pattern of hand-writing one inherent `#[method]` forwarder per interface function: the forwarders move into a compiler-checked `impl ITrait for Contract`, and an override is just a different impl body. Modeled one-to-one on OpenZeppelin Stylus's `#[public(implements(...))]`.
+
+```rust
+#[contract(implements(IErc20, IErc165))]
+mod my_token {
+    pub struct MyToken { pub erc20: Erc20State }
+    impl MyToken { #[constructor] pub fn new(&mut self) {} }   // only genuinely-custom methods
+
+    impl IErc20 for MyToken {
+        fn total_supply(&self) -> U256 { self.erc20._total_supply() }
+        fn transfer(&mut self, to: Address, v: U256) -> Result<bool, Error> {
+            self.erc20._transfer(self.caller(), to, v)          // an override is just a different body
+        }
+        // ... rest of the interface
+    }
+    impl IErc165 for MyToken { /* the ERC-165 3-liner below */ }
+}
+```
+
+Mechanics:
+
+- **How folding works.** Each folded method becomes one dispatch arm that calls the method through a fully-qualified trait call `<MyToken as IErc20>::transfer(this, ...)`. This runs the contract's own trait-impl body, so an override just works without any `virtual`/`override` keyword. An inherent method of the same name cannot shadow it. All methods share one flat `match`, keeping bytecode small. Dispatch is static, so interface traits are never used as `dyn` trait objects. This is what lets `#[interface_id]` traits serve as interfaces at all, since their associated constant makes them non-object-safe.
+- **Matched by last-segment ident.** `implements(IErc20)` matches `impl IErc20`, `impl crate::x::IErc20`, or `impl super::IErc20` (an associated `Error` type is bound in the impl body as `type Error = E;`, not on the impl header). If two distinct traits in the module share the last segment `IErc20`, the match is ambiguous and rejected. The impl must target the contract struct, be non-generic, and carry no `where` clause. Folded methods must take a receiver and have concrete (non-`Self::_`) parameter types.
+- **Mutability** is inferred from the receiver exactly as for inherent methods. Per-method attributes go on the **impl fn** and behave as on the inherent path: `#[payable]` (payability isn't part of the Rust signature, so the trait can't carry it), `#[non_reentrant]` (folded methods always have a receiver, so the reentrancy guard applies just as it does to a `#[method]`), and `#[selector(name = "...")]`. With a `.sol` interface, a folded method's payability is cross-checked against the `.sol` declaration.
+- **`<Error = Ty>` binding.** For a folded method returning `Result<_, Self::Error>`, the macro can't resolve `Self::Error` from the impl block, so `implements(IErc20<Error = MyError>)` names the concrete error for the ABI. A method that writes its error type concretely needs no binding.
+- **Selector-collision detection.** A const-eval guard rejects any two dispatched methods (inherent vs folded, or two folded) sharing a 4-byte selector with a hard compile error. Rename one with `#[selector(name = "...")]` to fix this.
+- **Order.** Inherent `#[method]`s dispatch and appear in the ABI first, then folded methods in `implements(...)` order then declaration order — so `abi.json` is stable.
+
+### ERC-165 pattern (opt-in, no generated code)
+
+ERC-165 falls out of `#[interface_id]` + `implements(...)`. Define an `IErc165` interface, list it in `implements(...)`, and hand-write the 3-liner using the `INTERFACE_ID` consts. A contract that doesn't add this pays zero bytes.
+
+```rust
+impl IErc165 for MyToken {
+    fn supports_interface(&self, id: [u8; 4]) -> bool {
+        id == [0x01, 0xff, 0xc9, 0xa7]                // ERC-165 itself
+            || id == <Self as IErc20>::INTERFACE_ID
+    }
+}
+```
+
+### DSL path (builder-DSL)
+
+The builder-DSL composes via **router chaining** (its dispatch table is runtime, so chaining is the analog of the macro fold). An extension exposes its handlers as a `ContractBuilder`; the contract calls `ContractBuilder::dispatch_composed::<BUF>(&host, &[&extension, ...])`, which tries its own methods first, then each extension's non-terminating `try_route` in order (first match wins). Selector uniqueness within one builder is enforced at registration — `method`/`payable_method` **panic on a duplicate selector** (the DSL's runtime analog of the macro's compile-time collision check).
 
 ## Type System
 

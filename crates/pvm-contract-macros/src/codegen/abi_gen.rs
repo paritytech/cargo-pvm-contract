@@ -541,6 +541,7 @@ mod tests {
             mutability: StateMutability::View,
             precomputed_selector: None,
             is_non_reentrant: false,
+            trait_path: None,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -563,6 +564,7 @@ mod tests {
             mutability: StateMutability::Pure,
             precomputed_selector: None,
             is_non_reentrant: false,
+            trait_path: None,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);

@@ -1,0 +1,7 @@
+error: a folded interface `impl` must not be generic or carry a `where` clause
+ --> tests/ui/implements_where_clause_impl.rs:7:1
+  |
+7 | #[pvm_contract_macros::contract(implements(IThing))]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `pvm_contract_macros::contract` (in Nightly builds, run with -Z macro-backtrace for more info)

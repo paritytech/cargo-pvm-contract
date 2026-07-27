@@ -18,6 +18,11 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 /// - `allocator = "pico"` - Enables allocator mode using picoalloc
 /// - `allocator = "bump"` - Enables allocator mode using pvm-bump-allocator
 /// - `allocator_size = N` - Sets allocator heap size (with `allocator = "pico"` or `allocator = "bump"`, default: 1024)
+/// - `implements(ITrait, ...)` - Folds the methods of each in-module `impl ITrait for Contract`
+///   block into the dispatch table as real entry points, so an interface is implemented as one
+///   trait impl instead of a pile of inherent `#[method]` forwarders. An optional per-trait
+///   `<Error = Ty>` (e.g. `implements(IErc20<Error = MyError>)`) binds the interface's associated
+///   error type. See the "Interface Composition" section of `specs/proc-macros.md`.
 ///
 /// # Usage with Solidity Interface
 ///

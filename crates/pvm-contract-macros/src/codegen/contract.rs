@@ -28,6 +28,26 @@ pub struct ContractArgs {
     /// `__abi_json()` / `__storage_layout_json()` so callers can pull the
     /// outputs directly.
     pub no_main: bool,
+    /// Interface traits to fold into dispatch from `#[contract(implements(...))]`.
+    /// Each entry names a trait whose `impl Trait for Contract` block in the
+    /// same module is folded into the dispatch table as real entry points.
+    pub implements: Vec<InterfaceRef>,
+}
+
+/// One entry of `implements(...)`: an interface trait path, plus its optional
+/// `<Error = Ty>` associated-error binding.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InterfaceRef {
+    /// The trait path with any `<Error = Ty>` binding stripped. Matched by its
+    /// last segment against `impl Path for Struct` blocks. (The UFCS fold call
+    /// uses the matched `impl`'s own path, not this one, so a qualified `impl`
+    /// path resolves even when the bare name isn't in scope.)
+    pub path: syn::Path,
+    /// The concrete type bound to the trait's associated `Error` type, from
+    /// `implements(IErc20<Error = MyError>)`. The macro cannot resolve
+    /// `Self::Error` from the impl block, so a folded method returning
+    /// `Result<_, Self::Error>` uses this as its concrete error type.
+    pub error_ty: Option<syn::Type>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,8 +64,40 @@ impl Default for ContractArgs {
             allocator: None,
             allocator_size: 1024,
             no_main: false,
+            implements: Vec::new(),
         }
     }
+}
+
+/// Parse one `implements(...)` entry: a trait path optionally carrying an
+/// `<Error = Ty>` binding. The binding is extracted into `error_ty` and stripped
+/// from the returned path, which is then matched by its last segment against the
+/// module's `impl` blocks.
+fn parse_interface_ref(input: ParseStream) -> syn::Result<InterfaceRef> {
+    let mut path: syn::Path = input.parse()?;
+    let mut error_ty = None;
+
+    if let Some(last) = path.segments.last_mut()
+        && let syn::PathArguments::AngleBracketed(ab) = &last.arguments
+    {
+        for arg in &ab.args {
+            match arg {
+                syn::GenericArgument::AssocType(assoc) if assoc.ident == "Error" => {
+                    error_ty = Some(assoc.ty.clone());
+                }
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "`implements(...)` only accepts an `<Error = Ty>` binding on an \
+                         interface trait; other generic arguments are not supported",
+                    ));
+                }
+            }
+        }
+        last.arguments = syn::PathArguments::None;
+    }
+
+    Ok(InterfaceRef { path, error_ty })
 }
 
 impl Parse for ContractArgs {
@@ -99,6 +151,35 @@ impl Parse for ContractArgs {
                     // Standalone flag — no `= value`. Caller (e.g. a test
                     // harness or library crate) provides its own `main`.
                     args.no_main = true;
+                }
+                "implements" => {
+                    let content;
+                    syn::parenthesized!(content in input);
+                    let refs = content.parse_terminated(parse_interface_ref, Token![,])?;
+                    if refs.is_empty() {
+                        return Err(syn::Error::new(
+                            ident.span(),
+                            "`implements()` is empty; list at least one interface trait to fold, \
+                             or omit the argument",
+                        ));
+                    }
+                    for r in refs {
+                        // A trait listed twice would fold its methods twice —
+                        // a duplicate-selector collision at best, confusing at
+                        // worst. Reject by last-segment ident (the matching key).
+                        let last = |p: &syn::Path| p.segments.last().map(|s| s.ident.clone());
+                        if args
+                            .implements
+                            .iter()
+                            .any(|existing| last(&existing.path) == last(&r.path))
+                        {
+                            return Err(syn::Error::new_spanned(
+                                &r.path,
+                                "duplicate interface in `implements(...)`",
+                            ));
+                        }
+                        args.implements.push(r);
+                    }
                 }
                 other => {
                     return Err(syn::Error::new(
@@ -718,9 +799,451 @@ fn build_assert_non_payable_call(emit: bool) -> TokenStream {
     quote! { __pvm_assert_non_payable(this.host()); }
 }
 
+/// True if `ty` mentions `Self` anywhere — directly (`Self::Error`, `Self::Foo`)
+/// or nested inside a generic / tuple / array / reference (`Vec<Self::Item>`,
+/// `(Self::Amount, u64)`, `[Self::X; N]`). Such a type has no macro-time
+/// `SOL_NAME` (the dispatch codegen lives at module scope, where `Self` doesn't
+/// resolve), so it can't be a folded param type.
+fn type_references_self(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(tp) => {
+            // `<Foo as Bar>::Baz` — a qualified-self projection.
+            if tp
+                .qself
+                .as_ref()
+                .is_some_and(|q| type_references_self(&q.ty))
+            {
+                return true;
+            }
+            if tp.path.segments.first().is_some_and(|s| s.ident == "Self") {
+                return true;
+            }
+            // Recurse into generic arguments, e.g. `Vec<Self::Item>`.
+            tp.path.segments.iter().any(|seg| {
+                if let syn::PathArguments::AngleBracketed(ab) = &seg.arguments {
+                    ab.args.iter().any(
+                        |a| matches!(a, syn::GenericArgument::Type(t) if type_references_self(t)),
+                    )
+                } else {
+                    false
+                }
+            })
+        }
+        syn::Type::Tuple(t) => t.elems.iter().any(type_references_self),
+        syn::Type::Array(a) => type_references_self(&a.elem),
+        syn::Type::Slice(s) => type_references_self(&s.elem),
+        syn::Type::Reference(r) => type_references_self(&r.elem),
+        syn::Type::Paren(p) => type_references_self(&p.elem),
+        syn::Type::Group(g) => type_references_self(&g.elem),
+        _ => false,
+    }
+}
+
+/// Register a folded method's error type for the ABI, substituting a
+/// `Self::Error` return with the `implements(IErc20<Error = Ty>)` binding — the
+/// macro can't resolve `Self::Error` from the impl block. A method that names its
+/// error concretely (`Result<_, MyError>`) needs no binding.
+fn collect_folded_error_type(
+    output: &syn::ReturnType,
+    error_binding: Option<&syn::Type>,
+    error_types: &mut Vec<syn::Type>,
+    seen_error_names: &mut Vec<String>,
+) -> syn::Result<()> {
+    let syn::ReturnType::Type(_, ty) = output else {
+        return Ok(());
+    };
+    let syn::Type::Path(type_path) = ty.as_ref() else {
+        return Ok(());
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return Ok(());
+    };
+    if segment.ident != "Result" {
+        return Ok(());
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return Ok(());
+    };
+    let type_args: Vec<_> = args
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            syn::GenericArgument::Type(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+    if type_args.len() < 2 {
+        return Ok(());
+    }
+    let err_ty = type_args[1];
+    let concrete = if type_references_self(err_ty) {
+        match error_binding {
+            Some(bound) => bound.clone(),
+            // Can't resolve `Self::Error` without a binding — the ABI can't list
+            // it. Point the author at `implements(ITrait<Error = ...>)`.
+            None => {
+                return Err(syn::Error::new_spanned(
+                    err_ty,
+                    "folded method returns `Result<_, Self::Error>` but the interface has no \
+                     error binding; write `implements(ITrait<Error = YourError>)`",
+                ));
+            }
+        }
+    } else {
+        err_ty.clone()
+    };
+    let name = quote! { #concrete }.to_string();
+    if !seen_error_names.contains(&name) {
+        seen_error_names.push(name);
+        error_types.push(concrete);
+    }
+    Ok(())
+}
+
+/// Resolve the single interface `contract`/`interface` declaration in a `.sol`
+/// file. `None` when no `.sol` was provided; error if the file declares zero or
+/// more than one interface.
+fn resolve_single_interface<'a>(
+    sol_interface: Option<&'a syn_solidity::File>,
+    input: &ItemMod,
+) -> syn::Result<Option<&'a syn_solidity::ItemContract>> {
+    let Some(file) = sol_interface else {
+        return Ok(None);
+    };
+    let mut interfaces = file.items.iter().filter_map(|x| match x {
+        Item::Contract(c) if c.is_interface() => Some(c),
+        _ => None,
+    });
+    match (interfaces.next(), interfaces.next()) {
+        (Some(c), None) => Ok(Some(c)),
+        _ => Err(syn::Error::new_spanned(
+            input,
+            "Only one contract interface per file is supported",
+        )),
+    }
+}
+
+/// Match a Rust method against a `.sol` interface function, validate parameter
+/// compatibility and mutability, and return `(sol_name, selector, sol_func)`.
+///
+/// This is the single source of truth for Rust-to-`.sol` method resolution,
+/// shared by inherent `#[method]`s and `implements(...)`-folded methods
+/// so both honor the same matcher — including the rule that an
+/// explicit `#[selector(name)]` binds to the interface function of exactly that
+/// name, never falling back to the Rust-name heuristic.
+fn resolve_sol_method<'a>(
+    sol_contract: &'a syn_solidity::ItemContract,
+    func: &syn::ImplItemFn,
+    explicit_rename: &Option<String>,
+    param_types: &[syn::Type],
+    inferred_mutability: StateMutability,
+) -> syn::Result<(String, [u8; 4], &'a syn_solidity::ItemFunction)> {
+    let rust_fn_name = func.sig.ident.to_string();
+    let rename = explicit_rename
+        .clone()
+        .unwrap_or_else(|| to_snake_case(&rust_fn_name));
+    let sol_func = sol_contract
+        .body
+        .iter()
+        .find_map(|f| match f {
+            syn_solidity::Item::Function(item_function)
+                if item_function.name.as_ref().is_some_and(|name| {
+                    if explicit_rename.is_some() {
+                        name.as_string() == rename
+                    } else {
+                        name.as_string() == rename
+                            || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                    }
+                }) =>
+            {
+                Some(item_function)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                func,
+                format!("No matching Solidity function found for `{rename}` in interface"),
+            )
+        })?;
+
+    let sig = sol_func
+        .parameters
+        .types()
+        .map(|x| x.clone().try_into())
+        .collect::<Result<Vec<SolType>, String>>();
+    check_signature_compatibility(
+        func,
+        &sol_func.name().to_string(),
+        &sig.map_err(|x| {
+            syn::Error::new_spanned(
+                func,
+                format!(
+                    "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
+                ),
+            )
+        })?,
+        param_types,
+    )?;
+
+    let sol_mutability = match sol_func.attributes.mutability() {
+        Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
+        Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
+        Some(syn_solidity::Mutability::Payable(_)) => StateMutability::Payable,
+        _ => StateMutability::NonPayable,
+    };
+    if sol_mutability != inferred_mutability {
+        return Err(mutability_mismatch_error(
+            func,
+            &func.sig.ident.to_string(),
+            sol_mutability,
+            inferred_mutability,
+        ));
+    }
+
+    let selector = compute_selector(&compute_function_signature(sol_func));
+    Ok((sol_func.name().to_string(), selector, sol_func))
+}
+
+/// Fold the methods of each `implements(...)` trait's `impl Trait for Struct`
+/// block into `methods` as real dispatch entry points.
+#[allow(clippy::too_many_arguments)]
+fn fold_interface_methods(
+    items: &[syn::Item],
+    struct_ident: &Ident,
+    implements: &[InterfaceRef],
+    methods: &mut Vec<MethodInfo>,
+    error_types: &mut Vec<syn::Type>,
+    seen_error_names: &mut Vec<String>,
+    sol_contract: Option<&syn_solidity::ItemContract>,
+    implemented_sol_methods: &mut Vec<Option<syn_solidity::SolIdent>>,
+) -> syn::Result<()> {
+    for iface in implements {
+        let iface_last = iface
+            .path
+            .segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_default();
+
+        let mut matched_impl = false;
+        for item in items {
+            let syn::Item::Impl(item_impl) = item else {
+                continue;
+            };
+            let Some((_, trait_path, _)) = &item_impl.trait_ else {
+                continue;
+            };
+            // Match by last-segment ident so `implements(IErc20)` matches
+            // `impl IErc20`, `impl crate::x::IErc20`, or `impl super::IErc20`.
+            if trait_path.segments.last().map(|s| s.ident.to_string()) != Some(iface_last.clone()) {
+                continue;
+            }
+
+            // The impl must target the contract struct.
+            let self_ok = matches!(
+                item_impl.self_ty.as_ref(),
+                syn::Type::Path(tp) if tp.path.segments.last().map(|s| &s.ident) == Some(struct_ident)
+            );
+            if !self_ok {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.self_ty,
+                    format!(
+                        "`impl {iface_last} for ...` must target the contract struct `{struct_ident}`"
+                    ),
+                ));
+            }
+
+            // Contracts aren't generic; the fold assumes a concrete impl.
+            if !item_impl.generics.params.is_empty() || item_impl.generics.where_clause.is_some() {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.generics,
+                    "a folded interface `impl` must not be generic or carry a `where` clause",
+                ));
+            }
+
+            // `#[cfg]` on the whole `impl` block has the same hazard as on a
+            // single folded method: the macro folds it unconditionally (attr
+            // macros run pre-cfg-eval), then the compiler strips the impl when
+            // the feature is off, leaving dispatch arms referencing a
+            // now-missing `<Struct as Trait>::method`. Reject it, like the
+            // method-level cfg check below.
+            for attr in &item_impl.attrs {
+                if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "#[cfg] / #[cfg_attr] on a folded interface `impl` block is not \
+                         supported; gate the interface behind an inherent `#[method]` instead",
+                    ));
+                }
+            }
+
+            // Last-segment matching is ambiguous if two traits share it. Folding
+            // both would silently expose the unintended trait's methods as entry
+            // points (a contract-surface hazard) and apply this item's
+            // `<Error = Ty>` binding to the wrong trait. Require exactly one
+            // matching impl per `implements(...)` entry.
+            if matched_impl {
+                return Err(syn::Error::new_spanned(
+                    trait_path,
+                    format!(
+                        "`implements({iface_last})` is ambiguous: more than one `impl` for \
+                         `{struct_ident}` in this module ends in `{iface_last}`. Two interface \
+                         traits sharing a last segment can't both be folded — rename one so \
+                         their last segments differ."
+                    ),
+                ));
+            }
+            matched_impl = true;
+
+            for impl_item in &item_impl.items {
+                let syn::ImplItem::Fn(func) = impl_item else {
+                    continue;
+                };
+
+                if !func.sig.generics.params.is_empty() {
+                    return Err(syn::Error::new_spanned(
+                        &func.sig.generics.params,
+                        "folded interface methods must not be generic (their selector is undefined)",
+                    ));
+                }
+
+                // `#[cfg]`/`#[cfg_attr]` on a folded method is rejected for now.
+                // Honoring it (a feature-varying dispatch table) would need the
+                // selector const and dispatch arm to carry the cfg, but the
+                // const-eval collision guard references every selector const
+                // unconditionally (a gated const breaks it) and abi-gen would
+                // still emit the entry — an ABI that doesn't match the gated
+                // dispatch. Reject cleanly rather than ship a half-correct story.
+                for attr in &func.attrs {
+                    if attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr") {
+                        return Err(syn::Error::new_spanned(
+                            attr,
+                            "#[cfg] / #[cfg_attr] on a folded interface method is not supported; \
+                             use an inherent `#[method]` for feature-gated entry points",
+                        ));
+                    }
+                }
+
+                // `#[non_reentrant]` is honored on folded methods (read into the
+                // MethodInfo below); a folded method always has a receiver, so
+                // the pure-method restriction that applies to the inherent path
+                // can't arise here.
+
+                // Interface methods take a receiver; a no-receiver (associated)
+                // fn has no host access and isn't dispatchable.
+                match classify_receiver(&func.sig.inputs)? {
+                    ReceiverKind::Ref | ReceiverKind::RefMut => {}
+                    ReceiverKind::None => {
+                        return Err(syn::Error::new_spanned(
+                            func,
+                            "folded interface methods must take `&self` or `&mut self`",
+                        ));
+                    }
+                }
+
+                let typed_params = extract_typed_params_impl(func, &func.sig.inputs)?;
+                for (_, ty) in &typed_params {
+                    if type_references_self(ty) {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            "folded interface method parameters must be concrete types; \
+                             a parameter mentioning `Self` (directly or nested, e.g. \
+                             `Self::Item` or `Vec<Self::Item>`) has no ABI selector name",
+                        ));
+                    }
+                }
+
+                let is_payable = has_pvm_attr(&func.attrs, "payable");
+                let mutability = infer_method_mutability(func, is_payable)?;
+
+                let param_names: Vec<Ident> = typed_params.iter().map(|(n, _)| n.clone()).collect();
+                let param_types: Vec<syn::Type> =
+                    typed_params.into_iter().map(|(_, t)| t).collect();
+                let returns_result = is_result_return_type(&func.sig.output);
+                let return_types = extract_return_types(&func.sig.output);
+                // Return types are ABI-encoded at module scope, where `Self`
+                // has no meaning, so a `Self`-referencing return type has no ABI
+                // name. `extract_return_types` yields the `Ok` type(s), so a
+                // `Result<_, Self::Error>` error side is excluded here (it is
+                // resolved via the `implements(ITrait<Error = ...>)` binding).
+                for ty in &return_types {
+                    if type_references_self(ty) {
+                        return Err(syn::Error::new_spanned(
+                            ty,
+                            "folded interface method return types must be concrete; a return \
+                             type mentioning `Self` (e.g. `Self::Value`) has no ABI name. A \
+                             `Result<_, Self::Error>` error type is resolved via \
+                             `implements(ITrait<Error = ...>)`.",
+                        ));
+                    }
+                }
+                let explicit_rename = extract_method_rename(&func.attrs)?;
+
+                // When a `.sol` interface is provided, a folded method is
+                // resolved against it through the same matcher as inherent
+                // methods — coverage, parameter-compatibility, and mutability
+                // (incl. payability) cross-checks all apply, and the selector is
+                // taken from the `.sol` declaration. Without a `.sol`, the
+                // selector derives from the Rust signature (camelCase or rename).
+                let (sol_name, precomputed_selector) = match sol_contract {
+                    Some(sc) => {
+                        let (name, selector, sol_func) = resolve_sol_method(
+                            sc,
+                            func,
+                            &explicit_rename,
+                            &param_types,
+                            mutability,
+                        )?;
+                        implemented_sol_methods.push(sol_func.name.clone());
+                        (name, Some(selector))
+                    }
+                    None => (
+                        explicit_rename
+                            .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string())),
+                        None,
+                    ),
+                };
+
+                collect_folded_error_type(
+                    &func.sig.output,
+                    iface.error_ty.as_ref(),
+                    error_types,
+                    seen_error_names,
+                )?;
+
+                methods.push(MethodInfo {
+                    fn_name: func.sig.ident.clone(),
+                    sol_name,
+                    param_names,
+                    param_types,
+                    return_types,
+                    returns_result,
+                    mutability,
+                    precomputed_selector,
+                    is_non_reentrant: has_pvm_attr(&func.attrs, "non_reentrant"),
+                    trait_path: Some(trait_path.clone()),
+                });
+            }
+        }
+
+        if !matched_impl {
+            return Err(syn::Error::new_spanned(
+                &iface.path,
+                format!(
+                    "`implements({iface_last})` has no matching `impl {iface_last} for {struct_ident}` \
+                     block in the contract module"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse_contract(
     input: &ItemMod,
     sol_interface: Option<&syn_solidity::File>,
+    implements: &[InterfaceRef],
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
     let content = input
@@ -752,6 +1275,31 @@ fn parse_contract(
             return None;
         };
         type_path.path.segments.last().map(|s| s.ident.clone())
+    });
+
+    // Fallback for an `implements(...)`-only contract whose only impl blocks are
+    // `impl ITrait for Struct` (no inherent `#[method]`/`#[constructor]` block to
+    // name the struct): take the self-type of a matching trait impl.
+    let struct_name = struct_name.or_else(|| {
+        if implements.is_empty() {
+            return None;
+        }
+        content.1.iter().find_map(|item| {
+            let syn::Item::Impl(item_impl) = item else {
+                return None;
+            };
+            let (_, trait_path, _) = item_impl.trait_.as_ref()?;
+            let trait_last = trait_path.segments.last()?.ident.to_string();
+            if !implements.iter().any(|r| {
+                r.path.segments.last().map(|s| s.ident.to_string()) == Some(trait_last.clone())
+            }) {
+                return None;
+            }
+            let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+                return None;
+            };
+            type_path.path.segments.last().map(|s| s.ident.clone())
+        })
     });
 
     // A contract is a single type — the dispatcher constructs one `this` and
@@ -885,6 +1433,25 @@ fn parse_contract(
         let syn::Item::Impl(item_impl) = item else {
             continue;
         };
+
+        // A folded interface `impl` (its trait's last segment is listed in
+        // `implements(...)`) is handled entirely by `fold_interface_methods`.
+        // Skip it here so its methods aren't *also* collected as inherent
+        // `#[method]`s: a folded method carrying `#[method]` / `#[method(rename
+        // = "...")]` would otherwise register twice under the same selector and
+        // trip the collision guard. The fold reads `#[selector(name)]` /
+        // `#[method(rename)]` and honors `#[non_reentrant]` on its own.
+        let is_folded_iface_impl = !implements.is_empty()
+            && item_impl.trait_.as_ref().is_some_and(|(_, p, _)| {
+                let last = p.segments.last().map(|s| s.ident.to_string());
+                implements
+                    .iter()
+                    .any(|r| r.path.segments.last().map(|s| s.ident.to_string()) == last)
+            });
+        if is_folded_iface_impl {
+            continue;
+        }
+
         for impl_item in &item_impl.items {
             let syn::ImplItem::Fn(func) = impl_item else {
                 continue;
@@ -991,99 +1558,23 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
 
-                let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
-                    sol_interface
-                    && let Some(sol_iface) = {
-                        let mut items = sol_iface.items.iter().filter_map(|x| match x {
-                            Item::Contract(item_contract) if item_contract.is_interface() => {
-                                Some(item_contract)
-                            }
-                            _ => None,
-                        });
-                        if let i_face @ Some(_) = items.next()
-                            && items.next().is_none()
-                        {
-                            i_face
-                        } else {
-                            return Err(syn::Error::new_spanned(
-                                input,
-                                "Only one contract interface per file is supported",
-                            ));
-                        }
-                    } {
-                    let rust_fn_name = func.sig.ident.to_string();
-                    let explicit_rename = extract_method_rename(&func.attrs)?;
-                    let rename = explicit_rename
-                        .clone()
-                        .unwrap_or_else(|| to_snake_case(&rust_fn_name));
-                    let sol_func = sol_iface
-                        .body.iter().find_map(|f| match f {
-                            // With an explicit `#[selector(name = "...")]` (or its
-                            // `#[method(rename)]` alias), match the interface function of
-                            // exactly that name. Falling back to the Rust-name heuristic
-                            // here would silently ignore the rename and dispatch under the
-                            // interface's own name instead.
-                            syn_solidity::Item::Function(item_function) if item_function.name.as_ref().is_some_and(|name| {
-                                if explicit_rename.is_some() {
-                                    name.as_string() == rename
-                                } else {
-                                    name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name
-                                }
-                            }) => Some(item_function),
-                           _ => None
-                        })
-                        .ok_or_else(|| {
-                            syn::Error::new_spanned(
-                                func,
-                                format!(
-                                    "No matching Solidity function found for `{rename}` in interface"
-                                ),
-                            )
-                        })?;
-                    let sig = sol_func
-                        .parameters
-                        .types()
-                        .map(|x| x.clone().try_into())
-                        .collect::<Result<Vec<SolType>, String>>();
-                    check_signature_compatibility(
-                        func,
-                        &sol_func.name().to_string(),
-                        &sig.map_err(|x| {
-                            syn::Error::new_spanned(
-                                func,
-                                format!(
-                                    "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
-                                ),
-                            )
-                        })?,
-                        &param_types,
-                    )?;
-                    implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&compute_function_signature(sol_func));
-                    let sol_mutability = match sol_func.attributes.mutability() {
-                        Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
-                        Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
-                        Some(syn_solidity::Mutability::Payable(_)) => StateMutability::Payable,
-                        _ => StateMutability::NonPayable,
-                    };
-                    if sol_mutability != inferred_mutability {
-                        return Err(mutability_mismatch_error(
+                let (sol_name, precomputed_selector, mutability) =
+                    if let Some(sc) = resolve_single_interface(sol_interface, input)? {
+                        let explicit_rename = extract_method_rename(&func.attrs)?;
+                        let (name, selector, sol_func) = resolve_sol_method(
+                            sc,
                             func,
-                            &func.sig.ident.to_string(),
-                            sol_mutability,
+                            &explicit_rename,
+                            &param_types,
                             inferred_mutability,
-                        ));
-                    }
-                    (
-                        sol_func.name().to_string(),
-                        Some(selector),
-                        inferred_mutability,
-                    )
-                } else {
-                    let sol_name = extract_method_rename(&func.attrs)?
-                        .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    (sol_name, None, inferred_mutability)
-                };
+                        )?;
+                        implemented_sol_methods.push(sol_func.name.clone());
+                        (name, Some(selector), inferred_mutability)
+                    } else {
+                        let sol_name = extract_method_rename(&func.attrs)?
+                            .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
+                        (sol_name, None, inferred_mutability)
+                    };
 
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
@@ -1095,10 +1586,32 @@ fn parse_contract(
                     mutability,
                     precomputed_selector,
                     is_non_reentrant,
+                    trait_path: None,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             }
         }
+    }
+
+    // Fold `implements(...)` trait-impl methods into the dispatch table.
+    if !implements.is_empty() {
+        let Some(struct_ident) = &struct_name else {
+            return Err(syn::Error::new_spanned(
+                input,
+                "`implements(...)` requires a contract storage struct in the module",
+            ));
+        };
+        let sol_contract = resolve_single_interface(sol_interface, input)?;
+        fold_interface_methods(
+            &content.1,
+            struct_ident,
+            implements,
+            &mut methods,
+            &mut error_types,
+            &mut seen_error_names,
+            sol_contract,
+            &mut implemented_sol_methods,
+        )?;
     }
 
     if let Some(sol_iface) = sol_interface
@@ -1226,7 +1739,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         None
     };
 
-    let parsed = parse_contract(&input, sol_interface.as_ref())?;
+    let parsed = parse_contract(&input, sol_interface.as_ref(), &args.implements)?;
     let use_alloc = args.allocator.is_some();
 
     let mod_name = &parsed.mod_name;
@@ -2252,7 +2765,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         let deposit = parsed
             .methods
             .iter()
@@ -2279,7 +2792,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         let deposit = parsed
             .methods
             .iter()
@@ -2303,7 +2816,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(parsed.constructor_is_payable);
         assert_eq!(parsed.constructor_inputs.len(), 1);
     }
@@ -2319,7 +2832,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(!parsed.constructor_is_payable);
     }
 
@@ -2335,7 +2848,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(parsed.fallback_is_payable);
     }
 
@@ -2357,7 +2870,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, Some(&iface)).unwrap();
+        let parsed = parse_contract(&input, Some(&iface), &[]).unwrap();
         let method = parsed
             .methods
             .iter()
@@ -2384,7 +2897,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, Some(&iface)).unwrap();
+        let parsed = parse_contract(&input, Some(&iface), &[]).unwrap();
         let method = parsed.methods.iter().find(|m| m.fn_name == "add").unwrap();
         assert_eq!(method.mutability, StateMutability::Pure);
     }
@@ -2409,7 +2922,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, Some(&iface)) {
+        let err = match parse_contract(&input, Some(&iface), &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2438,7 +2951,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, Some(&iface)) {
+        let err = match parse_contract(&input, Some(&iface), &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2469,7 +2982,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, Some(&iface)).unwrap();
+        let parsed = parse_contract(&input, Some(&iface), &[]).unwrap();
         let method = parsed
             .methods
             .iter()
@@ -2489,7 +3002,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         let method = parsed
             .methods
             .iter()
@@ -2509,7 +3022,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         let method = parsed
             .methods
             .iter()
@@ -2529,7 +3042,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         let method = parsed
             .methods
             .iter()
@@ -2550,7 +3063,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2573,7 +3086,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2595,7 +3108,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2616,7 +3129,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2641,7 +3154,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2663,7 +3176,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2686,7 +3199,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Err(e) => e,
             Ok(_) => panic!("expected error"),
         };
@@ -2708,7 +3221,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(!parsed.fallback_is_payable);
     }
 
@@ -2725,6 +3238,7 @@ mod tests {
                 allocator: None,
                 allocator_size: 1024,
                 no_main: false,
+                implements: Vec::new(),
             }
         );
     }
@@ -2742,6 +3256,7 @@ mod tests {
                 allocator: Some(super::AllocatorKind::Pico),
                 allocator_size: 2048,
                 no_main: false,
+                implements: Vec::new(),
             }
         );
     }
@@ -4158,7 +4673,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(parsed.has_receive);
         assert_eq!(parsed.receive_name.unwrap(), "receive");
         assert!(!parsed.receive_returns_result);
@@ -4175,7 +4690,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(parsed.has_receive);
         assert!(parsed.receive_returns_result);
     }
@@ -4192,7 +4707,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.to_string(),
         };
@@ -4210,7 +4725,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.to_string(),
         };
@@ -4228,7 +4743,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.to_string(),
         };
@@ -4246,7 +4761,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.to_string(),
         };
@@ -4266,7 +4781,7 @@ mod tests {
                 }
             }
         };
-        let err = match parse_contract(&input, None) {
+        let err = match parse_contract(&input, None, &[]) {
             Ok(_) => panic!("expected error"),
             Err(e) => e.to_string(),
         };
@@ -4388,7 +4903,7 @@ mod tests {
                 }
             }
         };
-        let parsed = parse_contract(&input, None).unwrap();
+        let parsed = parse_contract(&input, None, &[]).unwrap();
         assert!(parsed.has_receive);
         assert!(parsed.has_fallback);
 
@@ -4446,5 +4961,183 @@ mod tests {
             !s.contains("__pvm_assert_non_payable"),
             "receive is implicitly payable: call() must not invoke the non-payable guard; got:\n{s}"
         );
+    }
+
+    #[test]
+    fn fold_orders_methods_inherent_then_folded_and_binds_error() {
+        let args = syn::parse_str::<ContractArgs>("implements(IThing<Error = MyErr>)").unwrap();
+        let input: ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn inherent_one(&self) -> u64 { 0 }
+                }
+                impl IThing for C {
+                    fn folded_a(&self) -> u64 { 0 }
+                    fn folded_b(&mut self, x: U256) -> Result<bool, Self::Error> { let _ = x; Ok(true) }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None, &args.implements).unwrap();
+
+        // Deterministic order: inherent `#[method]`s first, then folded methods
+        // in impl declaration order.
+        let names: Vec<_> = parsed.methods.iter().map(|m| m.sol_name.clone()).collect();
+        assert_eq!(names, vec!["inherentOne", "foldedA", "foldedB"]);
+
+        // The folded methods carry their trait path; the inherent one does not.
+        assert!(parsed.methods[0].trait_path.is_none());
+        assert!(parsed.methods[1].trait_path.is_some());
+        assert!(parsed.methods[2].trait_path.is_some());
+
+        // `Result<_, Self::Error>` resolved to the `<Error = MyErr>` binding for
+        // the ABI errors.
+        assert!(
+            parsed
+                .error_types
+                .iter()
+                .any(|t| quote::quote!(#t).to_string().contains("MyErr")),
+            "expected the bound error type `MyErr` in error_types; got {:?}",
+            parsed
+                .error_types
+                .iter()
+                .map(|t| quote::quote!(#t).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn fold_without_error_binding_but_self_error_return_errors() {
+        // A folded method returning `Result<_, Self::Error>` needs an
+        // `implements(ITrait<Error = ...>)` binding to name the error for the ABI.
+        let args = syn::parse_str::<ContractArgs>("implements(IThing)").unwrap();
+        let input: ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+                impl IThing for C {
+                    fn folded(&mut self) -> Result<bool, Self::Error> { Ok(true) }
+                }
+            }
+        };
+        let err = match parse_contract(&input, None, &args.implements) {
+            Ok(_) => panic!("expected an error for Self::Error without a binding"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("error binding"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn folded_method_payability_comes_from_impl_fn_attr() {
+        // Payability is read from `#[payable]` on the impl fn (it isn't
+        // part of the Rust signature). The receiver pins the rest of the
+        // mutability inference, identical to inherent `#[method]`s.
+        let args = syn::parse_str::<ContractArgs>("implements(IVault)").unwrap();
+        let input: ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+                impl IVault for C {
+                    #[pvm_contract_macros::payable]
+                    fn deposit(&mut self) -> U256 { U256::ZERO }
+                    fn poke(&mut self) -> U256 { U256::ZERO }
+                    fn peek(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None, &args.implements).unwrap();
+        let by = |name: &str| {
+            parsed
+                .methods
+                .iter()
+                .find(|m| m.fn_name == name)
+                .unwrap_or_else(|| panic!("method `{name}` not folded"))
+                .mutability
+        };
+        assert_eq!(by("deposit"), StateMutability::Payable); // #[payable] + &mut self
+        assert_eq!(by("poke"), StateMutability::NonPayable); // &mut self
+        assert_eq!(by("peek"), StateMutability::View); // &self
+    }
+
+    #[test]
+    fn folded_method_honors_non_reentrant_attr() {
+        // `#[non_reentrant]` on a folded method is read into its `MethodInfo`
+        // (so the shared dispatch codegen emits the reentrancy guard), rather
+        // than being silently dropped or rejected.
+        let args = syn::parse_str::<ContractArgs>("implements(IVault)").unwrap();
+        let input: ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+                impl IVault for C {
+                    #[pvm_contract_macros::non_reentrant]
+                    fn withdraw(&mut self) -> U256 { U256::ZERO }
+                    fn peek(&self) -> U256 { U256::ZERO }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None, &args.implements).unwrap();
+        let guarded = |name: &str| {
+            parsed
+                .methods
+                .iter()
+                .find(|m| m.fn_name == name)
+                .unwrap_or_else(|| panic!("method `{name}` not folded"))
+                .is_non_reentrant
+        };
+        assert!(
+            guarded("withdraw"),
+            "folded `#[non_reentrant]` must be honored"
+        );
+        assert!(
+            !guarded("peek"),
+            "an unannotated folded method must not be guarded"
+        );
+    }
+
+    #[test]
+    fn folded_method_method_rename_alias_is_not_double_collected() {
+        // A folded method carrying the `#[method(rename = "...")]` alias must be
+        // folded exactly once (honoring the rename) rather than also collected
+        // as an inherent method — the latter would double-register under the
+        // same selector and trip the collision guard.
+        let args = syn::parse_str::<ContractArgs>("implements(IErc20)").unwrap();
+        let input: ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+                impl IErc20 for C {
+                    #[pvm_contract_macros::method(rename = "transferTokens")]
+                    fn transfer(&mut self) -> bool { true }
+                }
+            }
+        };
+        let parsed = parse_contract(&input, None, &args.implements).unwrap();
+        let matching: Vec<_> = parsed
+            .methods
+            .iter()
+            .filter(|m| m.fn_name == "transfer")
+            .collect();
+        assert_eq!(matching.len(), 1, "must be folded exactly once");
+        assert_eq!(matching[0].sol_name, "transferTokens"); // rename honored
+        assert!(matching[0].trait_path.is_some()); // folded, not inherent
     }
 }

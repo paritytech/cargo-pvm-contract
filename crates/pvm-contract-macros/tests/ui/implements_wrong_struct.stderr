@@ -1,0 +1,5 @@
+error: `impl IThing for ...` must target the contract struct `C`
+  --> tests/ui/implements_wrong_struct.rs:19:21
+   |
+19 |     impl IThing for Other {
+   |                     ^^^^^

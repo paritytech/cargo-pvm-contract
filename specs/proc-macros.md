@@ -348,7 +348,40 @@ pub trait IErc20 {
 - Parameter types are resolved through their `SolEncode::SOL_NAME` at const-eval, so custom types (`#[derive(SolType)]` structs) work as parameters.
 - Adding the associated const makes the trait non-object-safe (it can no longer be used behind `dyn`).
 
-Compile errors: an empty trait, a generic method (its selector is undefined), a trait that already declares `INTERFACE_ID`, or two methods that produce the same selector (they would silently cancel in the XOR — rename one with `#[selector(name = "...")]`).
+Compile errors: an empty trait, a generic method (its selector is undefined), a `#[cfg]`-gated method (it would still contribute its selector to the XOR, so the ID wouldn't match the active method set), a trait that already declares `INTERFACE_ID`, or two methods that produce the same selector (they would silently cancel in the XOR — rename one with `#[selector(name = "...")]`).
+
+## Interface Composition (`implements(...)`)
+
+`#[contract(implements(ITrait, ...))]` folds the methods of each in-module `impl ITrait for Contract` block into the dispatch table as real entry points, letting you keep every interface forwarder in one compiler-checked trait impl, where overriding a method is simply a matter of writing a different impl body.
+
+```rust,ignore
+#[pvm_contract_sdk::contract(implements(IErc20, IErc165))]
+mod my_token {
+    pub struct MyToken { pub erc20: Erc20State }
+    impl MyToken { #[constructor] pub fn new(&mut self) {} }   // only genuinely-custom methods
+
+    impl IErc20 for MyToken {
+        fn total_supply(&self) -> U256 { self.erc20._total_supply() }
+        fn transfer(&mut self, to: Address, v: U256) -> Result<bool, Error> {
+            self.erc20._transfer(self.caller(), to, v)          // override = a different body
+        }
+        // ... rest of the interface, no `#[method]` attributes
+    }
+
+    impl IErc165 for MyToken {                                  // ERC-165, opt-in, no codegen
+        fn supports_interface(&self, id: [u8; 4]) -> bool {
+            id == [0x01, 0xff, 0xc9, 0xa7] || id == <Self as IErc20>::INTERFACE_ID
+        }
+    }
+}
+```
+
+- A folded method dispatches through `<MyToken as IErc20>::method(this, ...)`, so it runs the contract's own body (overrides work) and can't be shadowed by an inherent method of the same name.
+- Interfaces are matched by last-segment ident; the `impl` must target the contract struct, be non-generic, and carry no `where` clause. Folded methods must take a receiver and have concrete (non-`Self::_`) parameters. Mutability is inferred from the receiver, and the same per-method attributes as the inherent path apply on the impl fn: `#[payable]`, `#[non_reentrant]`, and `#[selector(name = "...")]`.
+- `implements(IErc20<Error = MyError>)` binds the trait's associated `Error` so a folded method returning `Result<_, Self::Error>` registers `MyError` in the ABI.
+- Two dispatched methods (inherent or folded) that share a 4-byte selector are a **compile error** — rename one with `#[selector(name = "...")]`. Inherent methods are ordered before folded ones in dispatch and the ABI.
+
+Compile errors: `implements()` empty or listing a duplicate trait; an interface with no matching `impl` in the module; an ambiguous match, where two distinct traits sharing the same last segment both have an `impl` for the contract; an `impl` targeting the wrong struct, or one that is generic or carries a `where` clause; a generic folded method; a no-receiver folded method; a folded method with a `Self::_`-rooted parameter *or return type* (e.g. `Self::Value`); a folded method returning `Result<_, Self::Error>` with no `<Error = Ty>` binding; two dispatched methods (inherent or folded) that share a 4-byte selector; and `#[cfg]`/`#[cfg_attr]` on a folded method *or on the folded `impl` block* (use an inherent `#[method]` for feature-gated entry points). Only the traits listed in `implements(...)` are folded — an `impl OtherTrait for Contract` not listed is left as an ordinary trait impl. Only methods written in the `impl` block are folded (a trait default the contract doesn't restate is not an entry point).
 
 ## ABI Generation
 
