@@ -1169,20 +1169,6 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        // Register V's struct shape into `types` if needed — the mapping's
-        // OWN type string (`mapping(K => V)`) still uses V's bare name via
-        // StorageTypeName, matching solc; only V's *own* entry in `types`
-        // needs the qualified name.
-        // if V::IS_STRUCT {
-        //     let qualified = alloc::format!(
-        //         "struct {}.{}",
-        //         contract_name,
-        //         <V as pvm_contract_types::StorageTypeName>::name(),
-        //     );
-        //     if !registry.types.contains_key(&qualified) {
-        //         V::emit_members(registry, contract_name);
-        //     }
-        // }
 
         // Mapping<K, V> — V's struct registration, mapping's own `ty` unchanged
         if V::IS_STRUCT {
