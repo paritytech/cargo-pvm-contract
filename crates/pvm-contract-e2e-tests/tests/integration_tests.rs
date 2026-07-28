@@ -698,3 +698,84 @@ fn receive_dsl_accumulates_multiple_transfers() {
     let count = cast.call(&addr, "receiveCount()(uint256)", &[]);
     assert_eq!(count, "3");
 }
+
+// --- Precompiles ---
+//
+// The `precompiles` contract forwards to the builtin ecrecover (0x01) and
+// P256Verify (0x100) precompiles through the typed SDK wrappers. Unit tests
+// mock the call, so these are the only tests that exercise the real
+// cryptography and confirm the wrappers build the layout pallet-revive
+// expects.
+
+// Published Ethereum ecrecover vector.
+const ECR_HASH: &str = "0x456e9aea5e197a1f1af7a3e85a3212fa4049a3ba34c2289b4c860fc0b0c64ef3";
+const ECR_R: &str = "0x9242685bf161793cc25603c231bc2f568eb630ea16aa137d2664ac8038825608";
+const ECR_S: &str = "0x4f8ae3bd7535248d0bd448298cc2e2071e56992d0774dc340c368ae950852ada";
+const ECR_ADDR: &str = "0x7156526fbd7a3c72969b54f64e42c10fbb768c8a";
+const ZERO_ADDR: &str = "0x0000000000000000000000000000000000000000";
+
+// go-ethereum's `CallP256Verify` vector — a valid secp256r1 signature.
+const P256_HASH: &str = "0x4cee90eb86eaa050036147a12d49004b6b9c72bd725d39d4785011fe190f0b4d";
+const P256_R: &str = "0xa73bd4903f0ce3b639bbbf6e8e80d16931ff4bcf5993d58468e8fb19086e8cac";
+const P256_S: &str = "0x36dbcd03009df8c59286b162af3bd7fcc0450c9aa81be5d10d312af6c66b1d60";
+const P256_X: &str = "0x4aebd3099c618202fcfe16ae7770b0c49ab5eadf74b754204a3bb6060e44eff3";
+const P256_Y: &str = "0x7618b065f9832de4ca6ca971a7a1adc826d0f7c00181a5fb2ddf79ae00b4e10e";
+
+const RECOVER_SIG: &str = "recover(bytes32,uint8,bytes32,bytes32)(address)";
+const VERIFY_P256_SIG: &str = "verifyP256(bytes32,bytes32,bytes32,bytes32,bytes32)(bool)";
+
+#[test]
+fn precompile_ecrecover_recovers_signer() {
+    let (_anvil, cast, addr) = deploy("precompiles");
+
+    let recovered = cast.call(&addr, RECOVER_SIG, &[ECR_HASH, "28", ECR_R, ECR_S]);
+    assert_eq!(recovered.to_lowercase(), ECR_ADDR);
+}
+
+#[test]
+fn precompile_ecrecover_normalizes_raw_recovery_id() {
+    let (_anvil, cast, addr) = deploy("precompiles");
+
+    // v = 1 is the raw recovery id for the same signature; the wrapper lifts
+    // it to 28 before handing it to the precompile.
+    let recovered = cast.call(&addr, RECOVER_SIG, &[ECR_HASH, "1", ECR_R, ECR_S]);
+    assert_eq!(recovered.to_lowercase(), ECR_ADDR);
+}
+
+#[test]
+fn precompile_ecrecover_failed_recovery_is_zero_address() {
+    let (_anvil, cast, addr) = deploy("precompiles");
+
+    // s = 0 is outside the valid range, so the precompile returns empty output.
+    let zero = "0x0000000000000000000000000000000000000000000000000000000000000000";
+    let recovered = cast.call(&addr, RECOVER_SIG, &[ECR_HASH, "28", ECR_R, zero]);
+    assert_eq!(recovered.to_lowercase(), ZERO_ADDR);
+}
+
+#[test]
+fn precompile_p256_verify_accepts_valid_signature() {
+    let (_anvil, cast, addr) = deploy("precompiles");
+
+    let valid = cast.call(
+        &addr,
+        VERIFY_P256_SIG,
+        &[P256_HASH, P256_R, P256_S, P256_X, P256_Y],
+    );
+    assert_eq!(valid, "true");
+}
+
+#[test]
+fn precompile_p256_verify_rejects_invalid_signature() {
+    let (_anvil, cast, addr) = deploy("precompiles");
+
+    // Wycheproof's "modified r or s, e.g. by adding or subtracting the order
+    // of the group" case, which must not verify.
+    let hash = "0xbb5a52f42f9c9261ed4361f59422a1e30036e7c32b270c8807a419feca605023";
+    let r = "0xd45c5740946b2a147f59262ee6f5bc90bd01ed280528b62b3aed5fc93f06f739";
+    let s = "0xb329f479a2bbd0a5c384ee1493b1f5186a87139cac5df4087c134b49156847db";
+    let x = "0x2927b10512bae3eddcfe467828128bad2903269919f7086069c8c4df6c732838";
+    let y = "0xc7787964eaac00e5921fb1498a60f4606766b3d9685001558d1a974e7341513e";
+
+    let valid = cast.call(&addr, VERIFY_P256_SIG, &[hash, r, s, x, y]);
+    assert_eq!(valid, "false");
+}

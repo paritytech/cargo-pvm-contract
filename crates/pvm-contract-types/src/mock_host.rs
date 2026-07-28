@@ -199,6 +199,13 @@ impl MockHost {
         self.state.borrow().recorded_calls.clone()
     }
 
+    /// Same as [`MockHost::recorded_calls`], but drains the log so the next
+    /// assertion sees only the calls made after this point. Useful when one
+    /// test drives several calls in sequence on the same mock.
+    pub fn take_recorded_calls(&self) -> Vec<([u8; 20], Vec<u8>)> {
+        core::mem::take(&mut self.state.borrow_mut().recorded_calls)
+    }
+
     /// Register a mock return for [`HostApi::instantiate`].
     pub fn mock_instantiate(&self, address: [u8; 20], output: Vec<u8>) {
         self.state.borrow_mut().instantiate_return =
@@ -839,6 +846,19 @@ mod tests {
         let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &input, None);
 
         assert_eq!(host.recorded_calls(), vec![(callee, input.to_vec())]);
+    }
+
+    #[test]
+    fn take_recorded_calls_drains_the_log() {
+        let callee = [0x99; 20];
+        let host = MockHostBuilder::new().build();
+
+        let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &[0xAA], None);
+        assert_eq!(host.take_recorded_calls(), vec![(callee, vec![0xAA])]);
+        assert_eq!(host.take_recorded_calls(), vec![]);
+
+        let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &[0xBB], None);
+        assert_eq!(host.recorded_calls(), vec![(callee, vec![0xBB])]);
     }
 
     #[test]

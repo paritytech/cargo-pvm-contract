@@ -20,7 +20,7 @@ use pvm_contract_types::{Address, CallFlags, Host, HostApi};
 /// Fixed addresses of the builtin Ethereum precompiles in pallet-revive.
 ///
 /// Addresses are 20-byte big-endian; the low bytes hold the precompile index
-/// (`0x01`..=`0x09` for the classic set, `0x100` for P256Verify / RIP-7212).
+/// (`0x01`..=`0x0a` for the classic set, `0x100` for P256Verify / RIP-7212).
 pub mod address {
     use pvm_contract_types::Address;
 
@@ -50,6 +50,12 @@ pub mod address {
     pub const BN128_PAIRING: Address = precompile(0x08);
     /// BLAKE2b F compression (0x09).
     pub const BLAKE2F: Address = precompile(0x09);
+    /// KZG point evaluation — EIP-4844 (0x0a).
+    ///
+    /// pallet-revive reserves this address but does not implement the
+    /// precompile yet; calling it fails with `UnsupportedPrecompileAddress`
+    /// rather than silently transferring value.
+    pub const POINT_EVAL: Address = precompile(0x0a);
     /// P256Verify — secp256r1 signature verification, RIP-7212 (0x100).
     pub const P256_VERIFY: Address = precompile(0x100);
 }
@@ -89,6 +95,11 @@ fn call_precompile(host: &Host, callee: Address, input: &[u8], out: &mut [u8; 32
 /// the recovery id (27 or 28) placed right-aligned in its word. The precompile
 /// returns the recovered address right-aligned in a 32-byte word.
 ///
+/// A raw recovery id (`0` or `1`, what most signing libraries hand back) is
+/// normalized to the EVM form by adding 27, so both conventions work. Values
+/// already at or above 27 are passed through untouched — an out-of-range `v`
+/// stays out of range and the precompile rejects it.
+///
 /// Returns `None` when recovery fails: the precompile signals this with empty
 /// output, and this wrapper also maps an all-zero output word (the zero address)
 /// to `None` so callers get a clean "no address" result instead of `Address::ZERO`.
@@ -97,7 +108,7 @@ fn call_precompile(host: &Host, callee: Address, input: &[u8], out: &mut [u8; 32
 pub fn ecrecover(host: &Host, hash: [u8; 32], v: u8, r: [u8; 32], s: [u8; 32]) -> Option<Address> {
     let mut input = [0u8; 128];
     input[..32].copy_from_slice(&hash);
-    input[63] = v;
+    input[63] = if v < 27 { v + 27 } else { v };
     input[64..96].copy_from_slice(&r);
     input[96..128].copy_from_slice(&s);
 
