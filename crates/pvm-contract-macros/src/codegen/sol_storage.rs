@@ -373,8 +373,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                     #struct_name_str,
                     qualified,
                     member_entries,
-                    // TODO: compute real packed size instead of hardcoding 32.
-                    "32".to_string(),
+                    (<Self as ::pvm_contract_sdk::StorageComponent>::SLOTS * 32).to_string(),
                 )
             }
         }
@@ -806,7 +805,7 @@ fn generate_sol_storage_impls(
                     stringify!(#name),
                     qualified,
                     member_entries,
-                    "32".to_string(), // TODO: compute real size, not hardcoded
+                    (Self::__STORAGE_LAYOUT.1 as u64 * 32).to_string(),
                 )
             }
         };
@@ -959,7 +958,7 @@ fn generate_sol_storage_impls(
                     stringify!(#name),
                     qualified,
                     member_entries,
-                    "32".to_string(), // TODO: compute real size, not hardcoded
+                    (Self::__STORAGE_LAYOUT.1 as u64 * 32).to_string(),
                 )
             }
         };
