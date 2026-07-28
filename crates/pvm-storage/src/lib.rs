@@ -1169,7 +1169,6 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-
         // Mapping<K, V> — V's struct registration, mapping's own `ty` unchanged
         if V::IS_STRUCT {
             V::emit_members(registry, contract_name); // key not needed here, only registration matters
