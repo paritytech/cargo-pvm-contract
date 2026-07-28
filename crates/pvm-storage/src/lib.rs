@@ -656,8 +656,16 @@ macro_rules! leaf_storage_type_body {
             Self: 'a;
 
         fn get_at(key: StorageKey, offset: u8, host: &Host) -> $ty {
-            // Reads ignore `alone`; a plain (RMW-safe) cursor is correct.
-            unsafe { Lazy::<$ty>::new(key, offset, host.clone()) }.get()
+            // Full-slot leaf: read straight through the codec — byte-identical
+            // to the pre-composability `Mapping::get` path and smaller bytecode
+            // (no `Lazy` wrapper). Sub-word leaf: go through a `Lazy` cursor so
+            // the per-element byte offset is honoured (reads ignore `alone`).
+            if <$ty as StorageEncode>::PACKED_BYTES == 32 {
+                let _ = offset;
+                <$ty as StorageDecode>::read_from_storage(host, key.as_bytes())
+            } else {
+                unsafe { Lazy::<$ty>::new(key, offset, host.clone()) }.get()
+            }
         }
 
         unsafe fn get_mut_at(key: StorageKey, offset: u8, alone: bool, host: &Host) -> Lazy<$ty> {
@@ -669,12 +677,18 @@ macro_rules! leaf_storage_type_body {
         }
 
         unsafe fn clear_at(key: StorageKey, offset: u8, alone: bool, host: &Host) {
-            let mut cell = if alone {
-                unsafe { Lazy::<$ty>::new_alone(key, offset, host.clone()) }
+            // Full-slot leaf: clear directly (offset 0, `alone` irrelevant).
+            if <$ty as StorageEncode>::PACKED_BYTES == 32 {
+                let _ = (offset, alone);
+                <$ty as StorageEncode>::clear_storage(host, key.as_bytes());
             } else {
-                unsafe { Lazy::<$ty>::new(key, offset, host.clone()) }
-            };
-            <Lazy<$ty> as StorageComponent>::clear(&mut cell);
+                let mut cell = if alone {
+                    unsafe { Lazy::<$ty>::new_alone(key, offset, host.clone()) }
+                } else {
+                    unsafe { Lazy::<$ty>::new(key, offset, host.clone()) }
+                };
+                <Lazy<$ty> as StorageComponent>::clear(&mut cell);
+            }
         }
     };
 }
@@ -704,8 +718,17 @@ macro_rules! simple_storage_type_body {
         }
 
         fn write_value(value: &$ty, key: StorageKey, offset: u8, alone: bool, host: &Host) {
-            let mut cell = unsafe { <$ty as StorageType>::get_mut_at(key, offset, alone, host) };
-            cell.set(value);
+            // Full-slot leaf: write straight through the codec — byte-identical
+            // to `Mapping::insert` and smaller (no `Lazy` cursor). Sub-word
+            // leaf: RMW through a `Lazy` cursor so packed siblings survive.
+            if <$ty as StorageEncode>::PACKED_BYTES == 32 {
+                let _ = (offset, alone);
+                value.write_to_storage(host, key.as_bytes());
+            } else {
+                let mut cell =
+                    unsafe { <$ty as StorageType>::get_mut_at(key, offset, alone, host) };
+                cell.set(value);
+            }
         }
     };
 }
