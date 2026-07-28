@@ -149,7 +149,7 @@ impl ContractBuilder {
     ///
     /// Panics if more than MAX_METHODS methods are registered, or if `selector`
     /// is already registered (duplicate-selector guard).
-    #[inline]
+    #[inline(always)]
     pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         assert!(
             self.len < MAX_METHODS,
@@ -171,7 +171,7 @@ impl ContractBuilder {
     ///
     /// Panics if more than MAX_METHODS methods are registered, or if `selector`
     /// is already registered (duplicate-selector guard).
-    #[inline]
+    #[inline(always)]
     pub fn payable_method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         assert!(
             self.len < MAX_METHODS,
