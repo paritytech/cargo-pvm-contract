@@ -128,16 +128,12 @@ impl ContractBuilder {
     /// runtime panic instead. This guards only within a single builder — clashes
     /// *across* chained extensions (`dispatch_composed`) are not caught here;
     /// they are resolved by first-match-wins.
-    #[inline]
+    #[inline(always)]
     fn assert_unique_selector(&self, selector: Selector) {
-        let mut i = 0;
-        while i < self.len {
-            assert!(
-                self.methods[i].0 != selector,
-                "ContractBuilder: duplicate selector registration"
-            );
-            i += 1;
-        }
+        assert!(
+            !self.methods[..self.len].iter().any(|(s, _)| *s == selector),
+            "ContractBuilder: duplicate selector registration"
+        );
     }
 
     /// Register a non-payable method handler for the given selector.
@@ -273,9 +269,28 @@ impl ContractBuilder {
     /// extra bytes of bytecode.
     #[inline(always)]
     pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &Host) {
-        dispatch_terminating::<BUF_SIZE>(host, |selector, input, output| {
-            self.try_route(host, selector, input, output)
-        });
+        let call_data_len = host.call_data_size() as usize;
+
+        if call_data_len > BUF_SIZE {
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+        } else {
+            let mut calldata = [0u8; BUF_SIZE];
+            host.call_data_copy(&mut calldata[..call_data_len], 0);
+
+            if call_data_len < 4 {
+                host.revert(&pvm_contract_types::framework_errors::NO_SELECTOR);
+            } else {
+                let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
+                let input = &calldata[4..call_data_len];
+                let mut output = [0u8; BUF_SIZE];
+
+                if let Some(result) = self.try_route(host, selector, input, &mut output) {
+                    finalize_response(host, &mut output, result);
+                } else {
+                    host.revert(&pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+                }
+            }
+        }
     }
 
     /// Dispatch, trying this builder's methods first and then each extension
@@ -287,52 +302,43 @@ impl ContractBuilder {
     /// is enforced at registration ([`method`](Self::method) panics on a
     /// duplicate); across chained builders the first match wins, so order the
     /// extensions with precedence in mind.
+    ///
+    /// Kept as a standalone body rather than sharing one with `dispatch_impl`:
+    /// folding the two into a shared helper regressed the common (non-composing)
+    /// dispatch path's code size.
     #[inline(always)]
     pub fn dispatch_composed<const BUF_SIZE: usize>(
         &self,
         host: &Host,
         extensions: &[&ContractBuilder],
     ) {
-        dispatch_terminating::<BUF_SIZE>(host, |selector, input, output| {
-            self.try_route(host, selector, input, output).or_else(|| {
-                extensions
-                    .iter()
-                    .find_map(|ext| ext.try_route(host, selector, input, output))
-            })
-        });
-    }
-}
+        let call_data_len = host.call_data_size() as usize;
 
-/// Shared calldata-reading + terminating dispatch core for `dispatch_impl` and
-/// `dispatch_composed`. `route` attempts to handle the call and returns the
-/// (non-terminating) result; `None` means no method matched. Success is handed
-/// to `finalize_response` (which calls `host.return_value`); every failure path
-/// diverges via `host.revert`. Force-inlined for the same cross-crate
-/// const-folding reason documented on `dispatch_impl`.
-#[inline(always)]
-fn dispatch_terminating<const BUF_SIZE: usize>(
-    host: &Host,
-    route: impl Fn(Selector, &[u8], &mut [u8]) -> Option<HandlerResult>,
-) {
-    let call_data_len = host.call_data_size() as usize;
-
-    if call_data_len > BUF_SIZE {
-        host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
-    } else {
-        let mut calldata = [0u8; BUF_SIZE];
-        host.call_data_copy(&mut calldata[..call_data_len], 0);
-
-        if call_data_len < 4 {
-            host.revert(&pvm_contract_types::framework_errors::NO_SELECTOR);
+        if call_data_len > BUF_SIZE {
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
         } else {
-            let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
-            let input = &calldata[4..call_data_len];
-            let mut output = [0u8; BUF_SIZE];
+            let mut calldata = [0u8; BUF_SIZE];
+            host.call_data_copy(&mut calldata[..call_data_len], 0);
 
-            if let Some(result) = route(selector, input, &mut output) {
-                finalize_response(host, &mut output, result);
+            if call_data_len < 4 {
+                host.revert(&pvm_contract_types::framework_errors::NO_SELECTOR);
             } else {
-                host.revert(&pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+                let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
+                let input = &calldata[4..call_data_len];
+                let mut output = [0u8; BUF_SIZE];
+
+                let result = self
+                    .try_route(host, selector, input, &mut output)
+                    .or_else(|| {
+                        extensions
+                            .iter()
+                            .find_map(|ext| ext.try_route(host, selector, input, &mut output))
+                    });
+                if let Some(result) = result {
+                    finalize_response(host, &mut output, result);
+                } else {
+                    host.revert(&pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+                }
             }
         }
     }
@@ -405,7 +411,49 @@ impl ContractBuilderWithHandlers {
     /// [`ContractBuilderWithHandlers`].
     #[inline]
     pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &Host) {
-        self.dispatch_with_handlers::<BUF_SIZE>(host, &[]);
+        let call_data_len = host.call_data_size() as usize;
+
+        if call_data_len > BUF_SIZE {
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+        }
+
+        let mut calldata = [0u8; BUF_SIZE];
+        host.call_data_copy(&mut calldata[..call_data_len], 0);
+        let mut output = [0u8; BUF_SIZE];
+
+        if call_data_len == 0
+            && let Some(receive) = self.receive
+        {
+            let result = receive(host, &[], &mut output);
+            finalize_response(host, &mut output, result);
+            return;
+        }
+
+        let default_err = if call_data_len < 4 {
+            &pvm_contract_types::framework_errors::NO_SELECTOR
+        } else {
+            let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
+            let input = &calldata[4..call_data_len];
+            if let Some(result) = self.inner.try_route(host, selector, input, &mut output) {
+                finalize_response(host, &mut output, result);
+                return;
+            }
+            &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR
+        };
+
+        if let Some(handler) = self.fallback {
+            if !self.fallback_is_payable && pvm_contract_types::value_transferred_is_nonzero(host) {
+                output[..4].copy_from_slice(
+                    &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED,
+                );
+                host.revert(&output[..4]);
+            }
+            let result = handler(host, &calldata[..call_data_len], &mut output);
+            finalize_response(host, &mut output, result);
+            return;
+        }
+
+        host.revert(default_err);
     }
 
     /// Like [`dispatch_impl`](Self::dispatch_impl) but also chains each extension
@@ -414,22 +462,11 @@ impl ContractBuilderWithHandlers {
     /// [`ContractBuilder::dispatch_composed`]. Lets a DSL contract compose
     /// extensions *and* keep a `fallback`/`receive` handler, matching the macro
     /// path's `implements(...)` + `#[fallback]`/`#[receive]`.
-    #[inline]
+    ///
+    /// Kept as a standalone body rather than sharing one with `dispatch_impl`:
+    /// folding the two into a shared helper regressed the common (non-composing)
+    /// dispatch path's code size.
     pub fn dispatch_composed<const BUF_SIZE: usize>(
-        &self,
-        host: &Host,
-        extensions: &[&ContractBuilder],
-    ) {
-        self.dispatch_with_handlers::<BUF_SIZE>(host, extensions);
-    }
-
-    /// Shared core for [`dispatch_impl`](Self::dispatch_impl) and
-    /// [`dispatch_composed`](Self::dispatch_composed): try this contract's own
-    /// methods then each extension (first match wins), then `receive` (empty
-    /// calldata) / `fallback`, else revert. `extensions` is empty for the
-    /// non-composed entry point.
-    #[inline]
-    fn dispatch_with_handlers<const BUF_SIZE: usize>(
         &self,
         host: &Host,
         extensions: &[&ContractBuilder],
