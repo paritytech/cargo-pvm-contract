@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../specs/proc-macros.md")]
+#![doc = include_str!("../proc-macros.md")]
 
 extern crate proc_macro2;
 

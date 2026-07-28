@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../specs/abi.md")]
+#![doc = include_str!("../abi.md")]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate self as pvm_contract_types;

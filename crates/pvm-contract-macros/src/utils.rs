@@ -1,4 +1,26 @@
+use proc_macro2::TokenStream;
+use quote::quote;
 use syn_solidity::ItemFunction;
+
+/// Build the const-eval expression for a method's canonical Solidity signature,
+/// e.g. `concatcp!("transfer(", <Address>::SOL_NAME, ",", <U256>::SOL_NAME, ")")`.
+///
+/// Each parameter's ABI name is resolved from its `SolEncode::SOL_NAME` at
+/// const-eval, so custom types work without the macro knowing their ABI name.
+/// Shared by the dispatch selector codegen and `#[interface_id]` so both derive
+/// selector text identically.
+pub fn build_method_signature_expr(sol_name: &str, param_types: &[syn::Type]) -> TokenStream {
+    let prefix = format!("{sol_name}(");
+    let mut parts: Vec<TokenStream> = vec![quote! { #prefix }];
+    for (i, ty) in param_types.iter().enumerate() {
+        if i > 0 {
+            parts.push(quote! { "," });
+        }
+        parts.push(quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
+    }
+    parts.push(quote! { ")" });
+    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
+}
 
 /// Convert snake_case to camelCase, the default Solidity name for a Rust method.
 /// The leading segment stays lower-case (`balance_of` becomes `balanceOf`).
@@ -55,10 +77,18 @@ pub fn validate_sol_identifier(name: &str, spanned: impl quote::ToTokens) -> syn
 /// `#[selector(...)]` and prefixed `#[pvm_contract_sdk::selector(...)]` forms.
 /// The name is validated as a Solidity identifier.
 pub fn extract_selector_rename(attrs: &[syn::Attribute]) -> syn::Result<Option<String>> {
+    let mut found: Option<String> = None;
     for attr in attrs {
         if attr.path().segments.last().map(|s| s.ident.to_string()) != Some("selector".to_string())
         {
             continue;
+        }
+
+        if found.is_some() {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "duplicate `#[selector(name = \"...\")]`; a method may carry at most one",
+            ));
         }
 
         let mut name: Option<syn::LitStr> = None;
@@ -79,9 +109,9 @@ pub fn extract_selector_rename(attrs: &[syn::Attribute]) -> syn::Result<Option<S
         };
         let value = lit.value();
         validate_sol_identifier(&value, &lit)?;
-        return Ok(Some(value));
+        found = Some(value);
     }
-    Ok(None)
+    Ok(found)
 }
 
 pub fn to_snake_case(s: &str) -> String {

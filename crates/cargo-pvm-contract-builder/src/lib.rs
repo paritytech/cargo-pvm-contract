@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../specs/build.md")]
+#![doc = include_str!("../build.md")]
 
 mod abi;
 

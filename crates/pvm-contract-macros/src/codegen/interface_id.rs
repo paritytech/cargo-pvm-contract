@@ -2,7 +2,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use syn::{FnArg, GenericParam, ItemTrait, TraitItem};
 
-use crate::utils::{extract_selector_rename, to_camel_case};
+use crate::utils::{build_method_signature_expr, extract_selector_rename, to_camel_case};
 
 /// Expand `#[interface_id]` on a trait.
 ///
@@ -151,7 +151,7 @@ pub fn expand_interface_id(mut input: ItemTrait) -> syn::Result<TokenStream> {
         .iter()
         .zip(&sel_idents)
         .map(|(m, id)| {
-            let sig_expr = build_signature_expr(&m.sol_name, &m.param_types);
+            let sig_expr = build_method_signature_expr(&m.sol_name, &m.param_types);
             quote! {
                 const #id: [u8; 4] = ::pvm_contract_sdk::const_selector(#sig_expr);
             }
@@ -209,19 +209,4 @@ pub fn expand_interface_id(mut input: ItemTrait) -> syn::Result<TokenStream> {
         #input
         #guard
     })
-}
-
-/// Build the const-eval expression for a method's canonical Solidity signature,
-/// e.g. `concatcp!("transfer(", <Address>::SOL_NAME, ",", <U256>::SOL_NAME, ")")`.
-fn build_signature_expr(sol_name: &str, params: &[syn::Type]) -> TokenStream {
-    let prefix = format!("{sol_name}(");
-    let mut parts: Vec<TokenStream> = vec![quote! { #prefix }];
-    for (i, ty) in params.iter().enumerate() {
-        if i > 0 {
-            parts.push(quote! { "," });
-        }
-        parts.push(quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
-    }
-    parts.push(quote! { ")" });
-    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
