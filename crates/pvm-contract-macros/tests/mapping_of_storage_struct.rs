@@ -578,7 +578,7 @@ fn sol_storage_value_struct_uses_struct_name_in_layout_json() {
     // ident; without it the type would render as the ABI tuple
     // `"(uint64,uint64)"`.
     assert_eq!(
-        origin["type"], "struct PointRegistry.PackedPoint",
+        origin["type"], "t_struct(PackedPoint)_0_storage",
         "Lazy<PackedPoint> should report struct ident, not ABI tuple notation. Got layout: {layout}",
     );
 
@@ -588,4 +588,11 @@ fn sol_storage_value_struct_uses_struct_name_in_layout_json() {
         by_id["type"], "mapping(uint64 => PackedPoint)",
         "Mapping<_, PackedPoint> should embed struct ident, not ABI tuple. Got layout: {layout}",
     );
+
+    // Check the type table entry for the struct itself. The `SolStorage` derive
+    // emits a `StorageTypeName` impl returning the ident; without it the type
+    // would render as the ABI tuple `"(uint64,uint64)"`.
+    let types = &parsed["types"];
+    let entry = &types["t_struct(PackedPoint)_0_storage"];
+    assert_eq!(entry["label"], "struct PointRegistry.PackedPoint");
 }
