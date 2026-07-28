@@ -1,15 +1,15 @@
 //! `Mapping<K, V>` where `V` is itself a storage component (`#[storage]`
 //! sub-struct, `Lazy<T>`, nested `Mapping<K2, V'>`, …).
 //!
-//! Covers the new storage-typed `view` / `view_mut` API introduced by the
-//! `StorageComponent::new_at(StorageKey, …)` generalization. The on-chain
+//! Covers the storage-typed `get` (read) / `entry` (write) API for container
+//! values, backed by the `StorageType` composition traits. The on-chain
 //! layout matches solc's `mapping(K => struct)` pattern: the value lives at
 //! the derived key, sub-fields at `derived + N`, and inner mappings derive
 //! sub-keys from the per-key derived slot.
 //!
 //! Three angles per pattern:
-//!   - **Round-trip** — write through `view_mut(k).field.set(v)`, read
-//!     through `view(k).field.get()`.
+//!   - **Round-trip** — write through `entry(k).field.set(v)`, read
+//!     through `get(k).field.get()`.
 //!   - **Independent keys** — different outer K values don't interfere.
 //!   - **Layout** — the inner field's slot matches the
 //!     `keccak256(pad32(k)+slot).add(N)` derivation solc would emit.

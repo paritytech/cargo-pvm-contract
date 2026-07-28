@@ -490,7 +490,7 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         // multi-field packed codegen which isn't implemented. This is an
         // optimization gap, NOT a solc-parity gap: a nested struct in storage
         // already works today (with byte-identical solc layout) via the
-        // `#[storage]` attribute + `.view()/.view_mut()` composition path. The
+        // `#[storage]` attribute + `get`/`entry` composition path. The
         // rejection hint in `generate_sol_storage_impls` points users there.
         //
         // `Array<T>` (T != u8), `FixedArray`, `Tuple` in struct fields: deferred.
@@ -557,15 +557,15 @@ fn generate_sol_storage_impls(
             None => format!("field {field_idx}"),
         };
         // A nested struct *can* live in storage today — just not as a packed
-        // value field. Point the user at the `#[storage]` + `.view()` path,
+        // value field. Point the user at the `#[storage]` + `get`/`entry` path,
         // which yields the identical solc layout. Other unsupported kinds
         // (`Vec<T>`, tuples, fixed arrays) have no such workaround.
         let hint = if is_nested_struct {
             "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
              struct. To store a nested struct, make BOTH structs \
              `#[pvm_contract_sdk::storage]` and access them through a field handle \
-             or `Mapping<_, T>` with `.view()` / `.view_mut()` — this produces the \
-             identical solc storage layout. (`#[derive(SolType)]` alone remains \
+             or `Mapping<_, T>` with `get` (read) / `entry` (write) — this produces \
+             the identical solc storage layout. (`#[derive(SolType)]` alone remains \
              correct if you only need ABI for calldata / events.)"
         } else {
             "Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \

@@ -506,8 +506,8 @@ pub trait StorageComponent: Sized {
     ///   clears the header AND any spilled body chunks.
     /// - [`Mapping<K, V>`]: **no-op**. Solidity mappings have no header to
     ///   clear — entries live at derived keys that can't be enumerated. If
-    ///   you need to clear individual entries, call `delete` /
-    ///   `view_mut(k).clear()` on each known key.
+    ///   you need to clear individual entries, call `delete(k)` /
+    ///   `entry(k).clear()` on each known key.
     /// - `#[storage]` sub-structs: recursively clear each field — matches
     ///   solc's `delete struct_field` semantics.
     ///
@@ -664,10 +664,17 @@ macro_rules! simple_storage_type_body {
         }
 
         fn try_read_value(key: StorageKey, offset: u8, host: &Host) -> Option<$ty> {
-            // Match `Mapping::try_get`: read through the codec at the canonical
-            // (right-aligned) offset. Only meaningful for alone slots (mapping
-            // entries / vec elements), where offset == canonical.
-            let _ = offset;
+            // Reads through the codec at the type's *canonical* (right-aligned)
+            // offset, ignoring `offset`. This is only correct for a value alone
+            // in its slot at the canonical position (mapping entries; full-slot
+            // vec elements) — where present callers pass exactly that. Guard
+            // against a future caller wiring a non-canonical packed offset here
+            // (which would read the wrong window and conflate a neighbour's
+            // write with presence — the hazard `Lazy::try_get` const-rejects).
+            debug_assert!(
+                offset as usize == 32 - <$ty as StorageEncode>::PACKED_BYTES,
+                "try_read_value only supports the canonical offset (32 - PACKED_BYTES)"
+            );
             <$ty as StorageDecode>::try_read_from_storage(host, key.as_bytes())
         }
 
@@ -900,7 +907,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// Violating that invariant clobbers the neighbour on the next `set`.
     /// Safe callers are the macro-generated [`StorageComponent::new_at`]
     /// path (with `alone = true` derived from layout analysis) and the
-    /// `Mapping::entry`/`view*`/`delete` family (each derived slot is
+    /// `Mapping::entry`/`get`/`delete` family (each derived slot is
     /// uniquely keyed by `keccak256(pad32(key) ++ pad32(slot))`).
     pub unsafe fn new_alone(key: StorageKey, offset: u8, host: Host) -> Self {
         unsafe { Self::new_inner(key, offset, true, host) }
@@ -1470,6 +1477,10 @@ impl<K: AsStorageKey, V: StorageType> Mapping<K, V> {
     /// Delete the entry at `key`, clearing every slot it occupies. Recurses for
     /// a container V; a `Mapping` value is a no-op (its entries live at
     /// underivable keys — matches solc's `delete`).
+    ///
+    /// Available for any `V: StorageType`. For by-value (`SimpleStorageType`)
+    /// values, [`remove`](Mapping::remove) is the identically-behaving alias
+    /// under the value-oriented name (`insert`/`get`/`remove`).
     pub fn delete(&mut self, key: &K) {
         // SAFETY: `&mut self`; key-unique derived slot.
         unsafe { V::clear_at(self.slot_of(key), Self::entry_offset(), true, &self.host) }
@@ -1509,9 +1520,11 @@ impl<K, V: StorageType> StorageType for Mapping<K, V> {
     const PACKED_BYTES: usize = 32;
     const HAS_DYNAMIC_BODY: bool = false;
     // A mapping stores nothing at its root and its entries live at underivable
-    // keys, so there is nothing to recurse into on clear — bulk-zeroing the
-    // (empty) root slot is correct and matches solc's `delete` on a mapping.
-    const NEEDS_RECURSIVE_CLEAR: bool = false;
+    // keys. `true` routes `StorageVec<Mapping<..>>::clear` through the per-element
+    // `clear_at` (a no-op for a mapping) instead of the bulk-zero path, avoiding
+    // `len` pointless zero-writes to already-empty root slots. Outcome is
+    // identical (roots are always zero) and matches solc's `delete`, just cheaper.
+    const NEEDS_RECURSIVE_CLEAR: bool = true;
 
     type Get<'a>
         = Ref<'a, Mapping<K, V>>
@@ -1584,10 +1597,12 @@ impl<K, V: StorageType> StorageType for Mapping<K, V> {
 ///
 /// # Notable design choices
 ///
-/// - `get(i)` / `pop()` return `T` by value.
-/// - Per-element handles only appear on the nested impl
-///   (`StorageVec<StorageVec<T>>`), where `entry(i)` / `grow()` return
-///   a `RefMut<'_, StorageVec<T>>`.
+/// - `get(i)` returns the element's `S::Get<'_>` — the value by value for a
+///   leaf element, a read-only `Ref<'_, S>` guard for a container element
+///   (`StorageVec`, `Mapping`, `#[storage]` struct). `pop()` (leaf-only, via
+///   `SimpleStorageType`) returns the value.
+/// - For container elements, `entry(i)` / `grow()` return `RefMut<'_, S>`;
+///   this is generic over any `S: StorageType`, with no per-shape impl.
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot — the gas-optimal policy that matches solc.
 ///   For full-slot elements, every pop frees a full slot.
@@ -1623,8 +1638,10 @@ impl<K, V: StorageType> StorageType for Mapping<K, V> {
 ///   inline/spilled layout — header lives in the element's slot, spilled
 ///   body at `keccak256(header_slot) + i`. Covers `String` and `Bytes`.
 ///
-/// Nested arrays (`StorageVec<StorageVec<T>>`, i.e. Solidity's `T[][]`)
-/// are supported via the dedicated nested impl block below.
+/// Container elements — `StorageVec<StorageVec<T>>` (Solidity `T[][]`),
+/// `StorageVec<Mapping<K, V>>`, `StorageVec<#[storage] struct>`, and deeper —
+/// are supported by the generic `impl<S: StorageType> StorageVec<S>` below,
+/// with no per-shape impl; `get`/`entry`/`grow` yield `Ref`/`RefMut<'_, S>`.
 pub struct StorageVec<T> {
     root: StorageKey,
     base: core::cell::OnceCell<[u8; 32]>,
