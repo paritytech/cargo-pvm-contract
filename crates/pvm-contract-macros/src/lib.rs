@@ -7,7 +7,7 @@ mod codegen;
 mod signature;
 mod utils;
 use proc_macro::TokenStream;
-use syn::{DeriveInput, ItemFn, ItemMod, parse_macro_input};
+use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 
 /// Marks a module as a PVM smart contract, generating dispatch logic and entry points.
 ///
@@ -590,6 +590,58 @@ pub fn storage(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
+}
+
+/// Declares a trait as an on-chain interface and generates its ERC-165 interface
+/// ID as an associated constant.
+///
+/// # Generated Code
+///
+/// Given
+///
+/// ```ignore
+/// #[pvm_contract_sdk::interface_id]
+/// pub trait IErc20 {
+///     fn total_supply(&self) -> U256;
+///     fn balance_of(&self, account: Address) -> U256;
+///     #[selector(name = "transfer")]
+///     fn transfer(&mut self, to: Address, amount: U256) -> Result<bool, Error>;
+/// }
+/// ```
+///
+/// the macro adds a defaulted associated constant
+///
+/// ```ignore
+/// const INTERFACE_ID: [u8; 4] = /* XOR of every method's 4-byte selector */;
+/// ```
+///
+/// Each method's selector is `keccak256` of its canonical Solidity signature
+/// (the camelCase of the Rust name, or the `#[selector(name = "...")]` override).
+/// Parameter types are rendered through their `SolEncode::SOL_NAME` at const-eval,
+/// so custom types work.
+///
+/// It is a compile error for the trait to be empty, to have a generic method, to
+/// already declare `INTERFACE_ID`, or for two methods to share a selector (which
+/// would silently cancel in the XOR).
+#[proc_macro_attribute]
+pub fn interface_id(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemTrait);
+    match codegen::expand_interface_id(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Overrides the Solidity name a method contributes to selector computation:
+/// `#[selector(name = "transfer")]`.
+///
+/// This is an inert helper attribute — it is consumed by `#[interface_id]` (on
+/// trait methods) and by `#[contract]` (on `#[method]`s, where it is the
+/// canonical spelling of the older `#[method(rename = "...")]`). Applied on its
+/// own it expands to the item unchanged.
+#[proc_macro_attribute]
+pub fn selector(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    item
 }
 
 /// Marks a function as a contract method. The signature is derived from the Solidity interface file.

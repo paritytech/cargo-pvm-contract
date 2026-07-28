@@ -2,6 +2,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use super::decode::{calculate_min_input_size, generate_decode_params};
+use crate::utils::build_method_signature_expr;
 
 /// Generate a **diverging** revert — encode the error `e`, then
 /// `host.revert(..)` (`-> !`: the syscall on `riscv64`; a recorded unwind on
@@ -190,28 +191,11 @@ fn build_selector_const(method: &MethodInfo) -> TokenStream {
             const #sel_ident: [u8; 4] = [#s0, #s1, #s2, #s3];
         }
     } else {
-        let sig_expr = build_const_signature_expr(method);
+        let sig_expr = build_method_signature_expr(&method.sol_name, &method.param_types);
         quote! {
             const #sel_ident: [u8; 4] = ::pvm_contract_sdk::const_selector(#sig_expr);
         }
     }
-}
-
-fn build_const_signature_expr(method: &MethodInfo) -> TokenStream {
-    let fn_name = &method.sol_name;
-    let mut parts: Vec<TokenStream> = Vec::new();
-    let prefix = format!("{}(", fn_name);
-    parts.push(quote! { #prefix });
-
-    for (i, ty) in method.param_types.iter().enumerate() {
-        if i > 0 {
-            parts.push(quote! { "," });
-        }
-        parts.push(quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
-    }
-
-    parts.push(quote! { ")" });
-    quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
 }
 
 /// Input size-check — calls `host.revert(INVALID_CALLDATA)` when the input is
