@@ -1,0 +1,5 @@
+error: a folded method's error type may reference `Self` only as a bare associated type like `Self::Error`; a nested `Self` (e.g. `Wrapper<Self::Error>`) can't be resolved for the ABI. Write the error type concretely.
+  --> tests/ui/implements_nested_self_error.rs:28:40
+   |
+28 |         fn maybe(&self) -> Result<u64, Wrapper<Self::Error>> {
+   |                                        ^^^^^^^^^^^^^^^^^^^^

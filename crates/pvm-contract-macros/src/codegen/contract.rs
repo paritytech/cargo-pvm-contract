@@ -843,6 +843,19 @@ fn type_references_self(ty: &syn::Type) -> bool {
     }
 }
 
+/// True for a `Self`-rooted associated type like `Self::Error` — a plain path
+/// (no qualified self) whose first segment is `Self`. Distinguishes the shape the
+/// `<Error = Ty>` binding can resolve by wholesale substitution from one that
+/// merely nests `Self` (see the caller for why nesting is rejected).
+fn is_self_rooted_path(ty: &syn::Type) -> bool {
+    matches!(
+        ty,
+        syn::Type::Path(tp)
+            if tp.qself.is_none()
+                && tp.path.segments.first().is_some_and(|s| s.ident == "Self")
+    )
+}
+
 /// Register a folded method's error type for the ABI, substituting a
 /// `Self::Error` return with the `implements(IErc20<Error = Ty>)` binding — the
 /// macro can't resolve `Self::Error` from the impl block. A method that names its
@@ -884,8 +897,8 @@ fn collect_folded_error_type(
         return Ok(false);
     }
     let err_ty = type_args[1];
-    let references_self = type_references_self(err_ty);
-    let concrete = if references_self {
+    let self_rooted = is_self_rooted_path(err_ty);
+    let concrete = if self_rooted {
         match error_binding {
             Some(bound) => bound.clone(),
             // Can't resolve `Self::Error` without a binding — the ABI can't list
@@ -898,6 +911,17 @@ fn collect_folded_error_type(
                 ));
             }
         }
+    } else if type_references_self(err_ty) {
+        // `Self` appears nested (e.g. `Wrapper<Self::Error>`). The binding names
+        // only the associated type, so substituting the whole type with it would
+        // record `MyError` in the ABI while the runtime encodes `Wrapper<MyError>`.
+        // Reject rather than emit a mismatched ABI.
+        return Err(syn::Error::new_spanned(
+            err_ty,
+            "a folded method's error type may reference `Self` only as a bare associated type \
+             like `Self::Error`; a nested `Self` (e.g. `Wrapper<Self::Error>`) can't be resolved \
+             for the ABI. Write the error type concretely.",
+        ));
     } else {
         err_ty.clone()
     };
@@ -906,7 +930,7 @@ fn collect_folded_error_type(
         seen_error_names.push(name);
         error_types.push(concrete);
     }
-    Ok(references_self && error_binding.is_some())
+    Ok(self_rooted && error_binding.is_some())
 }
 
 /// Resolve the single interface `contract`/`interface` declaration in a `.sol`
@@ -1014,6 +1038,24 @@ fn resolve_sol_method<'a>(
     Ok((sol_func.name().to_string(), selector, sol_func))
 }
 
+/// Does an `impl <impl_path> for ...` block satisfy the `implements(<iface_path>)`
+/// entry? Compares the last `iface_path` segments against the tail of `impl_path`,
+/// so a bare `implements(IErc20)` matches `impl IErc20`, `impl crate::x::IErc20`,
+/// or `impl super::IErc20`, while a qualified `implements(a::IAdmin)` matches only
+/// paths ending in `a::IAdmin`, never a different `b::IAdmin`.
+fn trait_path_matches(iface_path: &syn::Path, impl_path: &syn::Path) -> bool {
+    let iface: Vec<_> = iface_path.segments.iter().map(|s| &s.ident).collect();
+    let imp: Vec<_> = impl_path.segments.iter().map(|s| &s.ident).collect();
+    if iface.len() > imp.len() {
+        return false;
+    }
+    iface
+        .iter()
+        .rev()
+        .zip(imp.iter().rev())
+        .all(|(a, b)| a == b)
+}
+
 /// Fold the methods of each `implements(...)` trait's `impl Trait for Struct`
 /// block into `methods` as real dispatch entry points.
 #[allow(clippy::too_many_arguments)]
@@ -1029,14 +1071,20 @@ fn fold_interface_methods(
     folded_error_asserts: &mut Vec<TokenStream>,
 ) -> syn::Result<()> {
     for iface in implements {
-        let iface_last = iface
+        let iface_str = iface
             .path
             .segments
-            .last()
+            .iter()
             .map(|s| s.ident.to_string())
-            .unwrap_or_default();
+            .collect::<Vec<_>>()
+            .join("::");
 
         let mut matched_impl = false;
+        // A same-trait `impl` that targets some other struct in the module. We
+        // skip it (a later `impl Trait for Contract` is the real match, so item
+        // order can't decide the outcome) but remember the first one so that, if
+        // no contract impl turns up, the diagnostic can point at the wrong target.
+        let mut wrong_struct: Option<&syn::Type> = None;
         for item in items {
             let syn::Item::Impl(item_impl) = item else {
                 continue;
@@ -1044,24 +1092,17 @@ fn fold_interface_methods(
             let Some((_, trait_path, _)) = &item_impl.trait_ else {
                 continue;
             };
-            // Match by last-segment ident so `implements(IErc20)` matches
-            // `impl IErc20`, `impl crate::x::IErc20`, or `impl super::IErc20`.
-            if trait_path.segments.last().map(|s| s.ident.to_string()) != Some(iface_last.clone()) {
+            if !trait_path_matches(&iface.path, trait_path) {
                 continue;
             }
 
-            // The impl must target the contract struct.
             let self_ok = matches!(
                 item_impl.self_ty.as_ref(),
                 syn::Type::Path(tp) if tp.path.segments.last().map(|s| &s.ident) == Some(struct_ident)
             );
             if !self_ok {
-                return Err(syn::Error::new_spanned(
-                    &item_impl.self_ty,
-                    format!(
-                        "`impl {iface_last} for ...` must target the contract struct `{struct_ident}`"
-                    ),
-                ));
+                wrong_struct.get_or_insert(item_impl.self_ty.as_ref());
+                continue;
             }
 
             // Contracts aren't generic; the fold assumes a concrete impl.
@@ -1088,7 +1129,7 @@ fn fold_interface_methods(
                 }
             }
 
-            // Last-segment matching is ambiguous if two traits share it. Folding
+            // Suffix matching is ambiguous if two traits share it. Folding
             // both would silently expose the unintended trait's methods as entry
             // points (a contract-surface hazard) and apply this item's
             // `<Error = Ty>` binding to the wrong trait. Require exactly one
@@ -1097,8 +1138,8 @@ fn fold_interface_methods(
                 return Err(syn::Error::new_spanned(
                     trait_path,
                     format!(
-                        "`implements({iface_last})` is ambiguous: more than one `impl` for \
-                         `{struct_ident}` in this module ends in `{iface_last}`. Two interface \
+                        "`implements({iface_str})` is ambiguous: more than one `impl` for \
+                         `{struct_ident}` in this module ends in `{iface_str}`. Two interface \
                          traits sharing a last segment can't both be folded — rename one so \
                          their last segments differ."
                     ),
@@ -1106,10 +1147,8 @@ fn fold_interface_methods(
             }
             matched_impl = true;
 
-            // Set when a folded method of this impl returns `Result<_, Self::Error>`
-            // and the `implements(Trait<Error = Ty>)` binding supplied the concrete
-            // type. That binding drives the ABI, so we emit a const-eval check that
-            // it equals the impl's real `type Error` (see below).
+            // True once a folded method of this impl consumes the `<Error = Ty>`
+            // binding; drives the per-interface const-eval check emitted below.
             let mut binding_used = false;
 
             for impl_item in &item_impl.items {
@@ -1254,10 +1293,20 @@ fn fold_interface_methods(
         }
 
         if !matched_impl {
+            // A same-trait impl for a different struct is the likely mistake, so
+            // point at it; otherwise report the missing impl.
+            if let Some(self_ty) = wrong_struct {
+                return Err(syn::Error::new_spanned(
+                    self_ty,
+                    format!(
+                        "`impl {iface_str} for ...` must target the contract struct `{struct_ident}`"
+                    ),
+                ));
+            }
             return Err(syn::Error::new_spanned(
                 &iface.path,
                 format!(
-                    "`implements({iface_last})` has no matching `impl {iface_last} for {struct_ident}` \
+                    "`implements({iface_str})` has no matching `impl {iface_str} for {struct_ident}` \
                      block in the contract module"
                 ),
             ));
@@ -2265,9 +2314,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
             #mod_content
 
-            // Const-eval checks that each `implements(Trait<Error = Ty>)` binding
-            // matches the impl's real `type Error`. Placed after `#mod_content` so
-            // the folded `impl`s and the contract struct are in scope.
+            // Emitted after `#mod_content` so the folded `impl`s and the contract
+            // struct they reference are in scope.
             #(#folded_error_asserts)*
 
             #payable_helpers_fn
