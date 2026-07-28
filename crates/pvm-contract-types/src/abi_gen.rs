@@ -106,7 +106,6 @@ pub struct StorageLayoutTypeEntry {
     pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
 }
 
-
 pub struct LayoutTypesRegistry {
     pub types: BTreeMap<String, StorageLayoutTypeEntry>,
     next_struct_id: u64,
@@ -114,17 +113,22 @@ pub struct LayoutTypesRegistry {
 
 impl LayoutTypesRegistry {
     pub fn new() -> Self {
-        Self { types: BTreeMap::new(), next_struct_id: 0 }
+        Self {
+            types: BTreeMap::new(),
+            next_struct_id: 0,
+        }
     }
 
     /// Primitives: deterministic key, no counter, idempotent.
     pub fn register_primitive(&mut self, sol_name: &str, number_of_bytes: &str) -> String {
         let key = alloc::format!("t_{sol_name}");
-        self.types.entry(key.clone()).or_insert_with(|| StorageLayoutTypeEntry {
-            label: sol_name.to_string(),
-            members: Vec::new(),
-            number_of_bytes: number_of_bytes.to_string(),
-        });
+        self.types
+            .entry(key.clone())
+            .or_insert_with(|| StorageLayoutTypeEntry {
+                label: sol_name.to_string(),
+                members: Vec::new(),
+                number_of_bytes: number_of_bytes.to_string(),
+            });
         key
     }
 
@@ -140,11 +144,18 @@ impl LayoutTypesRegistry {
             return k.clone();
         }
         let id = self.next_struct_id;
-        // Irrespective of how the astIds and hece the naming for struct works. 
+        // Irrespective of how the astIds and hece the naming for struct works.
         // Due to implemnentation barriers, we would be having incremental astIds
         self.next_struct_id += 1;
         let key = alloc::format!("t_struct({struct_name})_{id}_storage");
-        self.types.insert(key.clone(), StorageLayoutTypeEntry { label, members, number_of_bytes });
+        self.types.insert(
+            key.clone(),
+            StorageLayoutTypeEntry {
+                label,
+                members,
+                number_of_bytes,
+            },
+        );
         key
     }
 }

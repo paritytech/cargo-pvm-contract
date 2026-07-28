@@ -1914,7 +1914,7 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
-    ) { 
+    ) {
         if T::IS_STRUCT {
             T::emit_members(registry, contract_name); // registration only, key discarded
         }

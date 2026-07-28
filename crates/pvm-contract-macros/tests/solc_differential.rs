@@ -384,7 +384,6 @@ fn ours(json: &str) -> Vec<NormEntry> {
     out
 }
 
-
 /// Run `solc --standard-json` on `source` and return the named contract's
 /// storage layout as sorted normalized entries, resolving each entry's `type`
 /// id through the `types` table's `label`.
