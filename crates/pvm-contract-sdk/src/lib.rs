@@ -43,8 +43,8 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback, method,
-    payable, receive, storage,
+    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback,
+    interface_id, method, non_reentrant, payable, receive, selector, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,9 +80,13 @@ pub use pvm_contract_types::{
     HostApi,
     HostResult,
     I256,
+    OutSink,
+    Outcome,
     Panic,
     ParseI256Error,
     PolkaVmHost,
+    // Reentrancy guard error (OZ-compatible).
+    ReentrancyGuardReentrantCall,
     ReturnErrorCode,
     ReturnFlags,
     RevertString,
@@ -108,14 +112,23 @@ pub use pvm_contract_types::{
     checked_sum,
     const_keccak256,
     const_selector,
+    // Dispatch outcome lowering (single exit for the selector-dispatch path)
+    finalize_outcome,
     // Framework errors
     framework_errors,
     keccak256,
     // Storage-layout walker wrapper (StorageEncode family) used by codegen
     layout_step_encode,
+    // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
+    panic_revert,
     read_word_offset,
     value_transferred_is_nonzero,
 };
+
+/// Reentrancy guard helpers emitted by the `#[non_reentrant]` codegen.
+/// Not part of the public API surface.
+#[doc(hidden)]
+pub use pvm_contract_types::{__reentrancy_is_locked, __reentrancy_lock, __reentrancy_unlock};
 
 /// Sealing module re-exported for the `#[contract]` macro to implement on
 /// generated storage structs. External users have no reason to import this.
@@ -155,7 +168,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, assert_panics, assert_reverts};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;

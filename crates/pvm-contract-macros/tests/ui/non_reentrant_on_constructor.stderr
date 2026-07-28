@@ -1,0 +1,9 @@
+error: `#[non_reentrant]` is only supported on `#[method]`s; it cannot be applied to a constructor, fallback, or receive handler
+  --> tests/ui/non_reentrant_on_constructor.rs:8:9
+   |
+ 8 | /         #[pvm_contract_macros::constructor]
+ 9 | |         #[pvm_contract_macros::non_reentrant]
+10 | |         pub fn new(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
+11 | |             Ok(())
+12 | |         }
+   | |_________^

@@ -90,7 +90,9 @@ extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
 pub(crate) use pvm_contract_types::storage_codec::inc_be_32;
-use pvm_contract_types::{Host, HostApi, SolEncode, StorageDecode, StorageEncode, StorageFlags};
+use pvm_contract_types::{
+    Host, HostApi, Panic, SolEncode, StorageDecode, StorageEncode, StorageFlags, panic_revert,
+};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -195,20 +197,43 @@ fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
     }
 }
 
-/// Read a u64 length from a storage slot's lower 8 bytes (big-endian).
+/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian),
+/// reverting with `Panic(0x22)` ("incorrectly encoded storage byte array") if
+/// the stored length is malformed.
+///
 /// Solidity stores array lengths as `uint256`; we cap support at `u64::MAX`
-/// elements (more than enough for any real-world contract) and panic if the
-/// upper 24 bytes are non-zero, which would indicate either corrupted state
-/// or a length set via raw uAPI that exceeds our supported range.
-fn read_len_u64(host: &Host, slot_key: &[u8; 32]) -> u64 {
+/// elements (more than enough for any real-world contract). If the upper 24
+/// bytes are non-zero the stored length is malformed — corrupt state or a
+/// length written via raw uAPI beyond our supported range.
+///
+/// This is the reverting reader used by the plain accessors (`len`, `get`,
+/// `push`, ...); the `try_*` accessors use [`try_read_len`] instead, which
+/// surfaces a malformed length as `None` rather than reverting. Keeping the two
+/// paths as separate readers avoids threading an `Option` through the common
+/// reverting path (which measurably grows the bytecode).
+fn read_len(host: &Host, slot_key: &[u8; 32]) -> u64 {
     let buf = storage_get_32(host, slot_key);
-    assert!(
-        buf[..24].iter().all(|&b| b == 0),
-        "StorageVec length exceeds u64::MAX"
-    );
+    if !buf[..24].iter().all(|&b| b == 0) {
+        panic_revert(host, Panic::StorageByteArrayEncoding);
+    }
     u64::from_be_bytes([
         buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
     ])
+}
+
+/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian), or
+/// `None` if the stored length is malformed.
+///
+/// The non-reverting counterpart of [`read_len`], used by the `try_*`
+/// accessors so a corrupt length slot reads as "empty" instead of reverting.
+fn try_read_len(host: &Host, slot_key: &[u8; 32]) -> Option<u64> {
+    let buf = storage_get_32(host, slot_key);
+    if !buf[..24].iter().all(|&b| b == 0) {
+        return None;
+    }
+    Some(u64::from_be_bytes([
+        buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+    ]))
 }
 
 /// Write a u64 length to a storage slot as a big-endian `uint256` (upper 24
@@ -510,7 +535,7 @@ pub trait StorageComponent: Sized {
     ///
     /// - [`Lazy<T>`]: zero the slot(s) the value occupies. For sub-word
     ///   primitives this is a sub-slot RMW that preserves neighbours
-    ///   (matches solc/Stylus). For dynamic types (`String`, `Bytes`),
+    ///   (matches solc). For dynamic types (`String`, `Bytes`),
     ///   clears the header AND any spilled body chunks.
     /// - [`Mapping<K, V>`]: **no-op**. Solidity mappings have no header to
     ///   clear — entries live at derived keys that can't be enumerated. If
@@ -812,7 +837,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// (sub-32-byte primitives that share a slot with neighbours via the
     /// macro walker), `set` performs one SLOAD + one SSTORE: it loads the
     /// shared slot, zeros only the field's byte window, writes the new
-    /// bytes back, and stores. This matches solc and Stylus's gas profile
+    /// bytes back, and stores. This matches solc gas profile
     /// for packed `SSTORE`s — neighbours sharing the slot are preserved.
     ///
     /// **Fast path when alone in slot** (`self.alone == true`): when the
@@ -1453,13 +1478,16 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot — the gas-optimal policy that matches solc.
 ///   For full-slot elements, every pop frees a full slot.
-/// - Out-of-bounds `get`/`set` revert via a plain trap with a static message
-///   (no `core::fmt` in the bytecode), **not** solc's ABI-encoded
-///   `Panic(0x32)` — off-chain callers won't see the `0x32` code. Use
-///   `try_get` to avoid the trap.
+/// - Out-of-bounds `get`/`set` revert with solc's ABI-encoded `Panic(0x32)`
+///   (array out-of-bounds access), matching Solidity — off-chain callers can
+///   decode the `0x32` code. Use `try_get` for a read that never reverts.
 /// - The length is read as a `u64`; a stored length exceeding `u64::MAX`
-///   (unreachable through this API — only via corrupted state or raw uAPI)
-///   traps intentionally rather than silently truncating to a smaller value.
+///   (unreachable through this API — only via corrupted state or raw uAPI) is
+///   treated as malformed. The **reverting** accessors (`get`/`set`/`len`/
+///   `push`/`pop`/`clear`) revert `Panic(0x22)` ("incorrectly encoded storage
+///   byte array") on it; the **non-reverting** read accessors (`try_get`/
+///   `first`/`last`/`is_empty`/`iter`) instead read it as empty
+///   (`None`/`true`/empty iterator) and never revert.
 ///
 /// # Element shapes supported
 ///
@@ -1562,18 +1590,20 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// - Sub-word: `i / per_slot` (multiple elements share a slot)
     /// - Multi-slot static: `i * STORAGE_SLOTS` (stride)
     /// - Single-slot full-word / dynamic-body header: `i`
-    fn slot_index_for(i: u64) -> u64 {
+    fn slot_index_for(host: &Host, i: u64) -> u64 {
         if T::PACKED_BYTES < 32 {
             i / Self::per_slot()
         } else if T::STORAGE_SLOTS > 1 {
             // Multi-slot static. Dynamic-body always has STORAGE_SLOTS == 1
             // (one header slot per element; bodies derive elsewhere).
             // `checked_mul` so a corrupted length / pathologically large `i`
-            // surfaces as a clean panic rather than silently wrapping into
+            // surfaces as a clean revert rather than silently wrapping into
             // the wrong slot. Physically unreachable in any real contract
             // (would require `i > u64::MAX / STORAGE_SLOTS`), defensive.
-            i.checked_mul(T::STORAGE_SLOTS as u64)
-                .expect("StorageVec: element-stride overflow")
+            match i.checked_mul(T::STORAGE_SLOTS as u64) {
+                Some(v) => v,
+                None => panic_revert(host, Panic::Overflow),
+            }
         } else {
             i
         }
@@ -1594,42 +1624,56 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// multi-slot static).
     fn element_slot(&self, i: u64) -> [u8; 32] {
         let mut key = *self.body_base();
-        inc_slot_by(&mut key, Self::slot_index_for(i));
+        inc_slot_by(&mut key, Self::slot_index_for(&self.host, i));
         key
     }
 
     /// Return the number of elements.
+    ///
+    /// Reverts with `Panic(0x22)` if the stored length is malformed (corrupt /
+    /// beyond `u64::MAX`). See [`checked_len`](Self::checked_len) for the
+    /// non-reverting variant.
     pub fn len(&self) -> u64 {
         let () = Self::_SHAPE_CHECK;
-        read_len_u64(&self.host, self.root.as_bytes())
+        read_len(&self.host, self.root.as_bytes())
     }
 
-    /// Return `true` if the array contains no elements.
+    /// The length, or `None` if the stored length is malformed. Backs the
+    /// non-reverting `try_*` accessors so a corrupt slot reads as "empty"
+    /// rather than reverting.
+    fn checked_len(&self) -> Option<u64> {
+        try_read_len(&self.host, self.root.as_bytes())
+    }
+
+    /// Return `true` if the array contains no elements. Non-reverting: a
+    /// malformed length reads as empty (`true`).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.checked_len().is_none_or(|n| n == 0)
     }
 
     /// Read the element at `index`.
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `index >= len()`, mirroring Solidity's
-    /// out-of-bounds behaviour. Note: the SDK reverts via a plain trap, not
-    /// the ABI-encoded `Panic(0x32)` selector solc emits — an off-chain
-    /// caller decoding revert data won't see the `0x32` code. Use
-    /// [`try_get`](Self::try_get) for a non-panicking read. The message is a
-    /// static string (no `{}` interpolation) to keep `core::fmt` out of the
-    /// bytecode.
+    /// Reverts with the ABI-encoded `Panic(0x32)` (array out-of-bounds) if
+    /// `index >= len()`, mirroring Solidity's out-of-bounds behaviour so an
+    /// off-chain caller decoding revert data sees the `0x32` code (and
+    /// `Panic(0x22)` if the stored length itself is malformed). Use
+    /// [`try_get`](Self::try_get) for a read that never reverts.
     pub fn get(&self, index: u64) -> T {
         let () = Self::_SHAPE_CHECK;
-        assert!(index < self.len(), "StorageVec::get: index out of bounds");
+        if index >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         self.read_at(index)
     }
 
     /// Read the element at `index`, returning `None` if out of bounds.
+    ///
+    /// Never reverts — a malformed stored length reads as empty (`None`).
     pub fn try_get(&self, index: u64) -> Option<T> {
         let () = Self::_SHAPE_CHECK;
-        if index >= self.len() {
+        if index >= self.checked_len()? {
             return None;
         }
         Some(self.read_at(index))
@@ -1646,7 +1690,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// one SLOAD cheaper than `try_get(len - 1)` for full-slot `T`.
     pub fn last(&self) -> Option<T> {
         let () = Self::_SHAPE_CHECK;
-        let len = self.len();
+        let len = self.checked_len()?;
         if len == 0 {
             None
         } else {
@@ -1670,7 +1714,8 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
         StorageVecIter {
             vec: self,
             pos: 0,
-            len: self.len(),
+            // Non-reverting: a malformed length iterates as empty.
+            len: self.checked_len().unwrap_or(0),
         }
     }
 
@@ -1700,12 +1745,13 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `index >= len()`. Use [`push`](Self::push) to
-    /// extend the array. Like [`get`](Self::get), the revert is a plain trap
-    /// rather than solc's ABI-encoded `Panic(0x32)`.
+    /// Reverts with `Panic(0x32)` (array out-of-bounds) if `index >= len()`.
+    /// Use [`push`](Self::push) to extend the array.
     pub fn set(&mut self, index: u64, value: &T) {
         let () = Self::_SHAPE_CHECK;
-        assert!(index < self.len(), "StorageVec::set: index out of bounds");
+        if index >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         self.write_at(index, value);
     }
 
@@ -1742,14 +1788,16 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the length would overflow `u64::MAX` (practically
-    /// unreachable — the storage budget is exhausted long before).
+    /// Reverts with `Panic(0x41)` ("array too large") if the length would
+    /// overflow `u64::MAX` (practically unreachable — the storage budget is
+    /// exhausted long before).
     pub fn push(&mut self, value: &T) {
         let () = Self::_SHAPE_CHECK;
         let len = self.len();
-        let new_len = len
-            .checked_add(1)
-            .expect("StorageVec::push: length overflow");
+        let new_len = match len.checked_add(1) {
+            Some(v) => v,
+            None => panic_revert(&self.host, Panic::OOM),
+        };
         self.write_at(len, value);
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
     }
@@ -1838,9 +1886,10 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
                 // corrupted length can't silently wrap and clear an
                 // unintended slot range — physically unreachable for
                 // honest writers, defensive against external corruption.
-                let total_slots = len
-                    .checked_mul(T::STORAGE_SLOTS as u64)
-                    .expect("StorageVec::clear: total-slots overflow");
+                let total_slots = match len.checked_mul(T::STORAGE_SLOTS as u64) {
+                    Some(v) => v,
+                    None => panic_revert(&self.host, Panic::Overflow),
+                };
                 let mut key = *self.body_base();
                 for _ in 0..total_slots {
                     storage_set_32(&self.host, &key, &[0u8; 32]);
@@ -2012,13 +2061,23 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     }
 
     /// Number of inner arrays appended.
+    ///
+    /// Reverts with `Panic(0x22)` if the stored length is malformed; see
+    /// [`checked_len`](Self::checked_len) for the non-reverting variant.
     pub fn len(&self) -> u64 {
-        read_len_u64(&self.host, self.root.as_bytes())
+        read_len(&self.host, self.root.as_bytes())
     }
 
-    /// `true` if no inner arrays have been appended.
+    /// The length, or `None` if the stored length is malformed. Backs the
+    /// non-reverting `try_*` accessors.
+    fn checked_len(&self) -> Option<u64> {
+        try_read_len(&self.host, self.root.as_bytes())
+    }
+
+    /// `true` if no inner arrays have been appended. Non-reverting: a malformed
+    /// length reads as empty (`true`).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.checked_len().is_none_or(|n| n == 0)
     }
 
     /// Read-only view of the inner array at index `i`. The returned [`Ref`]
@@ -2026,11 +2085,13 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `i >= len()`, consistent with flat
-    /// [`StorageVec::get`]. As there, the revert is a plain trap rather than
-    /// solc's ABI-encoded `Panic(0x32)`.
+    /// Reverts with `Panic(0x32)` (array out-of-bounds) if `i >= len()` (or
+    /// `Panic(0x22)` if the stored length is malformed), consistent with flat
+    /// [`StorageVec::get`].
     pub fn get(&self, i: u64) -> Ref<'_, StorageVec<T>> {
-        assert!(i < self.len(), "StorageVec::get: index out of bounds");
+        if i >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         // SAFETY: the inner handle is immediately wrapped in `Ref<'_, _>`,
         // which forwards only `&self` methods. The parent `&self` borrow
         // gates mutation: `grow`/`erase_last`/`set` require `&mut self` and
@@ -2040,7 +2101,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
 
     /// Read-only view of the inner array at `index`, returning `None` if out of bounds.
     pub fn try_get(&self, i: u64) -> Option<Ref<'_, StorageVec<T>>> {
-        if i >= self.len() {
+        if i >= self.checked_len()? {
             return None;
         }
         // SAFETY: see `get` — read-only `Ref` gates mutation.
@@ -2054,7 +2115,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
 
     /// Read-only view of the last inner array, or `None` if empty.
     pub fn last(&self) -> Option<Ref<'_, StorageVec<T>>> {
-        let len = self.len();
+        let len = self.checked_len()?;
         if len == 0 {
             None
         } else {
@@ -2067,7 +2128,8 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
         NestedStorageVecIter {
             vec: self,
             pos: 0,
-            len: self.len(),
+            // Non-reverting: a malformed length iterates as empty.
+            len: self.checked_len().unwrap_or(0),
         }
     }
 
@@ -2076,11 +2138,12 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `i >= len()`. Append a new inner first via
-    /// [`grow`](Self::grow). As with flat [`StorageVec::set`], the revert is
-    /// a plain trap rather than solc's ABI-encoded `Panic(0x32)`.
+    /// Reverts with `Panic(0x32)` (array out-of-bounds) if `i >= len()`.
+    /// Append a new inner first via [`grow`](Self::grow).
     pub fn entry(&mut self, i: u64) -> RefMut<'_, StorageVec<T>> {
-        assert!(i < self.len(), "StorageVec::entry: index out of bounds");
+        if i >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         // SAFETY: `&mut self` proves mutating access through the parent
         // borrow; the inner handle just forwards that capability.
         RefMut::new(self.inner_handle(i))
@@ -2098,12 +2161,14 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     /// ```
     ///
     /// # Panics
-    /// Panics if the outer length would overflow `u64::MAX`.
+    /// Reverts with `Panic(0x41)` ("array too large") if the outer length
+    /// would overflow `u64::MAX`.
     pub fn grow(&mut self) -> RefMut<'_, StorageVec<T>> {
         let len = self.len();
-        let new_len = len
-            .checked_add(1)
-            .expect("StorageVec::grow: length overflow");
+        let new_len = match len.checked_add(1) {
+            Some(v) => v,
+            None => panic_revert(&self.host, Panic::OOM),
+        };
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
         // SAFETY: `&mut self` proves mutating access through the parent
         // borrow; the freshly appended inner array is exclusively ours.

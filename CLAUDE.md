@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[selector]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `#[interface_id]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error trait (`SolError`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -18,6 +18,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `pvm-bump-allocator` | Simple bump allocator for PVM smart contracts (backs `allocator = "bump"`) |
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
 | `pvm-contract-e2e-tests` | End-to-end + integration test harness |
+| `pvm-solc-differential` | Differential tests of on-chain storage representation vs real solc (executed on `revm`); `solc-tests` feature |
 
 ## How It Works
 
@@ -90,9 +91,9 @@ DSL handlers take a concrete `&Host` (same type the macro path injects on the st
 The `#[contract]` macro generates two PolkaVM entry points:
 
 - **`deploy()`** — calls the `#[constructor]` function
-- **`call()`** — reads calldata, extracts 4-byte selector, dispatches to matching `#[method]`. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
+- **`call()`** — reads calldata, extracts 4-byte selector, dispatches via `route()` to the matching `#[method]`, then lowers `route()`'s returned `Outcome` to the host through a single `finalize_outcome` exit. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (`Outcome::Unhandled`, or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
 
-Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags.
+Dispatch uses an "Outcome-in-route" model: arms don't call the host on the success path. `route(this, selector, input, out) -> Outcome` (generic over the `OutSink` output buffer) has each arm validate input size -> decode parameters via `SolDecode` -> call the user function -> encode the return via `SolEncode` into the caller-owned buffer `out`, and return `Outcome::Return(len)`; unmatched selectors return `Outcome::Unhandled`. The single `finalize_outcome` call maps `Return` to the `return_value` success door (`Unhandled` falls through to fallback/revert). **Reverts never flow through `Outcome`** — a method's own `Err(e)` (encoded via `SolError::encode_to` into `out`) and every framework abort (input size check, malformed-calldata decode, payable guard, storage `panic_revert`) all diverge directly via `Host::revert` (`-> !`, `REVERT` flags). So `Outcome` has just two variants (`Return`, `Unhandled`), there's one revert path, and one test idiom (`expect_revert`/`assert_reverts!`) for every revert. The no-alloc `OutSink` is a fixed `&mut [u8]` sized to `MAX_RETURN_LEN`; the alloc one is a stack buffer with a `Vec` spill for dynamic returns.
 
 Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time.
 
@@ -109,8 +110,9 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 ### Method Attribute
 
 - `#[method]` — marks a public function as a contract method
-- `#[method(rename = "name")]` — overrides the Solidity function name (default: snake_case to camelCase)
+- `#[selector(name = "name")]` — overrides the Solidity function name (default: snake_case to camelCase); `#[method(rename = "name")]` is a supported alias
 - `#[payable]` — marks the method as `payable` (must be combined with `&mut self`)
+- `#[non_reentrant]` — emits an OpenZeppelin-compatible reentrancy guard (see [Reentrancy Protection](#reentrancy-protection)). Only valid on a `&self` / `&mut self` `#[method]` (not pure, constructor, fallback, or receive)
 
 ### Mutability Inference
 
@@ -153,7 +155,7 @@ Three layers, in increasing strength:
 
 This matches Solidity's `pure` rules — solc rejects the same operations in a `pure` function. If a method needs `keccak256`, block context, or any host call, mark it `view` (`&self`) rather than pure. The restriction isn't a SDK limitation; it's the same semantic boundary Solidity callers expect when they see `pure` in the ABI.
 
-**Reentrancy non-protection:** `&mut self` enforces single-threaded mutation within a frame, but persistent storage is shared across reentrant frames (each callee gets a fresh contract struct, so the borrow checker offers no cross-frame guarantee). A reentrancy-sensitive method needs an explicit guard (not provided by the SDK yet).
+**Reentrancy non-protection:** `&mut self` enforces single-threaded mutation within a frame, but persistent storage is shared across reentrant frames (each callee gets a fresh contract struct, so the borrow checker offers no cross-frame guarantee). pallet-revive rejects reentrancy by default; a contract that opts into `ALLOW_REENTRY` and needs an explicit guard can use the `#[non_reentrant]` modifier (see [Reentrancy Protection](#reentrancy-protection)).
 
 ### Fallback and Receive Handlers
 
@@ -290,7 +292,7 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 |------|-------------|
 | `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
 | `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
-| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` to avoid it |
+| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert with solc's ABI-encoded `Panic(0x32)` (array out-of-bounds); use `try_get` to avoid it |
 
 - Supports static values up to `MAX_STATIC_SLOTS` * 32 bytes (single-word and multi-word static structs/tuples) and dynamic values (`String`, `Bytes`, `#[derive(SolType, SolStorage)]` structs with dynamic fields) using solc's inline/spilled `bytes`/`string` layout
 - **Custom struct as storage value:** structs that live in `Lazy<S>` / `Mapping<_, S>` must derive **both** `SolType` (for ABI / field-layout signature) **and** `SolStorage` (for `StorageEncode`/`StorageDecode` + the `StaticStorageEncode`/`StaticStorageDecode` refinement when fully static). `SolType` alone is sufficient for ABI-only types (function parameter structs, event field structs). Deriving `SolStorage` on a struct with a non-storage-compatible field (e.g. `Vec<U256>`, nested SolType structs, tuples, fixed arrays of non-`u8`) emits a `compile_error!` at expansion time — visible to `cargo check` and `trybuild`
@@ -311,12 +313,21 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 
 ### Storage on the contract struct
 
-Declare storage fields directly on the contract struct. Two modes:
+Declare storage fields directly on the contract struct. Three modes:
 
 - **Auto-numbering (default).** Drop the `#[slot]` attribute and let the macro assign slots in declaration order via `layout_step`. Sub-word siblings pack into the same slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, sharing slot 0). Accepts every storage type.
 - **Explicit pinning (`#[slot(N)]`).** Restricted to full-slot types — `Mapping`, `Lazy<U256>`, `Lazy<String>`, `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and `#[storage]` sub-structs (anything with `StorageComponent::PACKED_BYTES == 32`). Sub-word types are rejected at compile time (explicit mode would place them at byte 0 of the slot while solc places them right-aligned). Use auto-numbering for sub-word packing or wrap the field in a `#[storage]` sub-struct if you need to pin the group at a specific slot. The primary reason to reach for `#[slot(N)]` over auto-numbering is `#[cfg(...)]`-gated storage variants — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
+- **Raw external slots (`#[slot(raw = KEY)]`).** Bind a typed field to a fixed, externally-known 32-byte slot (`KEY: [u8; 32]`) that lives *outside* the compiler-assigned sequential range — e.g. an [EIP-1967](https://eips.ethereum.org/EIPS/eip-1967) proxy slot (`keccak256("eip1967.proxy.implementation") - 1`). Because it's a real typed field, `get`/`set` stay gated by the borrow checker's `&self`/`&mut self` (view-vs-mutating) rule — no raw `host.get_storage` call and no `unsafe`. Sub-word types are **accepted** here (unlike `#[slot(N)]`) and placed right-aligned at `offset = 32 - PACKED_BYTES`, matching solc, so a slot written by a real Solidity proxy decodes identically. The field binds via `StorageComponent::new_at(StorageKey::from_raw(KEY), …)` with `alone = true` (an external pseudo-random slot has no packing neighbours). Raw slots are omitted from the abi-gen `storageLayout` (solc doesn't emit them either). Define the `KEY` constant in the contract/example, not the SDK. Example:
+  ```rust
+  const IMPLEMENTATION_SLOT: [u8; 32] = /* keccak256("eip1967.proxy.implementation") - 1 */;
 
-Mixing the two modes is not supported (either all fields are explicit or all are auto-numbered).
+  pub struct Proxy {
+      #[slot(raw = IMPLEMENTATION_SLOT)]
+      impl_addr: Lazy<Address>,
+  }
+  ```
+
+**Mixing modes.** Numeric `#[slot(N)]` and auto-numbering are mutually exclusive — either all non-raw fields pin a numeric slot or all are auto-numbered. **`#[slot(raw = KEY)]` is exempt** and may coexist with either mode: its key is pseudo-random and outside the sequential range, so it can't collide with a numeric or auto slot, and auto-numbered siblings keep their solc-style sub-word packing. (The caller owns raw-key correctness — a deliberately colliding `KEY` isn't checked.)
 
 The `#[contract]` macro constructs each field with a `StorageKey` and a clone of the host handle. Methods access storage via `self`:
 
@@ -403,6 +414,30 @@ host.call_evm(
 ```
 
 **Security: do not enable `ALLOW_REENTRY` unless the contract is specifically designed to handle reentrant callbacks** (e.g., flash loans, ERC-777 hooks). Reentrancy is one of the most exploited vulnerability classes in smart contracts. The default protection exists to prevent the classic attack where a callee re-enters the caller before state updates are complete. PVM creates fresh memory per call, so in-memory state is not shared across reentrant invocations. On-chain storage is shared.
+
+### `#[non_reentrant]` modifier
+
+For contracts that opt into `ALLOW_REENTRY` (and thus lose the default runtime reject), `#[non_reentrant]` re-adds an explicit OpenZeppelin-style guard on a method. The mode is inferred from the receiver:
+
+- **`&mut self` — full guard** (OZ `nonReentrant`): reverts if a guarded section is already in progress, otherwise sets a lock for the duration of the call and clears it on return.
+- **`&self` — read-only check** (OZ `nonReentrantView`): reverts if a guarded section is in progress; never writes.
+
+```rust
+#[method]
+#[non_reentrant]
+pub fn flash_loan(&mut self, ...) -> Result<(), Error> { /* ... */ }
+```
+
+On re-entry a guarded method reverts with the OZ-compatible `ReentrancyGuardReentrantCall` error (selector matches OZ v5), so Foundry/Etherscan decode it. The error is registered in the contract's ABI for guarded methods.
+
+Implementation notes (for maintainers):
+
+- **Opt-in only.** On a contract that never sets `ALLOW_REENTRY`, the guard is redundant with pallet-revive's default reject (pure overhead). Use it only on the `ALLOW_REENTRY` paths. This can't be enforced at compile time: `ALLOW_REENTRY` is a runtime call flag (not a static contract property), and the guarded method often makes no calls itself (a sibling makes the `ALLOW_REENTRY` call while the guarded method is the one re-entered via the shared lock), so the macro can't tell whether the guard is warranted. The redundant case is wasted gas, not a correctness issue.
+- **Two different errors.** A reentrant call on a *default* contract reverts with pallet-revive's `ReentranceDenied` (a runtime trap, not ABI-decodable); only the `#[non_reentrant]` path produces the ABI-decodable `ReentrancyGuardReentrantCall`. This differs from OZ, which has a single mechanism. The SDK can't unify them because the default-path error belongs to the runtime.
+- **Guard every reachable mutating entry point** during an `ALLOW_REENTRY` window: the guard only protects methods that carry the attribute; an unguarded sibling mutator is a hole. (Internal Rust calls bypass the guard; it protects external dispatch entry points only.)
+- **Delegatecall/proxy:** the lock lives in the *current* storage context, so under `delegatecall` it guards the caller's storage. That's the correct EVM behavior, but call it out since proxy + reentrancy is a common confusion.
+- **The lock lives in transient storage** (EIP-1153, `StorageFlags::TRANSIENT`) at a fixed namespaced key (`keccak256("pvm.guards.reentrancy")`), outside the declared layout, so it doesn't perturb slot numbering or the `storageLayout` ABI (`pvm-contract-types::reentrancy`). Transient is the right fit: shared across the call stack within a transaction (the re-entrant frame sees the lock), cheaper than a persistent `SSTORE`, and auto-cleared at transaction end, so a stuck lock can't brick the contract across transactions.
+- **The lock is cleared explicitly before `return_value`, not via `Drop`.** On-chain `return_value` diverges without unwinding, so a `Drop` guard would never run (it would on host targets, hiding the bug). The explicit clear is still needed with transient storage, which persists across *sequential* calls within a transaction, otherwise a later guarded call in the same tx would revert spuriously (as in OZ's `ReentrancyGuardTransient`).
 
 ## Host APIs
 
