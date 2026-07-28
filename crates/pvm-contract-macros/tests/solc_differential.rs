@@ -360,22 +360,32 @@ struct NormEntry {
 fn ours(json: &str) -> Vec<NormEntry> {
     let v: serde_json::Value = serde_json::from_str(json).expect("our layout json parses");
     let storage = v["storage"].as_array().expect("storage is an array");
+    let types = &v["types"];
     let mut out: Vec<NormEntry> = storage
         .iter()
-        .map(|e| NormEntry {
-            slot: e["slot"]
-                .as_str()
-                .expect("slot is a string")
-                .parse()
-                .expect("slot parses as u64"),
-            offset: e["offset"].as_u64().expect("offset is a number"),
-            label: e["label"].as_str().expect("label is a string").to_owned(),
-            ty: e["type"].as_str().expect("type is a string").to_owned(),
+        .map(|e| {
+            let raw_ty = e["type"].as_str().expect("type is a string").to_owned();
+            let ty = types
+                .get(&raw_ty)
+                .and_then(|t| t["label"].as_str())
+                .map(String::from)
+                .unwrap_or(raw_ty);
+            NormEntry {
+                slot: e["slot"]
+                    .as_str()
+                    .expect("slot is a string")
+                    .parse()
+                    .expect("slot parses as u64"),
+                offset: e["offset"].as_u64().expect("offset is a number"),
+                label: e["label"].as_str().expect("label is a string").to_owned(),
+                ty,
+            }
         })
         .collect();
     out.sort();
     out
 }
+
 
 /// Run `solc --standard-json` on `source` and return the named contract's
 /// storage layout as sorted normalized entries, resolving each entry's `type`

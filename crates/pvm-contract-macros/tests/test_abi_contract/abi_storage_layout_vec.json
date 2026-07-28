@@ -61,23 +61,23 @@
         "label": "pool",
         "offset": 0,
         "slot": "4",
-        "type": "struct StorageVecContract.PoolState"
+        "type": "t_struct(PoolState)_0_storage"
       }
     ],
     "types": {
-      "struct StorageVecContract.PoolState": {
+      "t_struct(PoolState)_0_storage": {
         "label": "struct StorageVecContract.PoolState",
         "members": [
           {
             "label": "owner",
             "offset": 0,
-            "slot": "4",
+            "slot": "0",
             "type": "address"
           },
           {
             "label": "entries",
             "offset": 0,
-            "slot": "5",
+            "slot": "1",
             "type": "uint256[]"
           }
         ],

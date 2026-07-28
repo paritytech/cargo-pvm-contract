@@ -210,7 +210,11 @@ pub trait StorageTypeName {
     /// Push this type's own member entries into `types`, keyed by its
     /// solc-style qualified name. No-op default — only `#[derive(SolStorage)]`
     /// structs override this.
-    fn emit_members(_types: &mut LayoutTypesRegistry, _contract_name: &str) {}
+    fn emit_members(_registry: &mut LayoutTypesRegistry, _contract_name: &str) -> String {
+        // Default: primitives never call this (IS_STRUCT == false gates it),
+        // but a body is required. Unreachable in practice.
+        String::new()
+    }
 }
 
 /// Serialize a [`StorageLayout`] to a JSON string.

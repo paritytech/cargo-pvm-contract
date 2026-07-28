@@ -320,12 +320,14 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 name_prefix: &str,
                 contract_name: &str,
                 entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
-                registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
+                registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
             ) {
-                let type_name = format!(
-                    "struct {}.{}",
+                // Delegate struct registration + key assignment to the
+                // StorageTypeName::emit_members impl below (single source of
+                // truth, shared with the `#[derive(SolStorage)]` path).
+                let key = <Self as ::pvm_contract_sdk::StorageTypeName>::emit_members(
+                    registry,
                     contract_name,
-                    <Self as ::pvm_contract_sdk::StorageTypeName>::name(),
                 );
 
                 // One entry for the whole sub-struct — no flattening.
@@ -333,41 +335,13 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                     label: ::std::string::String::from(name_prefix),
                     slot: base.to_string(),
                     offset,
-                    ty: type_name.clone(),
+                    ty: key,
                 });
-
-                // Register the struct's own shape in `types`, once per distinct type.
-                if !registry.types.contains_key(&type_name) {
-                    let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
-                        ::std::vec::Vec::new();
-                    {
-                        let entries = &mut member_entries;
-                        let name_prefix = "";
-                        // contract_name is not shadowed, coz members inside this struct
-                        // still has the same contract name
-                        #(#offset_consts_for_layout)*
-                        #(#layout_emits)*
-                    }
-                    registry.types.insert(
-                        type_name.clone(),
-                        ::pvm_contract_sdk::StorageLayoutTypeEntry {
-                            label: type_name.clone(),
-                            // TODO: need to calculate the actual packed size of the struct, not just hardcode 32. This is a placeholder until we implement proper size calculation for structs.
-                            number_of_bytes: "32".to_string(),
-                            members: member_entries,
-                        },
-                    );
-                }
             }
         }
 
-        // Name resolver for the layout-emit code path: when this struct is
-        // used as the value type of a `Mapping<K, Self>`, the parent layout
-        // emit asks `<Self as StorageTypeName>::name()` for the `"type"`
-        // string of the `"mapping(K, …)"` entry. `pvm-contract-types` has no
-        // blanket `StorageTypeName` impl — each type provides its own — so
-        // `#[storage]` sub-structs need this explicit impl returning the
-        // Rust ident.
+        // Name resolver for the layout-emit code path — also now the single
+        // place that registers this struct's shape into the `types` registry.
         #[cfg(feature = "abi-gen")]
         impl #impl_generics ::pvm_contract_sdk::StorageTypeName
             for #struct_name #ty_generics
@@ -375,6 +349,33 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         {
             fn name() -> ::std::string::String {
                 ::std::string::String::from(#struct_name_str)
+            }
+
+            const IS_STRUCT: bool = true;
+
+            fn emit_members(
+                registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
+                contract_name: &str,
+            ) -> ::std::string::String {
+                let qualified = ::std::format!("struct {}.{}", contract_name, #struct_name_str);
+                let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                    ::std::vec::Vec::new();
+                {
+                    let entries = &mut member_entries;
+                    let name_prefix = "";
+                    // contract_name is not shadowed — members inside this struct
+                    // still belong to the same top-level contract.
+                    let base: u64 = 0;
+                    #(#offset_consts_for_layout)*
+                    #(#layout_emits)*
+                }
+                registry.register_struct(
+                    #struct_name_str,
+                    qualified,
+                    member_entries,
+                    // TODO: compute real packed size instead of hardcoding 32.
+                    "32".to_string(),
+                )
             }
         }
     })
@@ -794,25 +795,19 @@ fn generate_sol_storage_impls(
 
         let emit_members_body = quote! {
             fn emit_members(
-                registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
+                registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
                 contract_name: &str,
-            ) {
+            ) -> ::std::string::String {
                 let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
-                if registry.types.contains_key(&qualified) {
-                    return;
-                }
                 let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                     ::std::vec::Vec::new();
                 #(#member_emit_pushes)*
-                registry.types.insert(
-                    qualified.clone(),
-                    ::pvm_contract_sdk::StorageLayoutTypeEntry {
-                        label: qualified,
-                        // TODO: need to calculate the actual packed size of the struct, not just hardcode 32. This is a placeholder until we implement proper size calculation for structs.
-                        number_of_bytes: "32".to_string(),
-                        members: member_entries,
-                    },
-                );
+                registry.register_struct(
+                    stringify!(#name),
+                    qualified,
+                    member_entries,
+                    "32".to_string(), // TODO: compute real size, not hardcoded
+                )
             }
         };
 
@@ -955,23 +950,17 @@ fn generate_sol_storage_impls(
             fn emit_members(
                 registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
                 contract_name: &str,
-            ) {
+            ) -> ::std::string::String {
                 let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
-                if registry.types.contains_key(&qualified) {
-                    return;
-                }
                 let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                     ::std::vec::Vec::new();
                 #(#member_emit_pushes)*
-                registry.types.insert(
-                    qualified.clone(),
-                    ::pvm_contract_sdk::StorageLayoutTypeEntry {
-                        label: qualified,
-                        // TODO: need to calculate the actual packed size of the struct, not just hardcode 32. This is a placeholder until we implement proper size calculation for structs.
-                        number_of_bytes: "32".to_string(),
-                        members: member_entries,
-                    },
-                );
+                registry.register_struct(
+                    stringify!(#name),
+                    qualified,
+                    member_entries,
+                    "32".to_string(), // TODO: compute real size, not hardcoded
+                )
             }
         };
         // Static struct: universal trait methods delegate to shared helpers;

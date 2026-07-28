@@ -951,19 +951,10 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
         let type_name = if T::IS_STRUCT {
-            let qualified = alloc::format!(
-                "struct {}.{}",
-                contract_name,
-                <T as pvm_contract_types::StorageTypeName>::name(),
-            );
-            if !registry.types.contains_key(&qualified) {
-                T::emit_members(registry, contract_name);
-            }
-            qualified
+            T::emit_members(registry, contract_name)
         } else {
             <T as pvm_contract_types::StorageTypeName>::name()
         };
-
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
@@ -1157,15 +1148,20 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         // OWN type string (`mapping(K => V)`) still uses V's bare name via
         // StorageTypeName, matching solc; only V's *own* entry in `types`
         // needs the qualified name.
+        // if V::IS_STRUCT {
+        //     let qualified = alloc::format!(
+        //         "struct {}.{}",
+        //         contract_name,
+        //         <V as pvm_contract_types::StorageTypeName>::name(),
+        //     );
+        //     if !registry.types.contains_key(&qualified) {
+        //         V::emit_members(registry, contract_name);
+        //     }
+        // }
+
+        // Mapping<K, V> — V's struct registration, mapping's own `ty` unchanged
         if V::IS_STRUCT {
-            let qualified = alloc::format!(
-                "struct {}.{}",
-                contract_name,
-                <V as pvm_contract_types::StorageTypeName>::name(),
-            );
-            if !registry.types.contains_key(&qualified) {
-                V::emit_members(registry, contract_name);
-            }
+            V::emit_members(registry, contract_name); // key not needed here, only registration matters
         }
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
@@ -1918,16 +1914,9 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
-    ) {
+    ) { 
         if T::IS_STRUCT {
-            let qualified = alloc::format!(
-                "struct {}.{}",
-                contract_name,
-                <T as pvm_contract_types::StorageTypeName>::name(),
-            );
-            if !registry.types.contains_key(&qualified) {
-                T::emit_members(registry, contract_name);
-            }
+            T::emit_members(registry, contract_name); // registration only, key discarded
         }
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
