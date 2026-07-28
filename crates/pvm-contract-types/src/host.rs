@@ -187,21 +187,33 @@ pub trait HostApi {
     fn block_number(&self, output: &mut [u8; 32]);
     fn block_hash(&self, block_number: &[u8; 32], output: &mut [u8; 32]);
 
-    /// Terminate execution with the given flags and encoded data.
+    /// Return successfully with the ABI-encoded `data`.
     ///
-    /// On `riscv64` this is a syscall and never returns. On host targets
-    /// the test mock captures the call as a [`ReturnValue`](super::ReturnValue)
-    /// and returns control to the caller — see
+    /// `return_value` and [`Self::revert`] are the two halves of pallet-revive's
+    /// single `return_value(flags, data)` exit syscall: on `riscv64` both inline
+    /// to that one syscall and differ only by [`ReturnFlags`] (empty here,
+    /// `REVERT` there). They are split into two methods only so the host mock can
+    /// give success a non-diverging capture seam (see below).
+    ///
+    /// This is the **success** door — it never carries a revert, and it is
+    /// **internal**: only the single-exit lowering (`finalize_outcome`, or the
+    /// DSL's `finalize_response`) calls it, from an encoded `Outcome::Return`.
+    /// Contract authors fail a frame via [`Self::revert`], not by calling this.
+    ///
+    /// On `riscv64` this is the `return_value` syscall (with empty flags) and
+    /// never returns. On host targets the test mock captures the call as a
+    /// [`ReturnValue`](super::ReturnValue) and returns control to the caller
+    /// (so tests can inspect the success payload) — see
     /// [`MockHost::take_return_value`](super::MockHost::take_return_value).
     #[cfg(target_arch = "riscv64")]
-    fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> !;
+    fn return_value(&self, data: &[u8]) -> !;
 
-    /// Capture the return value (host-target equivalent of the `riscv64`
-    /// diverging syscall). Implementations on host targets should record the
-    /// `(flags, data)` pair (typically into a [`ReturnValue`](super::ReturnValue))
-    /// for the test to inspect after the dispatch returns.
+    /// Capture the success return value (host-target equivalent of the
+    /// `riscv64` diverging syscall). Implementations on host targets should
+    /// record `data` (typically into a [`ReturnValue`](super::ReturnValue) with
+    /// empty flags) for the test to inspect after the dispatch returns.
     #[cfg(not(target_arch = "riscv64"))]
-    fn return_value(&self, flags: ReturnFlags, data: &[u8]);
+    fn return_value(&self, data: &[u8]);
 
     /// Halt execution and consume all remaining gas.
     ///
@@ -215,6 +227,24 @@ pub trait HostApi {
     ///
     /// Same divergence semantics as [`Self::consume_all_gas`].
     fn terminate(&self, beneficiary: &[u8; 20]) -> !;
+
+    /// Revert the frame with ABI-encoded return `data`.
+    ///
+    /// This is the **failure** door — the sole way to revert. It **diverges on
+    /// both targets** so it can be called from inside a value-returning method
+    /// (e.g. a storage getter) that has no value to return on the error path,
+    /// as well as from dispatch error arms.
+    ///
+    /// On `riscv64` this is the `return_value` syscall with the
+    /// [`ReturnFlags::REVERT`] flag and never returns. On host targets the mock
+    /// records `data` (tagged with [`ReturnFlags::REVERT`]) and then diverges
+    /// via a typed panic. Because it diverges, tests recover the payload with
+    /// [`MockHost::expect_revert`](super::MockHost::expect_revert) — which
+    /// catches the unwind (via
+    /// [`MockHost::run_until_halt`](super::MockHost::run_until_halt)) and returns
+    /// the captured [`ReturnValue`](super::ReturnValue) — not a bare
+    /// `take_return_value()`, which the reverting call unwinds past.
+    fn revert(&self, data: &[u8]) -> !;
 }
 
 /// Real host backend for PolkaVM contracts.
@@ -447,14 +477,14 @@ impl HostApi for PolkaVmHost {
         pallet_revive_uapi::HostFnImpl::block_hash(block_number, output)
     }
     #[inline(always)]
-    fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> ! {
+    fn return_value(&self, data: &[u8]) -> ! {
         // Every contract exit routes through `return_value` (both the dispatch's
         // normal return and a raw call in a user body), so release the reentrancy
         // lock here if this frame holds it. This covers a body that exits via a
         // raw `return_value`, which would otherwise skip the codegen's post-body
         // unlock.
         crate::reentrancy::__reentrancy_clear_if_held(self);
-        pallet_revive_uapi::HostFnImpl::return_value(flags, data)
+        pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::empty(), data)
     }
     #[inline(always)]
     fn consume_all_gas(&self) -> ! {
@@ -463,6 +493,10 @@ impl HostApi for PolkaVmHost {
     #[inline(always)]
     fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
         pallet_revive_uapi::HostFnImpl::terminate(beneficiary)
+    }
+    #[inline(always)]
+    fn revert(&self, data: &[u8]) -> ! {
+        pallet_revive_uapi::HostFnImpl::return_value(ReturnFlags::REVERT, data)
     }
 }
 
@@ -627,7 +661,7 @@ impl HostApi for PolkaVmHost {
     fn block_hash(&self, _block_number: &[u8; 32], _output: &mut [u8; 32]) {
         unimplemented!("PolkaVmHost::block_hash is only available on PolkaVM")
     }
-    fn return_value(&self, _flags: ReturnFlags, _data: &[u8]) {
+    fn return_value(&self, _data: &[u8]) {
         unimplemented!("PolkaVmHost::return_value is only available on PolkaVM")
     }
     fn consume_all_gas(&self) -> ! {
@@ -635,6 +669,9 @@ impl HostApi for PolkaVmHost {
     }
     fn terminate(&self, _beneficiary: &[u8; 20]) -> ! {
         unimplemented!("PolkaVmHost::terminate is only available on PolkaVM")
+    }
+    fn revert(&self, _data: &[u8]) -> ! {
+        unimplemented!("PolkaVmHost::revert is only available on PolkaVM")
     }
 }
 
@@ -932,13 +969,13 @@ impl HostApi for Host {
     }
     #[cfg(target_arch = "riscv64")]
     #[inline(always)]
-    fn return_value(&self, flags: ReturnFlags, data: &[u8]) -> ! {
-        self.inner.return_value(flags, data)
+    fn return_value(&self, data: &[u8]) -> ! {
+        self.inner.return_value(data)
     }
     #[cfg(not(target_arch = "riscv64"))]
     #[inline(always)]
-    fn return_value(&self, flags: ReturnFlags, data: &[u8]) {
-        self.inner.return_value(flags, data)
+    fn return_value(&self, data: &[u8]) {
+        self.inner.return_value(data)
     }
     #[inline(always)]
     fn consume_all_gas(&self) -> ! {
@@ -947,6 +984,10 @@ impl HostApi for Host {
     #[inline(always)]
     fn terminate(&self, beneficiary: &[u8; 20]) -> ! {
         self.inner.terminate(beneficiary)
+    }
+    #[inline(always)]
+    fn revert(&self, data: &[u8]) -> ! {
+        self.inner.revert(data)
     }
 }
 
@@ -1115,13 +1156,16 @@ impl HostApi for Host {
     fn block_hash(&self, _block_number: &[u8; 32], _output: &mut [u8; 32]) {
         match self._never {}
     }
-    fn return_value(&self, _flags: ReturnFlags, _data: &[u8]) {
+    fn return_value(&self, _data: &[u8]) {
         match self._never {}
     }
     fn consume_all_gas(&self) -> ! {
         match self._never {}
     }
     fn terminate(&self, _beneficiary: &[u8; 20]) -> ! {
+        match self._never {}
+    }
+    fn revert(&self, _data: &[u8]) -> ! {
         match self._never {}
     }
 }

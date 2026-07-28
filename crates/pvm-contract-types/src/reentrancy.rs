@@ -90,8 +90,8 @@ impl SolError for ReentrancyGuardReentrantCall {
 /// Whether the reentrancy lock is currently held.
 ///
 /// The dispatch codegen calls this and, on `true`, reverts **inline** with
-/// `ReentrancyGuardReentrantCall` via `return_value` + an explicit `return`
-/// from the route.
+/// `ReentrancyGuardReentrantCall` via the diverging `host.revert(...)` door
+/// (`-> !`), which never clears the outer frame's lock.
 #[doc(hidden)]
 pub fn __reentrancy_is_locked(host: &Host) -> bool {
     let mut buf = [0u8; 32];

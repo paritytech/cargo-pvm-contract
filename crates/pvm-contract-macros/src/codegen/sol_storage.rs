@@ -407,7 +407,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         // Name resolver for the layout-emit code path: when this struct is
         // used as the value type of a `Mapping<K, Self>`, the parent layout
         // emit asks `<Self as StorageTypeName>::name()` for the `"type"`
-        // string of the `"mapping(K, …)"` entry. `pvm-contract-types` has no
+        // string of the `"mapping(K => …)"` entry. `pvm-contract-types` has no
         // blanket `StorageTypeName` impl — each type provides its own — so
         // `#[storage]` sub-structs need this explicit impl returning the
         // Rust ident.

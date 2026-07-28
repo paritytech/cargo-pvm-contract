@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[selector]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `#[interface_id]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error trait (`SolError`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -91,9 +91,9 @@ DSL handlers take a concrete `&Host` (same type the macro path injects on the st
 The `#[contract]` macro generates two PolkaVM entry points:
 
 - **`deploy()`** — calls the `#[constructor]` function
-- **`call()`** — reads calldata, extracts 4-byte selector, dispatches to matching `#[method]`. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
+- **`call()`** — reads calldata, extracts 4-byte selector, dispatches via `route()` to the matching `#[method]`, then lowers `route()`'s returned `Outcome` to the host through a single `finalize_outcome` exit. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (`Outcome::Unhandled`, or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
 
-Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags.
+Dispatch uses an "Outcome-in-route" model: arms don't call the host on the success path. `route(this, selector, input, out) -> Outcome` (generic over the `OutSink` output buffer) has each arm validate input size -> decode parameters via `SolDecode` -> call the user function -> encode the return via `SolEncode` into the caller-owned buffer `out`, and return `Outcome::Return(len)`; unmatched selectors return `Outcome::Unhandled`. The single `finalize_outcome` call maps `Return` to the `return_value` success door (`Unhandled` falls through to fallback/revert). **Reverts never flow through `Outcome`** — a method's own `Err(e)` (encoded via `SolError::encode_to` into `out`) and every framework abort (input size check, malformed-calldata decode, payable guard, storage `panic_revert`) all diverge directly via `Host::revert` (`-> !`, `REVERT` flags). So `Outcome` has just two variants (`Return`, `Unhandled`), there's one revert path, and one test idiom (`expect_revert`/`assert_reverts!`) for every revert. The no-alloc `OutSink` is a fixed `&mut [u8]` sized to `MAX_RETURN_LEN`; the alloc one is a stack buffer with a `Vec` spill for dynamic returns.
 
 Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time.
 
@@ -110,7 +110,7 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 ### Method Attribute
 
 - `#[method]` — marks a public function as a contract method
-- `#[method(rename = "name")]` — overrides the Solidity function name (default: snake_case to camelCase)
+- `#[selector(name = "name")]` — overrides the Solidity function name (default: snake_case to camelCase); `#[method(rename = "name")]` is a supported alias
 - `#[payable]` — marks the method as `payable` (must be combined with `&mut self`)
 - `#[non_reentrant]` — emits an OpenZeppelin-compatible reentrancy guard (see [Reentrancy Protection](#reentrancy-protection)). Only valid on a `&self` / `&mut self` `#[method]` (not pure, constructor, fallback, or receive)
 
@@ -292,7 +292,7 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 |------|-------------|
 | `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
 | `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
-| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` to avoid it |
+| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert with solc's ABI-encoded `Panic(0x32)` (array out-of-bounds); use `try_get` to avoid it |
 
 - Supports static values up to `MAX_STATIC_SLOTS` * 32 bytes (single-word and multi-word static structs/tuples) and dynamic values (`String`, `Bytes`, `#[derive(SolType, SolStorage)]` structs with dynamic fields) using solc's inline/spilled `bytes`/`string` layout
 - **Custom struct as storage value:** structs that live in `Lazy<S>` / `Mapping<_, S>` must derive **both** `SolType` (for ABI / field-layout signature) **and** `SolStorage` (for `StorageEncode`/`StorageDecode` + the `StaticStorageEncode`/`StaticStorageDecode` refinement when fully static). `SolType` alone is sufficient for ABI-only types (function parameter structs, event field structs). Deriving `SolStorage` on a struct with a non-storage-compatible field (e.g. `Vec<U256>`, nested SolType structs, tuples, fixed arrays of non-`u8`) emits a `compile_error!` at expansion time — visible to `cargo check` and `trybuild`
@@ -313,12 +313,21 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 
 ### Storage on the contract struct
 
-Declare storage fields directly on the contract struct. Two modes:
+Declare storage fields directly on the contract struct. Three modes:
 
 - **Auto-numbering (default).** Drop the `#[slot]` attribute and let the macro assign slots in declaration order via `layout_step`. Sub-word siblings pack into the same slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, sharing slot 0). Accepts every storage type.
 - **Explicit pinning (`#[slot(N)]`).** Restricted to full-slot types — `Mapping`, `Lazy<U256>`, `Lazy<String>`, `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and `#[storage]` sub-structs (anything with `StorageComponent::PACKED_BYTES == 32`). Sub-word types are rejected at compile time (explicit mode would place them at byte 0 of the slot while solc places them right-aligned). Use auto-numbering for sub-word packing or wrap the field in a `#[storage]` sub-struct if you need to pin the group at a specific slot. The primary reason to reach for `#[slot(N)]` over auto-numbering is `#[cfg(...)]`-gated storage variants — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
+- **Raw external slots (`#[slot(raw = KEY)]`).** Bind a typed field to a fixed, externally-known 32-byte slot (`KEY: [u8; 32]`) that lives *outside* the compiler-assigned sequential range — e.g. an [EIP-1967](https://eips.ethereum.org/EIPS/eip-1967) proxy slot (`keccak256("eip1967.proxy.implementation") - 1`). Because it's a real typed field, `get`/`set` stay gated by the borrow checker's `&self`/`&mut self` (view-vs-mutating) rule — no raw `host.get_storage` call and no `unsafe`. Sub-word types are **accepted** here (unlike `#[slot(N)]`) and placed right-aligned at `offset = 32 - PACKED_BYTES`, matching solc, so a slot written by a real Solidity proxy decodes identically. The field binds via `StorageComponent::new_at(StorageKey::from_raw(KEY), …)` with `alone = true` (an external pseudo-random slot has no packing neighbours). Raw slots are omitted from the abi-gen `storageLayout` (solc doesn't emit them either). Define the `KEY` constant in the contract/example, not the SDK. Example:
+  ```rust
+  const IMPLEMENTATION_SLOT: [u8; 32] = /* keccak256("eip1967.proxy.implementation") - 1 */;
 
-Mixing the two modes is not supported (either all fields are explicit or all are auto-numbered).
+  pub struct Proxy {
+      #[slot(raw = IMPLEMENTATION_SLOT)]
+      impl_addr: Lazy<Address>,
+  }
+  ```
+
+**Mixing modes.** Numeric `#[slot(N)]` and auto-numbering are mutually exclusive — either all non-raw fields pin a numeric slot or all are auto-numbered. **`#[slot(raw = KEY)]` is exempt** and may coexist with either mode: its key is pseudo-random and outside the sequential range, so it can't collide with a numeric or auto slot, and auto-numbered siblings keep their solc-style sub-word packing. (The caller owns raw-key correctness — a deliberately colliding `KEY` isn't checked.)
 
 The `#[contract]` macro constructs each field with a `StorageKey` and a clone of the host handle. Methods access storage via `self`:
 
