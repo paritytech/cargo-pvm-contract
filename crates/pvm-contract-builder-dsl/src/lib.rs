@@ -130,10 +130,14 @@ impl ContractBuilder {
     /// they are resolved by first-match-wins.
     #[inline(always)]
     fn assert_unique_selector(&self, selector: Selector) {
-        assert!(
-            !self.methods[..self.len].iter().any(|(s, _)| *s == selector),
-            "ContractBuilder: duplicate selector registration"
-        );
+        let mut i = 0;
+        while i < self.len {
+            assert!(
+                self.methods[i].0 != selector,
+                "ContractBuilder: duplicate selector registration"
+            );
+            i += 1;
+        }
     }
 
     /// Register a non-payable method handler for the given selector.

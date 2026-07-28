@@ -247,6 +247,10 @@ pub(super) struct ParsedContract {
     /// Idents of structs in the module body carrying `#[derive(SolEvent)]`.
     /// Used by the abi-gen codepath to emit event entries for no-sol contracts.
     pub(super) event_idents: Vec<Ident>,
+    /// Const-eval assertions that each `implements(ITrait<Error = Ty>)` binding
+    /// matches the impl's actual `type Error`. Emitted inside the module so the
+    /// ABI-advertised error type can't silently drift from the encoded one.
+    pub(super) folded_error_asserts: Vec<TokenStream>,
 }
 
 /// A storage field on the contract struct.
@@ -843,26 +847,30 @@ fn type_references_self(ty: &syn::Type) -> bool {
 /// `Self::Error` return with the `implements(IErc20<Error = Ty>)` binding — the
 /// macro can't resolve `Self::Error` from the impl block. A method that names its
 /// error concretely (`Result<_, MyError>`) needs no binding.
+///
+/// Returns `true` when the binding was consumed (the method's error type
+/// referenced `Self`), so the caller can emit a const-eval assertion that the
+/// binding matches the impl's actual `type Error`.
 fn collect_folded_error_type(
     output: &syn::ReturnType,
     error_binding: Option<&syn::Type>,
     error_types: &mut Vec<syn::Type>,
     seen_error_names: &mut Vec<String>,
-) -> syn::Result<()> {
+) -> syn::Result<bool> {
     let syn::ReturnType::Type(_, ty) = output else {
-        return Ok(());
+        return Ok(false);
     };
     let syn::Type::Path(type_path) = ty.as_ref() else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(segment) = type_path.path.segments.last() else {
-        return Ok(());
+        return Ok(false);
     };
     if segment.ident != "Result" {
-        return Ok(());
+        return Ok(false);
     }
     let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return Ok(());
+        return Ok(false);
     };
     let type_args: Vec<_> = args
         .args
@@ -873,10 +881,11 @@ fn collect_folded_error_type(
         })
         .collect();
     if type_args.len() < 2 {
-        return Ok(());
+        return Ok(false);
     }
     let err_ty = type_args[1];
-    let concrete = if type_references_self(err_ty) {
+    let references_self = type_references_self(err_ty);
+    let concrete = if references_self {
         match error_binding {
             Some(bound) => bound.clone(),
             // Can't resolve `Self::Error` without a binding — the ABI can't list
@@ -897,7 +906,7 @@ fn collect_folded_error_type(
         seen_error_names.push(name);
         error_types.push(concrete);
     }
-    Ok(())
+    Ok(references_self && error_binding.is_some())
 }
 
 /// Resolve the single interface `contract`/`interface` declaration in a `.sol`
@@ -1017,6 +1026,7 @@ fn fold_interface_methods(
     seen_error_names: &mut Vec<String>,
     sol_contract: Option<&syn_solidity::ItemContract>,
     implemented_sol_methods: &mut Vec<Option<syn_solidity::SolIdent>>,
+    folded_error_asserts: &mut Vec<TokenStream>,
 ) -> syn::Result<()> {
     for iface in implements {
         let iface_last = iface
@@ -1095,6 +1105,12 @@ fn fold_interface_methods(
                 ));
             }
             matched_impl = true;
+
+            // Set when a folded method of this impl returns `Result<_, Self::Error>`
+            // and the `implements(Trait<Error = Ty>)` binding supplied the concrete
+            // type. That binding drives the ABI, so we emit a const-eval check that
+            // it equals the impl's real `type Error` (see below).
+            let mut binding_used = false;
 
             for impl_item in &item_impl.items {
                 let syn::ImplItem::Fn(func) = impl_item else {
@@ -1205,7 +1221,7 @@ fn fold_interface_methods(
                     ),
                 };
 
-                collect_folded_error_type(
+                binding_used |= collect_folded_error_type(
                     &func.sig.output,
                     iface.error_ty.as_ref(),
                     error_types,
@@ -1223,6 +1239,16 @@ fn fold_interface_methods(
                     precomputed_selector,
                     is_non_reentrant: has_pvm_attr(&func.attrs, "non_reentrant"),
                     trait_path: Some(trait_path.clone()),
+                });
+            }
+
+            // The identity closure only coerces to this fn pointer when the two
+            // types are identical, so a binding that disagrees with the impl's
+            // `type Error` is a hard compile error rather than silent ABI drift.
+            if binding_used {
+                let bound = iface.error_ty.as_ref().unwrap();
+                folded_error_asserts.push(quote! {
+                    const _: fn(<#struct_ident as #trait_path>::Error) -> #bound = |e| e;
                 });
             }
         }
@@ -1405,6 +1431,7 @@ fn parse_contract(
 
     // Collect methods from every `impl` block in the module.
     let mut methods = Vec::new();
+    let mut folded_error_asserts: Vec<TokenStream> = Vec::new();
     let mut has_constructor = false;
     let mut has_fallback = false;
     let mut constructor_name = None;
@@ -1611,6 +1638,7 @@ fn parse_contract(
             &mut seen_error_names,
             sol_contract,
             &mut implemented_sol_methods,
+            &mut folded_error_asserts,
         )?;
     }
 
@@ -1706,6 +1734,7 @@ fn parse_contract(
         receive_returns_result,
         error_types,
         event_idents,
+        folded_error_asserts,
     })
 }
 
@@ -1758,6 +1787,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         generate_abi_gen(&parsed, args.sol_path.is_some(), &slot_fields, args.no_main);
 
     let mod_content = strip_pvm_attrs(&input, struct_name)?;
+    let folded_error_asserts = &parsed.folded_error_asserts;
 
     // `alloc_setup` is emitted at the caller's crate root (sibling of the
     // contract mod). Keep `extern crate alloc;` here, but do NOT add
@@ -2234,6 +2264,11 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #(#explicit_full_slot_checks)*
 
             #mod_content
+
+            // Const-eval checks that each `implements(Trait<Error = Ty>)` binding
+            // matches the impl's real `type Error`. Placed after `#mod_content` so
+            // the folded `impl`s and the contract struct are in scope.
+            #(#folded_error_asserts)*
 
             #payable_helpers_fn
 
