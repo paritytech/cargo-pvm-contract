@@ -1180,6 +1180,23 @@ fn fold_interface_methods(
                     }
                 }
 
+                // Lifecycle attributes have no meaning on a folded method — it is
+                // always an ordinary selector-dispatched entry point. Silently
+                // dropping them (the pre-existing behavior) hides a real mistake,
+                // so reject them with a pointer to the inherent path.
+                for name in ["constructor", "fallback", "receive"] {
+                    if has_pvm_attr(&func.attrs, name) {
+                        return Err(syn::Error::new_spanned(
+                            func,
+                            format!(
+                                "#[{name}] is not valid on a folded interface method (it dispatches \
+                                 as an ordinary method); declare lifecycle handlers as inherent \
+                                 `impl` methods on the contract struct"
+                            ),
+                        ));
+                    }
+                }
+
                 // `#[non_reentrant]` is honored on folded methods (read into the
                 // MethodInfo below); a folded method always has a receiver, so
                 // the pure-method restriction that applies to the inherent path

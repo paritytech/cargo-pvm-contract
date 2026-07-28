@@ -470,6 +470,7 @@ impl ContractBuilderWithHandlers {
     /// Kept as a standalone body rather than sharing one with `dispatch_impl`:
     /// folding the two into a shared helper regressed the common (non-composing)
     /// dispatch path's code size.
+    #[inline]
     pub fn dispatch_composed<const BUF_SIZE: usize>(
         &self,
         host: &Host,
