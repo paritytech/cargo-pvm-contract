@@ -1,0 +1,59 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "withdraw",
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "VaultError",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
+]

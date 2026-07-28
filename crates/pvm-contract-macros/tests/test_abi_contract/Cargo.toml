@@ -55,6 +55,10 @@ path = "src/storage_layout_vec.rs"
 name = "proxy-raw-slot"
 path = "src/proxy_raw_slot.rs"
 
+[[bin]]
+name = "folded-error-binding"
+path = "src/folded_error_binding.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-sdk = { path = "../../../pvm-contract-sdk", features = ["alloc"] }

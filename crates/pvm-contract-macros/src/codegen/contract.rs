@@ -843,17 +843,26 @@ fn type_references_self(ty: &syn::Type) -> bool {
     }
 }
 
-/// True for a `Self`-rooted associated type like `Self::Error` — a plain path
-/// (no qualified self) whose first segment is `Self`. Distinguishes the shape the
-/// `<Error = Ty>` binding can resolve by wholesale substitution from one that
-/// merely nests `Self` (see the caller for why nesting is rejected).
-fn is_self_rooted_path(ty: &syn::Type) -> bool {
-    matches!(
-        ty,
-        syn::Type::Path(tp)
-            if tp.qself.is_none()
-                && tp.path.segments.first().is_some_and(|s| s.ident == "Self")
-    )
+/// True for exactly `Self::Error`: a plain two-segment `Self::Error` with no
+/// qualified self and no generic args. That is the only shape the `<Error = Ty>`
+/// binding names; the caller rejects every other `Self`-referencing error type.
+fn is_self_error_path(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else {
+        return false;
+    };
+    if tp.qself.is_some() {
+        return false;
+    }
+    let segs: Vec<_> = tp.path.segments.iter().collect();
+    // Exactly `Self::Error`, with no generic arguments on either segment — a
+    // `Self::Error<T>` is not the plain associated type the binding names, so it
+    // falls through to the reject branch with a clear message rather than passing
+    // the "exact" check and failing later with a worse diagnostic.
+    segs.len() == 2
+        && segs[0].ident == "Self"
+        && matches!(segs[0].arguments, syn::PathArguments::None)
+        && segs[1].ident == "Error"
+        && matches!(segs[1].arguments, syn::PathArguments::None)
 }
 
 /// Register a folded method's error type for the ABI, substituting a
@@ -897,8 +906,8 @@ fn collect_folded_error_type(
         return Ok(false);
     }
     let err_ty = type_args[1];
-    let self_rooted = is_self_rooted_path(err_ty);
-    let concrete = if self_rooted {
+    let self_error = is_self_error_path(err_ty);
+    let concrete = if self_error {
         match error_binding {
             Some(bound) => bound.clone(),
             // Can't resolve `Self::Error` without a binding — the ABI can't list
@@ -912,15 +921,15 @@ fn collect_folded_error_type(
             }
         }
     } else if type_references_self(err_ty) {
-        // `Self` appears nested (e.g. `Wrapper<Self::Error>`). The binding names
-        // only the associated type, so substituting the whole type with it would
-        // record `MyError` in the ABI while the runtime encodes `Wrapper<MyError>`.
-        // Reject rather than emit a mismatched ABI.
+        // Any other `Self`-referencing error type would substitute the binding for
+        // the wrong type (advertising it in the ABI while the runtime encodes
+        // something else), so reject it.
         return Err(syn::Error::new_spanned(
             err_ty,
-            "a folded method's error type may reference `Self` only as a bare associated type \
-             like `Self::Error`; a nested `Self` (e.g. `Wrapper<Self::Error>`) can't be resolved \
-             for the ABI. Write the error type concretely.",
+            "a folded method's error type may reference `Self` only as exactly `Self::Error` \
+             (resolved via the `<Error = ...>` binding); a different associated type or a nested \
+             `Self` (e.g. `Wrapper<Self::Error>`) can't be resolved for the ABI. Write the error \
+             type concretely.",
         ));
     } else {
         err_ty.clone()
@@ -930,7 +939,7 @@ fn collect_folded_error_type(
         seen_error_names.push(name);
         error_types.push(concrete);
     }
-    Ok(self_rooted && error_binding.is_some())
+    Ok(self_error && error_binding.is_some())
 }
 
 /// Resolve the single interface `contract`/`interface` declaration in a `.sol`
@@ -1298,12 +1307,15 @@ fn fold_interface_methods(
                 });
             }
 
-            // The identity closure only coerces to this fn pointer when the two
-            // types are identical, so a binding that disagrees with the impl's
-            // `type Error` is a hard compile error rather than silent ABI drift.
+            // The identity closure coerces to this fn pointer only when the two
+            // types are identical, turning a binding that disagrees with the
+            // impl's `type Error` into a compile error instead of silent ABI
+            // drift. Gated to non-abi-gen: the trait impls it references aren't in
+            // scope under abi-gen, and the real build catches the drift anyway.
             if binding_used {
                 let bound = iface.error_ty.as_ref().unwrap();
                 folded_error_asserts.push(quote! {
+                    #[cfg(not(feature = "abi-gen"))]
                     const _: fn(<#struct_ident as #trait_path>::Error) -> #bound = |e| e;
                 });
             }
@@ -1369,30 +1381,58 @@ fn parse_contract(
         type_path.path.segments.last().map(|s| s.ident.clone())
     });
 
-    // Fallback for an `implements(...)`-only contract whose only impl blocks are
-    // `impl ITrait for Struct` (no inherent `#[method]`/`#[constructor]` block to
-    // name the struct): take the self-type of a matching trait impl.
-    let struct_name = struct_name.or_else(|| {
-        if implements.is_empty() {
-            return None;
-        }
-        content.1.iter().find_map(|item| {
-            let syn::Item::Impl(item_impl) = item else {
-                return None;
-            };
-            let (_, trait_path, _) = item_impl.trait_.as_ref()?;
-            let trait_last = trait_path.segments.last()?.ident.to_string();
-            if !implements.iter().any(|r| {
-                r.path.segments.last().map(|s| s.ident.to_string()) == Some(trait_last.clone())
-            }) {
-                return None;
+    // Fallback for an `implements(...)`-only contract with no inherent
+    // `#[method]`/`#[constructor]` block to name the struct: take the self-type of
+    // a matching trait impl (same `trait_path_matches` predicate as the fold).
+    // Reject if the matches target more than one struct, rather than letting item
+    // order silently pick the routed one.
+    let struct_name = match struct_name {
+        Some(name) => Some(name),
+        None if !implements.is_empty() => {
+            let mut candidates: Vec<syn::Ident> = Vec::new();
+            for item in &content.1 {
+                let syn::Item::Impl(item_impl) = item else {
+                    continue;
+                };
+                let Some((_, trait_path, _)) = item_impl.trait_.as_ref() else {
+                    continue;
+                };
+                if !implements
+                    .iter()
+                    .any(|r| trait_path_matches(&r.path, trait_path))
+                {
+                    continue;
+                }
+                let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+                    continue;
+                };
+                if let Some(ident) = type_path.path.segments.last().map(|s| s.ident.clone())
+                    && !candidates.contains(&ident)
+                {
+                    candidates.push(ident);
+                }
             }
-            let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
-                return None;
-            };
-            type_path.path.segments.last().map(|s| s.ident.clone())
-        })
-    });
+            if candidates.len() > 1 {
+                let names = candidates
+                    .iter()
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(syn::Error::new_spanned(
+                    input,
+                    format!(
+                        "`implements(...)` is ambiguous: the listed interface(s) are implemented \
+                         for more than one struct in this module ({names}), so the contract type \
+                         can't be determined. Give the contract struct an inherent \
+                         `#[constructor]`/`#[method]` block, or keep interface impls for a single \
+                         struct."
+                    ),
+                ));
+            }
+            candidates.into_iter().next()
+        }
+        None => None,
+    };
 
     // A contract is a single type — the dispatcher constructs one `this` and
     // calls every method on it. Methods scattered across different structs
@@ -1527,20 +1567,16 @@ fn parse_contract(
             continue;
         };
 
-        // A folded interface `impl` (its trait's last segment is listed in
-        // `implements(...)`) is handled entirely by `fold_interface_methods`.
-        // Skip it here so its methods aren't *also* collected as inherent
-        // `#[method]`s: a folded method carrying `#[method]` / `#[method(rename
-        // = "...")]` would otherwise register twice under the same selector and
-        // trip the collision guard. The fold reads `#[selector(name)]` /
-        // `#[method(rename)]` and honors `#[non_reentrant]` on its own.
-        let is_folded_iface_impl = !implements.is_empty()
-            && item_impl.trait_.as_ref().is_some_and(|(_, p, _)| {
-                let last = p.segments.last().map(|s| s.ident.to_string());
-                implements
-                    .iter()
-                    .any(|r| r.path.segments.last().map(|s| s.ident.to_string()) == last)
-            });
+        // A folded interface `impl` is handled entirely by `fold_interface_methods`;
+        // skip it here so a folded method carrying `#[method]` / `#[method(rename)]`
+        // isn't *also* collected as inherent and registered twice under the same
+        // selector. Match with the same `trait_path_matches` predicate the fold uses
+        // so the skipped set is exactly the folded set: a last-segment comparison
+        // would wrongly skip a non-folded same-basename `impl` and lose its methods.
+        let is_folded_iface_impl = item_impl
+            .trait_
+            .as_ref()
+            .is_some_and(|(_, p, _)| implements.iter().any(|r| trait_path_matches(&r.path, p)));
         if is_folded_iface_impl {
             continue;
         }
@@ -1669,6 +1705,10 @@ fn parse_contract(
                         (sol_name, None, inferred_mutability)
                     };
 
+                // Recording the impl's trait path (if any) makes a `#[method]` on
+                // a trait impl dispatch via UFCS `<Struct as Trait>::foo(this, ..)`
+                // like a folded method, rather than `this.foo(..)`; an inherent
+                // `#[method]` keeps `trait_path: None`.
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
                     sol_name,
@@ -1679,7 +1719,7 @@ fn parse_contract(
                     mutability,
                     precomputed_selector,
                     is_non_reentrant,
-                    trait_path: None,
+                    trait_path: item_impl.trait_.as_ref().map(|(_, p, _)| p.clone()),
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             }
@@ -2332,7 +2372,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             // Emitted after `#mod_content` so the folded `impl`s and the contract
-            // struct they reference are in scope.
+            // struct they reference are in scope. Each carries its own
+            // `#[cfg(not(feature = "abi-gen"))]`
             #(#folded_error_asserts)*
 
             #payable_helpers_fn

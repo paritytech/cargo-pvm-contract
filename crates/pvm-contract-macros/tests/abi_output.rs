@@ -129,3 +129,14 @@ fn storage_layout_raw_slot_omits_external_slot() {
     expect_test::expect_file!("./test_abi_contract/abi_proxy_raw_slot.json")
         .assert_eq(&cargo_run_abi("proxy-raw-slot"))
 }
+
+/// A folded interface method returning `Result<_, Self::Error>` with an
+/// `implements(IVault<Error = VaultError>)` binding must generate its ABI under
+/// `--features abi-gen`. Regression for the binding-vs-`type Error` const check,
+/// which referenced the trait impl (absent in the abi-gen build) and broke ABI
+/// generation until it was gated to the non-abi-gen build.
+#[test]
+fn folded_error_binding_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_folded_error_binding.json")
+        .assert_eq(&cargo_run_abi("folded-error-binding"))
+}
