@@ -1125,10 +1125,7 @@ fn multi_slot_composite_forces_fresh_slot_for_next_field() {
 /// always advances to a fresh slot and never packs with neighbours.
 #[test]
 fn mapping_packed_bytes_is_full_slot() {
-    assert_eq!(
-        <Mapping<Address, U256> as StorageType>::PACKED_BYTES,
-        32
-    );
+    assert_eq!(<Mapping<Address, U256> as StorageType>::PACKED_BYTES, 32);
     // bool + mapping + bool: mapping forces fresh slot; second bool can
     // pack at offset 31 of its own fresh slot (post-mapping).
     let step_a = crate::layout_step(crate::LayoutStep::FIRST, 1, 1);
@@ -1387,11 +1384,7 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
         v,
         "nested: entry/entry/set then get/get"
     );
-    assert_eq!(
-        m2.get(&k1).get(&k2),
-        v,
-        "nested: entry/insert then get/get"
-    );
+    assert_eq!(m2.get(&k1).get(&k2), v, "nested: entry/insert then get/get");
 
     // Inspect the deepest derived slot via the inner mapping's slot_of
     // (which is reachable through Ref<Mapping<K2, V>>::slot_of since
