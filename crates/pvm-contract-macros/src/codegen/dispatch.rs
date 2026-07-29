@@ -258,10 +258,11 @@ pub fn generate_dispatch_arm(
         mut call_args,
         has_params,
     } = decoding;
-    // A folded trait method is invoked through UFCS `<Struct as Trait>::method`,
-    // where the receiver is passed as the first positional argument — so prepend
-    // `this` to the decoded args. (`&mut this` coerces to `&self` for view
-    // methods.) Inherent methods keep method-call syntax and need no self arg.
+    // A folded trait method is invoked through a fully-qualified trait call
+    // `<Struct as Trait>::method`, where the receiver is passed as the first
+    // positional argument, so prepend `this` to the decoded args. (`&mut this`
+    // coerces to `&self` for view methods.) Inherent methods keep method-call
+    // syntax and need no self arg.
     if method.trait_path.is_some() {
         call_args.insert(0, quote! { this });
     }
@@ -283,8 +284,8 @@ pub fn generate_dispatch_arm(
     // `<Struct as Trait>::fn_name(this, ...)` — runs the contract's own trait-impl
     // body (so overrides work) and can't be shadowed by an inherent method.
     // Pure methods are associated functions — no `self` receiver — so dispatch
-    // them via UFCS (`Self::fn_name`) rather than method-call syntax
-    // (`this.fn_name`), which would only work for `&self` / `&mut self`.
+    // them via a fully-qualified call (`Self::fn_name`) rather than method-call
+    // syntax (`this.fn_name`), which would only work for `&self` / `&mut self`.
     let invoke = if let Some(trait_path) = &method.trait_path {
         quote! { <#struct_name as #trait_path>::#fn_name }
     } else if method.mutability == StateMutability::Pure {

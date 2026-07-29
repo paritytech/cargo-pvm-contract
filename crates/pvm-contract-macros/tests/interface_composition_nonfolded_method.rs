@@ -5,7 +5,7 @@
 //! `impl b::IThing for C` under `implements(a::IThing)` (same last segment, but a
 //! different trait) is not treated as folded and its `#[method]`s are not lost.
 //!
-//! It also dispatches through UFCS `<C as b::IThing>::extra(this)` (not
+//! It also dispatches through a fully-qualified trait call `<C as b::IThing>::extra(this)` (not
 //! `this.extra()`), so it resolves *without* `b::IThing` in method-call scope and
 //! can't be silently shadowed by a same-named inherent method. This test
 //! deliberately does not import `b::IThing`'s methods, to prove that.
@@ -29,7 +29,7 @@ mod c {
     use super::a;
     use super::b;
     // Note: `b::IThing` is intentionally NOT imported into method-call scope.
-    // The collected `#[method]` dispatches via UFCS `<C as b::IThing>::extra`,
+    // The collected `#[method]` dispatches via a fully-qualified trait call `<C as b::IThing>::extra`,
     // which resolves through the impl's own trait path regardless of imports.
 
     pub struct C;

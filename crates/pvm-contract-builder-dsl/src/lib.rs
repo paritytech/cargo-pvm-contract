@@ -122,32 +122,18 @@ impl ContractBuilder {
         }
     }
 
-    /// The capacity + duplicate-selector check and the actual insertion, kept
-    /// out-of-line (`#[inline(never)]`) and shared by all registration methods.
-    ///
-    /// The duplicate check guards only within a single builder; cross-builder
-    /// clashes (`dispatch_composed`) are resolved by first-match-wins.
-    #[inline(never)]
-    fn insert_checked(mut self, selector: Selector, handler: MethodHandler, payable: bool) -> Self {
+    /// Panic if `selector` is already registered *on this builder*. The DSL
+    /// builds its dispatch table at runtime, so it has no compile-time analog of
+    /// the macro path's selector-collision check; a duplicate registration is a
+    /// runtime panic instead. This guards only within a single builder — clashes
+    /// *across* chained extensions (`dispatch_composed`) are not caught here;
+    /// they are resolved by first-match-wins.
+    #[inline(always)]
+    fn assert_unique_selector(&self, selector: Selector) {
         assert!(
-            self.len < MAX_METHODS,
-            "ContractBuilder: exceeded MAX_METHODS ({})",
-            MAX_METHODS
+            !self.methods[..self.len].iter().any(|(s, _)| *s == selector),
+            "ContractBuilder: duplicate selector registration"
         );
-        let mut i = 0;
-        while i < self.len {
-            assert!(
-                self.methods[i].0 != selector,
-                "ContractBuilder: duplicate selector registration"
-            );
-            i += 1;
-        }
-        if payable {
-            self.payable_bits |= 1u64 << self.len;
-        }
-        self.methods[self.len] = (selector, handler);
-        self.len += 1;
-        self
     }
 
     /// Register a non-payable method handler for the given selector.
@@ -159,15 +145,17 @@ impl ContractBuilder {
     ///
     /// Panics if more than MAX_METHODS methods are registered, or if `selector`
     /// is already registered (duplicate-selector guard).
-    #[inline(always)]
+    #[inline]
     pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
-        // Fast path for the first registration leads to improved code size.
-        if self.len == 0 {
-            self.methods[0] = (selector, handler);
-            self.len = 1;
-            return self;
-        }
-        self.insert_checked(selector, handler, false)
+        assert!(
+            self.len < MAX_METHODS,
+            "ContractBuilder: exceeded MAX_METHODS ({})",
+            MAX_METHODS
+        );
+        self.assert_unique_selector(selector);
+        self.methods[self.len] = (selector, handler);
+        self.len += 1;
+        self
     }
 
     /// Register a payable method handler for the given selector.
@@ -179,15 +167,18 @@ impl ContractBuilder {
     ///
     /// Panics if more than MAX_METHODS methods are registered, or if `selector`
     /// is already registered (duplicate-selector guard).
-    #[inline(always)]
+    #[inline]
     pub fn payable_method(mut self, selector: Selector, handler: MethodHandler) -> Self {
-        if self.len == 0 {
-            self.methods[0] = (selector, handler);
-            self.payable_bits |= 1u64;
-            self.len = 1;
-            return self;
-        }
-        self.insert_checked(selector, handler, true)
+        assert!(
+            self.len < MAX_METHODS,
+            "ContractBuilder: exceeded MAX_METHODS ({})",
+            MAX_METHODS
+        );
+        self.assert_unique_selector(selector);
+        self.methods[self.len] = (selector, handler);
+        self.payable_bits |= 1u64 << self.len;
+        self.len += 1;
+        self
     }
 
     /// Attach a non-payable fallback handler, transitioning to
@@ -309,8 +300,11 @@ impl ContractBuilder {
     /// extension exposes its handlers as a `ContractBuilder`, and the composing
     /// contract chains them here. Selector uniqueness *within* a single builder
     /// is enforced at registration ([`method`](Self::method) panics on a
-    /// duplicate); across chained builders the first match wins, so order the
-    /// extensions with precedence in mind.
+    /// duplicate). *Across* chained builders a selector may legitimately appear
+    /// more than once; first match wins, which is how a composing contract
+    /// overrides an extension. Unlike the macro fold, that clash is resolved here
+    /// at dispatch rather than rejected at compile time, so order the extensions
+    /// with precedence in mind.
     ///
     /// Kept as a standalone body rather than sharing one with `dispatch_impl`:
     /// folding the two into a shared helper regressed the common (non-composing)

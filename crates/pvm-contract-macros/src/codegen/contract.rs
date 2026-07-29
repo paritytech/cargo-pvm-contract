@@ -39,9 +39,9 @@ pub struct ContractArgs {
 #[derive(Debug, PartialEq, Eq)]
 pub struct InterfaceRef {
     /// The trait path with any `<Error = Ty>` binding stripped. Matched by its
-    /// last segment against `impl Path for Struct` blocks. (The UFCS fold call
-    /// uses the matched `impl`'s own path, not this one, so a qualified `impl`
-    /// path resolves even when the bare name isn't in scope.)
+    /// last segment against `impl Path for Struct` blocks. (The fully-qualified
+    /// fold call uses the matched `impl`'s own path, not this one, so a qualified
+    /// `impl` path resolves even when the bare name isn't in scope.)
     pub path: syn::Path,
     /// The concrete type bound to the trait's associated `Error` type, from
     /// `implements(IErc20<Error = MyError>)`. The macro cannot resolve
@@ -865,14 +865,11 @@ fn is_self_error_path(ty: &syn::Type) -> bool {
         && matches!(segs[1].arguments, syn::PathArguments::None)
 }
 
-/// Register a folded method's error type for the ABI, substituting a
-/// `Self::Error` return with the `implements(IErc20<Error = Ty>)` binding — the
-/// macro can't resolve `Self::Error` from the impl block. A method that names its
-/// error concretely (`Result<_, MyError>`) needs no binding.
+/// Register a folded method's error type for the ABI, substituting a `Self::Error`
+/// return with the interface's `<Error = Ty>` binding (`InterfaceRef::error_ty`).
 ///
-/// Returns `true` when the binding was consumed (the method's error type
-/// referenced `Self`), so the caller can emit a const-eval assertion that the
-/// binding matches the impl's actual `type Error`.
+/// Returns `true` when the binding was consumed, so the caller can emit a
+/// const-eval assertion that it matches the impl's actual `type Error`.
 fn collect_folded_error_type(
     output: &syn::ReturnType,
     error_binding: Option<&syn::Type>,
@@ -910,8 +907,6 @@ fn collect_folded_error_type(
     let concrete = if self_error {
         match error_binding {
             Some(bound) => bound.clone(),
-            // Can't resolve `Self::Error` without a binding — the ABI can't list
-            // it. Point the author at `implements(ITrait<Error = ...>)`.
             None => {
                 return Err(syn::Error::new_spanned(
                     err_ty,
@@ -1189,10 +1184,6 @@ fn fold_interface_methods(
                     }
                 }
 
-                // Lifecycle attributes have no meaning on a folded method — it is
-                // always an ordinary selector-dispatched entry point. Silently
-                // dropping them (the pre-existing behavior) hides a real mistake,
-                // so reject them with a pointer to the inherent path.
                 for name in ["constructor", "fallback", "receive"] {
                     if has_pvm_attr(&func.attrs, name) {
                         return Err(syn::Error::new_spanned(
@@ -1211,8 +1202,6 @@ fn fold_interface_methods(
                 // the pure-method restriction that applies to the inherent path
                 // can't arise here.
 
-                // Interface methods take a receiver; a no-receiver (associated)
-                // fn has no host access and isn't dispatchable.
                 match classify_receiver(&func.sig.inputs)? {
                     ReceiverKind::Ref | ReceiverKind::RefMut => {}
                     ReceiverKind::None => {
@@ -1243,11 +1232,8 @@ fn fold_interface_methods(
                     typed_params.into_iter().map(|(_, t)| t).collect();
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
-                // Return types are ABI-encoded at module scope, where `Self`
-                // has no meaning, so a `Self`-referencing return type has no ABI
-                // name. `extract_return_types` yields the `Ok` type(s), so a
-                // `Result<_, Self::Error>` error side is excluded here (it is
-                // resolved via the `implements(ITrait<Error = ...>)` binding).
+                // `extract_return_types` yields only the `Ok` type(s), so the
+                // `Result<_, Self::Error>` error side isn't checked here.
                 for ty in &return_types {
                     if type_references_self(ty) {
                         return Err(syn::Error::new_spanned(
@@ -1706,9 +1692,9 @@ fn parse_contract(
                     };
 
                 // Recording the impl's trait path (if any) makes a `#[method]` on
-                // a trait impl dispatch via UFCS `<Struct as Trait>::foo(this, ..)`
-                // like a folded method, rather than `this.foo(..)`; an inherent
-                // `#[method]` keeps `trait_path: None`.
+                // a trait impl dispatch via a fully-qualified trait call
+                // `<Struct as Trait>::foo(this, ..)` like a folded method, rather
+                // than `this.foo(..)`; an inherent `#[method]` keeps `trait_path: None`.
                 methods.push(MethodInfo {
                     fn_name: func.sig.ident.clone(),
                     sol_name,
@@ -3422,7 +3408,7 @@ mod tests {
     #[test]
     fn method_without_receiver_is_pure() {
         // No `self` receiver = associated function = `pure` mutability.
-        // Dispatch generates `MyContract::foo(args)` (UFCS) instead of
+        // Dispatch generates `MyContract::foo(args)` (fully-qualified) instead of
         // `this.foo(args)` so the call type-checks.
         let input: ItemMod = syn::parse_quote! {
             mod my_contract {
