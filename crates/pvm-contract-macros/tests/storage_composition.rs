@@ -3,7 +3,7 @@
 //! - Auto-numbered slots on the `#[contract]` struct (no `#[slot(N)]` needed).
 //! - `#[storage]`-derived embedded sub-storage struct claiming a contiguous
 //!   slot range.
-//! - `StorageComponent::SLOTS` chained through both levels so the outer
+//! - `StorageType::SLOTS` chained through both levels so the outer
 //!   contract gets the correct overall layout without manual offset math.
 //! - Dynamic `String` value stored via native `Lazy<String>` (Gap 1).
 //!
@@ -13,7 +13,7 @@
 //! `#[cfg(feature = "abi-gen")]` and exercised by
 //! `composed_contract_emits_storage_layout_under_abi_gen` below.
 
-use pvm_contract_sdk::{Lazy, Mapping, StorageComponent, StorageKey};
+use pvm_contract_sdk::{Lazy, Mapping, StorageComponent, StorageKey, StorageType};
 use pvm_contract_types::{Address, Host, MockHostBuilder};
 use ruint::aliases::U256;
 
@@ -61,10 +61,10 @@ pub struct PackedThenFull {
 /// SLOTS counts at the type level should match what we expect.
 #[test]
 fn storage_component_slots_are_field_sums() {
-    assert_eq!(<Erc20State as StorageComponent>::SLOTS, 3);
-    assert_eq!(<MetadataState as StorageComponent>::SLOTS, 2);
-    assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, U256> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<Erc20State as StorageType>::SLOTS, 3);
+    assert_eq!(<MetadataState as StorageType>::SLOTS, 2);
+    assert_eq!(<Lazy<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, U256> as StorageType>::SLOTS, 1);
 }
 
 /// Packed sub-word fields share a slot, so `SLOTS` is the walker's packed
@@ -72,9 +72,9 @@ fn storage_component_slots_are_field_sums() {
 #[test]
 fn storage_component_slots_pack_sub_word_fields() {
     // Naive sum would be 2 here — solc packs both uint128 into one slot.
-    assert_eq!(<PackedPair as StorageComponent>::SLOTS, 1);
+    assert_eq!(<PackedPair as StorageType>::SLOTS, 1);
     // a/b pack into slot 0; c takes slot 1. Naive sum would be 3.
-    assert_eq!(<PackedThenFull as StorageComponent>::SLOTS, 2);
+    assert_eq!(<PackedThenFull as StorageType>::SLOTS, 2);
 }
 
 fn fresh_host() -> Host {
@@ -231,7 +231,7 @@ pub struct OuterState {
 
 #[test]
 fn nested_storage_struct_slot_sum() {
-    assert_eq!(<OuterState as StorageComponent>::SLOTS, 4);
+    assert_eq!(<OuterState as StorageType>::SLOTS, 4);
 }
 
 #[test]

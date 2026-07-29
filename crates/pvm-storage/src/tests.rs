@@ -194,9 +194,9 @@ fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
 fn lazy_multi_slot_slots_const_matches_word_count() {
     // SLOTS = ENCODED_SIZE / 32. For (U256, U256) that's 2, so an
     // auto-numbered field after this Lazy would be 2 slots later.
-    assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Lazy<(U256, U256)> as StorageComponent>::SLOTS, 2);
-    assert_eq!(<Lazy<(U256, U256, U256)> as StorageComponent>::SLOTS, 3);
+    assert_eq!(<Lazy<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<Lazy<(U256, U256)> as StorageType>::SLOTS, 2);
+    assert_eq!(<Lazy<(U256, U256, U256)> as StorageType>::SLOTS, 3);
 }
 
 // --- Mapping operations ---
@@ -811,17 +811,17 @@ fn derive_key_matches_solidity() {
 
 #[test]
 fn storage_component_slot_count() {
-    assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, U256> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<Lazy<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, U256> as StorageType>::SLOTS, 1);
 }
 
 #[cfg(feature = "alloc")]
 #[test]
 fn storage_component_slot_count_dynamic() {
-    assert_eq!(<Lazy<String> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Lazy<Bytes> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, String> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, Bytes> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<Lazy<String> as StorageType>::SLOTS, 1);
+    assert_eq!(<Lazy<Bytes> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, String> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, Bytes> as StorageType>::SLOTS, 1);
 }
 
 // --- Packing semantics (matches solc storageLayout) ---
@@ -831,14 +831,14 @@ fn storage_component_slot_count_dynamic() {
 /// solc's layout for `contract C { uint128 a; uint128 b; }` (a at
 /// offset 16, b at offset 0).
 ///
-/// Verifies the `StorageComponent::PACKED_BYTES` propagation and the
+/// Verifies the `StorageType::PACKED_BYTES` propagation and the
 /// const-folded walker's placement directly.
 #[test]
 fn adjacent_lazy_u128_packs_at_contract_field_level() {
     assert_eq!(<u128 as StorageEncode>::PACKED_BYTES, 16);
     assert_eq!(<u128 as StorageEncode>::STORAGE_SLOTS, 1);
-    assert_eq!(<Lazy<u128> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Lazy<u128> as StorageComponent>::PACKED_BYTES, 16);
+    assert_eq!(<Lazy<u128> as StorageType>::SLOTS, 1);
+    assert_eq!(<Lazy<u128> as StorageType>::PACKED_BYTES, 16);
 
     // Two-step walker walk: first u128 at (slot=0, offset=16);
     // second u128 at (slot=0, offset=0).
@@ -1126,7 +1126,7 @@ fn multi_slot_composite_forces_fresh_slot_for_next_field() {
 #[test]
 fn mapping_packed_bytes_is_full_slot() {
     assert_eq!(
-        <Mapping<Address, U256> as StorageComponent>::PACKED_BYTES,
+        <Mapping<Address, U256> as StorageType>::PACKED_BYTES,
         32
     );
     // bool + mapping + bool: mapping forces fresh slot; second bool can
@@ -2361,10 +2361,10 @@ fn storage_vec_get_after_set_reuses_body_base_cache() {
 
 #[test]
 fn storage_vec_storage_component_metadata() {
-    assert_eq!(<StorageVec<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<U256> as StorageComponent>::PACKED_BYTES, 32);
-    assert_eq!(<StorageVec<Address> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<Address> as StorageComponent>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<U256> as StorageType>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<Address> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<Address> as StorageType>::PACKED_BYTES, 32);
 }
 
 #[test]
@@ -2523,10 +2523,10 @@ fn storage_vec_subword_clear_resets_all_body_slots() {
 fn storage_vec_subword_storage_component_metadata() {
     // Sub-word StorageVecs report the same metadata as full-word ones:
     // one root slot, never packs with neighbours.
-    assert_eq!(<StorageVec<u32> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<u32> as StorageComponent>::PACKED_BYTES, 32);
-    assert_eq!(<StorageVec<u64> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<bool> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<u32> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<u32> as StorageType>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<u64> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<bool> as StorageType>::SLOTS, 1);
 }
 
 // --- StorageVec<T> for multi-slot static T ((U256, U256)[], etc.) ---
@@ -3176,9 +3176,9 @@ fn nested_storage_vec_storage_component_metadata() {
     // `StorageVec<StorageVec<T>>` plugs into the `#[storage]` /
     // `#[contract]` macro path as a full-slot, non-packing component —
     // matches the flat `StorageVec<T>` shape exactly.
-    assert_eq!(<StorageVec<StorageVec<U256>> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<StorageVec<U256>> as StorageType>::SLOTS, 1);
     assert_eq!(
-        <StorageVec<StorageVec<U256>> as StorageComponent>::PACKED_BYTES,
+        <StorageVec<StorageVec<U256>> as StorageType>::PACKED_BYTES,
         32
     );
 }

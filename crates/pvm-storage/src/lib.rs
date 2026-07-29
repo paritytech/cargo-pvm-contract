@@ -474,6 +474,8 @@ pub use pvm_contract_types::{LayoutStep, layout_step};
 /// [`pvm_contract_types::layout_step_encode`] for the `StorageEncode` family;
 /// both forward to the one trait-agnostic [`layout_step`] primitive.
 pub const fn layout_step_component<T: StorageComponent>(prev: LayoutStep) -> LayoutStep {
+    // `PACKED_BYTES` / `SLOTS` live on the `StorageType` supertrait; the
+    // `T: StorageComponent` bound implies `T: StorageType`, so they resolve.
     layout_step(prev, T::PACKED_BYTES, T::SLOTS)
 }
 
@@ -491,17 +493,11 @@ pub const fn layout_step_component<T: StorageComponent>(prev: LayoutStep) -> Lay
 /// The `#[contract]` macro reads `SLOTS` to assign slot numbers to fields. The
 /// macro-generated constructor calls [`StorageComponent::new_at`] with the
 /// assigned base slot and a clone of the contract's host handle.
-pub trait StorageComponent: Sized {
-    /// Number of root storage slots claimed by this component.
-    const SLOTS: u64;
-
-    /// Number of bytes consumed within the component's *first* slot when it
-    /// participates in field-level packing alongside siblings. `32` means the
-    /// component always starts a fresh slot and claims it fully (the case for
-    /// composites, mappings, dynamic-bodied types, and full-slot primitives).
-    /// `< 32` means the component is a packable sub-word value and may share
-    /// a slot with adjacent fields.
-    const PACKED_BYTES: usize;
+pub trait StorageComponent: StorageType {
+    // The slot count and packing width live on the `StorageType` supertrait
+    // (`StorageType::SLOTS` / `StorageType::PACKED_BYTES`) — the single source
+    // of truth. `StorageComponent` adds only the construction/teardown door
+    // (`new_at` / `clear`); read layout facts through `StorageType`.
 
     /// Construct the component at `(key, offset)`, bound to `host`. `key` is
     /// the 32-byte storage key (a contract-field slot via
@@ -1126,15 +1122,9 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
 }
 
 impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
-    /// One root slot per slot of `T::STORAGE_SLOTS`. A multi-slot `T` (e.g.
-    /// `(U256, U256)`) reserves multiple consecutive slots, mirroring
-    /// Solidity's struct-in-storage layout.
-    const SLOTS: u64 = T::STORAGE_SLOTS as u64;
-
-    /// Propagates `T::PACKED_BYTES`. A `Lazy<u128>` has `PACKED_BYTES = 16`
-    /// (packable); a `Lazy<U256>` or `Lazy<(U256, U256)>` has
-    /// `PACKED_BYTES = 32` (full-slot).
-    const PACKED_BYTES: usize = T::PACKED_BYTES;
+    // SLOTS / PACKED_BYTES are inherited from the `StorageType for Lazy<T>`
+    // impl (`T::STORAGE_SLOTS` / `T::PACKED_BYTES`) — see the defaulted consts
+    // on the `StorageComponent` trait.
 
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         // SAFETY: `new_at` is the safe public entry point for macro-generated
@@ -1386,11 +1376,13 @@ impl<K, V> Mapping<K, V> {
     }
 }
 
-impl<K, V> StorageComponent for Mapping<K, V> {
-    const SLOTS: u64 = 1;
-    /// Mappings always claim a full slot for their root header — they never
-    /// pack with neighbours. Matches solc's storage layout for mappings.
-    const PACKED_BYTES: usize = 32;
+// `V: StorageType` is required by the `StorageComponent: StorageType`
+// supertrait (`Mapping<K, V>: StorageType` only holds when `V: StorageType`).
+// Construction itself doesn't inspect `V`, but a mapping is only ever declared
+// to be accessed, and every accessor already needs `V: StorageType`.
+impl<K, V: StorageType> StorageComponent for Mapping<K, V> {
+    // SLOTS (1) / PACKED_BYTES (32) inherited from `StorageType for Mapping`:
+    // a mapping's root header always claims a full slot and never packs.
 
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert!(
@@ -2097,14 +2089,9 @@ impl<S: SimpleStorageType> StorageVec<S> {
 }
 
 impl<S: StorageType> StorageComponent for StorageVec<S> {
-    /// One root slot for the length header. Elements live at
-    /// `keccak256(slot) + i` and consume no additional contract-layout slots.
-    const SLOTS: u64 = 1;
-
-    /// Never packs with neighbours — the length header always claims a full
-    /// slot. Matches `Mapping`'s `PACKED_BYTES = 32` and solc's storage
-    /// layout for dynamic arrays.
-    const PACKED_BYTES: usize = 32;
+    // SLOTS (1, the length header — elements live at `keccak256(slot) + i`) /
+    // PACKED_BYTES (32, never packs) inherited from `StorageType for
+    // StorageVec<S>`.
 
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert_eq!(

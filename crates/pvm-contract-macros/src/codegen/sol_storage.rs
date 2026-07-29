@@ -23,12 +23,16 @@
 //!     allowances: Mapping<Address, Mapping<Address, U256>>,
 //! }
 //!
-//! impl ::pvm_contract_sdk::StorageComponent for Erc20 {
-//!     const SLOTS: u64 =
-//!           <Lazy<U256> as StorageComponent>::SLOTS
-//!         + <Mapping<Address, U256> as StorageComponent>::SLOTS
-//!         + <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS;
+//! impl ::pvm_contract_sdk::StorageType for Erc20 {
+//!     // `StorageType` owns the layout facts. SLOTS is the layout-walker
+//!     // chain (same `layout_step_component` steps as `new_at` below).
+//!     const SLOTS: u64 = { /* layout_step_component walker over the fields */ };
+//!     const PACKED_BYTES: usize = 32;
+//!     // ... HAS_DYNAMIC_BODY / NEEDS_RECURSIVE_CLEAR / Get / GetMut / get_at ...
+//! }
 //!
+//! impl ::pvm_contract_sdk::StorageComponent for Erc20 {
+//!     // SLOTS / PACKED_BYTES inherited from the `StorageType` impl above.
 //!     fn new_at(base: StorageKey, offset: u8, alone: bool, host: ::pvm_contract_sdk::Host) -> Self {
 //!         // Per-field placement chain: each `LayoutStep` is computed by the
 //!         // shared walker from the previous step plus this field's
@@ -275,13 +279,9 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             for #struct_name #ty_generics
         #where_clause
         {
-            const SLOTS: u64 = #slots_expr;
-
-            // Embedded `#[storage]` sub-structs always start a fresh slot and
-            // never pack with neighbouring contract fields. Matches solc —
-            // packing applies inside the sub-struct, never across its outer
-            // boundary.
-            const PACKED_BYTES: usize = 32;
+            // The slot count / packing width live on the `StorageType` impl
+            // below (the single source of truth); `StorageComponent` carries
+            // only construction (`new_at`) and teardown (`clear`).
 
             fn new_at(
                 base: ::pvm_contract_sdk::StorageKey,
@@ -322,7 +322,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             for #struct_name #ty_generics
         #where_clause
         {
-            const SLOTS: u64 = <Self as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+            // Source of truth for the slot count (the layout-walker result).
+            const SLOTS: u64 = #slots_expr;
             const PACKED_BYTES: usize = 32;
             const HAS_DYNAMIC_BODY: bool = false;
             // Fields may own storage at derived keys / dynamic bodies, so

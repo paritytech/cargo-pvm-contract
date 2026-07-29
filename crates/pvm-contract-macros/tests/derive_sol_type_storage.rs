@@ -585,10 +585,10 @@ fn lazy_of_u128_pair_advances_chain_by_one_slot() {
     // `Lazy<u128>; Lazy<u128>;` lands at (slot=0, offset=16) and
     // (slot=0, offset=0) rather than consuming two slots.
     assert_eq!(
-        <Lazy<U128Pair> as pvm_contract_sdk::StorageComponent>::SLOTS,
+        <Lazy<U128Pair> as pvm_contract_sdk::StorageType>::SLOTS,
         1
     );
-    assert_eq!(<Lazy<u128> as pvm_contract_sdk::StorageComponent>::SLOTS, 1);
+    assert_eq!(<Lazy<u128> as pvm_contract_sdk::StorageType>::SLOTS, 1);
 }
 
 // ========================================================================
