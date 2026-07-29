@@ -739,7 +739,10 @@ fn generate_sol_storage_impls(
 
     // Leaf `StorageType` + `SimpleStorageType` so a value struct can be a
     // `Mapping<K, Self>` value / `StorageVec<Self>` element (and `Lazy<Self>`).
-    // Delegates to `Lazy` exactly like the built-in scalar/tuple/array leaves.
+    // A derived storage struct is always full-slot (`PACKED_BYTES == 32`), so
+    // the read/write/clear accessors go straight through the codec — no `Lazy`
+    // wrapper — matching the built-in full-slot leaf path. `get_mut_at` still
+    // returns a `Lazy<Self>` because that IS the user-facing `entry` cursor.
     // Emitted identically for the static and dynamic branches (a value struct
     // is a by-value leaf either way).
     let value_storage_type = quote! {
@@ -760,7 +763,9 @@ fn generate_sol_storage_impls(
                 offset: u8,
                 host: &::pvm_contract_sdk::Host,
             ) -> #name {
-                unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }.get()
+                // Full-slot: read straight through the codec (no `Lazy` wrapper).
+                let _ = offset;
+                <#name as ::pvm_contract_sdk::StorageDecode>::read_from_storage(host, key.as_bytes())
             }
 
             unsafe fn get_mut_at(
@@ -782,14 +787,9 @@ fn generate_sol_storage_impls(
                 alone: bool,
                 host: &::pvm_contract_sdk::Host,
             ) {
-                let mut cell = if alone {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new_alone(key, offset, host.clone()) }
-                } else {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }
-                };
-                <::pvm_contract_sdk::Lazy<#name> as ::pvm_contract_sdk::StorageComponent>::clear(
-                    &mut cell,
-                );
+                // Full-slot: clear straight through the codec.
+                let _ = (offset, alone);
+                <#name as ::pvm_contract_sdk::StorageEncode>::clear_storage(host, key.as_bytes());
             }
         }
 
@@ -823,10 +823,14 @@ fn generate_sol_storage_impls(
                 alone: bool,
                 host: &::pvm_contract_sdk::Host,
             ) {
-                let mut cell = unsafe {
-                    <#name as ::pvm_contract_sdk::StorageType>::get_mut_at(key, offset, alone, host)
-                };
-                cell.set(value);
+                // Full-slot: write straight through the codec (no `Lazy` wrapper).
+                // Fully-qualified so the user crate needn't import `StorageEncode`.
+                let _ = (offset, alone);
+                <#name as ::pvm_contract_sdk::StorageEncode>::write_to_storage(
+                    value,
+                    host,
+                    key.as_bytes(),
+                );
             }
         }
     };

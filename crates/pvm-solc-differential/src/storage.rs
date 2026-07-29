@@ -762,6 +762,61 @@ contract VecOfPacked {
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecOfPacked"));
 }
 
+// A richer `#[storage]` sub-struct: three DIFFERENT sub-word widths
+// (`u8`/`u32`/`u64`) pack into slot 0, then a full-slot `U256` takes slot 1 —
+// so the walker's `SLOTS` is 2, while the naive per-field sum would be 4. The
+// following sibling (`next`) must therefore land at slot 2, not slot 4. This
+// exercises the `slots_expr` layout walker across mixed field widths (not just
+// the `2×u128` case) with a 2-slot naive-vs-packed divergence.
+#[pvm_contract_sdk::storage]
+pub struct Header {
+    pub version: Lazy<u8>,
+    pub count: Lazy<u32>,
+    pub stamp: Lazy<u64>,
+    pub root: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::contract]
+mod packed_mixed {
+    use super::*;
+    pub struct PackedMixed {
+        pub hdr: Header,
+        pub next: Lazy<U256>,
+    }
+    impl PackedMixed {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.hdr.version.set(&7u8);
+            self.hdr.count.set(&1000u32);
+            self.hdr.stamp.set(&42u64);
+            self.hdr.root.set(&U256::from(99u64));
+            self.next.set(&U256::from(123u64));
+        }
+    }
+}
+
+#[test]
+fn packed_mixed_width_substruct_sibling_slot_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract PackedMixed {
+    struct Header { uint8 version; uint32 count; uint64 stamp; uint256 root; }
+    Header hdr;   // version/count/stamp packed into slot 0; root -> slot 1
+    uint256 next; // slot 2 (naive per-field SLOTS=4 would put it at slot 4)
+    function populate() external {
+        hdr.version = 7; hdr.count = 1000; hdr.stamp = 42; hdr.root = 99;
+        next = 123;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = packed_mixed::PackedMixed::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "PackedMixed"));
+}
+
 // --- depth-3 nesting (T[][][]) — the "arbitrary depth, zero per-shape code" claim
 //
 // Exercises the generic container path three levels deep: `grow` at each level

@@ -536,8 +536,9 @@ pub trait StorageComponent: Sized {
     /// - `#[storage]` sub-structs: recursively clear each field — matches
     ///   solc's `delete struct_field` semantics.
     ///
-    /// Used by the storage-typed `Mapping<K, V: StorageComponent>::delete`
-    /// to clear an entry of arbitrary inner shape.
+    /// Used to clear a resident field / sub-component (e.g. a `#[storage]`
+    /// field's clear, `StorageVec`'s `delete arr`). Entry-level clearing for a
+    /// `Mapping` value now goes through `StorageType::clear_at`.
     fn clear(&mut self);
 }
 
@@ -1278,10 +1279,6 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Mapping<K, V>
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Storage handle guards: lifetime-bound wrappers that gate read-vs-write
 // access through `Deref` / `DerefMut`.
 //
@@ -1483,13 +1480,12 @@ impl<K: AsStorageKey, V> Mapping<K, V> {
 // ---------------------------------------------------------------------------
 // Mapping value access — unified over StorageType (issue #108).
 //
-// One `get`/`entry`/`delete` surface covers every value shape. For a leaf V,
-// `get` returns the value and `entry` a `Lazy<V>` cursor (read-then-write on a
-// single keccak). For a container V (`Mapping`, `StorageVec`, `#[storage]`
-// struct), `get` returns a read-only `Ref<V>` and `entry` a `RefMut<V>` — this
-// subsumes the old `view`/`view_mut`/`delete` block and the dedicated
-// `Mapping<K, StorageVec<T>>` block, and composes to any nesting depth.
-// By-value `insert`/`try_get`/`remove` live on the `SimpleStorageType` tier.
+// One `get`/`entry` surface covers every value shape and composes to any
+// nesting depth. For a leaf V, `get` returns the value and `entry` a `Lazy<V>`
+// cursor (read-then-write on a single keccak). For a container V (`Mapping`,
+// `StorageVec`, `#[storage]` struct), `get` returns a read-only `Ref<V>` and
+// `entry` a `RefMut<V>`. By-value `insert`/`try_get`/`remove` live on the
+// `SimpleStorageType` tier.
 // ---------------------------------------------------------------------------
 
 impl<K: AsStorageKey, V: StorageType> Mapping<K, V> {

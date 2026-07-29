@@ -1381,16 +1381,16 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
     m1.entry(&k1).entry(&k2).set(&v);
     m2.entry(&k1).insert(&k2, &v);
 
-    // Outer view → Ref<inner>, inner .get(k2) → V.
+    // Outer get → Ref<inner>, inner .get(k2) → V.
     assert_eq!(
         m1.get(&k1).get(&k2),
         v,
-        "nested: view_mut/entry/set then view/get"
+        "nested: entry/entry/set then get/get"
     );
     assert_eq!(
         m2.get(&k1).get(&k2),
         v,
-        "nested: view_mut/insert then view/get"
+        "nested: entry/insert then get/get"
     );
 
     // Inspect the deepest derived slot via the inner mapping's slot_of
