@@ -4,6 +4,8 @@ Annotate a module with `#[contract]` and impl methods with `#[method]`, `#[const
 
 > The user-facing crate is `pvm_contract_sdk`, which re-exports the macros from `pvm_contract_macros` together with the runtime types (`Lazy`, `Mapping`, `Address`, ABI traits, etc.). The two attribute paths (`#[pvm_contract_sdk::contract]` and `#[pvm_contract_macros::contract]`) are equivalent; the SDK path is preferred in user code.
 
+
+
 ## Basic Usage
 
 ```rust,ignore
@@ -53,18 +55,22 @@ interface MyToken {
 }
 ```
 
-**Without a `.sol` file** — selectors are inferred from Rust function signatures. Rust `snake_case` is converted to `camelCase` for the Solidity signature.
+**Without a** `.sol` **file** — selectors are inferred from Rust function signatures. Rust `snake_case` is converted to `camelCase` for the Solidity signature.
 
 ## Contract Attribute Arguments
 
-| Argument             | Default | Description                                                                                                                       |
-| -------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
+
+| Argument             | Default | Description                                                                                                                      |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `"path.sol"`         | none    | Solidity interface file (validates every function is implemented and that `stateMutability` agrees with the Rust receiver shape) |
-| `buffer = N`         | 256     | Stack calldata buffer size (no-alloc mode)                                                                                        |
-| `allocator = "pico"` | none    | Use picoalloc heap allocator (required to *return* dynamic types like `String` / `Vec`)                                           |
-| `allocator = "bump"` | none    | Use bump allocator (no free, smaller than picoalloc)                                                                              |
-| `allocator_size = N` | 1024    | Heap size in bytes for allocator modes                                                                                            |
-| `no_main`            | off     | Suppress the `fn main()` emission so a `#[contract]` can sit inside an integration test or library crate                          |
+| `buffer = N`         | 256     | Stack calldata buffer size (no-alloc mode)                                                                                       |
+| `allocator = "pico"` | none    | Use picoalloc heap allocator (required to *return* dynamic types like `String` / `Vec`)                                          |
+| `allocator = "bump"` | none    | Use bump allocator (no free, smaller than picoalloc)                                                                             |
+| `allocator_size = N` | 1024    | Heap size in bytes for allocator modes                                                                                           |
+| `no_main`            | off     | Suppress the `fn main()` emission so a `#[contract]` can sit inside an integration test or library crate                         |
+
+
+
 
 ## Allocator Options
 
@@ -78,6 +84,8 @@ Contracts run in `no_std`. If you need heap allocation (`Vec`, `String`), choose
 #[pvm_contract_sdk::contract("MyToken.sol", allocator = "pico", allocator_size = 2048)]
 mod my_token { ... }
 ```
+
+
 
 ## Contract Anatomy
 
@@ -98,6 +106,8 @@ call()    — called on every subsequent interaction
 4. If the selector matches no method (or calldata is 1..=3 bytes), falls through to `#[fallback]` if present, else reverts
 5. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags
 
+
+
 ## Method, Constructor, Fallback, Receive
 
 - `#[method]` — public contract method. `#[selector(name = "name")]` overrides the Solidity name (default: `snake_case` to `camelCase`); `#[method(rename = "name")]` is a supported alias.
@@ -113,14 +123,16 @@ When both `#[receive]` and `#[fallback]` are present, `receive` fires first on e
 
 Solidity `stateMutability` is inferred from the Rust receiver shape. There is no explicit `#[view]` or `#[pure]` attribute.
 
-| Receiver              | `#[payable]` | ABI emits           |
-| --------------------- | ------------ | ------------------- |
-| none (`fn foo(args)`) | —            | `pure`              |
-| `&self`               | —            | `view`              |
-| `&mut self`           | —            | `nonpayable`        |
-| `&mut self`           | yes          | `payable`           |
-| `&self`               | yes          | **compile error**   |
-| no receiver           | yes          | **compile error**   |
+
+| Receiver              | `#[payable]` | ABI emits         |
+| --------------------- | ------------ | ----------------- |
+| none (`fn foo(args)`) | —            | `pure`            |
+| `&self`               | —            | `view`            |
+| `&mut self`           | —            | `nonpayable`      |
+| `&mut self`           | yes          | `payable`         |
+| `&self`               | yes          | **compile error** |
+| no receiver           | yes          | **compile error** |
+
 
 If a `.sol` interface is provided, the macro rejects any mismatch between the Rust-inferred mutability and the `.sol` declaration.
 
@@ -131,7 +143,7 @@ Storage helpers live in `pvm-storage` (re-exported from `pvm-contract-sdk`). The
 Declare fields directly on the contract struct. Two layout modes:
 
 - **Auto-numbered (default).** Omit `#[slot]` and the macro assigns slots in declaration order. Sub-word siblings pack into a shared slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, both in slot 0).
-- **Explicit `#[slot(N)]`.** Pins a field at slot `N`. Restricted to full-slot types (`Mapping`, `StorageVec`, `Lazy<U256>`, `Lazy<String>`, multi-slot composites, `#[storage]` sub-structs). Sub-word types are rejected because solc would place them at byte `32 - sizeof(T)`, while explicit-slot mode would place them at byte 0. Mixing the two modes within one struct is not supported.
+- **Explicit** `#[slot(N)]`**.** Pins a field at slot `N`. Restricted to full-slot types (`Mapping`, `StorageVec`, `Lazy<U256>`, `Lazy<String>`, multi-slot composites, `#[storage]` sub-structs). Sub-word types are rejected because solc would place them at byte `32 - sizeof(T)`, while explicit-slot mode would place them at byte 0. Mixing the two modes within one struct is not supported.
 
 `#[slot(N)]` is mainly useful when fields need `#[cfg(...)]` gating — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
 
@@ -377,11 +389,12 @@ mod my_token {
 ```
 
 - A folded method dispatches through `<MyToken as IErc20>::method(this, ...)`, so it runs the contract's own body (overrides work) and can't be shadowed by an inherent method of the same name.
-- Interfaces are matched on the path segments written in `implements(...)`: a bare name matches any impl path ending in it, a qualified name only one agreeing on that suffix. A same-trait `impl` for a different struct in the module is skipped (the contract's own impl wins regardless of order); the `impl` folded must target the contract struct, be non-generic, and carry no `where` clause. Folded methods must take a receiver and have concrete (non-`Self::_`) parameters. Mutability is inferred from the receiver, and the same per-method attributes as the inherent path apply on the impl fn: `#[payable]`, `#[non_reentrant]`, and `#[selector(name = "...")]`.
+- Interfaces are matched on the path segments written in `implements(...)`: a bare name matches any impl path ending in it, a qualified name only one agreeing on that suffix. A same-trait `impl` for a different struct in the module is skipped (the contract's own impl wins regardless of order); the `impl` folded must target the contract struct, be non-generic, and carry no `where` clause. Folded methods must take a receiver and have concrete (non-`Self::_`) parameters.
+- Mutability is inferred from the receiver, exactly as for inherent methods. Folded methods carry no `#[method]` attribute; the same per-method behavior attributes still apply, written on the method in the `impl ITrait for Contract` block (not on the trait): `#[payable]`, `#[non_reentrant]`, and `#[selector(name = "...")]`.
 - `implements(IErc20<Error = MyError>)` binds the trait's associated `Error` so a folded method returning `Result<_, Self::Error>` registers `MyError` in the ABI. The binding is verified against the impl's actual `type Error` by a const-eval assertion, so a mismatch is a compile error.
 - Two dispatched methods (inherent or folded) that share a 4-byte selector are a **compile error** — rename one with `#[selector(name = "...")]`. Inherent methods are ordered before folded ones in dispatch and the ABI.
 
-Compile errors: `implements()` empty or listing a duplicate trait; an interface with no matching `impl` in the module; an ambiguous match, where two distinct traits sharing the matched suffix both have an `impl` for the contract; an `impl` of the interface that targets no struct but the contract (all same-trait impls point elsewhere), or one that is generic or carries a `where` clause; a generic folded method; a no-receiver folded method; a folded method with a `Self::_`-rooted parameter *or return type* (e.g. `Self::Value`); a folded error type that nests `Self` (e.g. `Wrapper<Self::Error>` — write it concretely); a folded method returning `Result<_, Self::Error>` with no `<Error = Ty>` binding; a `<Error = Ty>` binding that disagrees with the impl's `type Error`; two dispatched methods (inherent or folded) that share a 4-byte selector; a lifecycle attribute (`#[constructor]`/`#[fallback]`/`#[receive]`) on a folded method (it always dispatches as an ordinary method — declare lifecycle handlers as inherent `impl` methods); and `#[cfg]`/`#[cfg_attr]` on a folded method *or on the folded `impl` block* (use an inherent `#[method]` for feature-gated entry points). Only the traits listed in `implements(...)` are folded — an `impl OtherTrait for Contract` not listed is left as an ordinary trait impl.
+Compile errors: `implements()` empty or listing a duplicate trait; an interface with no matching `impl` in the module; an ambiguous match, where two distinct traits sharing the matched suffix both have an `impl` for the contract; an `impl` of the interface that targets no struct but the contract (all same-trait impls point elsewhere), or one that is generic or carries a `where` clause; a generic folded method; a no-receiver folded method; a folded method with a `Self::_`-rooted parameter *or return type* (e.g. `Self::Value`); a folded error type that nests `Self` (e.g. `Wrapper<Self::Error>` — write it concretely instead); a folded method returning `Result<_, Self::Error>` with no `<Error = Ty>` binding; a `<Error = Ty>` binding that disagrees with the impl's `type Error`; two dispatched methods (inherent or folded) that share a 4-byte selector; a lifecycle attribute (`#[constructor]`/`#[fallback]`/`#[receive]`) on a folded method (it always dispatches as an ordinary method — declare lifecycle handlers as inherent `impl` methods); and `#[cfg]`/`#[cfg_attr]` on a folded method *or on the folded* `impl` *block* (use an inherent `#[method]` for feature-gated entry points). Only the traits listed in `implements(...)` are folded — an `impl OtherTrait for Contract` not listed is left as an ordinary trait impl.
 
 Only the methods the `impl` block writes become entry points. A trait method that has a **default body** but isn't restated in the impl is *not* folded: a `.sol` interface flags it through the missing-implementation check, while without a `.sol` it is silently absent from both dispatch and the ABI. Restate the method in the `impl` to expose it.
 

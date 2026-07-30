@@ -167,7 +167,7 @@ When both are present, receive fires first on empty calldata; fallback handles n
 
 ## Interface Composition
 
-`#[contract(implements(ITrait, ...))]` folds the methods of each in-module `impl ITrait for Contract` block into the dispatch table as real entry points. This replaces the pattern of hand-writing one inherent `#[method]` forwarder per interface function: the forwarders move into a compiler-checked `impl ITrait for Contract`, and an override is just a different impl body. Modeled one-to-one on OpenZeppelin Stylus's `#[public(implements(...))]`.
+`#[contract(implements(ITrait, ...))]` folds the methods of each in-module `impl ITrait for Contract` block into the dispatch table as real entry points. This replaces the pattern of hand-writing one inherent `#[method]` forwarder per interface function: the forwarders move into a compiler-checked `impl ITrait for Contract`, and an override is just a different impl body. Modeled on the interface composition in OpenZeppelin's Contracts for Stylus (`#[public]` + `#[implements(...)]`).
 
 ```rust
 #[contract(implements(IErc20, IErc165))]
