@@ -784,7 +784,7 @@ fn generate_sol_storage_impls(
                         member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
                             label: ::std::string::String::from(#label),
                             slot: __s.to_string(),
-                            offset: __o as u8,
+                            offset: 32u8 - __o as u8 - <#field_ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES as u8,
                             ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
                         });
                     }
@@ -937,7 +937,7 @@ fn generate_sol_storage_impls(
                         member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
                             label: ::std::string::String::from(#label),
                             slot: __s.to_string(),
-                            offset: __o as u8,
+                            offset: 32u8 - __o as u8 - <#field_ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES as u8,
                             ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::name(),
                         });
                     }
