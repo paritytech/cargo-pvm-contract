@@ -1,5 +1,0 @@
-error: `implements()` is empty; list at least one interface trait to fold, or omit the argument
- --> tests/ui/implements_empty.rs:2:33
-  |
-2 | #[pvm_contract_macros::contract(implements())]
-  |                                 ^^^^^^^^^^

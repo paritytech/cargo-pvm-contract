@@ -1,5 +1,0 @@
-error: folded interface method parameters must be concrete types; a parameter mentioning `Self` (directly or nested, e.g. `Self::Item` or `Vec<Self::Item>`) has no ABI selector name
-  --> tests/ui/implements_non_concrete_param.rs:22:40
-   |
-22 |         fn deposit(&mut self, _amount: Self::Amount) {}
-   |                                        ^^^^^^^^^^^^

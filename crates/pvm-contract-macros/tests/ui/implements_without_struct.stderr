@@ -1,5 +1,0 @@
-error: `implements(...)` requires a contract storage struct in the module
- --> tests/ui/implements_without_struct.rs:7:1
-  |
-7 | mod c {}
-  | ^^^^^^^^
