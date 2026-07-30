@@ -3,7 +3,7 @@
 //! inherent `#[method]` path, and `#[method(rename = "...")]` remains a working
 //! alias. Both rename the selector the method dispatches under.
 
-use pvm_contract_types::Outcome;
+use pvm_contract_types::{Outcome, const_selector};
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
 #[pvm_contract_macros::contract]
@@ -23,10 +23,6 @@ mod renamed {
     }
 }
 
-fn selector(sig: &str) -> [u8; 4] {
-    pvm_contract_types::const_selector(sig)
-}
-
 #[test]
 fn selector_name_renames_dispatch() {
     let mock = pvm_contract_types::MockHostBuilder::new().build();
@@ -36,12 +32,17 @@ fn selector_name_renames_dispatch() {
     // Void method: a match returns `Return(0)`, a miss returns `Unhandled`.
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        renamed::route(&mut contract, selector("transfer()"), &[], &mut out),
+        renamed::route(&mut contract, const_selector("transfer()"), &[], &mut out),
         Outcome::Return(0)
     );
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        renamed::route(&mut contract, selector("transferTokens()"), &[], &mut out),
+        renamed::route(
+            &mut contract,
+            const_selector("transferTokens()"),
+            &[],
+            &mut out
+        ),
         Outcome::Unhandled
     );
 }
@@ -54,12 +55,17 @@ fn method_rename_alias_still_works() {
 
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        renamed::route(&mut contract, selector("approve()"), &[], &mut out),
+        renamed::route(&mut contract, const_selector("approve()"), &[], &mut out),
         Outcome::Return(0)
     );
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        renamed::route(&mut contract, selector("approveTokens()"), &[], &mut out),
+        renamed::route(
+            &mut contract,
+            const_selector("approveTokens()"),
+            &[],
+            &mut out
+        ),
         Outcome::Unhandled
     );
 }
