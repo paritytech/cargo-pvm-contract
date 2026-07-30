@@ -572,8 +572,6 @@ pub trait StorageType: Sized {
     const SLOTS: u64;
     /// Packing width; `32` = fresh slot, `< 32` = sub-word packable leaf.
     const PACKED_BYTES: usize;
-    /// Whether the value spills a body outside its slot range (`String`/`Bytes`).
-    const HAS_DYNAMIC_BODY: bool;
     /// Whether clearing this element must recurse — it owns storage at derived
     /// keys (a container) or spills a body (`String`/`Bytes`). `false` for a
     /// static leaf whose whole representation lives in its slot range and can
@@ -620,14 +618,12 @@ pub trait StorageType: Sized {
 /// by-value surface (`push`/`pop`/`insert`/`set`/value `get`). Containers do
 /// not implement this, which is what confines by-value ops to leaves.
 pub trait SimpleStorageType: StorageType {
-    /// The owned value type (always `Self` for the built-in leaves).
-    type Value;
     /// Read the value at `(key, offset)`.
-    fn read_value(key: StorageKey, offset: u8, host: &Host) -> Self::Value;
+    fn read_value(key: StorageKey, offset: u8, host: &Host) -> Self;
     /// Read the value, or `None` if the slot(s) read back zero.
-    fn try_read_value(key: StorageKey, offset: u8, host: &Host) -> Option<Self::Value>;
+    fn try_read_value(key: StorageKey, offset: u8, host: &Host) -> Option<Self>;
     /// Write the value at `(key, offset)`.
-    fn write_value(value: &Self::Value, key: StorageKey, offset: u8, alone: bool, host: &Host);
+    fn write_value(value: &Self, key: StorageKey, offset: u8, alone: bool, host: &Host);
 }
 
 /// The `StorageType` associated items for a value-leaf `$ty`, delegating to
@@ -638,7 +634,6 @@ macro_rules! leaf_storage_type_body {
     ($ty:ty) => {
         const SLOTS: u64 = <$ty as StorageEncode>::STORAGE_SLOTS as u64;
         const PACKED_BYTES: usize = <$ty as StorageEncode>::PACKED_BYTES;
-        const HAS_DYNAMIC_BODY: bool = <$ty as StorageEncode>::HAS_DYNAMIC_BODY;
         // A static leaf bulk-zeroes; a dynamic-body leaf (String/Bytes) must
         // recurse to tear down its spilled chunks.
         const NEEDS_RECURSIVE_CLEAR: bool = <$ty as StorageEncode>::HAS_DYNAMIC_BODY;
@@ -693,8 +688,6 @@ macro_rules! leaf_storage_type_body {
 /// The `SimpleStorageType` associated items for a value-leaf `$ty`.
 macro_rules! simple_storage_type_body {
     ($ty:ty) => {
-        type Value = $ty;
-
         fn read_value(key: StorageKey, offset: u8, host: &Host) -> $ty {
             <$ty as StorageType>::get_at(key, offset, host)
         }
@@ -1189,7 +1182,6 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
 impl<T: StorageEncode + StorageDecode> StorageType for Lazy<T> {
     const SLOTS: u64 = T::STORAGE_SLOTS as u64;
     const PACKED_BYTES: usize = T::PACKED_BYTES;
-    const HAS_DYNAMIC_BODY: bool = T::HAS_DYNAMIC_BODY;
     // A dynamic-body `T` (String/Bytes) must recurse to tear down spilled
     // chunks; a static `T` bulk-zeroes.
     const NEEDS_RECURSIVE_CLEAR: bool = T::HAS_DYNAMIC_BODY;
@@ -1526,12 +1518,12 @@ impl<K: AsStorageKey, V: StorageType> Mapping<K, V> {
 impl<K: AsStorageKey, V: SimpleStorageType> Mapping<K, V> {
     /// Read the value, returning `None` if the entry reads back zero (never
     /// written or cleared) — Solidity's zero-slot semantics.
-    pub fn try_get(&self, key: &K) -> Option<V::Value> {
+    pub fn try_get(&self, key: &K) -> Option<V> {
         V::try_read_value(self.slot_of(key), Self::entry_offset(), &self.host)
     }
 
     /// Write a value at `key`.
-    pub fn insert(&mut self, key: &K, value: &V::Value) {
+    pub fn insert(&mut self, key: &K, value: &V) {
         V::write_value(
             value,
             self.slot_of(key),
@@ -1554,7 +1546,6 @@ impl<K: AsStorageKey, V: SimpleStorageType> Mapping<K, V> {
 impl<K, V: StorageType> StorageType for Mapping<K, V> {
     const SLOTS: u64 = 1;
     const PACKED_BYTES: usize = 32;
-    const HAS_DYNAMIC_BODY: bool = false;
     // A mapping stores nothing at its root and its entries live at underivable
     // keys. `true` routes `StorageVec<Mapping<..>>::clear` through the per-element
     // `clear_at` (a no-op for a mapping) instead of the bulk-zero path, avoiding
@@ -2031,7 +2022,7 @@ impl<S: SimpleStorageType> StorageVec<S> {
     /// # Panics
     ///
     /// Reverts with `Panic(0x32)` (array out-of-bounds) if `index >= len()`.
-    pub fn set(&mut self, index: u64, value: &S::Value) {
+    pub fn set(&mut self, index: u64, value: &S) {
         let () = Self::_SHAPE_CHECK;
         if index >= self.len() {
             panic_revert(&self.host, Panic::OutOfBoundsAccess);
@@ -2045,7 +2036,7 @@ impl<S: SimpleStorageType> StorageVec<S> {
     ///
     /// Reverts with `Panic(0x41)` (array too large) if the length would
     /// overflow `u64::MAX`.
-    pub fn push(&mut self, value: &S::Value) {
+    pub fn push(&mut self, value: &S) {
         let () = Self::_SHAPE_CHECK;
         let len = self.len();
         let new_len = match len.checked_add(1) {
@@ -2058,7 +2049,7 @@ impl<S: SimpleStorageType> StorageVec<S> {
 
     /// Remove and return the last element by value, or `None` if empty. The
     /// freed slot(s) are cleared (SSTORE-to-zero refund), matching solc.
-    pub fn pop(&mut self) -> Option<S::Value> {
+    pub fn pop(&mut self) -> Option<S> {
         let () = Self::_SHAPE_CHECK;
         let len = self.len();
         if len == 0 {
@@ -2076,7 +2067,7 @@ impl<S: SimpleStorageType> StorageVec<S> {
     }
 
     /// Write `value` at element `i` (no bounds check).
-    fn write_value_at(&mut self, i: u64, value: &S::Value) {
+    fn write_value_at(&mut self, i: u64, value: &S) {
         let alone = Self::per_slot() == 1;
         S::write_value(
             value,
@@ -2120,7 +2111,6 @@ impl<S: StorageType> StorageComponent for StorageVec<S> {
 impl<S: StorageType> StorageType for StorageVec<S> {
     const SLOTS: u64 = 1;
     const PACKED_BYTES: usize = 32;
-    const HAS_DYNAMIC_BODY: bool = false;
     // A vec owns element storage at derived keys — clearing must recurse.
     const NEEDS_RECURSIVE_CLEAR: bool = true;
 

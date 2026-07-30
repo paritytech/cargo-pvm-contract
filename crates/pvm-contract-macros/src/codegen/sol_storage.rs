@@ -28,7 +28,7 @@
 //!     // chain (same `layout_step_component` steps as `new_at` below).
 //!     const SLOTS: u64 = { /* layout_step_component walker over the fields */ };
 //!     const PACKED_BYTES: usize = 32;
-//!     // ... HAS_DYNAMIC_BODY / NEEDS_RECURSIVE_CLEAR / Get / GetMut / get_at ...
+//!     // ... NEEDS_RECURSIVE_CLEAR / Get / GetMut / get_at ...
 //! }
 //!
 //! impl ::pvm_contract_sdk::StorageComponent for Erc20 {
@@ -325,7 +325,6 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             // Source of truth for the slot count (the layout-walker result).
             const SLOTS: u64 = #slots_expr;
             const PACKED_BYTES: usize = 32;
-            const HAS_DYNAMIC_BODY: bool = false;
             // Fields may own storage at derived keys / dynamic bodies, so
             // clearing recurses through `StorageComponent::clear`.
             const NEEDS_RECURSIVE_CLEAR: bool = true;
@@ -486,15 +485,11 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         | SolType::Int(_)
         | SolType::Bytes(_) => StorageFieldKind::Packable,
         SolType::String | SolType::DynBytes => StorageFieldKind::Dynamic,
-        // Custom types (nested structs) are not yet supported as a *packed
-        // value* field of a `SolStorage` struct — that would need atomic
-        // multi-field packed codegen which isn't implemented. This is an
-        // optimization gap, NOT a solc-parity gap: a nested struct in storage
-        // already works today (with byte-identical solc layout) via the
-        // `#[storage]` attribute + `get`/`entry` composition path. The
-        // rejection hint in `generate_sol_storage_impls` points users there.
-        //
-        // `Array<T>` (T != u8), `FixedArray`, `Tuple` in struct fields: deferred.
+        // No codegen arm for composite / multi-slot fields — the derive emits
+        // only `Packable` (single-slot byte-packing) and `Dynamic` (sub-key
+        // delegation to the field's own codec). Use handles instead, same solc
+        // layout: `#[storage]` for a nested struct, `Lazy<(A, B)>` for a tuple,
+        // `Lazy<[T; N]>` for a fixed array.
         SolType::Custom(_) | SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
             StorageFieldKind::Unsupported
         }
@@ -557,10 +552,11 @@ fn generate_sol_storage_impls(
             Some(ident) => format!("field `{ident}`"),
             None => format!("field {field_idx}"),
         };
-        // A nested struct *can* live in storage today — just not as a packed
-        // value field. Point the user at the `#[storage]` + `get`/`entry` path,
-        // which yields the identical solc layout. Other unsupported kinds
-        // (`Vec<T>`, tuples, fixed arrays) have no such workaround.
+        // A nested struct lives in storage via the `#[storage]` + `get`/`entry`
+        // path (identical solc layout); point the user there. The other
+        // composites have their own handle-based homes — `Lazy<(A, B)>` for a
+        // tuple, `Lazy<[T; N]>` for a fixed array, `StorageVec<T>` for a
+        // dynamic array — just not as a packed value field of this struct.
         let hint = if is_nested_struct {
             "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
              struct. To store a nested struct, make BOTH structs \
@@ -751,8 +747,6 @@ fn generate_sol_storage_impls(
             const SLOTS: u64 = <#name as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS as u64;
             const PACKED_BYTES: usize =
                 <#name as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES;
-            const HAS_DYNAMIC_BODY: bool =
-                <#name as ::pvm_contract_sdk::StorageEncode>::HAS_DYNAMIC_BODY;
             const NEEDS_RECURSIVE_CLEAR: bool =
                 <#name as ::pvm_contract_sdk::StorageEncode>::HAS_DYNAMIC_BODY;
 
@@ -795,8 +789,6 @@ fn generate_sol_storage_impls(
         }
 
         impl ::pvm_contract_sdk::SimpleStorageType for #name {
-            type Value = #name;
-
             fn read_value(
                 key: ::pvm_contract_sdk::StorageKey,
                 offset: u8,

@@ -1427,7 +1427,7 @@ fn check_packing_parity<V>(name: &str, sample: V, tail: &[u8])
 where
     V: StorageEncode
         + StorageDecode
-        + SimpleStorageType<Value = V>
+        + SimpleStorageType
         + Copy
         + PartialEq
         + core::fmt::Debug
