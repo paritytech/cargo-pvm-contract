@@ -10,7 +10,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `cargo-pvm-contract-builder` | Build library — links PolkaVM bytecode and generates ABI JSON (used by CLI and optional `build.rs`) |
 | `pvm-contract-sdk` | Primary user-facing SDK crate — re-exports macros, types, and polkavm-derive for contract development |
 | `pvm-contract-core` | Core structures for the PVM smart contracts SDK |
-| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
+| `pvm-contract-macros` | Proc macros — `#[contract]`, `#[method]`, `#[selector]`, `#[payable]`, `#[constructor]`, `#[fallback]`, `#[receive]`, `#[storage]`, `#[interface_id]`, `abi_import!`, `#[derive(SolType)]`, `#[derive(SolStorage)]`, `#[derive(SolError)]`, `#[derive(SolEvent)]` |
 | `pvm-contract-types` | ABI encoding/decoding traits (`SolEncode`, `SolDecode`), error trait (`SolError`) — `no_std` compatible |
 | `pvm-storage` | Typed storage helpers — `Lazy<T>`, `Mapping<K, V>`, Solidity-compatible slot layout |
 | `pvm-contract-builder-dsl` | Builder-pattern DSL for contracts without proc macros |
@@ -91,9 +91,9 @@ DSL handlers take a concrete `&Host` (same type the macro path injects on the st
 The `#[contract]` macro generates two PolkaVM entry points:
 
 - **`deploy()`** — calls the `#[constructor]` function
-- **`call()`** — reads calldata, extracts 4-byte selector, dispatches to matching `#[method]`. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
+- **`call()`** — reads calldata, extracts 4-byte selector, dispatches via `route()` to the matching `#[method]`, then lowers `route()`'s returned `Outcome` to the host through a single `finalize_outcome` exit. When `call_data_len == 0` and a `#[receive]` handler is present, the receive arm fires before the selector dispatch. When the selector matches no method (`Outcome::Unhandled`, or calldata is 1..=3 bytes), control falls through to `#[fallback]` if present, else reverts.
 
-Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags.
+Dispatch uses an "Outcome-in-route" model: arms don't call the host on the success path. `route(this, selector, input, out) -> Outcome` (generic over the `OutSink` output buffer) has each arm validate input size -> decode parameters via `SolDecode` -> call the user function -> encode the return via `SolEncode` into the caller-owned buffer `out`, and return `Outcome::Return(len)`; unmatched selectors return `Outcome::Unhandled`. The single `finalize_outcome` call maps `Return` to the `return_value` success door (`Unhandled` falls through to fallback/revert). **Reverts never flow through `Outcome`** — a method's own `Err(e)` (encoded via `SolError::encode_to` into `out`) and every framework abort (input size check, malformed-calldata decode, payable guard, storage `panic_revert`) all diverge directly via `Host::revert` (`-> !`, `REVERT` flags). So `Outcome` has just two variants (`Return`, `Unhandled`), there's one revert path, and one test idiom (`expect_revert`/`assert_reverts!`) for every revert. The no-alloc `OutSink` is a fixed `&mut [u8]` sized to `MAX_RETURN_LEN`; the alloc one is a stack buffer with a `Vec` spill for dynamic returns.
 
 Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time. When the signature comes from a `.sol` interface (the `#[contract("Foo.sol")]` and `abi_import!` paths), user-defined types are expanded to their canonical ABI form first — a struct becomes the tuple of its field types (`Point` -> `(uint64,uint64)`), an `enum` becomes `uint8`, and a `type X is T` becomes `T` — matching solc, `cast`, and the generated `.abi.json`.
 
@@ -110,7 +110,7 @@ Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), co
 ### Method Attribute
 
 - `#[method]` — marks a public function as a contract method
-- `#[method(rename = "name")]` — overrides the Solidity function name (default: snake_case to camelCase)
+- `#[selector(name = "name")]` — overrides the Solidity function name (default: snake_case to camelCase); `#[method(rename = "name")]` is a supported alias
 - `#[payable]` — marks the method as `payable` (must be combined with `&mut self`)
 - `#[non_reentrant]` — emits an OpenZeppelin-compatible reentrancy guard (see [Reentrancy Protection](#reentrancy-protection)). Only valid on a `&self` / `&mut self` `#[method]` (not pure, constructor, fallback, or receive)
 
@@ -294,7 +294,7 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 |------|-------------|
 | `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
 | `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
-| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` to avoid it |
+| `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert with solc's ABI-encoded `Panic(0x32)` (array out-of-bounds); use `try_get` to avoid it |
 
 - Supports static values up to `MAX_STATIC_SLOTS` * 32 bytes (single-word and multi-word static structs/tuples) and dynamic values (`String`, `Bytes`, `#[derive(SolType, SolStorage)]` structs with dynamic fields) using solc's inline/spilled `bytes`/`string` layout
 - **Custom struct as storage value:** structs that live in `Lazy<S>` / `Mapping<_, S>` must derive **both** `SolType` (for ABI / field-layout signature) **and** `SolStorage` (for `StorageEncode`/`StorageDecode` + the `StaticStorageEncode`/`StaticStorageDecode` refinement when fully static). `SolType` alone is sufficient for ABI-only types (function parameter structs, event field structs). Deriving `SolStorage` on a struct with a non-storage-compatible field (e.g. `Vec<U256>`, nested SolType structs, tuples, fixed arrays of non-`u8`) emits a `compile_error!` at expansion time — visible to `cargo check` and `trybuild`

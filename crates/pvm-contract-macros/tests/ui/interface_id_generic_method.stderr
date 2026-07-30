@@ -1,0 +1,5 @@
+error: #[interface_id]: generic trait methods are not supported (their selector is undefined)
+ --> tests/ui/interface_id_generic_method.rs:3:8
+  |
+3 |     fn foo<T>(&self, x: T) -> u64;
+  |        ^^^

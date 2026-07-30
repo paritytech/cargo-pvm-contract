@@ -5,7 +5,7 @@
 //! `.abi.json` use — rather than its declared name, `sum(Point)`.
 
 use pvm_contract_macros::SolType;
-use pvm_contract_types::{MockHost, MockHostBuilder, ReturnFlags, SolDecode, SolEncode};
+use pvm_contract_types::{MockHostBuilder, OutSink, Outcome, SolDecode, SolEncode};
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
 #[pvm_contract_macros::contract("tests/fixtures/StructParam.sol")]
@@ -31,15 +31,13 @@ mod struct_param {
     }
 }
 
-fn new_contract() -> (struct_param::StructParam, MockHost) {
-    let mock = MockHostBuilder::new().build();
-    let contract = struct_param::StructParam::with_host(mock.clone());
-    (contract, mock)
+fn new_contract() -> struct_param::StructParam {
+    struct_param::StructParam::with_host(MockHostBuilder::new().build())
 }
 
 #[test]
 fn struct_param_selector_matches_the_canonical_tuple_signature() {
-    let (mut contract, mock) = new_contract();
+    let mut contract = new_contract();
     let point = struct_param::Point { x: 20, y: 22 };
     let mut input = vec![0u8; point.encode_len()];
     point.encode_to(&mut input);
@@ -50,23 +48,26 @@ fn struct_param_selector_matches_the_canonical_tuple_signature() {
         sel,
         pvm_contract_types::const_selector("sum((uint64,uint64))")
     );
-    let outcome = struct_param::route(&mut contract, sel, &input);
-    assert_eq!(outcome, Some(()));
 
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::empty());
-    assert_eq!(u64::decode_at(&rv.data, 0).unwrap(), 42);
+    let mut buf = [0u8; struct_param::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let returned = match struct_param::route(&mut contract, sel, &input, &mut out) {
+        Outcome::Return(n) => out.view(n).to_vec(),
+        other => panic!("expected Return, got {other:?}"),
+    };
+    assert_eq!(u64::decode_at(&returned, 0).unwrap(), 42);
 }
 
 #[test]
 fn struct_param_selector_is_not_hashed_from_the_declared_name() {
-    let (mut contract, mock) = new_contract();
+    let mut contract = new_contract();
 
     let sel = pvm_contract_types::const_selector("sum(Point)");
-    let outcome = struct_param::route(&mut contract, sel, &[0u8; 64]);
+    let mut buf = [0u8; struct_param::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
 
-    assert_eq!(outcome, None);
-    assert!(mock.take_return_value().is_none());
+    assert_eq!(
+        struct_param::route(&mut contract, sel, &[0u8; 64], &mut out),
+        Outcome::Unhandled
+    );
 }

@@ -5,12 +5,15 @@ use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
-    generate_revert_encoding_boundary, generate_router,
+    MethodInfo, RevertBuf, RouteItems, StateMutability, generate_param_decoding, generate_revert,
+    generate_router, size_check,
 };
 use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
 use crate::signature::{CustomTypes, SolType, compute_selector};
-use crate::utils::{compute_function_signature, to_snake_case};
+use crate::utils::{
+    compute_function_signature, extract_selector_rename, to_camel_case, to_snake_case,
+    validate_sol_identifier,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -328,6 +331,11 @@ fn check_signature_compatibility(
 }
 
 fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
+    // Canonical spelling: `#[selector(name = "...")]` (shared with #[interface_id]).
+    let selector_rename = extract_selector_rename(attrs)?;
+
+    // Alias: `#[method(rename = "...")]`.
+    let mut method_rename: Option<(String, &Attribute)> = None;
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -338,28 +346,22 @@ fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
             && let Some(name) = args.rename
             && !name.is_empty()
         {
-            if !is_valid_solidity_identifier(&name) {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    format!(
-                        "Invalid Solidity identifier `{name}`. \
-                         Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
-                    ),
-                ));
-            }
-            return Ok(Some(name));
+            validate_sol_identifier(&name, attr)?;
+            method_rename = Some((name, attr));
         }
     }
-    Ok(None)
-}
 
-fn is_valid_solidity_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
-        _ => return false,
+    // Both spellings set the Solidity name; picking one silently would drop the
+    // other. Reject the conflict instead.
+    match (selector_rename, method_rename) {
+        (Some(_), Some((_, attr))) => Err(syn::Error::new_spanned(
+            attr,
+            "conflicting renames: set the Solidity name with either \
+             `#[selector(name = \"...\")]` or `#[method(rename = \"...\")]`, not both",
+        )),
+        (Some(name), None) | (None, Some((name, _))) => Ok(Some(name)),
+        (None, None) => Ok(None),
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
@@ -434,24 +436,6 @@ fn collect_error_type(
             }
         }
     }
-}
-
-fn to_camel_case(snake: &str) -> String {
-    let mut result = String::new();
-    let mut next_upper = false;
-    for (i, c) in snake.chars().enumerate() {
-        if c == '_' {
-            next_upper = true;
-        } else if i == 0 {
-            result.push(c);
-        } else if next_upper {
-            result.push(c.to_ascii_uppercase());
-            next_upper = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
 
 fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
@@ -708,9 +692,8 @@ fn build_payable_helpers_fn() -> TokenStream {
         #[inline(never)]
         fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, has_value: bool) {
             if has_value {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                     host,
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
             }
         }
@@ -1032,11 +1015,24 @@ fn parse_contract(
                         }
                     } {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)?
+                    let explicit_rename = extract_method_rename(&func.attrs)?;
+                    let rename = explicit_rename
+                        .clone()
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .body.iter().find_map(|f| match f {
-                            syn_solidity::Item::Function(item_function)  if item_function.name.as_ref().is_some_and(|name| name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name) => Some(item_function),
+                            // With an explicit `#[selector(name = "...")]` (or its
+                            // `#[method(rename)]` alias), match the interface function of
+                            // exactly that name. Falling back to the Rust-name heuristic
+                            // here would silently ignore the rename and dispatch under the
+                            // interface's own name instead.
+                            syn_solidity::Item::Function(item_function) if item_function.name.as_ref().is_some_and(|name| {
+                                if explicit_rename.is_some() {
+                                    name.as_string() == rename
+                                } else {
+                                    name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                                }
+                            }) => Some(item_function),
                            _ => None
                         })
                         .ok_or_else(|| {
@@ -1303,10 +1299,20 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         ))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
-            unsafe {
-                core::arch::asm!("unimp");
-                core::hint::unreachable_unchecked()
-            }
+            // Revert with a generic Solidity `Panic(0x00)` so off-chain callers
+            // get decodable revert data instead of a bare trap. This is the
+            // catch-all for Rust panics not already routed through an explicit
+            // `panic_revert` (e.g. storage bounds checks emit specific codes).
+            // `panic_revert` issues the `return_value` syscall and diverges.
+            //
+            // NOTE: with `-Cpanic=immediate-abort` the toolchain may lower
+            // panics directly to a trap without invoking this handler; in that
+            // case this path is inert. The explicit `panic_revert` call sites
+            // (storage) do not depend on the handler and always emit ABI data.
+            ::pvm_contract_sdk::panic_revert(
+                &::pvm_contract_sdk::Host::new(),
+                ::pvm_contract_sdk::Panic::Generic,
+            )
         }
     };
 
@@ -1436,14 +1442,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             .map(|(name, _)| name.clone())
             .collect();
 
-        let decoding = generate_param_decoding(&param_names, &param_types, true);
+        let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
             min_size_expr,
             decode_statements,
             call_args,
             has_params,
         } = decoding;
-        let size_check = boundary_size_check(has_params, &min_size_expr);
+        let size_check = size_check(has_params, &min_size_expr);
 
         let read_calldata = if param_names.is_empty() {
             quote! {}
@@ -1460,8 +1466,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -1473,7 +1479,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
 
         let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
-        let revert_err = generate_revert_encoding_boundary(use_alloc);
+        let revert_err = generate_revert(RevertBuf::Local, use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -1516,9 +1522,17 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let (route_items, router_impl) =
-        generate_router(&parsed.methods, mod_name, struct_name, use_alloc);
-    let RouteItems { route_fn } = route_items;
+    let (route_items, router_impl) = generate_router(
+        &parsed.methods,
+        mod_name,
+        struct_name,
+        use_alloc,
+        parsed.fallback_is_payable,
+    );
+    let RouteItems {
+        max_return_const,
+        route_fn,
+    } = route_items;
     let router_impl = router_impl.tokens;
 
     // When `#[receive]` is present, the empty-calldata case dispatches to it
@@ -1527,7 +1541,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let receive_dispatch = if parsed.has_receive {
         let receive_name = parsed.receive_name.as_ref().unwrap();
         if parsed.receive_returns_result {
-            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            let revert_err = generate_revert(RevertBuf::Local, use_alloc);
             quote! {
                 if call_data_len == 0 {
                     match this.#receive_name() {
@@ -1554,7 +1568,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
 
         let handler = if parsed.fallback_returns_result {
-            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            let revert_err = generate_revert(RevertBuf::Local, use_alloc);
             quote! {
                 #fallback_assert
                 match this.#fallback_name() {
@@ -1575,23 +1589,25 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                    this.host(),
                     &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                    this.host(),
                     &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
             },
         )
     };
 
     // `call()` is the riscv64 boundary: read calldata, dispatch via `route()`.
-    // Each matched dispatch arm calls `host.return_value(...)` directly
-    // (diverges via syscall) — no buffer round-trip, no result enum to
-    // translate. If `route()` returns `None`, no selector matched and we
-    // fall through to the fallback or unknown-selector handler.
+    // On success `route()` encodes the result into the caller-owned `out` buffer
+    // and returns `Outcome::Return`; the single `finalize_outcome` call lowers it
+    // to the `return_value` success door. `Outcome::Unhandled` means no selector
+    // matched — fall through to the fallback or unknown-selector handler. Every
+    // revert (a method's own `Err`, size check, decode, payable guard, storage
+    // `Panic`) diverges directly inside `route` and never reaches here.
     let call_fn = if use_alloc {
         quote! {
             #[cfg(target_arch = "riscv64")]
@@ -1611,8 +1627,43 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                if route(&mut this, selector, input).is_none() {
-                    #unknown_selector_handler
+                // Inline stack buffer (sized to the max static return via
+                // `MAX_RETURN_LEN`) with heap spill: static returns stay on the
+                // stack — matching the pre-unification per-arm fast path — while
+                // only returns whose runtime length exceeds it (large dynamic
+                // returns, oversized errors) allocate.
+                struct __OutBuf {
+                    stack: [u8; MAX_RETURN_LEN],
+                    spill: alloc::vec::Vec<u8>,
+                }
+                impl ::pvm_contract_sdk::OutSink for __OutBuf {
+                    #[inline(always)]
+                    fn reserve(&mut self, len: usize) -> &mut [u8] {
+                        if len <= self.stack.len() {
+                            &mut self.stack[..len]
+                        } else {
+                            self.spill.resize(len, 0);
+                            &mut self.spill[..len]
+                        }
+                    }
+                    #[inline(always)]
+                    fn view(&self, len: usize) -> &[u8] {
+                        if len <= self.stack.len() {
+                            &self.stack[..len]
+                        } else {
+                            &self.spill[..len]
+                        }
+                    }
+                }
+                let mut __out = __OutBuf {
+                    stack: [0u8; MAX_RETURN_LEN],
+                    spill: alloc::vec::Vec::new(),
+                };
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        #unknown_selector_handler
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         }
@@ -1626,8 +1677,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -1640,8 +1691,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                if route(&mut this, selector, input).is_none() {
-                    #unknown_selector_handler
+                let mut __out_storage = [0u8; MAX_RETURN_LEN];
+                let mut __out: &mut [u8] = &mut __out_storage;
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        #unknown_selector_handler
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         }
@@ -1671,6 +1727,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             #payable_helpers_fn
+
+            #[cfg(not(feature = "abi-gen"))]
+            #max_return_const
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
@@ -1742,13 +1801,23 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                     if let syn::ImplItem::Fn(func) = impl_item {
                         func.attrs.retain(|attr| {
                             let segments: Vec<_> = attr.path().segments.iter().collect();
-                            !(segments.len() == 2
+                            // `#[selector(name = "...")]` — the rename override,
+                            // consumed here (bare or prefixed).
+                            let is_selector = segments
+                                .last()
+                                .is_some_and(|s| s.ident == "selector")
+                                && (segments.len() == 1
+                                    || (segments.len() == 2
+                                        && VALID_PREFIXES
+                                            .contains(&segments[0].ident.to_string().as_str())));
+                            let is_pvm_method = segments.len() == 2
                                 && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
                                 && (segments[1].ident == "method"
                                     || segments[1].ident == "constructor"
                                     || segments[1].ident == "fallback"
                                     || segments[1].ident == "receive"
-                                    || segments[1].ident == "non_reentrant"))
+                                    || segments[1].ident == "non_reentrant");
+                            !(is_selector || is_pvm_method)
                         });
                     }
                 }
@@ -2802,20 +2871,23 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Generated route() takes a `&mut Contract` and returns Option<()>
+        // Generated route() encodes into the caller-owned buffer and returns an
+        // `Outcome`.
         assert!(
             output.contains("fn route"),
             "route() function should be generated"
         );
-        // The Router trait impl is emitted (no generic parameter).
+        // The Router trait impl is emitted.
         assert!(
             output.contains(":: pvm_contract_sdk :: Router"),
             "Router impl should be generated"
         );
-        // call() delegates to route() with the constructed `this` and falls
-        // through to the unknown-selector handler when the Option is None.
-        assert!(output.contains("route (& mut this , selector , input)"));
-        assert!(output.contains("is_none ()"));
+        // call() drives route() with the constructed `this` + output buffer and
+        // lowers the returned `Outcome` via `finalize_outcome`, falling through
+        // to the unknown-selector handler on `Outcome::Unhandled`.
+        assert!(output.contains("route (& mut this , selector , input , & mut __out)"));
+        assert!(output.contains(":: pvm_contract_sdk :: finalize_outcome"));
+        assert!(output.contains(":: pvm_contract_sdk :: Outcome :: Unhandled"));
     }
 
     #[test]
@@ -2841,7 +2913,7 @@ mod tests {
 
         assert!(output.contains("\"owner\""));
         assert!(output.contains("Err (e)"));
-        assert!(output.contains("REVERT"));
+        assert!(output.contains(":: revert ("));
     }
 
     #[test]
@@ -4250,8 +4322,8 @@ mod tests {
                     as usize;
                 let mut call_data = [0u8; 256usize];
                 if call_data_len > 256usize {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE,
                     );
                 }
@@ -4264,18 +4336,23 @@ mod tests {
                         this.receive();
                         return;
                     }
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::NO_SELECTOR,
                     );
                 }
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
-                if route(&mut this, selector, input).is_none() {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
-                        &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
-                    );
+                let mut __out_storage = [0u8; MAX_RETURN_LEN];
+                let mut __out: &mut [u8] = &mut __out_storage;
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                            this.host(),
+                            &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
+                        );
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         "##]];
