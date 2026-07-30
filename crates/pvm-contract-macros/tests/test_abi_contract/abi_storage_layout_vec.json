@@ -61,11 +61,11 @@
         "label": "pool",
         "offset": 0,
         "slot": "4",
-        "type": "t_struct(PoolState)_0_storage"
+        "type": "t_struct(PoolState)0_storage"
       }
     ],
     "types": {
-      "t_struct(PoolState)_0_storage": {
+      "t_struct(PoolState)0_storage": {
         "label": "struct StorageVecContract.PoolState",
         "members": [
           {
