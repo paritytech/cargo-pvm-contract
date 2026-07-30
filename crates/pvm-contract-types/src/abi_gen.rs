@@ -102,6 +102,7 @@ pub struct StorageLayoutEntry {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayoutTypeEntry {
     pub label: String, // "struct Outer.Inner"
+    #[serde(rename = "numberOfBytes")]
     pub number_of_bytes: String,
     pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
 }

@@ -75,7 +75,7 @@
             "type": "mapping(address => mapping(address => uint256))"
           }
         ],
-        "number_of_bytes": "96"
+        "numberOfBytes": "96"
       },
       "t_struct(MetadataState)1_storage": {
         "label": "struct ComposedContract.MetadataState",
@@ -93,7 +93,7 @@
             "type": "string"
           }
         ],
-        "number_of_bytes": "64"
+        "numberOfBytes": "64"
       }
     }
   }
