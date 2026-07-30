@@ -9,7 +9,7 @@ use super::dispatch::{
     generate_revert_encoding_boundary, generate_router,
 };
 use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
-use crate::signature::{SolType, compute_selector};
+use crate::signature::{CustomTypes, SolType, compute_selector};
 use crate::utils::{compute_function_signature, to_snake_case};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -740,6 +740,9 @@ fn parse_contract(
     sol_interface: Option<&syn_solidity::File>,
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
+    let sol_custom_types = sol_interface
+        .map(CustomTypes::from_file)
+        .unwrap_or_default();
     let content = input
         .content
         .as_ref()
@@ -1063,7 +1066,8 @@ fn parse_contract(
                         &param_types,
                     )?;
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&compute_function_signature(sol_func));
+                    let selector =
+                        compute_selector(&compute_function_signature(sol_func, &sol_custom_types));
                     let sol_mutability = match sol_func.attributes.mutability() {
                         Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
                         Some(syn_solidity::Mutability::View(_)) => StateMutability::View,

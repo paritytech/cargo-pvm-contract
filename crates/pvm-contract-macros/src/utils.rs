@@ -1,3 +1,4 @@
+use crate::signature::CustomTypes;
 use syn_solidity::ItemFunction;
 
 pub fn to_snake_case(s: &str) -> String {
@@ -42,10 +43,15 @@ pub fn capitalize(s: &str) -> String {
     }
 }
 
-pub fn compute_function_signature(item: &ItemFunction) -> String {
-    let mut name = format!("{}{}", item.name(), item.call_type());
-    if name.rfind(",").is_some_and(|x| x == name.len() - 2) {
-        name.remove(name.len() - 2);
-    }
-    name
+/// The canonical Solidity signature the selector is hashed from. `types` must
+/// carry the user-defined types declared alongside the function: a struct
+/// parameter hashes as the tuple of its fields (`Point` -> `(uint64,uint64)`),
+/// not as its declared name, and the same holds for enums and value types.
+pub fn compute_function_signature(item: &ItemFunction, types: &CustomTypes) -> String {
+    let params: Vec<String> = item
+        .parameters
+        .types()
+        .map(|ty| types.canonical_name(ty))
+        .collect();
+    format!("{}({})", item.name(), params.join(","))
 }

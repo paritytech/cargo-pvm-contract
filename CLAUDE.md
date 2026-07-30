@@ -95,7 +95,7 @@ The `#[contract]` macro generates two PolkaVM entry points:
 
 Each method dispatch arm: validates input size -> decodes parameters via `SolDecode` -> calls user function -> encodes return via `SolEncode` -> returns to host. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags.
 
-Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time.
+Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time. When the signature comes from a `.sol` interface (the `#[contract("Foo.sol")]` and `abi_import!` paths), user-defined types are expanded to their canonical ABI form first — a struct becomes the tuple of its field types (`Point` -> `(uint64,uint64)`), an `enum` becomes `uint8`, and a `type X is T` becomes `T` — matching solc, `cast`, and the generated `.abi.json`.
 
 ### Contract Attribute Arguments
 

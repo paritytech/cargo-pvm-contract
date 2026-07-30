@@ -4,7 +4,7 @@ use quote::{format_ident, quote};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
-use crate::utils::{capitalize, compute_function_signature, to_pascal_case, to_snake_case};
+use crate::utils::{capitalize, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(
@@ -22,7 +22,7 @@ pub fn expand_function(
     let selector: Vec<TokenStream> = if is_constructor {
         [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
     } else {
-        compute_selector(&compute_function_signature(func))
+        compute_selector(&ctxt.function_signature(func))
             .into_iter()
             .map(|x| quote! { #x })
             .collect()
@@ -2404,7 +2404,7 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (super::Voter), ()> {
                                 payload: (voter),
-                                selector: [217u8, 117u8, 149u8, 186u8],
+                                selector: [159u8, 61u8, 241u8, 46u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2425,7 +2425,7 @@ mod test {
                                 (),
                             > {
                                 payload: (a, b),
-                                selector: [178u8, 1u8, 18u8, 196u8],
+                                selector: [130u8, 210u8, 59u8, 138u8],
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,

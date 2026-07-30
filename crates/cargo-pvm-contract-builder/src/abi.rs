@@ -634,7 +634,7 @@ fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> AbiItem {
         .parameters
         .iter()
         .map(|p| {
-            let name = p.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+            let name = p.name.as_ref().map(unraw).unwrap_or_default();
             let param = type_to_abi_param(&name, &p.ty, structs, &mut Vec::new());
             AbiEventParam {
                 name: param.name,
@@ -801,6 +801,31 @@ interface Kw {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(field_names, vec!["from", "ref", "amount"]);
+    }
+
+    #[test]
+    fn generate_abi_from_sol_event_param_keyword_name_is_not_raw() {
+        let (_d, path) = write_sol(
+            "KwEvent.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface KwEvent {
+    event Placed(address indexed from, uint256 ref, uint256 amount);
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Event { name, inputs, .. } if name == "Placed" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let param_names: Vec<&str> = inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(param_names, vec!["from", "ref", "amount"]);
     }
 
     fn write_sol(name: &str, body: &str) -> (TempDir, std::path::PathBuf) {
