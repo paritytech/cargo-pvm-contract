@@ -1,4 +1,4 @@
-error: method `total_supply` mutability mismatch: `.sol` declares `view`, Rust signature is `nonpayable`. change Rust receiver to `&self`.
+error: method `total_supply` mutability mismatch: the `.sol` interface declares `view` but the Rust implementation is `nonpayable`; change Rust receiver to `&self`.
   --> tests/ui/implements_sol_mutability_mismatch.rs:23:9
    |
 23 | /         fn total_supply(&mut self) -> U256 {

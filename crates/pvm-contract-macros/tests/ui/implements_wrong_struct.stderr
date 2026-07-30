@@ -1,4 +1,4 @@
-error: `impl IThing for ...` must target the contract struct `C`
+error: `IThing` is listed in `implements(...)` but its `impl` targets a struct other than the contract struct `C`. A folded interface must be implemented for the contract struct.
   --> tests/ui/implements_wrong_struct.rs:19:21
    |
 19 |     impl IThing for Other {

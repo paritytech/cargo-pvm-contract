@@ -748,13 +748,13 @@ fn mutability_mismatch_error(
         (StateMutability::Payable, StateMutability::Pure) => {
             "add a `&mut self` receiver and `#[payable]`"
         }
-        _ => "update either the `.sol` interface or the Rust signature",
+        _ => "update either the `.sol` interface or the Rust implementation",
     };
     syn::Error::new_spanned(
         func,
         format!(
-            "method `{fn_name}` mutability mismatch: `.sol` declares `{}`, \
-             Rust signature is `{}`. {}.",
+            "method `{fn_name}` mutability mismatch: the `.sol` interface declares `{}` \
+             but the Rust implementation is `{}`; {}.",
             sol.as_abi_str(),
             rust.as_abi_str(),
             hint,
@@ -921,10 +921,8 @@ fn collect_folded_error_type(
         // something else), so reject it.
         return Err(syn::Error::new_spanned(
             err_ty,
-            "a folded method's error type may reference `Self` only as exactly `Self::Error` \
-             (resolved via the `<Error = ...>` binding); a different associated type or a nested \
-             `Self` (e.g. `Wrapper<Self::Error>`) can't be resolved for the ABI. Write the error \
-             type concretely.",
+            "a folded method's error type must be a concrete type or exactly `Self::Error` \
+             (resolved via the interface's `<Error = ...>` binding)",
         ));
     } else {
         err_ty.clone()
@@ -1190,8 +1188,8 @@ fn fold_interface_methods(
                             func,
                             format!(
                                 "#[{name}] is not valid on a folded interface method (it dispatches \
-                                 as an ordinary method); declare lifecycle handlers as inherent \
-                                 `impl` methods on the contract struct"
+                                 as an ordinary method); put it in the contract's own `impl` block, \
+                                 not in a trait impl"
                             ),
                         ));
                     }
@@ -1314,7 +1312,9 @@ fn fold_interface_methods(
                 return Err(syn::Error::new_spanned(
                     self_ty,
                     format!(
-                        "`impl {iface_str} for ...` must target the contract struct `{struct_ident}`"
+                        "`{iface_str}` is listed in `implements(...)` but its `impl` targets a \
+                         struct other than the contract struct `{struct_ident}`. A folded interface \
+                         must be implemented for the contract struct."
                     ),
                 ));
             }
@@ -1407,11 +1407,10 @@ fn parse_contract(
                 return Err(syn::Error::new_spanned(
                     input,
                     format!(
-                        "`implements(...)` is ambiguous: the listed interface(s) are implemented \
-                         for more than one struct in this module ({names}), so the contract type \
-                         can't be determined. Give the contract struct an inherent \
-                         `#[constructor]`/`#[method]` block, or keep interface impls for a single \
-                         struct."
+                        "`implements(...)` is ambiguous: more than one struct in this module \
+                         ({names}) implements a listed interface, so the contract struct can't be \
+                         determined. Give the contract struct an inherent `#[constructor]`/`#[method]` \
+                         block, or keep interface impls for a single struct."
                     ),
                 ));
             }

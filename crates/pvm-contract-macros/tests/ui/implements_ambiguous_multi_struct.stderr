@@ -1,4 +1,4 @@
-error: `implements(...)` is ambiguous: the listed interface(s) are implemented for more than one struct in this module (A, B), so the contract type can't be determined. Give the contract struct an inherent `#[constructor]`/`#[method]` block, or keep interface impls for a single struct.
+error: `implements(...)` is ambiguous: more than one struct in this module (A, B) implements a listed interface, so the contract struct can't be determined. Give the contract struct an inherent `#[constructor]`/`#[method]` block, or keep interface impls for a single struct.
   --> tests/ui/implements_ambiguous_multi_struct.rs:10:1
    |
 10 | / mod c {
