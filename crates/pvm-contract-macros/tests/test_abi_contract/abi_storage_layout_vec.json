@@ -66,6 +66,7 @@
     ],
     "types": {
       "t_struct(PoolState)0_storage": {
+        "encoding": "inplace",
         "label": "struct StorageVecContract.PoolState",
         "members": [
           {

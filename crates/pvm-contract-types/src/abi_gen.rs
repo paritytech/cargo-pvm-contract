@@ -102,6 +102,7 @@ pub struct StorageLayoutEntry {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayoutTypeEntry {
     pub label: String, // "struct Outer.Inner"
+    pub encoding: String,
     #[serde(rename = "numberOfBytes")]
     pub number_of_bytes: String,
     pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
@@ -128,6 +129,13 @@ impl LayoutTypesRegistry {
             .or_insert_with(|| StorageLayoutTypeEntry {
                 label: sol_name.to_string(),
                 members: Vec::new(),
+                // Hardcoded "inplace": every struct type this SDK currently
+                // supports is fixed-size and packed (nested structs, Vec<T>,
+                // and tuples aren't yet supported as struct fields, see
+                // classify_storage_field). solc also uses "mapping",
+                // "dynamic_array", and "bytes" for other type shapes.
+                // Revisit if struct fields ever support those.
+                encoding: "inplace".to_string(),
                 number_of_bytes: number_of_bytes.to_string(),
             });
         key
@@ -154,6 +162,13 @@ impl LayoutTypesRegistry {
             StorageLayoutTypeEntry {
                 label,
                 members,
+                // Hardcoded "inplace": every struct type this SDK currently
+                // supports is fixed-size and packed (nested structs, Vec<T>,
+                // and tuples aren't yet supported as struct fields, see
+                // classify_storage_field). solc also uses "mapping",
+                // "dynamic_array", and "bytes" for other type shapes.
+                // revisit if struct fields ever support those.
+                encoding: "inplace".to_string(),
                 number_of_bytes,
             },
         );

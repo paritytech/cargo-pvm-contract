@@ -54,6 +54,7 @@
     ],
     "types": {
       "t_struct(Erc20State)0_storage": {
+        "encoding": "inplace",
         "label": "struct ComposedContract.Erc20State",
         "members": [
           {
@@ -78,6 +79,7 @@
         "numberOfBytes": "96"
       },
       "t_struct(MetadataState)1_storage": {
+        "encoding": "inplace",
         "label": "struct ComposedContract.MetadataState",
         "members": [
           {
