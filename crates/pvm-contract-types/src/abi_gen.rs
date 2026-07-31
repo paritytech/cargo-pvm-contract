@@ -149,7 +149,19 @@ impl LayoutTypesRegistry {
         members: Vec<StorageLayoutEntry>,
         number_of_bytes: String,
     ) -> String {
-        if let Some((k, _)) = self.types.iter().find(|(_, v)| v.label == label) {
+        if let Some((k, existing)) = self.types.iter().find(|(_, v)| v.label == label) {
+            assert_eq!(
+                existing.members, members,
+                "storage layout: two distinct Rust types both resolve to label {label:?} \
+                with different member layouts — this SDK disambiguates struct types \
+                only by their bare Rust identifier plus contract name, so two \
+                same-named structs from different modules used in the same contract \
+                will collide. Rename one of the structs to avoid this.",
+            );
+            assert_eq!(
+                existing.number_of_bytes, number_of_bytes,
+                "storage layout: label {label:?} collision with mismatched size",
+            );
             return k.clone();
         }
         let id = self.next_struct_id;
@@ -507,4 +519,33 @@ mod tests {
         let parsed: StorageLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, layout);
     }
+
+    #[test]
+    #[should_panic(expected = "two distinct Rust types both resolve to label")]
+    fn register_struct_panics_on_label_collision_with_different_shape() {
+        let mut registry = LayoutTypesRegistry::new();
+
+        // Two distinct structs that happen to share the same bare name +
+        // contract name — e.g. `a::Point` and `b::Point` both used inside
+        // contract `C`. Their labels collide even though their shapes differ.
+        let members_a = vec![StorageLayoutEntry {
+            label: "x".to_string(),
+            slot: "0".to_string(),
+            offset: 0,
+            ty: "uint64".to_string(),
+        }];
+        let members_b = vec![StorageLayoutEntry {
+            label: "x".to_string(),
+            slot: "0".to_string(),
+            offset: 0,
+            ty: "uint256".to_string(), // different shape
+        }];
+
+        registry.register_struct("Point", "struct C.Point".to_string(), members_a, "32".to_string());
+
+        // Second call has the same label but a genuinely different layout —
+        // should panic rather than silently return the first registration's key.
+        registry.register_struct("Point", "struct C.Point".to_string(), members_b, "32".to_string());
+    }
+
 }
