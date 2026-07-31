@@ -122,6 +122,13 @@ impl LayoutTypesRegistry {
     }
 
     /// Primitives: deterministic key, no counter, idempotent.
+    ///
+    /// Not yet called anywhere in this PR: primitive types (`uint256`, `bool`,
+    /// etc.) aren't currently routed through the `types` table, only structs are
+    /// (see `register_struct`). This is included now as the reference
+    /// implementation for that follow-up work, so the
+    /// eventual change continues here rather than a fresh design with min effort.
+    #[allow(dead_code)]
     pub fn register_primitive(&mut self, sol_name: &str, number_of_bytes: &str) -> String {
         let key = alloc::format!("t_{sol_name}");
         self.types
