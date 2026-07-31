@@ -160,7 +160,7 @@ impl Parse for ContractArgs {
                         return Err(syn::Error::new(
                             ident.span(),
                             "`implements()` is empty; list at least one interface trait to fold, \
-                             or omit the argument",
+                             or drop `implements()` if the contract folds no interfaces",
                         ));
                     }
                     for r in refs {
