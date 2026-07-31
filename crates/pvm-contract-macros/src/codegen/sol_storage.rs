@@ -483,6 +483,26 @@ fn field_access_tokens(
     }
 }
 
+fn build_emit_members_body(name: &syn::Ident, member_emit_pushes: &[TokenStream]) -> TokenStream {
+    quote! {
+        fn emit_members(
+            registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
+            contract_name: &str,
+        ) -> ::std::string::String {
+            let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
+            let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                ::std::vec::Vec::new();
+            #(#member_emit_pushes)*
+            registry.register_struct(
+                stringify!(#name),
+                qualified,
+                member_entries,
+                (Self::__STORAGE_LAYOUT.1 as u64 * 32).to_string(),
+            )
+        }
+    }
+}
+
 /// Emit the `StorageEncode` + `StorageDecode` impls for a SolStorage-derived
 /// struct. Supports both static layouts (all fields `Packable`) and
 /// dynamic-bodied layouts (fields include `String` / `Bytes` — solc-style
@@ -792,24 +812,7 @@ fn generate_sol_storage_impls(
             })
             .collect();
 
-        let emit_members_body = quote! {
-            fn emit_members(
-                registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
-                contract_name: &str,
-            ) -> ::std::string::String {
-                let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
-                let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
-                    ::std::vec::Vec::new();
-                #(#member_emit_pushes)*
-                registry.register_struct(
-                    stringify!(#name),
-                    qualified,
-                    member_entries,
-                    (Self::__STORAGE_LAYOUT.1 as u64 * 32).to_string(),
-                )
-            }
-        };
-
+        let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
         Ok(quote! {
             // Eager type-check-time slot-count guard. Module-scope so it
             // fires under `cargo check` (visible to trybuild) instead of
@@ -944,24 +947,9 @@ fn generate_sol_storage_impls(
                 }
             })
             .collect();
+   
+        let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
 
-        let emit_members_body = quote! {
-            fn emit_members(
-                registry: &mut pvm_contract_sdk::LayoutTypesRegistry,
-                contract_name: &str,
-            ) -> ::std::string::String {
-                let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
-                let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
-                    ::std::vec::Vec::new();
-                #(#member_emit_pushes)*
-                registry.register_struct(
-                    stringify!(#name),
-                    qualified,
-                    member_entries,
-                    (Self::__STORAGE_LAYOUT.1 as u64 * 32).to_string(),
-                )
-            }
-        };
         // Static struct: universal trait methods delegate to shared helpers;
         // encode_slot + from_slots live on Static* refinement.
         Ok(quote! {
