@@ -947,7 +947,7 @@ fn generate_sol_storage_impls(
                 }
             })
             .collect();
-   
+
         let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
 
         // Static struct: universal trait methods delegate to shared helpers;

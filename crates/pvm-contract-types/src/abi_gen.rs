@@ -541,11 +541,20 @@ mod tests {
             ty: "uint256".to_string(), // different shape
         }];
 
-        registry.register_struct("Point", "struct C.Point".to_string(), members_a, "32".to_string());
+        registry.register_struct(
+            "Point",
+            "struct C.Point".to_string(),
+            members_a,
+            "32".to_string(),
+        );
 
         // Second call has the same label but a genuinely different layout —
         // should panic rather than silently return the first registration's key.
-        registry.register_struct("Point", "struct C.Point".to_string(), members_b, "32".to_string());
+        registry.register_struct(
+            "Point",
+            "struct C.Point".to_string(),
+            members_b,
+            "32".to_string(),
+        );
     }
-
 }

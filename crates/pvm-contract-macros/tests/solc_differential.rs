@@ -632,10 +632,7 @@ fn soltype_struct_value_layout_matches_solc() {
     let our_parsed: serde_json::Value = serde_json::from_str(&our_json).unwrap();
     let solc_layout = solc_raw(SOLTYPE_VALUE_SOL, "WithStruct");
 
-    assert_eq!(
-        ours(&our_json),
-        solc(SOLTYPE_VALUE_SOL, "WithStruct"),
-    );
+    assert_eq!(ours(&our_json), solc(SOLTYPE_VALUE_SOL, "WithStruct"),);
     assert_eq!(
         norm_types(&our_parsed["types"]),
         norm_types(&solc_layout["types"]),
@@ -660,5 +657,3 @@ fn substruct_layout_matches_solc() {
         "types table contents (members, encoding, numberOfBytes) must match solc",
     );
 }
-
-
