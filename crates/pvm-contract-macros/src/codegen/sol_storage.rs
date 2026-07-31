@@ -32,7 +32,6 @@
 //! }
 //!
 //! impl ::pvm_contract_sdk::StorageComponent for Erc20 {
-//!     // SLOTS / PACKED_BYTES inherited from the `StorageType` impl above.
 //!     fn new_at(base: StorageKey, offset: u8, alone: bool, host: ::pvm_contract_sdk::Host) -> Self {
 //!         // Per-field placement chain: each `LayoutStep` is computed by the
 //!         // shared walker from the previous step plus this field's
@@ -279,10 +278,6 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             for #struct_name #ty_generics
         #where_clause
         {
-            // The slot count / packing width live on the `StorageType` impl
-            // below (the single source of truth); `StorageComponent` carries
-            // only construction (`new_at`) and teardown (`clear`).
-
             fn new_at(
                 base: ::pvm_contract_sdk::StorageKey,
                 offset: u8,
@@ -711,8 +706,7 @@ fn generate_sol_storage_impls(
     // Module-scope `const _: () = ...` assertion. Evaluated at type-check
     // time (cargo check), so trybuild UI fixtures can pin the rejection
     // without needing a use site to force monomorphization. Each dynamic
-    // struct emits exactly one of these; the inline trait-method bodies
-    // no longer carry their own per-method copy.
+    // struct emits exactly one of these (not a per-method copy).
     // Embed the concrete limit in the message (read from the source of truth
     // so it can't drift) alongside the symbolic `MAX_STATIC_SLOTS` name.
     let max_static_slots =

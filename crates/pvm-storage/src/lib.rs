@@ -464,8 +464,6 @@ pub use pvm_contract_types::{LayoutStep, layout_step};
 /// [`pvm_contract_types::layout_step_encode`] for the `StorageEncode` family;
 /// both forward to the one trait-agnostic [`layout_step`] primitive.
 pub const fn layout_step_component<T: StorageComponent>(prev: LayoutStep) -> LayoutStep {
-    // `PACKED_BYTES` / `SLOTS` live on the `StorageType` supertrait; the
-    // `T: StorageComponent` bound implies `T: StorageType`, so they resolve.
     layout_step(prev, T::PACKED_BYTES, T::SLOTS)
 }
 
@@ -484,11 +482,6 @@ pub const fn layout_step_component<T: StorageComponent>(prev: LayoutStep) -> Lay
 /// macro-generated constructor calls [`StorageComponent::new_at`] with the
 /// assigned base slot and a clone of the contract's host handle.
 pub trait StorageComponent: StorageType {
-    // The slot count and packing width live on the `StorageType` supertrait
-    // (`StorageType::SLOTS` / `StorageType::PACKED_BYTES`) — the single source
-    // of truth. `StorageComponent` adds only the construction/teardown door
-    // (`new_at` / `clear`); read layout facts through `StorageType`.
-
     /// Construct the component at `(key, offset)`, bound to `host`. `key` is
     /// the 32-byte storage key (a contract-field slot via
     /// [`StorageKey::from_slot`], or a derived key produced by a parent
@@ -608,10 +601,9 @@ pub trait StorageType: Sized {
 /// by-value surface (`push`/`pop`/`insert`/`set`/value `get`). Containers do
 /// not implement this, which is what confines by-value ops to leaves.
 ///
-/// The `StorageEncode + StorageDecode` supertraits record an invariant every
-/// leaf already satisfies (a by-value storage leaf is, by definition, a codec
-/// type): it lets container code name `Lazy<Self>` for a leaf `Self` — e.g.
-/// [`StorageVec::pop`]'s fused [`Lazy::take`] path — without a separate bound.
+/// The `StorageEncode + StorageDecode` supertraits let container code name
+/// `Lazy<Self>` for a leaf `Self` — e.g. [`StorageVec::pop`]'s fused
+/// [`Lazy::take`] path.
 pub trait SimpleStorageType: StorageType + StorageEncode + StorageDecode {
     /// Read the value at `(key, offset)`.
     fn read_value(key: StorageKey, offset: u8, host: &Host) -> Self;
@@ -1132,10 +1124,6 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
 }
 
 impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
-    // SLOTS / PACKED_BYTES live on the `StorageType for Lazy<T>` impl
-    // (`T::STORAGE_SLOTS` / `T::PACKED_BYTES`), the single source of truth;
-    // `StorageComponent` inherits them via its `StorageType` supertrait.
-
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         // SAFETY: `new_at` is the safe public construction entry point used by
         // macro-generated field initializers, where the borrow check on the
@@ -1381,14 +1369,9 @@ impl<K, V> Mapping<K, V> {
     }
 }
 
-// `V: StorageType` is required by the `StorageComponent: StorageType`
-// supertrait (`Mapping<K, V>: StorageType` only holds when `V: StorageType`).
-// Construction itself doesn't inspect `V`, but a mapping is only ever declared
-// to be accessed, and every accessor already needs `V: StorageType`.
+// Construction doesn't inspect `V`, but a mapping is only ever declared to be
+// accessed, and every accessor needs `V: StorageType`.
 impl<K, V: StorageType> StorageComponent for Mapping<K, V> {
-    // SLOTS (1) / PACKED_BYTES (32) inherited from `StorageType for Mapping`:
-    // a mapping's root header always claims a full slot and never packs.
-
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert!(
             offset == 0,
@@ -2107,10 +2090,6 @@ impl<S: SimpleStorageType> StorageVec<S> {
 }
 
 impl<S: StorageType> StorageComponent for StorageVec<S> {
-    // SLOTS (1, the length header — elements live at `keccak256(slot) + i`) /
-    // PACKED_BYTES (32, never packs) inherited from `StorageType for
-    // StorageVec<S>`.
-
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert_eq!(
             offset, 0,
