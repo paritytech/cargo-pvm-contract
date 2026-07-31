@@ -145,8 +145,8 @@ impl LayoutTypesRegistry {
             return k.clone();
         }
         let id = self.next_struct_id;
-        // Irrespective of how the astIds and hece the naming for struct works.
-        // Due to implemnentation barriers, we would be having incremental astIds
+        // Irrespective of how the astIds and hence the naming for struct works.
+        // Due to implementation barriers, we would be having incremental astIds
         self.next_struct_id += 1;
         let key = alloc::format!("t_struct({struct_name}){id}_storage");
         self.types.insert(
