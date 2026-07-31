@@ -427,7 +427,7 @@ fn lazy_string_overwrite_smaller() {
     // Stale body chunks from the previous long value must have been
     // deleted, otherwise we'd be leaking storage on every long → short
     // transition.
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     for _ in 0..long_chunks {
         assert_eq!(
             storage_try_get_32(&host, &body_slot),
@@ -616,7 +616,7 @@ fn lazy_string_long_spill_layout() {
     // 40 * 2 + 1 = 81.
     assert_eq!(slot_bytes[31], 81);
 
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     let chunk0 = storage_get_32(&host, &body_slot);
     assert_eq!(&chunk0[..32], &s.as_bytes()[..32]);
 
@@ -655,7 +655,7 @@ fn lazy_string_shrink_long_to_short_clears_chunks() {
     lazy.set(&String::from("ok"));
     assert_eq!(lazy.get(), "ok");
 
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     for chunk_idx in 0..4 {
         assert_eq!(
             storage_try_get_32(&host, &body_slot),
@@ -680,7 +680,7 @@ fn lazy_string_clear_after_long_deletes_chunks() {
     // Header slot gone.
     assert_eq!(storage_try_get_32(&host, key.as_bytes()), None);
     // All body chunks gone.
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     for chunk_idx in 0..3 {
         assert_eq!(
             storage_try_get_32(&host, &body_slot),
@@ -764,7 +764,7 @@ fn mapping_address_to_string() {
 
 #[cfg(feature = "alloc")]
 #[test]
-fn dynamic_data_root_independent_per_slot() {
+fn body_base_independent_per_slot() {
     // Distinct header slots must hash to distinct data roots so two
     // dynamic values on adjacent slots can't trample each other.
     let mut a = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
@@ -967,6 +967,39 @@ fn packed_u128_clear_preserves_neighbour() {
     // Slot stays non-zero overall (a's bytes are still there).
     let slot = storage_get_32(&host, &StorageKey::from_slot(0).as_bytes().clone());
     assert_ne!(slot, [0u8; 32], "slot retained — a kept it alive");
+}
+
+/// `Lazy::take` (fused read+clear) returns the value and zeroes only its own
+/// window, preserving a packed neighbour — the 1-SLOAD equivalent of `get()`
+/// followed by `clear()`. This is the primitive `StorageVec::pop` uses.
+#[test]
+fn packed_u128_take_returns_value_and_preserves_neighbour() {
+    let host = h();
+    let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 16, host.clone()) };
+    let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 0, host.clone()) };
+
+    a.set(&0xAAAA_AAAA_AAAA_AAAAu128);
+    b.set(&0xBBBB_BBBB_BBBB_BBBBu128);
+
+    // Non-alone packed `take` → fused RMW path.
+    assert_eq!(
+        b.take(),
+        0xBBBB_BBBB_BBBB_BBBBu128,
+        "take returns b's value"
+    );
+    assert_eq!(b.get(), 0, "b's window zeroed after take");
+    assert_eq!(a.get(), 0xAAAA_AAAA_AAAA_AAAAu128, "a preserved");
+}
+
+/// `Lazy::take` on a full-slot value returns it and clears the slot (delegates
+/// to the canonical read-then-clear path — the `PACKED_BYTES == 32` branch).
+#[test]
+fn full_slot_take_returns_value_and_clears() {
+    let host = h();
+    let mut cell = unsafe { Lazy::<U256>::new(StorageKey::from_slot(3), 0, host.clone()) };
+    cell.set(&U256::from(0x1234u64));
+    assert_eq!(cell.take(), U256::from(0x1234u64), "take returns the value");
+    assert_eq!(cell.get(), U256::ZERO, "slot cleared after take");
 }
 
 /// Fast path: when `Lazy::new_alone` declares the slot has no neighbours,
@@ -1804,7 +1837,7 @@ fn nested_mapping_slot_matches_solidity() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    // Derive via chaining: view(&owner) returns Ref<inner>, then slot_of(&spender)
+    // Derive via chaining: get(&owner) returns Ref<inner>, then slot_of(&spender)
     let inner = allowances.get(&owner);
     let slot = inner.slot_of(&spender);
 
@@ -2011,7 +2044,7 @@ fn lazy_string_native_clear_removes_header_and_body() {
         None,
         "header not cleared"
     );
-    let mut body = dynamic_data_root(&host, key.as_bytes());
+    let mut body = storage_derive_body_base(&host, key.as_bytes());
     for _ in 0..3 {
         assert_eq!(storage_try_get_32(&host, &body), None);
         inc_be_32(&mut body);

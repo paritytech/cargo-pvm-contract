@@ -377,8 +377,9 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///     pub extern "C" fn call() {
 ///         let host = ::pvm_contract_sdk::Host::new();
 ///         let mut this = Contract {
-///             // #[slot(N)] fields would be initialised here with
-///             // field: <Type>::new(StorageKey::from_slot(N), host.clone()),
+///             // storage fields would be initialised here via the safe door
+///             // field: <Type as ::pvm_contract_sdk::StorageComponent>::new_at(
+///             //     StorageKey::from_slot(N), offset, alone, host.clone()),
 ///             host,
 ///         };
 ///         let call_data_len = HostFnImpl::call_data_size() as usize;
@@ -1208,7 +1209,8 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// If any field is not yet storage-compatible (nested SolType structs,
-/// `Vec<T>` for `T != u8`, fixed arrays of non-`u8`, tuples), the derive
+/// `Vec<T>` — use `Bytes` for `bytes`-shaped values, fixed arrays of
+/// non-`u8`, tuples), the derive
 /// emits a `compile_error!` at expansion time — visible to `cargo check`
 /// and `trybuild`, unlike the prior `const STORAGE_SLOTS = panic!(...)`
 /// stub that only fired during MIR const-eval at `cargo build` time.

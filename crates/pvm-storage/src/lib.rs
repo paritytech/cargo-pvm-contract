@@ -143,22 +143,12 @@ fn storage_derive_key_unpadded(host: &Host, root: &[u8; 32], key: &[u8]) -> [u8;
 /// `bytes` / `string` accessors recover the "set empty vs never written"
 /// distinction by storing a non-zero sentinel in the inline header.
 ///
-/// Only referenced by dynamic-bytes code (alloc-gated) and tests; the static
-/// `Lazy`/`Mapping` paths go through `storage_try_get_static_into` instead.
+/// Test-only helper; the static `Lazy`/`Mapping` paths go through
+/// `storage_try_get_static_into` instead.
 #[cfg(test)]
 fn storage_try_get_32(host: &Host, key: &[u8; 32]) -> Option<[u8; 32]> {
     let buf = storage_get_32(host, key);
     (buf != [0u8; 32]).then_some(buf)
-}
-
-/// Hash a 32-byte slot to produce the data root for a dynamic value
-/// (`keccak256(slot)`). This matches Solidity's layout for `bytes`, `string`,
-/// and arrays.
-#[cfg(test)]
-fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
-    let mut output = [0u8; 32];
-    host.hash_keccak_256(slot, &mut output);
-    output
 }
 
 pub use pvm_contract_types::MAX_STATIC_SLOTS;
@@ -299,10 +289,10 @@ impl StorageKey {
     /// matches `from_slot(s + N)` as long as `s + N` fits in `u64`; if it
     /// overflows `u64`, the carry propagates into the higher bytes (i.e. this
     /// is full 256-bit modular addition, not `u64` wrapping).
-    /// For a derived key, `add` performs proper 256-bit big-endian addition that
-    /// wrap is unreachable because derived keys are uniformly distributed in
-    /// the 256-bit space, so no realistic struct/array depth approaches the
-    /// wrap boundary.
+    /// For a derived key, `add` performs proper 256-bit big-endian addition;
+    /// wrap is unreachable in practice because derived keys are uniformly
+    /// distributed in the 256-bit space, so no realistic struct/array depth
+    /// approaches the wrap boundary.
     ///
     /// Named `add` despite clippy's `should_implement_trait` lint: this is
     /// EVM `uint256` modular addition (matches solc's storage-key derivation),
@@ -617,7 +607,12 @@ pub trait StorageType: Sized {
 /// A [`StorageType`] leaf that is materialized by value — enables the container
 /// by-value surface (`push`/`pop`/`insert`/`set`/value `get`). Containers do
 /// not implement this, which is what confines by-value ops to leaves.
-pub trait SimpleStorageType: StorageType {
+///
+/// The `StorageEncode + StorageDecode` supertraits record an invariant every
+/// leaf already satisfies (a by-value storage leaf is, by definition, a codec
+/// type): it lets container code name `Lazy<Self>` for a leaf `Self` — e.g.
+/// [`StorageVec::pop`]'s fused [`Lazy::take`] path — without a separate bound.
+pub trait SimpleStorageType: StorageType + StorageEncode + StorageDecode {
     /// Read the value at `(key, offset)`.
     fn read_value(key: StorageKey, offset: u8, host: &Host) -> Self;
     /// Read the value, or `None` if the slot(s) read back zero.
@@ -661,11 +656,7 @@ macro_rules! leaf_storage_type_body {
         }
 
         unsafe fn get_mut_at(key: StorageKey, offset: u8, alone: bool, host: &Host) -> Lazy<$ty> {
-            if alone {
-                unsafe { Lazy::<$ty>::new_alone(key, offset, host.clone()) }
-            } else {
-                unsafe { Lazy::<$ty>::new(key, offset, host.clone()) }
-            }
+            <Lazy<$ty> as StorageComponent>::new_at(key, offset, alone, host.clone())
         }
 
         unsafe fn clear_at(key: StorageKey, offset: u8, alone: bool, host: &Host) {
@@ -674,11 +665,8 @@ macro_rules! leaf_storage_type_body {
                 let _ = (offset, alone);
                 <$ty as StorageEncode>::clear_storage(host, key.as_bytes());
             } else {
-                let mut cell = if alone {
-                    unsafe { Lazy::<$ty>::new_alone(key, offset, host.clone()) }
-                } else {
-                    unsafe { Lazy::<$ty>::new(key, offset, host.clone()) }
-                };
+                let mut cell =
+                    <Lazy<$ty> as StorageComponent>::new_at(key, offset, alone, host.clone());
                 <Lazy<$ty> as StorageComponent>::clear(&mut cell);
             }
         }
@@ -1112,24 +1100,53 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             value.write_to_storage(&self.host, self.key.as_bytes());
         }
     }
+
+    /// Read the value and clear the storage it occupies, in one pass —
+    /// `mem::take` for storage (a Solidity `delete` that also returns the
+    /// prior value). For a packed sub-word `T` sharing its slot with
+    /// neighbours, this fuses the read and the read-modify-write clear into
+    /// ONE SLOAD + ONE SSTORE (`get()` then `clear()` would SLOAD the same
+    /// slot twice); neighbour bytes are preserved. Every other shape reuses
+    /// the canonical read-then-clear paths, which are already optimal.
+    pub fn take(&mut self) -> T {
+        let () = Self::_SIZE_CHECK;
+        if T::PACKED_BYTES < 32 && !self.alone {
+            // Fused packed RMW: the single SLOAD serves both the read (unpack
+            // our window) and the clear (zero it). This is the merge of `get`'s
+            // and `clear`'s packed arms over one shared buffer.
+            let mut buf = storage_get_32(&self.host, self.key.as_bytes());
+            let off = self.offset as usize;
+            let value = T::__unpack_from_dispatched(&buf, off);
+            buf[off..off + T::PACKED_BYTES].fill(0);
+            storage_set_32(&self.host, self.key.as_bytes(), &buf);
+            value
+        } else {
+            // Alone sub-word (SLOAD + direct zero-store), full-slot, multi-slot
+            // static, and dynamic-body `T` are already optimal as read-then-
+            // clear; reuse those single-source-of-truth paths verbatim.
+            let value = self.get();
+            <Self as StorageComponent>::clear(self);
+            value
+        }
+    }
 }
 
 impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
-    // SLOTS / PACKED_BYTES are inherited from the `StorageType for Lazy<T>`
-    // impl (`T::STORAGE_SLOTS` / `T::PACKED_BYTES`) — see the defaulted consts
-    // on the `StorageComponent` trait.
+    // SLOTS / PACKED_BYTES live on the `StorageType for Lazy<T>` impl
+    // (`T::STORAGE_SLOTS` / `T::PACKED_BYTES`), the single source of truth;
+    // `StorageComponent` inherits them via its `StorageType` supertrait.
 
     fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
-        // SAFETY: `new_at` is the safe public entry point for macro-generated
-        // storage construction. The macro emits this call inside a contract
-        // struct's field initializer, where Rust's borrow check on the
-        // surrounding struct then gates `&self` / `&mut self` access to the
-        // resulting handle. `Lazy::new`/`new_alone` are `unsafe` only because
-        // direct user-code calls would let `&self` methods reconstruct a
-        // writable handle — that bypass cannot happen through this trait
-        // method. The macro derives `alone` from its layout walker (true iff
-        // no sibling field shares this slot); `Mapping` passes
-        // `alone = true` because each entry lives at a uniquely keyed slot.
+        // SAFETY: `new_at` is the safe public construction entry point used by
+        // macro-generated field initializers, where the borrow check on the
+        // surrounding storage struct gates `&self` / `&mut self` access to the
+        // resulting handle. Note `new_at` is itself a safe door to a writable
+        // handle: a hand-written `&self` method *could* call it to reconstruct
+        // one (the same bypass `Lazy::new`'s `unsafe` blocks for direct calls),
+        // so — like raw uAPI — it is backstopped by pallet-revive's STATICCALL
+        // boundary, not the type system (see CLAUDE.md). The macro derives
+        // `alone` from its layout walker (true iff no sibling field shares this
+        // slot); `Mapping` passes `alone = true` (each entry uniquely keyed).
         if alone {
             unsafe { Lazy::new_alone(key, offset, host) }
         } else {
@@ -1207,20 +1224,16 @@ impl<T: StorageEncode + StorageDecode> StorageType for Lazy<T> {
         alone: bool,
         host: &Host,
     ) -> RefMut<'_, Lazy<T>> {
-        let cell = if alone {
-            unsafe { Lazy::<T>::new_alone(key, offset, host.clone()) }
-        } else {
-            unsafe { Lazy::<T>::new(key, offset, host.clone()) }
-        };
-        RefMut::new(cell)
+        RefMut::new(<Lazy<T> as StorageComponent>::new_at(
+            key,
+            offset,
+            alone,
+            host.clone(),
+        ))
     }
 
     unsafe fn clear_at(key: StorageKey, offset: u8, alone: bool, host: &Host) {
-        let mut cell = if alone {
-            unsafe { Lazy::<T>::new_alone(key, offset, host.clone()) }
-        } else {
-            unsafe { Lazy::<T>::new(key, offset, host.clone()) }
-        };
+        let mut cell = <Lazy<T> as StorageComponent>::new_at(key, offset, alone, host.clone());
         <Lazy<T> as StorageComponent>::clear(&mut cell);
     }
 }
@@ -1618,9 +1631,9 @@ impl<K, V: StorageType> StorageType for Mapping<K, V> {
 ///   (`Option`), `first` / `last`, and [`iter`](Self::iter) (reads the
 ///   length once, then streams elements — cheaper than a manual
 ///   `0..len`/`get` loop). All take `&self`, so they work in `view` methods.
-/// - **Write:** `push`, `pop`, `set(i, &value)` (direct-write — no
-///   per-element handle on flat `StorageVec<T>`), and `clear`. All take
-///   `&mut self`.
+/// - **Write:** `push`, `pop` (returns the value), `set(i, &value)`
+///   (by-value write), `entry(i)` / `grow` (return a write cursor),
+///   `erase_last`, and `clear`. All take `&mut self`.
 ///
 /// # Notable design choices
 ///
@@ -1992,15 +2005,22 @@ impl<S: StorageType> StorageVec<S> {
         }
     }
 
-    /// Clear the storage for element `i` (no bounds check). For sub-word
-    /// leaves, `alone == (within == 0)` reproduces the whole-slot-vs-RMW
-    /// pop policy; container / dynamic elements recurse via `S::clear_at`.
-    fn elem_clear(&mut self, i: u64) {
-        let alone = if S::PACKED_BYTES < 32 {
+    /// `alone` policy for element `i`: a sub-word element is alone iff it
+    /// starts a fresh slot (and, for `pop`, is the last element — no later
+    /// neighbour exists); full-slot elements always own their slot.
+    fn elem_alone(i: u64) -> bool {
+        if S::PACKED_BYTES < 32 {
             i.is_multiple_of(Self::per_slot())
         } else {
             true
-        };
+        }
+    }
+
+    /// Clear the storage for element `i` (no bounds check). For a sub-word
+    /// leaf, `alone == (within == 0)` reproduces the whole-slot-vs-RMW pop
+    /// policy; container / dynamic elements recurse via `S::clear_at`.
+    fn elem_clear(&mut self, i: u64) {
+        let alone = Self::elem_alone(i);
         // SAFETY: `&mut self`; see `elem_mut`.
         unsafe {
             S::clear_at(
@@ -2056,12 +2076,19 @@ impl<S: SimpleStorageType> StorageVec<S> {
             return None;
         }
         let new_len = len - 1;
-        let value = S::read_value(
+        // Read-and-clear the last element in one pass. `Lazy::<S>::take` fuses
+        // the read with the RMW clear for a packed sub-word element (1 SLOAD
+        // instead of 2); every other shape is already read-then-clear. `S:
+        // SimpleStorageType` guarantees `S: StorageEncode + StorageDecode`, so
+        // `Lazy<S>` is nameable. `new_at` is the safe constructor; the enclosing
+        // `&mut self` supplies the mutating proof (same contract as `elem_mut`).
+        let mut cell = <Lazy<S> as StorageComponent>::new_at(
             self.element_slot(new_len),
             Self::element_offset(new_len),
-            &self.host,
+            Self::elem_alone(new_len),
+            self.host.clone(),
         );
-        self.elem_clear(new_len);
+        let value = cell.take();
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
         Some(value)
     }

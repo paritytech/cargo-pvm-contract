@@ -61,11 +61,11 @@
 //!                 base.add(__pvm_storage_offset_total_supply.slot),
 //!                 __pvm_storage_offset_total_supply.offset,
 //!                 __pvm_storage_alone_total_supply, host.clone()),
-//!             balances: <_ as StorageComponent>::new_at(
+//!             balances: <Mapping<Address, U256> as StorageComponent>::new_at(
 //!                 base.add(__pvm_storage_offset_balances.slot),
 //!                 __pvm_storage_offset_balances.offset,
 //!                 __pvm_storage_alone_balances, host.clone()),
-//!             allowances: <_ as StorageComponent>::new_at(
+//!             allowances: <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::new_at(
 //!                 base.add(__pvm_storage_offset_allowances.slot),
 //!                 __pvm_storage_offset_allowances.offset,
 //!                 __pvm_storage_alone_allowances, host.clone()),
@@ -527,7 +527,7 @@ fn field_access_tokens(
 /// dynamic-bodied layouts (fields include `String` / `Bytes` — solc-style
 /// header-in-slot + body at `keccak256(slot) + i`). Fields classified as
 /// `Unsupported` (nested SolType structs, tuples, fixed arrays of non-`u8`,
-/// `Vec<T>` for `T != u8`) produce a `compile_error!`.
+/// `Vec<T>` — use `Bytes` for `bytes`-shaped values) produce a `compile_error!`.
 fn generate_sol_storage_impls(
     name: &syn::Ident,
     fields: &Fields,
@@ -769,11 +769,9 @@ fn generate_sol_storage_impls(
                 alone: bool,
                 host: &::pvm_contract_sdk::Host,
             ) -> ::pvm_contract_sdk::Lazy<#name> {
-                if alone {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new_alone(key, offset, host.clone()) }
-                } else {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }
-                }
+                <::pvm_contract_sdk::Lazy<#name> as ::pvm_contract_sdk::StorageComponent>::new_at(
+                    key, offset, alone, host.clone(),
+                )
             }
 
             unsafe fn clear_at(

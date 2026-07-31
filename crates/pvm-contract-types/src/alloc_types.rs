@@ -95,7 +95,10 @@ impl crate::StorageDecode for Bytes {
         if header == [0u8; 32] {
             return None;
         }
-        Some(Self::read_from_storage(host, base_key))
+        // Decode from the header we already read (no second SLOAD).
+        Some(Bytes(crate::storage_codec::read_dynamic_bytes_from_header(
+            host, base_key, &header,
+        )))
     }
 }
 
