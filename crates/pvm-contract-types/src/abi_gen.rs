@@ -238,9 +238,11 @@ pub trait StorageTypeName {
     /// solc-style qualified name. No-op default — only `#[derive(SolStorage)]`
     /// structs override this.
     fn emit_members(_registry: &mut LayoutTypesRegistry, _contract_name: &str) -> String {
-        // Default: primitives never call this (IS_STRUCT == false gates it),
-        // but a body is required. Unreachable in practice.
-        String::new()
+        // Default: primitives never call this (IS_STRUCT == false gates it).
+        // Falls back to the bare name rather than an empty string, so a
+        // future bug that accidentally hits this path is visible in the
+        // output instead of silently emitting, ty: "".
+        Self::name()
     }
 }
 
