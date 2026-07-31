@@ -533,8 +533,9 @@ pub trait StorageComponent: StorageType {
 // with no per-shape impls.
 //
 // `StorageType` is intentionally NOT blanket-impl'd over `StorageEncode +
-// StorageDecode`: a blanket would overlap the container impls (the E0592
-// coherence wall this design exists to dodge — see issue #108). Leaves are
+// StorageDecode`: a blanket would overlap the container impls (the E0119
+// conflicting-implementations wall this design exists to dodge — see issue
+// #108). Leaves are
 // enumerated explicitly via `impl_leaf_storage_type!`; containers impl it
 // directly; `#[derive(SolStorage)]` structs get it from the derive.
 //
