@@ -927,9 +927,9 @@ fn generate_sol_storage_impls(
     } else {
         let member_emit_pushes: Vec<TokenStream> = field_info
             .iter()
+            .zip(field_types.iter())
             .enumerate()
-            .map(|(i, (field_name, _))| {
-                let field_ty = field_types[i];
+            .map(|(i, ((field_name, _), field_ty))| {
                 let label = match field_name {
                     Some(ident) => ident.to_string(),
                     None => i.to_string(),
