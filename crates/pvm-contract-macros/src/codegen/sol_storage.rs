@@ -361,6 +361,8 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                     ::std::vec::Vec::new();
                 {
+                    // Below declared variables: entries, name_prefix and base are aliases or magic lets which the generated layout-emit, offset_consts_for_layout code expects to exist in scope.
+                    // They are not used for anything else, and are not part of the public API of this function.
                     let entries = &mut member_entries;
                     let name_prefix = "";
                     // contract_name is not shadowed — members inside this struct
