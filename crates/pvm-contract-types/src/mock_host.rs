@@ -210,6 +210,10 @@ struct MockState {
     // --- Mock configuration ---
     call_returns: HashMap<[u8; 20], MockCallReturn>,
     instantiate_return: Option<MockInstantiateReturn>,
+
+    /// Calldata captured from each `call`/`call_evm`/`delegate_call*` in order,
+    /// so tests can assert on the exact input a wrapper sent to a callee.
+    recorded_calls: Vec<([u8; 20], Vec<u8>)>,
 }
 
 impl MockState {
@@ -234,6 +238,7 @@ impl MockState {
             return_value: None,
             call_returns: HashMap::new(),
             instantiate_return: None,
+            recorded_calls: Vec::new(),
         }
     }
 }
@@ -260,6 +265,23 @@ impl MockHost {
     /// Register a mock return value for [`HostApi::call`] to `callee`.
     pub fn mock_call(&self, callee: [u8; 20], result: MockCallReturn) {
         self.state.borrow_mut().call_returns.insert(callee, result);
+    }
+
+    /// Calldata captured from each [`HostApi::call`] / [`HostApi::call_evm`] /
+    /// [`HostApi::delegate_call`] / [`HostApi::delegate_call_evm`], in call
+    /// order, as `(callee, input_data)` pairs.
+    ///
+    /// Lets tests assert on the exact bytes a wrapper sent to a callee — e.g.
+    /// that a precompile wrapper built the spec-mandated input layout.
+    pub fn recorded_calls(&self) -> Vec<([u8; 20], Vec<u8>)> {
+        self.state.borrow().recorded_calls.clone()
+    }
+
+    /// Same as [`MockHost::recorded_calls`], but drains the log so the next
+    /// assertion sees only the calls made after this point. Useful when one
+    /// test drives several calls in sequence on the same mock.
+    pub fn take_recorded_calls(&self) -> Vec<([u8; 20], Vec<u8>)> {
+        core::mem::take(&mut self.state.borrow_mut().recorded_calls)
     }
 
     /// Register a mock return for [`HostApi::instantiate`].
@@ -603,10 +625,10 @@ impl HostApi for MockHost {
         _proof_size_limit: u64,
         _deposit: &[u8; 32],
         _value: &[u8; 32],
-        _input_data: &[u8],
+        input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.resolve_call(callee, output)
+        self.resolve_call(callee, input_data, output)
     }
 
     fn call_evm(
@@ -615,10 +637,10 @@ impl HostApi for MockHost {
         callee: &[u8; 20],
         _gas: u64,
         _value: &[u8; 32],
-        _input_data: &[u8],
+        input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.resolve_call(callee, output)
+        self.resolve_call(callee, input_data, output)
     }
 
     fn caller(&self, output: &mut [u8; 20]) {
@@ -644,10 +666,10 @@ impl HostApi for MockHost {
         _ref_time_limit: u64,
         _proof_size_limit: u64,
         _deposit_limit: &[u8; 32],
-        _input_data: &[u8],
+        input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.resolve_call(address, output)
+        self.resolve_call(address, input_data, output)
     }
 
     fn delegate_call_evm(
@@ -655,10 +677,10 @@ impl HostApi for MockHost {
         _flags: CallFlags,
         address: &[u8; 20],
         _gas: u64,
-        _input_data: &[u8],
+        input_data: &[u8],
         output: Option<&mut &mut [u8]>,
     ) -> HostResult {
-        self.resolve_call(address, output)
+        self.resolve_call(address, input_data, output)
     }
 
     fn deposit_event(&self, topics: &[[u8; 32]], data: &[u8]) {
@@ -860,7 +882,16 @@ impl MockHost {
 
     /// Shared logic for `call`, `call_evm`, `delegate_call`, `delegate_call_evm`.
     /// Uses borrow-drop-immediately pattern to stay re-entrancy-safe.
-    fn resolve_call(&self, callee: &[u8; 20], output: Option<&mut &mut [u8]>) -> HostResult {
+    fn resolve_call(
+        &self,
+        callee: &[u8; 20],
+        input: &[u8],
+        output: Option<&mut &mut [u8]>,
+    ) -> HostResult {
+        self.state
+            .borrow_mut()
+            .recorded_calls
+            .push((*callee, input.to_vec()));
         let resolved = self.state.borrow().call_returns.get(callee).cloned();
         match resolved {
             Some(Ok(data)) => {
@@ -1024,6 +1055,53 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!(&buf[..4], &[0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn call_records_input_data() {
+        let callee = [0x99; 20];
+        let host = MockHostBuilder::new().mock_call(callee, Ok(vec![])).build();
+        let input = [1u8, 2, 3, 4, 5];
+
+        let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &input, None);
+
+        assert_eq!(host.recorded_calls(), vec![(callee, input.to_vec())]);
+    }
+
+    #[test]
+    fn take_recorded_calls_drains_the_log() {
+        let callee = [0x99; 20];
+        let host = MockHostBuilder::new().build();
+
+        let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &[0xAA], None);
+        assert_eq!(host.take_recorded_calls(), vec![(callee, vec![0xAA])]);
+        assert_eq!(host.take_recorded_calls(), vec![]);
+
+        let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &[0xBB], None);
+        assert_eq!(host.recorded_calls(), vec![(callee, vec![0xBB])]);
+    }
+
+    #[test]
+    fn call_records_each_input_in_order() {
+        let callee = [0x99; 20];
+        let host = MockHostBuilder::new().build();
+
+        let _ = host.call_evm(CallFlags::empty(), &callee, 0, &[0u8; 32], &[0xAA], None);
+        let _ = host.call(
+            CallFlags::empty(),
+            &callee,
+            0,
+            0,
+            &[0u8; 32],
+            &[0u8; 32],
+            &[0xBB, 0xCC],
+            None,
+        );
+
+        assert_eq!(
+            host.recorded_calls(),
+            vec![(callee, vec![0xAA]), (callee, vec![0xBB, 0xCC])]
+        );
     }
 
     #[test]
