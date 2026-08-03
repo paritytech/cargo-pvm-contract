@@ -58,7 +58,8 @@ fn fresh_host() -> Host {
 #[test]
 fn erc20_state_new_at_assigns_contiguous_slots() {
     let host = fresh_host();
-    let state = <Erc20State as StorageComponent>::new_at(5, 0, host.clone());
+    let state =
+        <Erc20State as StorageComponent>::new_at(StorageKey::from_slot(5), 0, true, host.clone());
 
     // Mint to alice via balance map insert; that should write at the slot
     // derived from `keccak256(pad32(alice) ++ pad32(6))` because balances is
@@ -135,12 +136,20 @@ mod composed_contract {
 #[test]
 fn composed_contract_layout_matches_hand_constructed() {
     let host = fresh_host();
-    let mut erc20 = <Erc20State as StorageComponent>::new_at(0, 0, host.clone());
-    let mut metadata = <MetadataState as StorageComponent>::new_at(3, 0, host.clone());
+    let mut erc20 =
+        <Erc20State as StorageComponent>::new_at(StorageKey::from_slot(0), 0, true, host.clone());
+    let mut metadata = <MetadataState as StorageComponent>::new_at(
+        StorageKey::from_slot(3),
+        0,
+        true,
+        host.clone(),
+    );
     // Phase 3 walker: a standalone `Lazy<bool>` field at the start of a
     // fresh slot lands at canonical offset 31 (right-aligned, 1 byte wide).
-    // The macro would have called `new_at(5, 31, host)` for this field.
-    let mut paused = <Lazy<bool> as StorageComponent>::new_at(5, 31, host.clone());
+    // The macro would have called `new_at(5, 31, true, host)` for this field
+    // — `alone = true` because it's the only field in slot 5.
+    let mut paused =
+        <Lazy<bool> as StorageComponent>::new_at(StorageKey::from_slot(5), 31, true, host.clone());
 
     // Write through each sub-component.
     let alice = Address([0xAA; 20]);
@@ -165,9 +174,9 @@ fn composed_contract_layout_matches_hand_constructed() {
     };
     let bob = Address([0xBB; 20]);
     allowances_via_outer
-        .entry(&alice)
+        .view_mut(&alice)
         .insert(&bob, &U256::from(7));
-    assert_eq!(erc20.allowances.get(&alice).get(&bob), U256::from(7));
+    assert_eq!(erc20.allowances.view(&alice).get(&bob), U256::from(7));
 
     let name_slot =
         unsafe { Lazy::<alloc::string::String>::new(StorageKey::from_slot(3), 0, host.clone()) };
@@ -199,7 +208,8 @@ fn nested_storage_struct_slot_sum() {
 #[test]
 fn nested_storage_struct_uses_offset() {
     let host = fresh_host();
-    let mut outer = <OuterState as StorageComponent>::new_at(10, 0, host.clone());
+    let mut outer =
+        <OuterState as StorageComponent>::new_at(StorageKey::from_slot(10), 0, true, host.clone());
 
     // OuterState at base 10 places `flag` at slot 10 and `erc20` starting at
     // slot 11 (because flag claims 1 slot).

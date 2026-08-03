@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: #[interface_id]: two methods of trait `IDup` produce the same 4-byte selector; they would cancel in the interface-ID XOR. Rename one with #[selector(name = "...")]
+ --> tests/ui/interface_id_duplicate_selector.rs:3:1
+  |
+3 | #[pvm_contract_macros::interface_id]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `_` failed here

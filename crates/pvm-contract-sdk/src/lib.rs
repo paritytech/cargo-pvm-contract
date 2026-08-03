@@ -15,7 +15,7 @@
 //! ```toml
 //! [dependencies]
 //! pvm-contract-sdk = "0.3"
-//! polkavm-derive = "0.34"
+//! polkavm-derive = "0.35"
 //! ```
 //!
 //! ```ignore
@@ -43,8 +43,8 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolEvent, SolType, abi_import, constructor, contract, fallback, method, payable,
-    receive, storage,
+    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback,
+    interface_id, method, non_reentrant, payable, receive, selector, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,9 +80,13 @@ pub use pvm_contract_types::{
     HostApi,
     HostResult,
     I256,
+    OutSink,
+    Outcome,
     Panic,
     ParseI256Error,
     PolkaVmHost,
+    // Reentrancy guard error (OZ-compatible).
+    ReentrancyGuardReentrantCall,
     ReturnErrorCode,
     ReturnFlags,
     RevertString,
@@ -96,6 +100,8 @@ pub use pvm_contract_types::{
     SolEvent,
     StaticDecode,
     StaticEncodedLen,
+    StaticStorageDecode,
+    StaticStorageEncode,
     StorageArrayElement,
     StorageDecode,
     StorageEncode,
@@ -106,12 +112,23 @@ pub use pvm_contract_types::{
     checked_sum,
     const_keccak256,
     const_selector,
+    // Dispatch outcome lowering (single exit for the selector-dispatch path)
+    finalize_outcome,
     // Framework errors
     framework_errors,
     keccak256,
+    // Storage-layout walker wrapper (StorageEncode family) used by codegen
+    layout_step_encode,
+    // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
+    panic_revert,
     read_word_offset,
     value_transferred_is_nonzero,
 };
+
+/// Reentrancy guard helpers emitted by the `#[non_reentrant]` codegen.
+/// Not part of the public API surface.
+#[doc(hidden)]
+pub use pvm_contract_types::{__reentrancy_is_locked, __reentrancy_lock, __reentrancy_unlock};
 
 /// Sealing module re-exported for the `#[contract]` macro to implement on
 /// generated storage structs. External users have no reason to import this.
@@ -138,8 +155,8 @@ pub use pvm_contract_core::precompiles;
 // different on-chain layout). `StorageComponent` is the trait typed
 // storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
-    AsStorageKey, LayoutStep, Lazy, Mapping, Ref, RefMut, StorageComponent, StorageKey, StorageVec,
-    layout_step,
+    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, StorageComponent,
+    StorageKey, StorageVec, layout_step, layout_step_component,
 };
 
 #[cfg(feature = "abi-gen")]
@@ -150,15 +167,20 @@ pub use pvm_contract_types::Bytes;
 
 #[cfg(feature = "abi-gen")]
 pub use pvm_contract_types::{
-    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, abi_to_json,
-    parse_type_str, storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName,
+    abi_to_json, parse_type_str, storage_layout_to_json,
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, assert_panics, assert_reverts};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;
+
+/// Storage codec helpers used by macro-generated impls (kept under a public
+/// path so generated `::pvm_contract_sdk::storage_codec::static_*` calls
+/// resolve in downstream crates).
+pub use pvm_contract_types::storage_codec;
 
 // ---------------------------------------------------------------------------
 // Hidden re-exports for macro-generated code

@@ -11,9 +11,10 @@
 //! [`STORAGE_SLOTS`](pvm_contract_types::StorageEncode::STORAGE_SLOTS) is
 //! checked at compile time and must be in `1..=MAX_STATIC_SLOTS`. Single-slot
 //! values (`U256`, `Address`, `bool`, `[u8; 32]`, …) occupy one slot;
-//! multi-slot values like `(U256, U256)` or static `#[derive(SolType)]`
-//! structs are striped across `T::STORAGE_SLOTS` consecutive slots, mirroring
-//! Solidity's struct-in-storage layout.
+//! multi-slot values like `(U256, U256)` or static
+//! `#[derive(SolType, SolStorage)]` structs are striped across
+//! `T::STORAGE_SLOTS` consecutive slots, mirroring Solidity's
+//! struct-in-storage layout.
 //!
 //! Dynamic `bytes` / `string` values ride the same `Lazy<T>` / `Mapping<K, V>`
 //! accessors as static types — `Lazy<String>`, `Lazy<Bytes>`,
@@ -42,9 +43,9 @@
 //! packing infrastructure.
 //!
 //! Multi-slot composites (`Lazy<(U256, U256)>`, multi-slot
-//! `#[derive(SolType)]` structs), mappings, and `#[storage]` sub-structs
-//! always start a fresh slot and never pack with neighbours. They report
-//! `PACKED_BYTES = 32`.
+//! `#[derive(SolType, SolStorage)]` structs), mappings, and `#[storage]`
+//! sub-structs always start a fresh slot and never pack with neighbours.
+//! They report `PACKED_BYTES = 32`.
 //!
 //! # Usage
 //!
@@ -59,11 +60,17 @@
 //! // The `#[contract]` macro emits calls like the lines below. Direct user
 //! // code shouldn't need to construct handles by hand — use macro-managed
 //! // storage fields and access them via `self.balances.get(&caller)` etc.
-//! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(0, 0, host.clone());
+//! // `alone = true` is the safe choice for contract-field positions where
+//! // the macro's layout walker has proven no neighbour shares the slot.
+//! let mut total_supply = <Lazy<U256> as StorageComponent>::new_at(
+//!     StorageKey::from_slot(0), 0, true, host.clone(),
+//! );
 //! total_supply.set(&U256::from(1000));
 //! assert_eq!(total_supply.get(), U256::from(1000));
 //!
-//! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(1, 0, host);
+//! let mut balances = <Mapping<Address, U256> as StorageComponent>::new_at(
+//!     StorageKey::from_slot(1), 0, true, host,
+//! );
 //! balances.insert(&caller, &U256::from(500));
 //! assert_eq!(balances.get(&caller), U256::from(500));
 //! ```
@@ -82,7 +89,10 @@ extern crate alloc;
 extern crate self as pvm_contract_sdk;
 
 use core::marker::PhantomData;
-use pvm_contract_types::{Host, HostApi, SolEncode, StorageDecode, StorageEncode, StorageFlags};
+pub(crate) use pvm_contract_types::storage_codec::inc_be_32;
+use pvm_contract_types::{
+    Host, HostApi, Panic, SolEncode, StorageDecode, StorageEncode, StorageFlags, panic_revert,
+};
 
 // ---------------------------------------------------------------------------
 // Shared inner functions: type-erased helpers that operate on raw [u8; 32].
@@ -151,75 +161,14 @@ fn dynamic_data_root(host: &Host, slot: &[u8; 32]) -> [u8; 32] {
     output
 }
 
-/// Increment a 32-byte big-endian integer in-place (used to walk consecutive
-/// storage slots — both the body of dynamic values and multi-word static
-/// values that span more than one slot).
-fn inc_slot(slot: &mut [u8; 32]) {
-    for byte in slot.iter_mut().rev() {
-        let (next, carry) = byte.overflowing_add(1);
-        *byte = next;
-        if !carry {
-            return;
-        }
-    }
-}
-
-/// Maximum number of 32-byte slots a single static `Lazy<T>` / `Mapping<K, V>`
-/// value can occupy. 8 slots = 256 bytes is enough for typical record types
-/// (e.g. `(Address, U256, U256)`) without allocating heap or requiring
-/// `feature(generic_const_exprs)` to size the stack buffer by
-/// `T::STORAGE_SLOTS`.
-///
-/// Increase this if a contract needs larger inline static values, but never
-/// raise it beyond `pallet-revive`'s `STORAGE_BYTES` limit (currently 416 bytes
-/// = 13 slots) — that's the hard cap the runtime enforces per storage value,
-/// so any larger buffer here would fail at host-call time on chain.
-pub const MAX_STATIC_SLOTS: usize = 8;
-
-/// Read `out.len()` consecutive slots starting at `key` into `out`.
-fn read_slots(host: &Host, key: &[u8; 32], out: &mut [[u8; 32]]) {
-    let mut k = *key;
-    for slot in out.iter_mut() {
-        *slot = storage_get_32(host, &k);
-        inc_slot(&mut k);
-    }
-}
-
-/// Read `out.len()` consecutive slots starting at `key`. Returns `None` iff
-/// every slot read back as `[0; 32]` — matches Solidity's "value-zero ≡
-/// deleted ≡ never-written" semantics aggregated across a multi-slot value.
-fn try_read_slots(host: &Host, key: &[u8; 32], out: &mut [[u8; 32]]) -> Option<()> {
-    let mut k = *key;
-    let mut any_present = false;
-    for slot in out.iter_mut() {
-        let read = storage_get_32(host, &k);
-        if read != [0u8; 32] {
-            any_present = true;
-        }
-        *slot = read;
-        inc_slot(&mut k);
-    }
-    any_present.then_some(())
-}
-
-/// Stream-encode `value` slot-by-slot and write to consecutive slots starting
-/// at `key`. Uses a 32-byte stack buffer regardless of `T::STORAGE_SLOTS`.
-fn write_value<T: StorageEncode>(host: &Host, key: &[u8; 32], value: &T) {
-    let mut k = *key;
-    for i in 0..T::STORAGE_SLOTS {
-        let mut buf = [0u8; 32];
-        value.encode_slot(i, &mut buf);
-        storage_set_32(host, &k, &buf);
-        inc_slot(&mut k);
-    }
-}
+pub use pvm_contract_types::MAX_STATIC_SLOTS;
 
 /// Clear `n` consecutive slots starting at `key`.
 fn clear_n_slots(host: &Host, key: &[u8; 32], n: usize) {
     let mut k = *key;
     for _ in 0..n {
         host.set_storage_or_clear(StorageFlags::empty(), &k, &[0u8; 32]);
-        inc_slot(&mut k);
+        inc_be_32(&mut k);
     }
 }
 // Body-base derivation for a dynamic array (`StorageVec<T>`):
@@ -235,7 +184,7 @@ fn storage_derive_body_base(host: &Host, slot_key: &[u8; 32]) -> [u8; 32] {
 
 /// Add `n` to a 32-byte big-endian integer in-place, propagating carries
 /// up through all 32 bytes. Used by `StorageVec` to address element `i`
-/// at `body_base + i` without iterating `inc_slot` `i` times.
+/// at `body_base + i` without iterating `inc_be_32` `i` times.
 fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
     let mut carry: u64 = n;
     for byte in slot.iter_mut().rev() {
@@ -248,20 +197,43 @@ fn inc_slot_by(slot: &mut [u8; 32], n: u64) {
     }
 }
 
-/// Read a u64 length from a storage slot's lower 8 bytes (big-endian).
+/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian),
+/// reverting with `Panic(0x22)` ("incorrectly encoded storage byte array") if
+/// the stored length is malformed.
+///
 /// Solidity stores array lengths as `uint256`; we cap support at `u64::MAX`
-/// elements (more than enough for any real-world contract) and panic if the
-/// upper 24 bytes are non-zero, which would indicate either corrupted state
-/// or a length set via raw uAPI that exceeds our supported range.
-fn read_len_u64(host: &Host, slot_key: &[u8; 32]) -> u64 {
+/// elements (more than enough for any real-world contract). If the upper 24
+/// bytes are non-zero the stored length is malformed — corrupt state or a
+/// length written via raw uAPI beyond our supported range.
+///
+/// This is the reverting reader used by the plain accessors (`len`, `get`,
+/// `push`, ...); the `try_*` accessors use [`try_read_len`] instead, which
+/// surfaces a malformed length as `None` rather than reverting. Keeping the two
+/// paths as separate readers avoids threading an `Option` through the common
+/// reverting path (which measurably grows the bytecode).
+fn read_len(host: &Host, slot_key: &[u8; 32]) -> u64 {
     let buf = storage_get_32(host, slot_key);
-    assert!(
-        buf[..24].iter().all(|&b| b == 0),
-        "StorageVec length exceeds u64::MAX"
-    );
+    if !buf[..24].iter().all(|&b| b == 0) {
+        panic_revert(host, Panic::StorageByteArrayEncoding);
+    }
     u64::from_be_bytes([
         buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
     ])
+}
+
+/// Read a `u64` length from a storage slot's lower 8 bytes (big-endian), or
+/// `None` if the stored length is malformed.
+///
+/// The non-reverting counterpart of [`read_len`], used by the `try_*`
+/// accessors so a corrupt length slot reads as "empty" instead of reverting.
+fn try_read_len(host: &Host, slot_key: &[u8; 32]) -> Option<u64> {
+    let buf = storage_get_32(host, slot_key);
+    if !buf[..24].iter().all(|&b| b == 0) {
+        return None;
+    }
+    Some(u64::from_be_bytes([
+        buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+    ]))
 }
 
 /// Write a u64 length to a storage slot as a big-endian `uint256` (upper 24
@@ -320,6 +292,34 @@ impl StorageKey {
     /// Raw access to the 32-byte key for debugging and host API interop.
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+
+    /// Add a small offset, propagating carries across all 32 bytes.
+    ///
+    /// Used to position sub-fields of a `#[storage]` struct rooted at a
+    /// derived key — e.g. a `Mapping<K, MyStorageStruct>::entry(k)` constructs
+    /// the inner struct at `derived = keccak256(pad32(k) ++ root)`, and the
+    /// struct's macro-generated constructor positions each field at
+    /// `derived.add(N)` where `N` is the field's slot offset within the
+    /// struct as computed by the `LayoutStep` walker.
+    ///
+    /// For a contract-field StorageKey produced by `from_slot(s)`, `add(N)`
+    /// matches `from_slot(s + N)` as long as `s + N` fits in `u64`; if it
+    /// overflows `u64`, the carry propagates into the higher bytes (i.e. this
+    /// is full 256-bit modular addition, not `u64` wrapping).
+    /// For a derived key, `add` performs proper 256-bit big-endian addition that
+    /// wrap is unreachable because derived keys are uniformly distributed in
+    /// the 256-bit space, so no realistic struct/array depth approaches the
+    /// wrap boundary.
+    ///
+    /// Named `add` despite clippy's `should_implement_trait` lint: this is
+    /// EVM `uint256` modular addition (matches solc's storage-key derivation),
+    /// not host-side `core::ops::Add` arithmetic — a trait impl would mislead.
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, n: u64) -> StorageKey {
+        let mut out = self.0;
+        inc_slot_by(&mut out, n);
+        StorageKey(out)
     }
 }
 
@@ -470,71 +470,19 @@ const EMPTY_INLINE_SENTINEL: u8 = 0x01;
 // StorageComponent: how a typed storage object claims root slots.
 // ---------------------------------------------------------------------------
 
-/// One step in the const-folded contract-field layout walker.
-///
-/// Used by the `#[contract]` and `#[storage]` macros to compute each field's
-/// placement at compile time. The walker carries the chain state as a
-/// `LayoutStep`: the placement of the current field plus the entry conditions
-/// for the next one. See [`layout_step`] for the algorithm.
-#[derive(Copy, Clone)]
-pub struct LayoutStep {
-    /// Slot the current field starts at.
-    pub slot: u64,
-    /// Byte offset within `slot` where the current field begins.
-    pub offset: u8,
-    /// Slot the next field's chain step should start from.
-    pub next_slot: u64,
-    /// Bytes remaining in `next_slot` (32 if `next_slot` is fresh, 0 if
-    /// the current field consumed the slot to its end).
-    pub next_space: u8,
-}
+// The layout walker (`LayoutStep` + `layout_step`) lives in `pvm-contract-types`
+// so the tuple `StorageEncode` impls there consume the same algorithm rather
+// than hand-rolling a shadow copy. Re-exported here so existing
+// `pvm_storage::{LayoutStep, layout_step}` paths keep resolving.
+pub use pvm_contract_types::{LayoutStep, layout_step};
 
-impl LayoutStep {
-    /// Sentinel value used to seed the chain for the first field.
-    pub const FIRST: LayoutStep = LayoutStep {
-        slot: 0,
-        offset: 0,
-        next_slot: 0,
-        next_space: 32,
-    };
-}
-
-/// Compute one step of the contract-field layout walker, given the chain
-/// state from the previous step and this field's `PACKED_BYTES` + `SLOTS`.
-///
-/// Mirrors solc's layout rule: a field starts on the current slot if it has
-/// enough remaining bytes, else advances to the next fresh slot. Multi-slot
-/// composites (`SLOTS > 1`) always claim from the start of a fresh slot and
-/// consume to its end.
-///
-/// This is the SHARED const-fn used by every walker site so the
-/// contract-field chain (`contract.rs`), the `#[storage]` sub-struct chain
-/// (`sol_storage.rs`), and the SolType-derive struct walker (`sol_type.rs`)
-/// agree on layout byte-for-byte.
-pub const fn layout_step(prev: LayoutStep, packed_bytes: usize, slots: u64) -> LayoutStep {
-    let bytes = packed_bytes as u8;
-    // Decide whether the current field fits in `prev.next_slot` or must
-    // advance to a fresh slot.
-    let (slot, space) = if prev.next_space < bytes {
-        (prev.next_slot + 1, 32u8)
-    } else {
-        (prev.next_slot, prev.next_space)
-    };
-    let space_after = space - bytes;
-    let offset = space_after;
-    // Multi-slot composites: this field occupies `slots` consecutive slots
-    // starting at `slot`, consuming the last one to its end.
-    let (next_slot, next_space) = if slots > 1 {
-        (slot + slots - 1, 0u8)
-    } else {
-        (slot, space_after)
-    };
-    LayoutStep {
-        slot,
-        offset,
-        next_slot,
-        next_space,
-    }
+/// `StorageComponent`-family wrapper over [`layout_step`]: reads the component
+/// type's `PACKED_BYTES` + `SLOTS` so call sites (the `#[contract]` /
+/// `#[storage]` field-layout chains) pass only the type. Mirrors
+/// [`pvm_contract_types::layout_step_encode`] for the `StorageEncode` family;
+/// both forward to the one trait-agnostic [`layout_step`] primitive.
+pub const fn layout_step_component<T: StorageComponent>(prev: LayoutStep) -> LayoutStep {
+    layout_step(prev, T::PACKED_BYTES, T::SLOTS)
 }
 
 /// A typed storage helper that occupies one or more contiguous root slots.
@@ -563,11 +511,42 @@ pub trait StorageComponent: Sized {
     /// a slot with adjacent fields.
     const PACKED_BYTES: usize;
 
-    /// Construct the component at `(slot, offset)`, bound to `host`. The
-    /// `offset` is the byte position within `slot` where the component begins;
-    /// it's only meaningful when `PACKED_BYTES < 32` (i.e. the component packs
-    /// with siblings). Full-slot components expect `offset == 0`.
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self;
+    /// Construct the component at `(key, offset)`, bound to `host`. `key` is
+    /// the 32-byte storage key (a contract-field slot via
+    /// [`StorageKey::from_slot`], or a derived key produced by a parent
+    /// `Mapping`/`StorageVec`/`#[storage]` walker). `offset` is the byte
+    /// position within `key`'s slot where the component begins; only
+    /// meaningful when `PACKED_BYTES < 32` (the component packs with
+    /// siblings). Full-slot components expect `offset == 0`.
+    ///
+    /// `alone` declares that no other sub-word component shares this slot —
+    /// either the field has no sub-word neighbours in the surrounding
+    /// `#[contract]` / `#[storage]` layout, or it lives at a uniquely
+    /// derived key (e.g. a `Mapping` entry). For sub-word `Lazy<T>` this
+    /// lets `set`/`clear` skip the read-modify-write SLOAD that would
+    /// otherwise be needed to preserve neighbour bytes. Full-slot
+    /// components (`PACKED_BYTES == 32`) ignore the flag — they always own
+    /// their slot.
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self;
+
+    /// Clear every storage slot this component owns.
+    ///
+    /// Semantics per impl:
+    ///
+    /// - [`Lazy<T>`]: zero the slot(s) the value occupies. For sub-word
+    ///   primitives this is a sub-slot RMW that preserves neighbours
+    ///   (matches solc). For dynamic types (`String`, `Bytes`),
+    ///   clears the header AND any spilled body chunks.
+    /// - [`Mapping<K, V>`]: **no-op**. Solidity mappings have no header to
+    ///   clear — entries live at derived keys that can't be enumerated. If
+    ///   you need to clear individual entries, call `delete` /
+    ///   `view_mut(k).clear()` on each known key.
+    /// - `#[storage]` sub-structs: recursively clear each field — matches
+    ///   solc's `delete struct_field` semantics.
+    ///
+    /// Used by the storage-typed `Mapping<K, V: StorageComponent>::delete`
+    /// to clear an entry of arbitrary inner shape.
+    fn clear(&mut self);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,21 +556,27 @@ pub trait StorageComponent: Sized {
 /// Push flattened storage-layout entries for a composable storage component.
 ///
 /// The `#[contract]` macro generates the top-level `__storage_layout_json()`
-/// function by iterating contract-struct fields: leaf fields (`Lazy<T>` /
-/// `Mapping<K, V>`) get inlined as single entries via the macro's syntactic
-/// type resolver; embedded `#[storage]` sub-structs dispatch through this
-/// trait, which recursively flattens their fields and prefixes each entry's
-/// label with the field path (`erc20.total_supply`, `metadata.name`, …) to
-/// match solc's storage-layout convention.
+/// function by dispatching **every** storage field through this trait — there
+/// is no separate inlined-leaf path. `Lazy<T>` and `Mapping<K, V>` push a
+/// single entry; embedded `#[storage]` sub-structs recursively flatten their
+/// own fields, prefixing each entry's label with the field path
+/// (`erc20.total_supply`, `metadata.name`, …) to match solc's storage-layout
+/// convention. Adding a new storage component (e.g. a `StorageVec<T>`) is
+/// therefore a pure trait-impl task: implement this (and `StorageTypeName`)
+/// and the macro renders it with no codegen changes.
 ///
 /// `#[storage]` auto-emits this impl. Hand-rolled storage components need to
 /// implement it explicitly to participate in abi-gen layout output.
 #[cfg(feature = "abi-gen")]
 pub trait StorageLayoutEmit {
-    /// Append entries for this component into `out`, rooted at `base` and
-    /// prefixed by `name_prefix` (empty string at top level).
+    /// Append entries for this component into `out`, rooted at slot `base`,
+    /// byte `offset` within that slot, and prefixed by `name_prefix` (empty
+    /// string at top level). `offset` is non-zero only for packed sub-word
+    /// leaf fields sharing a slot with neighbours; multi-slot composites and
+    /// `#[storage]` sub-structs always start a fresh slot and ignore it.
     fn emit_entries(
         base: u64,
+        offset: u8,
         name_prefix: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
     );
@@ -625,22 +610,32 @@ pub fn join_label(prefix: &str, name: &str) -> String {
 ///
 /// Static `T` must report `STORAGE_SLOTS` in `1..=`[`MAX_STATIC_SLOTS`].
 /// Single-slot `T` (`U256`, `Address`, `bool`, `[u8; 32]`, …) occupies one
-/// slot; an `N`-slot `T` (e.g. `(U256, U256)`, or a `#[derive(SolType)]`
-/// struct of static fields) is striped across `N` consecutive slots starting
-/// at `self.key`, matching Solidity's struct-in-storage layout.
+/// slot; an `N`-slot `T` (e.g. `(U256, U256)`, or a
+/// `#[derive(SolType, SolStorage)]` struct of static fields) is striped
+/// across `N` consecutive slots starting at `self.key`, matching Solidity's
+/// struct-in-storage layout.
 ///
 /// Dynamic `T` (`String`, [`Bytes`](pvm_contract_types::Bytes), or
-/// `#[derive(SolType)]` structs with dynamic fields) uses the same `Lazy<T>`
-/// accessor: the header lives inline at `self.key` and any spilled body sits
-/// at `keccak256(key) + i`. `Vec<u8>` is rejected at compile time — use
-/// [`Bytes`](pvm_contract_types::Bytes) instead, since `Vec<u8>` is ABI
-/// `"uint8[]"` and would disagree with the on-chain `bytes` layout.
+/// `#[derive(SolType, SolStorage)]` structs with dynamic fields) uses the
+/// same `Lazy<T>` accessor: the header lives inline at `self.key` and any
+/// spilled body sits at `keccak256(key) + i`. `Vec<u8>` is rejected at
+/// compile time — use [`Bytes`](pvm_contract_types::Bytes) instead, since
+/// `Vec<u8>` is ABI `"uint8[]"` and would disagree with the on-chain
+/// `bytes` layout.
 pub struct Lazy<T> {
     key: StorageKey,
     /// Byte offset within `key`'s 32-byte slot where this value lives.
     /// `0` for full-slot types (`T::PACKED_BYTES == 32`); non-zero only when
     /// the contract macro places the field after a sub-word neighbour.
     offset: u8,
+    /// True when nothing else in storage shares this slot — set by the
+    /// macro's neighbour analysis for fields with no sub-word siblings, and
+    /// by `Mapping` for its derived entry slots (every key has a unique
+    /// keccak-derived key). Sub-word writes (`set`/`clear`) skip the SLOAD
+    /// half of the read-modify-write when this is true. Defaults to `false`
+    /// in [`Lazy::new`] — the safe (RMW) choice when the caller can't prove
+    /// exclusivity.
+    alone: bool,
     host: Host,
     _marker: PhantomData<T>,
 }
@@ -682,6 +677,40 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// belt-and-braces enforcement should add `#![forbid(unsafe_code)]` at
     /// the crate root.
     pub unsafe fn new(key: StorageKey, offset: u8, host: Host) -> Self {
+        // Default to `alone = false`: the safe choice when the caller can't
+        // statically prove the slot has no neighbours. Forces sub-word writes
+        // through the RMW path so any neighbour bytes survive. Callers that
+        // *can* prove exclusivity (the macro-driven [`StorageComponent::new_at`]
+        // path with `alone = true`, or `Mapping::entry` whose derived slot is
+        // unique to the key) get the optimised constructor via
+        // [`Lazy::new_alone`].
+        unsafe { Self::new_inner(key, offset, false, host) }
+    }
+
+    /// Like [`Lazy::new`], but declares that no other sub-word component
+    /// shares this slot. Sub-word `T` writes skip the SLOAD half of the
+    /// read-modify-write because there are no neighbour bytes to preserve.
+    ///
+    /// # Safety
+    ///
+    /// In addition to [`Lazy::new`]'s safety contract, the caller must
+    /// guarantee that no other live storage handle writes to this slot.
+    /// Violating that invariant clobbers the neighbour on the next `set`.
+    /// Safe callers are the macro-generated [`StorageComponent::new_at`]
+    /// path (with `alone = true` derived from layout analysis) and the
+    /// `Mapping::entry`/`view*`/`delete` family (each derived slot is
+    /// uniquely keyed by `keccak256(pad32(key) ++ pad32(slot))`).
+    pub unsafe fn new_alone(key: StorageKey, offset: u8, host: Host) -> Self {
+        unsafe { Self::new_inner(key, offset, true, host) }
+    }
+
+    /// Shared body for [`Lazy::new`] and [`Lazy::new_alone`].
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`Lazy::new`]; additionally, callers passing
+    /// `alone = true` must also satisfy [`Lazy::new_alone`]'s contract.
+    unsafe fn new_inner(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         let () = Self::_SIZE_CHECK;
         debug_assert!(
             (offset as usize) + T::PACKED_BYTES <= 32,
@@ -694,6 +723,7 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         Lazy {
             key,
             offset,
+            alone,
             host,
             _marker: PhantomData,
         }
@@ -719,30 +749,16 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
         let () = Self::_SIZE_CHECK;
         if T::PACKED_BYTES < 32 {
             // Packed sub-slot path: read the slot, unpack our byte window via
-            // the polymorphic dispatch hook. `__unpack_from_dispatched` is a
-            // no-zeroing reader; the caller (us) doesn't touch the rest of the
-            // buffer, so neighbours stay correct. The hook delegates to
+            // the polymorphic dispatch hook. The hook delegates to
             // `<T as StoragePackable>::unpack_from` for packable T; full-slot
-            // T never reaches this branch.
+            // and dynamic T never reach this branch.
             let buf = storage_get_32(&self.host, self.key.as_bytes());
             T::__unpack_from_dispatched(&buf, self.offset as usize)
-        } else if T::HAS_DYNAMIC_BODY {
-            // Dispatch to the type's host-aware reader (e.g. `String` / `Bytes`
-            // read their body from `keccak256(key) + i`).
-            T::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, self.key.as_bytes())
-        } else if T::STORAGE_SLOTS == 1 {
-            // Fast path: skip the loop + multi-slot buffer for single-slot V.
-            // The branch is const-folded at monomorphization.
-            let one = [storage_get_32(&self.host, self.key.as_bytes())];
-            T::from_slots(&one)
         } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            read_slots(
-                &self.host,
-                self.key.as_bytes(),
-                &mut slots[..T::STORAGE_SLOTS],
-            );
-            T::from_slots(&slots[..T::STORAGE_SLOTS])
+            // Full-slot OR dynamic — each type owns its access pattern.
+            // Primitives do one SLOAD; tuples do N SLOADs; String/Bytes do
+            // header + body. `Lazy<T>` doesn't need to know which.
+            T::read_from_storage(&self.host, self.key.as_bytes())
         }
     }
 
@@ -756,10 +772,12 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// semantics), so `try_get()` returns `None` after writing the zero
     /// value of `T`.
     ///
-    /// For `HAS_DYNAMIC_BODY` types, "present" is decided by the **header
-    /// slot** at `self.key`: a non-zero header (including the empty-string
-    /// sentinel) → `Some(value)` with the full body loaded; a zero header
-    /// → `None`.
+    /// For dynamic types (`String`, `Bytes`, structs with a dynamic field),
+    /// "present" is decided by the **header slot** at `self.key`: a non-zero
+    /// header (including the empty-string sentinel) → `Some(value)` with
+    /// the full body loaded; a zero header → `None`. Each dynamic type
+    /// owns its own `StorageDecode::try_read_from_storage` impl that
+    /// implements this check.
     ///
     /// **Not available for packed fields:** when `T::PACKED_BYTES < 32`
     /// (sub-32-byte primitives sharing a slot with neighbours), `try_get`
@@ -795,38 +813,10 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
                  indistinguishable from `get`.",
             );
         }
-        if T::HAS_DYNAMIC_BODY {
-            // Multi-slot dynamic V: "set" iff any header slot is non-zero.
-            // For a single-slot dynamic type (`String` / `Bytes`), the header
-            // itself is the marker. For a struct with a dynamic field, that
-            // field's header may be the only non-zero slot — checking just
-            // slot 0 would miss it.
-            let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(
-                &self.host,
-                self.key.as_bytes(),
-                &mut buf[..T::STORAGE_SLOTS],
-            )?;
-            Some(T::read_from_storage::<MAX_STATIC_SLOTS>(
-                &self.host,
-                self.key.as_bytes(),
-            ))
-        } else if T::STORAGE_SLOTS == 1 {
-            let read = storage_get_32(&self.host, self.key.as_bytes());
-            if read == [0u8; 32] {
-                None
-            } else {
-                Some(T::from_slots(&[read]))
-            }
-        } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(
-                &self.host,
-                self.key.as_bytes(),
-                &mut slots[..T::STORAGE_SLOTS],
-            )?;
-            Some(T::from_slots(&slots[..T::STORAGE_SLOTS]))
-        }
+        // Each type owns its presence check:
+        // - static types: all-zero slots → None (Solidity-compat semantics)
+        // - dynamic types (String/Bytes): zero header slot → None
+        T::try_read_from_storage(&self.host, self.key.as_bytes())
     }
 
     /// Write a value to storage. Encodes `value` slot-by-slot and writes to
@@ -839,11 +829,25 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
     /// (sub-32-byte primitives that share a slot with neighbours via the
     /// macro walker), `set` performs one SLOAD + one SSTORE: it loads the
     /// shared slot, zeros only the field's byte window, writes the new
-    /// bytes back, and stores. This matches solc's gas profile for packed
-    /// `SSTORE`s — neighbours sharing the slot are preserved.
+    /// bytes back, and stores. This matches solc gas profile
+    /// for packed `SSTORE`s — neighbours sharing the slot are preserved.
+    ///
+    /// **Fast path when alone in slot** (`self.alone == true`): when the
+    /// caller has proven the slot has no neighbours — every contract field
+    /// with no sub-word siblings, and every `Mapping` entry (derived slot
+    /// is unique per key) — the SLOAD is skipped. `set` writes a fresh
+    /// zero-initialised 32-byte buffer with the value packed at `offset`,
+    /// recovering main-branch write cost.
     pub fn set(&mut self, value: &T) {
         let () = Self::_SIZE_CHECK;
-        if T::PACKED_BYTES < 32 {
+        if T::PACKED_BYTES < 32 && self.alone {
+            // Sub-word + alone-in-slot: no neighbours to preserve. Write a
+            // fresh zero-padded 32-byte slot with the value packed at our
+            // offset. Skips the SLOAD the RMW path would do.
+            let mut buf = [0u8; 32];
+            value.__pack_into_dispatched(&mut buf, self.offset as usize);
+            storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        } else if T::PACKED_BYTES < 32 {
             // Packed sub-slot RMW: load slot, zero our window, write our
             // bytes back via the polymorphic dispatch hook, store. One extra
             // SLOAD on each write vs. the full-slot path — same gas profile
@@ -856,36 +860,9 @@ impl<T: StorageEncode + StorageDecode> Lazy<T> {
             buf[off..off + T::PACKED_BYTES].fill(0);
             value.__pack_into_dispatched(&mut buf, off);
             storage_set_32(&self.host, self.key.as_bytes(), &buf);
-        } else if T::HAS_DYNAMIC_BODY {
+        } else {
+            // Full-slot OR dynamic — each type owns its write pattern.
             value.write_to_storage(&self.host, self.key.as_bytes());
-        } else if T::STORAGE_SLOTS == 1 {
-            let mut buf = [0u8; 32];
-            value.encode_slot(0, &mut buf);
-            storage_set_32(&self.host, self.key.as_bytes(), &buf);
-        } else {
-            write_value(&self.host, self.key.as_bytes(), value);
-        }
-    }
-
-    /// Clear every slot occupied by this value.
-    pub fn clear(&mut self) {
-        let () = Self::_SIZE_CHECK;
-        if T::PACKED_BYTES < 32 {
-            // Packed sub-slot clear: RMW that zeros only our window. Calling
-            // `set_storage_or_clear` with an all-zero buffer would auto-delete
-            // the slot and clobber any neighbour bytes — so we load, zero
-            // OUR range, write back. If our zeroing leaves the slot all-zero
-            // (no neighbour present), the host auto-deletes on store anyway.
-            let mut buf = storage_get_32(&self.host, self.key.as_bytes());
-            let off = self.offset as usize;
-            buf[off..off + T::PACKED_BYTES].fill(0);
-            storage_set_32(&self.host, self.key.as_bytes(), &buf);
-        } else if T::HAS_DYNAMIC_BODY {
-            <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
-        } else if T::STORAGE_SLOTS == 1 {
-            storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
-        } else {
-            clear_n_slots(&self.host, self.key.as_bytes(), T::STORAGE_SLOTS);
         }
     }
 }
@@ -901,15 +878,92 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for Lazy<T> {
     /// `PACKED_BYTES = 32` (full-slot).
     const PACKED_BYTES: usize = T::PACKED_BYTES;
 
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         // SAFETY: `new_at` is the safe public entry point for macro-generated
         // storage construction. The macro emits this call inside a contract
         // struct's field initializer, where Rust's borrow check on the
         // surrounding struct then gates `&self` / `&mut self` access to the
-        // resulting handle. `Lazy::new` is `unsafe` only because direct
-        // user-code calls would let `&self` methods reconstruct a writable
-        // handle — that bypass cannot happen through this trait method.
-        unsafe { Lazy::new(StorageKey::from_slot(slot), offset, host) }
+        // resulting handle. `Lazy::new`/`new_alone` are `unsafe` only because
+        // direct user-code calls would let `&self` methods reconstruct a
+        // writable handle — that bypass cannot happen through this trait
+        // method. The macro derives `alone` from its layout walker (true iff
+        // no sibling field shares this slot); `Mapping` passes
+        // `alone = true` because each entry lives at a uniquely keyed slot.
+        if alone {
+            unsafe { Lazy::new_alone(key, offset, host) }
+        } else {
+            unsafe { Lazy::new(key, offset, host) }
+        }
+    }
+
+    /// Clear every slot occupied by this value.
+    ///
+    /// **Packed sub-word T** (`PACKED_BYTES < 32`): read-modify-write that
+    /// zeros only the field's byte window — neighbours sharing the slot are
+    /// preserved. If the resulting slot is all-zero (no neighbour written),
+    /// the host's `set_storage_or_clear` auto-deletes the slot. When the
+    /// handle was constructed with `alone = true` (no possible neighbour),
+    /// the SLOAD is skipped and the slot is auto-deleted directly.
+    ///
+    /// **Dynamic body** (`String`, `Bytes`): clears the inline header AND
+    /// any spilled body chunks at `keccak256(slot) + i`. No storage leak
+    /// even after a previously-long value is cleared.
+    ///
+    /// **Multi-slot static T** (e.g. `(U256, U256)`): clears all
+    /// `T::STORAGE_SLOTS` consecutive slots; each auto-deletes individually.
+    fn clear(&mut self) {
+        let () = Self::_SIZE_CHECK;
+        if T::PACKED_BYTES < 32 && self.alone {
+            // Alone-in-slot sub-word clear: no neighbours to preserve, write
+            // all-zero directly. `set_storage_or_clear` auto-deletes the slot.
+            storage_set_32(&self.host, self.key.as_bytes(), &[0u8; 32]);
+        } else if T::PACKED_BYTES < 32 {
+            // Packed sub-slot clear: RMW that zeros only our window. If our
+            // zeroing leaves the slot all-zero (no neighbour present), the
+            // host auto-deletes on store anyway.
+            let mut buf = storage_get_32(&self.host, self.key.as_bytes());
+            let off = self.offset as usize;
+            buf[off..off + T::PACKED_BYTES].fill(0);
+            storage_set_32(&self.host, self.key.as_bytes(), &buf);
+        } else {
+            // Full-slot OR dynamic — each type owns its clear pattern.
+            <T as StorageEncode>::clear_storage(&self.host, self.key.as_bytes());
+        }
+    }
+}
+
+/// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by `T`.
+///
+/// The macro names every field through `<#ty as StorageTypeName>::name()`, so
+/// this explicit impl is what gives `Lazy<T>` its name — and it keeps working
+/// when a contract author aliases the type (`type Counter = Lazy<U256>;`), where
+/// the field's syntactic ident is "Counter", not "Lazy". There is no blanket
+/// `StorageTypeName` impl (`Lazy` doesn't implement `SolEncode`), so without
+/// this impl that path would fail.
+#[cfg(feature = "abi-gen")]
+impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for Lazy<T> {
+    fn name() -> alloc::string::String {
+        <T as pvm_contract_types::StorageTypeName>::name()
+    }
+}
+
+/// `Lazy<T>` as a layout-emit leaf — a single entry at `(base, offset)`.
+/// `offset` carries the packed sub-word placement (e.g. a `Lazy<u128>`
+/// sharing a slot lands at offset 16) so the rendered layout matches solc.
+#[cfg(feature = "abi-gen")]
+impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
+    fn emit_entries(
+        base: u64,
+        offset: u8,
+        name_prefix: &str,
+        out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+    ) {
+        out.push(pvm_contract_types::StorageLayoutEntry {
+            label: String::from(name_prefix),
+            slot: alloc::format!("{}", base),
+            offset,
+            ty: <T as pvm_contract_types::StorageTypeName>::name(),
+        });
     }
 }
 
@@ -1021,27 +1075,92 @@ impl<K, V> StorageComponent for Mapping<K, V> {
     /// pack with neighbours. Matches solc's storage layout for mappings.
     const PACKED_BYTES: usize = 32;
 
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert!(
             offset == 0,
             "Mapping<K, V> always full-slot; offset must be 0"
         );
-        let _ = offset;
+        // `alone` is meaningless for a full-slot component — the root header
+        // always owns its slot byte-for-byte (`PACKED_BYTES == 32`). Accept
+        // the argument from the trait signature but discard it.
+        let _ = (offset, alone);
         // SAFETY: same justification as `Lazy::new_at` — this is the
         // macro-only safe entry point; bypass via direct `Mapping::new` is
         // what the `unsafe` keyword on `new` exists to mark.
-        unsafe { Mapping::new(StorageKey::from_slot(slot), host) }
+        unsafe { Mapping::new(key, host) }
+    }
+
+    /// No-op. Solidity's `delete map` for a `mapping(K => V)` field
+    /// clears no storage (mappings have no header to zero, and entries at
+    /// derived keys can't be enumerated). Matches that behaviour exactly —
+    /// any actually-written entries remain at their derived keys.
+    ///
+    /// To clear individual entries call [`Mapping::delete`] (storage-typed
+    /// V) or [`Mapping::remove`] (value-typed V) per key. To clear an
+    /// entire mapping by enumeration, the contract must track keys itself.
+    fn clear(&mut self) {
+        // Intentionally empty. See doc comment.
     }
 }
 
-impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
+/// `Mapping<K, V>` in layout JSON is `mapping(K_name => V_name)`. This impl
+/// is the fallback for callers that didn't take the macro's syntactic
+/// `Mapping<K, V>` detection path — for example a type-aliased mapping
+/// (`type Balances = Mapping<Address, U256>;`) flowing into the layout
+/// emitter as a single ident "Balances". The macro's wrapper detection
+/// matches on the syntactic ident "Mapping", which fails for aliases.
+///
+/// Built via `format!` because `concatcp!` (compile-time `&'static str`
+/// concat) can't reference generic parameters from the surrounding impl.
+/// Layout JSON is built off-chain under `--features abi-gen`, so heap
+/// allocation here is fine.
+#[cfg(feature = "abi-gen")]
+impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeName>
+    pvm_contract_types::StorageTypeName for Mapping<K, V>
+{
+    fn name() -> alloc::string::String {
+        alloc::format!(
+            "mapping({} => {})",
+            <K as pvm_contract_types::StorageTypeName>::name(),
+            <V as pvm_contract_types::StorageTypeName>::name(),
+        )
+    }
+}
+
+/// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K => V)` entry.
+/// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
+/// is always `0` here; it is threaded through for signature uniformity.
+#[cfg(feature = "abi-gen")]
+impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeName>
+    StorageLayoutEmit for Mapping<K, V>
+{
+    fn emit_entries(
+        base: u64,
+        offset: u8,
+        name_prefix: &str,
+        out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+    ) {
+        out.push(pvm_contract_types::StorageLayoutEntry {
+            label: String::from(name_prefix),
+            slot: alloc::format!("{}", base),
+            offset,
+            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+        });
+    }
+}
+
+/// V-agnostic accessors: only need the key derivation, independent of
+/// whether the value path is value-typed or storage-typed.
+impl<K: AsStorageKey, V> Mapping<K, V> {
     /// Compute the raw storage key for a given map key.
     ///
     /// Useful for debugging and cross-checking with `cast index`.
     pub fn slot_of(&self, key: &K) -> StorageKey {
         self.root.derive(&self.host, key)
     }
+}
 
+impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// Derive the slot once and return a [`Lazy`] handle for multiple operations.
     ///
     /// Requires `&mut self` because the returned `Lazy` supports writes.
@@ -1052,18 +1171,29 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     /// **Canonical offset within the entry slot:** for sub-word `V`
     /// (`PACKED_BYTES < 32` — `u8`..`u128`, `i8`..`i128`, `bool`, `Address`,
     /// `[u8; N<32]`), solc stores the value right-aligned within the derived
-    /// slot at byte `32 - PACKED_BYTES`. `insert` / `get` / `remove` route
-    /// through `encode_slot` / `from_slots` and observe that convention; the
+    /// slot at byte `32 - PACKED_BYTES`. `insert` / `get` / `remove` go
+    /// through each type's `StorageEncode::write_to_storage` /
+    /// `StorageDecode::read_from_storage` / `StorageEncode::clear_storage`,
+    /// which for static types delegate to the `StaticStorageEncode`/
+    /// `StaticStorageDecode` slot codec and observe that convention; the
     /// returned `Lazy` must use the same offset so `entry().set()` / `.get()`
     /// agree byte-for-byte with `insert` / `get`. For full-slot `V`
     /// (`PACKED_BYTES == 32`) this is `0` — identical to the previous behavior.
+    ///
+    /// **Alone-in-slot:** the derived slot
+    /// `keccak256(pad32(key) ++ pad32(root_slot))` is unique to this `key`
+    /// — no other entry, contract field, or external write can collide with
+    /// it. The returned `Lazy` is constructed via `Lazy::new_alone` so
+    /// sub-word `V::set`/`clear` skip the RMW SLOAD.
     pub fn entry(&mut self, key: &K) -> Lazy<V> {
         // SAFETY: `entry` takes `&mut self`, so the caller already has
         // mutating access through the surrounding borrow. The returned
         // `Lazy` is a typed handle to the derived slot; producing it via
-        // `Lazy::new` here does not introduce a new bypass surface.
+        // `Lazy::new_alone` here does not introduce a new bypass surface.
+        // The derived slot is unique to `key`, so `alone = true` is sound
+        // — there is no other handle that could write neighbouring bytes.
         let offset = (32 - V::PACKED_BYTES) as u8;
-        unsafe { Lazy::new(self.slot_of(key), offset, self.host.clone()) }
+        unsafe { Lazy::new_alone(self.slot_of(key), offset, self.host.clone()) }
     }
 
     /// Read the value at the given key. For multi-slot `V`, reads
@@ -1083,16 +1213,7 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     pub fn get(&self, key: &K) -> V {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            V::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, slot.as_bytes())
-        } else if V::STORAGE_SLOTS == 1 {
-            let one = [storage_get_32(&self.host, slot.as_bytes())];
-            V::from_slots(&one)
-        } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            read_slots(&self.host, slot.as_bytes(), &mut slots[..V::STORAGE_SLOTS]);
-            V::from_slots(&slots[..V::STORAGE_SLOTS])
-        }
+        V::read_from_storage(&self.host, slot.as_bytes())
     }
 
     /// Read the value, returning `None` if every slot occupied by the entry
@@ -1109,93 +1230,117 @@ impl<K: AsStorageKey, V: StorageEncode + StorageDecode> Mapping<K, V> {
     pub fn try_get(&self, key: &K) -> Option<V> {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            let mut buf = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, slot.as_bytes(), &mut buf[..V::STORAGE_SLOTS])?;
-            Some(V::read_from_storage::<MAX_STATIC_SLOTS>(
-                &self.host,
-                slot.as_bytes(),
-            ))
-        } else if V::STORAGE_SLOTS == 1 {
-            let read = storage_get_32(&self.host, slot.as_bytes());
-            if read == [0u8; 32] {
-                None
-            } else {
-                Some(V::from_slots(&[read]))
-            }
-        } else {
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            try_read_slots(&self.host, slot.as_bytes(), &mut slots[..V::STORAGE_SLOTS])?;
-            Some(V::from_slots(&slots[..V::STORAGE_SLOTS]))
-        }
+        V::try_read_from_storage(&self.host, slot.as_bytes())
     }
 
-    /// Write a value at the given key. Encodes `value` slot-by-slot and writes
-    /// to `V::STORAGE_SLOTS` consecutive slots beneath the derived key.
+    /// Write a value at the given key. Each type owns its access pattern.
     pub fn insert(&mut self, key: &K, value: &V) {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            value.write_to_storage(&self.host, slot.as_bytes());
-        } else if V::STORAGE_SLOTS == 1 {
-            let mut buf = [0u8; 32];
-            value.encode_slot(0, &mut buf);
-            storage_set_32(&self.host, slot.as_bytes(), &buf);
-        } else {
-            write_value(&self.host, slot.as_bytes(), value);
-        }
+        value.write_to_storage(&self.host, slot.as_bytes());
     }
 
     /// Delete every slot occupied by the entry at the given key.
     pub fn remove(&mut self, key: &K) {
         let () = Lazy::<V>::_SIZE_CHECK;
         let slot = self.slot_of(key);
-        if V::HAS_DYNAMIC_BODY {
-            <V as StorageEncode>::clear_storage(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
-        } else if V::STORAGE_SLOTS == 1 {
-            storage_set_32(&self.host, slot.as_bytes(), &[0u8; 32]);
-        } else {
-            clear_n_slots(&self.host, slot.as_bytes(), V::STORAGE_SLOTS);
-        }
+        <V as StorageEncode>::clear_storage(&self.host, slot.as_bytes());
     }
 }
 
 // ---------------------------------------------------------------------------
-// Mapping<K1, Mapping<K2, V>> (nested)
+// Mapping<K, V: StorageComponent>: storage-typed value
+//
+// Disjoint with the value-typed `Mapping<K, V: StorageEncode + StorageDecode>`
+// impl above: no in-tree type implements both bounds (primitives + derived
+// structs implement the value codec; `Lazy<T>`, `Mapping`, `StorageVec`,
+// `#[storage]` sub-structs implement `StorageComponent`).
+//
+// `V::new_at(derived_key, 0, host)` positions the sub-component at the
+// mapping's derived slot. For nested mappings (V = Mapping<K2, …>) this
+// generalizes the previously-hand-rolled `Mapping<K1, Mapping<K2, V>>` impl.
+// For `#[storage]` sub-structs as map values, the struct's macro-generated
+// `new_at` further walks its fields at `derived_key.add(N)` per field.
 // ---------------------------------------------------------------------------
 
-/// Nested mappings can also be accessed with tuple keys:
-/// `Mapping<(Address, Address), U256>` produces the same slots as
-/// `Mapping<Address, Mapping<Address, U256>>`. Tuple key support is
-/// implemented via `AsStorageKey` for tuples up to arity 5.
-impl<K1: AsStorageKey, K2: AsStorageKey, V: StorageEncode + StorageDecode>
-    Mapping<K1, Mapping<K2, V>>
-{
-    /// Read path for nested mappings: derives the inner mapping root and
-    /// returns a [`Ref`] so the inner mapping inherits the caller's `&self`
-    /// borrow. Only `&self` methods on `Mapping<K2, V>` (e.g. `get`,
-    /// `try_get`, `slot_of`) are reachable through it; `insert` / `entry`
-    /// / `remove` would require `&mut self` and are blocked at compile time.
-    pub fn get(&self, key: &K1) -> Ref<'_, Mapping<K2, V>> {
-        // SAFETY: the returned inner `Mapping` is immediately wrapped in
-        // `Ref<'_, _>`, which only forwards `&self` methods of `Mapping`.
-        // No bypass is exposed: `insert`/`entry` are unreachable from a
-        // `Ref`-guarded handle, so producing the inner `Mapping` via the
-        // `unsafe` constructor here doesn't widen the surface available
-        // to the `&self` caller.
-        Ref::new(unsafe { Mapping::new(self.root.derive(&self.host, key), self.host.clone()) })
+impl<K, V: StorageComponent> Mapping<K, V> {
+    /// Read-only view into the sub-component at `key`. The returned `Ref`
+    /// inherits this mapping's `&self` borrow, so only `&self` methods on
+    /// `V` are reachable through it. Writes through the returned handle
+    /// are blocked at compile time.
+    ///
+    /// Distinct method name (`view`, not `get`) so this storage-typed impl
+    /// can coexist with the value-typed `Mapping::get` which returns an
+    /// owned `V` for value-shaped V. Use `view` when V is itself a storage
+    /// handle: `Lazy<T>`, `Mapping<K2, V'>`, `StorageVec<T>`, or a
+    /// `#[storage]` sub-struct.
+    ///
+    /// **Canonical offset:** for sub-word storage handles (`V::PACKED_BYTES
+    /// < 32`, e.g. `Lazy<u128>` with `PACKED_BYTES = 16`), the handle is
+    /// placed at `32 - V::PACKED_BYTES` within the derived slot — solc's
+    /// right-aligned convention for `mapping(K => sub_word_V)`. Full-slot
+    /// V's (`Mapping`, `StorageVec`, `#[storage]` structs) have
+    /// `PACKED_BYTES == 32`, yielding offset 0.
+    pub fn view(&self, key: &K) -> Ref<'_, V>
+    where
+        K: AsStorageKey,
+    {
+        let offset = (32 - V::PACKED_BYTES) as u8;
+        // `alone = true`: the derived slot is keccak-keyed by `key`, so no
+        // other handle (sibling field, other entry, etc.) can collide with it.
+        Ref::new(V::new_at(
+            self.slot_of(key),
+            offset,
+            true,
+            self.host.clone(),
+        ))
     }
 
-    /// Write path for nested mappings: derives the inner mapping root and
-    /// returns a [`RefMut`] tied to the caller's `&mut self` borrow. The
-    /// full mutating API on `Mapping<K2, V>` is reachable through the
-    /// returned guard.
-    pub fn entry(&mut self, key: &K1) -> RefMut<'_, Mapping<K2, V>> {
-        // SAFETY: `entry` requires `&mut self`. The caller has already
-        // proved mutating access through the parent borrow; producing the
-        // inner `Mapping` via `unsafe { Mapping::new }` only forwards
-        // that capability, it doesn't manufacture one.
-        RefMut::new(unsafe { Mapping::new(self.root.derive(&self.host, key), self.host.clone()) })
+    /// Mutable view into the sub-component at `key`. Caller has `&mut self`
+    /// on the outer mapping; the returned `RefMut` propagates that
+    /// capability into the sub-component, allowing the full mutating API.
+    ///
+    /// Subsumes the previously-hand-rolled
+    /// `Mapping<K1, Mapping<K2, V>>::entry` — when `V = Mapping<K2, V'>`,
+    /// `V::new_at` reconstructs the inner mapping at the derived slot.
+    /// Canonical-offset rule same as [`view`](Self::view).
+    pub fn view_mut(&mut self, key: &K) -> RefMut<'_, V>
+    where
+        K: AsStorageKey,
+    {
+        let offset = (32 - V::PACKED_BYTES) as u8;
+        // `alone = true`: see `view` — derived slots are key-unique.
+        RefMut::new(V::new_at(
+            self.slot_of(key),
+            offset,
+            true,
+            self.host.clone(),
+        ))
+    }
+
+    /// Delete the entry at `key` by clearing every slot the sub-component
+    /// owns. Equivalent to Solidity's `delete mapping[key]`:
+    ///
+    /// - `V = Lazy<T>`: zeros `T`'s storage slot (sub-word RMW preserves
+    ///   any neighbour bytes that happen to be there).
+    /// - `V = Mapping<K2, V'>`: **no-op**. The inner mapping's entries
+    ///   live at derived keys we can't enumerate — matches solc, which
+    ///   also leaves them in place.
+    /// - `V = #[storage]` sub-struct: recursively clears each field via
+    ///   the derived `StorageComponent::clear`.
+    ///
+    /// Symmetric with the value-typed [`Mapping::remove`]: both delete
+    /// the entry; this one dispatches to `V::clear()` so it works for
+    /// arbitrary storage-component value shapes.
+    pub fn delete(&mut self, key: &K)
+    where
+        K: AsStorageKey,
+    {
+        let offset = (32 - V::PACKED_BYTES) as u8;
+        // `alone = true`: see `view` — derived slots are key-unique. Skips
+        // the RMW SLOAD when V's `clear` operates on sub-word storage.
+        let mut handle = V::new_at(self.slot_of(key), offset, true, self.host.clone());
+        <V as StorageComponent>::clear(&mut handle);
     }
 }
 
@@ -1285,10 +1430,16 @@ impl<K: AsStorageKey, T: StorageEncode + StorageDecode> Mapping<K, StorageVec<T>
 /// - `pop()` zeros the freed slot only when the freed element was the first
 ///   packed element in its slot — the gas-optimal policy that matches solc.
 ///   For full-slot elements, every pop frees a full slot.
-/// - Out-of-bounds `get`/`set` revert via a plain trap with a static message
-///   (no `core::fmt` in the bytecode), **not** solc's ABI-encoded
-///   `Panic(0x32)` — off-chain callers won't see the `0x32` code. Use
-///   `try_get` to avoid the trap.
+/// - Out-of-bounds `get`/`set` revert with solc's ABI-encoded `Panic(0x32)`
+///   (array out-of-bounds access), matching Solidity — off-chain callers can
+///   decode the `0x32` code. Use `try_get` for a read that never reverts.
+/// - The length is read as a `u64`; a stored length exceeding `u64::MAX`
+///   (unreachable through this API — only via corrupted state or raw uAPI) is
+///   treated as malformed. The **reverting** accessors (`get`/`set`/`len`/
+///   `push`/`pop`/`clear`) revert `Panic(0x22)` ("incorrectly encoded storage
+///   byte array") on it; the **non-reverting** read accessors (`try_get`/
+///   `first`/`last`/`is_empty`/`iter`) instead read it as empty
+///   (`None`/`true`/empty iterator) and never revert.
 ///
 /// # Element shapes supported
 ///
@@ -1391,18 +1542,20 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// - Sub-word: `i / per_slot` (multiple elements share a slot)
     /// - Multi-slot static: `i * STORAGE_SLOTS` (stride)
     /// - Single-slot full-word / dynamic-body header: `i`
-    fn slot_index_for(i: u64) -> u64 {
+    fn slot_index_for(host: &Host, i: u64) -> u64 {
         if T::PACKED_BYTES < 32 {
             i / Self::per_slot()
         } else if T::STORAGE_SLOTS > 1 {
             // Multi-slot static. Dynamic-body always has STORAGE_SLOTS == 1
             // (one header slot per element; bodies derive elsewhere).
             // `checked_mul` so a corrupted length / pathologically large `i`
-            // surfaces as a clean panic rather than silently wrapping into
+            // surfaces as a clean revert rather than silently wrapping into
             // the wrong slot. Physically unreachable in any real contract
             // (would require `i > u64::MAX / STORAGE_SLOTS`), defensive.
-            i.checked_mul(T::STORAGE_SLOTS as u64)
-                .expect("StorageVec: element-stride overflow")
+            match i.checked_mul(T::STORAGE_SLOTS as u64) {
+                Some(v) => v,
+                None => panic_revert(host, Panic::Overflow),
+            }
         } else {
             i
         }
@@ -1423,42 +1576,56 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// multi-slot static).
     fn element_slot(&self, i: u64) -> [u8; 32] {
         let mut key = *self.body_base();
-        inc_slot_by(&mut key, Self::slot_index_for(i));
+        inc_slot_by(&mut key, Self::slot_index_for(&self.host, i));
         key
     }
 
     /// Return the number of elements.
+    ///
+    /// Reverts with `Panic(0x22)` if the stored length is malformed (corrupt /
+    /// beyond `u64::MAX`). See [`checked_len`](Self::checked_len) for the
+    /// non-reverting variant.
     pub fn len(&self) -> u64 {
         let () = Self::_SHAPE_CHECK;
-        read_len_u64(&self.host, self.root.as_bytes())
+        read_len(&self.host, self.root.as_bytes())
     }
 
-    /// Return `true` if the array contains no elements.
+    /// The length, or `None` if the stored length is malformed. Backs the
+    /// non-reverting `try_*` accessors so a corrupt slot reads as "empty"
+    /// rather than reverting.
+    fn checked_len(&self) -> Option<u64> {
+        try_read_len(&self.host, self.root.as_bytes())
+    }
+
+    /// Return `true` if the array contains no elements. Non-reverting: a
+    /// malformed length reads as empty (`true`).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.checked_len().is_none_or(|n| n == 0)
     }
 
     /// Read the element at `index`.
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `index >= len()`, mirroring Solidity's
-    /// out-of-bounds behaviour. Note: the SDK reverts via a plain trap, not
-    /// the ABI-encoded `Panic(0x32)` selector solc emits — an off-chain
-    /// caller decoding revert data won't see the `0x32` code. Use
-    /// [`try_get`](Self::try_get) for a non-panicking read. The message is a
-    /// static string (no `{}` interpolation) to keep `core::fmt` out of the
-    /// bytecode.
+    /// Reverts with the ABI-encoded `Panic(0x32)` (array out-of-bounds) if
+    /// `index >= len()`, mirroring Solidity's out-of-bounds behaviour so an
+    /// off-chain caller decoding revert data sees the `0x32` code (and
+    /// `Panic(0x22)` if the stored length itself is malformed). Use
+    /// [`try_get`](Self::try_get) for a read that never reverts.
     pub fn get(&self, index: u64) -> T {
         let () = Self::_SHAPE_CHECK;
-        assert!(index < self.len(), "StorageVec::get: index out of bounds");
+        if index >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         self.read_at(index)
     }
 
     /// Read the element at `index`, returning `None` if out of bounds.
+    ///
+    /// Never reverts — a malformed stored length reads as empty (`None`).
     pub fn try_get(&self, index: u64) -> Option<T> {
         let () = Self::_SHAPE_CHECK;
-        if index >= self.len() {
+        if index >= self.checked_len()? {
             return None;
         }
         Some(self.read_at(index))
@@ -1475,7 +1642,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// one SLOAD cheaper than `try_get(len - 1)` for full-slot `T`.
     pub fn last(&self) -> Option<T> {
         let () = Self::_SHAPE_CHECK;
-        let len = self.len();
+        let len = self.checked_len()?;
         if len == 0 {
             None
         } else {
@@ -1499,7 +1666,8 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
         StorageVecIter {
             vec: self,
             pos: 0,
-            len: self.len(),
+            // Non-reverting: a malformed length iterates as empty.
+            len: self.checked_len().unwrap_or(0),
         }
     }
 
@@ -1507,23 +1675,21 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// the bounds check.
     fn read_at(&self, i: u64) -> T {
         let key = self.element_slot(i);
-        if T::HAS_DYNAMIC_BODY {
-            // One header slot per element; the body (if spilled) lives at
-            // `keccak256(header_slot) + j`. Delegate to T's own dyn-body path.
-            T::read_from_storage::<MAX_STATIC_SLOTS>(&self.host, &key)
-        } else if T::PACKED_BYTES < 32 {
-            // Sub-word multi-pack: one shared slot, unpack at byte offset.
+        if T::PACKED_BYTES < 32 {
+            // Sub-word multi-pack: many elements share one slot, so read the
+            // whole slot and unpack at this element's byte offset. The uniform
+            // `read_from_storage` path can't be used here — it unpacks at the
+            // type's *canonical* offset, not the per-element one.
             let slot = storage_get_32(&self.host, &key);
             T::__unpack_from_dispatched(&slot, Self::within_slot_offset(i))
-        } else if T::STORAGE_SLOTS == 1 {
-            // Single-slot full-word fast path.
-            T::from_slots(&[storage_get_32(&self.host, &key)])
         } else {
-            // Multi-slot static: read STORAGE_SLOTS consecutive slots.
-            let mut slots = [[0u8; 32]; MAX_STATIC_SLOTS];
-            let n = T::STORAGE_SLOTS;
-            read_slots(&self.host, &key, &mut slots[..n]);
-            T::from_slots(&slots[..n])
+            // Full-slot, multi-slot static, or dynamic-body element. Each
+            // element owns `T::STORAGE_SLOTS` consecutive slots starting at
+            // `key`, so `read_from_storage` (which delegates to
+            // `read_from_storage_static` for static `T`, or reads the
+            // header + spilled body chunks for dynamic `T`) does the right
+            // thing for every non-sub-word shape.
+            T::read_from_storage(&self.host, &key)
         }
     }
 
@@ -1531,12 +1697,13 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `index >= len()`. Use [`push`](Self::push) to
-    /// extend the array. Like [`get`](Self::get), the revert is a plain trap
-    /// rather than solc's ABI-encoded `Panic(0x32)`.
+    /// Reverts with `Panic(0x32)` (array out-of-bounds) if `index >= len()`.
+    /// Use [`push`](Self::push) to extend the array.
     pub fn set(&mut self, index: u64, value: &T) {
         let () = Self::_SHAPE_CHECK;
-        assert!(index < self.len(), "StorageVec::set: index out of bounds");
+        if index >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         self.write_at(index, value);
     }
 
@@ -1546,27 +1713,25 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     /// `&mut self`).
     fn write_at(&mut self, i: u64, value: &T) {
         let key = self.element_slot(i);
-        if T::HAS_DYNAMIC_BODY {
-            // T's own write_to_storage handles header + body (inline or spilled).
-            value.write_to_storage(&self.host, &key);
-        } else if T::PACKED_BYTES < 32 {
+        if T::PACKED_BYTES < 32 {
             // Sub-word: read-modify-write to preserve sibling elements in the
             // same slot. Even when `i % per_slot == 0` (a fresh slot from
             // push's perspective), RMW is safe and avoids a fast-path that
-            // could leak stale data if external state ever pre-existed.
+            // could leak stale data if external state ever pre-existed. The
+            // uniform `write_to_storage` path packs at the canonical offset,
+            // not this element's, so it can't be used here.
             let mut buf = storage_get_32(&self.host, &key);
             let offset = Self::within_slot_offset(i);
             buf[offset..offset + T::PACKED_BYTES].fill(0);
             value.__pack_into_dispatched(&mut buf, offset);
             storage_set_32(&self.host, &key, &buf);
-        } else if T::STORAGE_SLOTS == 1 {
-            // Single-slot full-word fast path.
-            let mut buf = [0u8; 32];
-            value.encode_slot(0, &mut buf);
-            storage_set_32(&self.host, &key, &buf);
         } else {
-            // Multi-slot static: stream-encode slot-by-slot.
-            write_value(&self.host, &key, value);
+            // Full-slot, multi-slot static, or dynamic-body element.
+            // `write_to_storage` owns the access pattern: a single SSTORE,
+            // `STORAGE_SLOTS` consecutive SSTOREs (via
+            // `write_to_storage_static` for static `T`), or header + spilled
+            // body chunks for dynamic `T`.
+            value.write_to_storage(&self.host, &key);
         }
     }
 
@@ -1575,14 +1740,16 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
     ///
     /// # Panics
     ///
-    /// Panics if the length would overflow `u64::MAX` (practically
-    /// unreachable — the storage budget is exhausted long before).
+    /// Reverts with `Panic(0x41)` ("array too large") if the length would
+    /// overflow `u64::MAX` (practically unreachable — the storage budget is
+    /// exhausted long before).
     pub fn push(&mut self, value: &T) {
         let () = Self::_SHAPE_CHECK;
         let len = self.len();
-        let new_len = len
-            .checked_add(1)
-            .expect("StorageVec::push: length overflow");
+        let new_len = match len.checked_add(1) {
+            Some(v) => v,
+            None => panic_revert(&self.host, Panic::OOM),
+        };
         self.write_at(len, value);
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
     }
@@ -1621,7 +1788,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
         let key = self.element_slot(i);
         if T::HAS_DYNAMIC_BODY {
             // Tears down inline header + any spilled body chunks.
-            <T as StorageEncode>::clear_storage(&self.host, &key, T::STORAGE_SLOTS);
+            <T as StorageEncode>::clear_storage(&self.host, &key);
         } else if T::PACKED_BYTES < 32 {
             // First element in a slot has no surviving siblings (the higher
             // within indices were popped first), so clear the whole slot.
@@ -1663,7 +1830,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
                 let mut key = *self.body_base();
                 for _ in 0..total_slots {
                     storage_set_32(&self.host, &key, &[0u8; 32]);
-                    inc_slot(&mut key);
+                    inc_be_32(&mut key);
                 }
             } else {
                 // Single-slot full-word or multi-slot static: clear
@@ -1671,13 +1838,14 @@ impl<T: StorageEncode + StorageDecode> StorageVec<T> {
                 // corrupted length can't silently wrap and clear an
                 // unintended slot range — physically unreachable for
                 // honest writers, defensive against external corruption.
-                let total_slots = len
-                    .checked_mul(T::STORAGE_SLOTS as u64)
-                    .expect("StorageVec::clear: total-slots overflow");
+                let total_slots = match len.checked_mul(T::STORAGE_SLOTS as u64) {
+                    Some(v) => v,
+                    None => panic_revert(&self.host, Panic::Overflow),
+                };
                 let mut key = *self.body_base();
                 for _ in 0..total_slots {
                     storage_set_32(&self.host, &key, &[0u8; 32]);
-                    inc_slot(&mut key);
+                    inc_be_32(&mut key);
                 }
             }
         }
@@ -1695,17 +1863,59 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<T> {
     /// layout for dynamic arrays.
     const PACKED_BYTES: usize = 32;
 
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert_eq!(
             offset, 0,
             "StorageVec<T> always full-slot; offset must be 0"
         );
-        let _ = offset;
+        // Full-slot component: the length header always owns its slot and
+        // elements live at derived keys, so `offset` / `alone` are irrelevant.
+        let _ = (offset, alone);
         // SAFETY: macro-only safe entry point. See `Lazy::new_at` for the
         // full justification — bypass would require direct user calls to
         // `StorageVec::new`, which is what the `unsafe` keyword marks.
         // Turbofish disambiguates from the nested `StorageVec<StorageVec<T>>::new`.
-        unsafe { StorageVec::<T>::new(StorageKey::from_slot(slot), host) }
+        unsafe { StorageVec::<T>::new(key, host) }
+    }
+
+    /// Remove every element and reset the length header to zero — solc's
+    /// `delete arr`. O(n) in the element count; see [`StorageVec::clear`].
+    fn clear(&mut self) {
+        // Inherent `clear` (resolves before the trait method of the same name).
+        StorageVec::<T>::clear(self)
+    }
+}
+
+/// `StorageVec<T>` is Solidity's `T[]`; in layout JSON it's named `<T>[]`.
+/// Recursing on the element name lets `StorageVec<StorageVec<U256>>` resolve
+/// to `uint256[][]` and `Mapping<K, StorageVec<T>>` (whose `name()` calls
+/// `V::name()`) nest to `mapping(K => T[])`.
+#[cfg(feature = "abi-gen")]
+impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for StorageVec<T> {
+    fn name() -> alloc::string::String {
+        alloc::format!("{}[]", <T as pvm_contract_types::StorageTypeName>::name())
+    }
+}
+
+/// `StorageVec<T>` as a layout-emit leaf — a single `T[]` entry. The length
+/// header always claims a fresh slot (`PACKED_BYTES == 32`), so `offset` is
+/// always `0`; it is threaded through for signature uniformity. The generic
+/// `T` covers the nested `StorageVec<StorageVec<U256>>` shape too, since the
+/// inner `StorageVec<U256>` itself implements `StorageTypeName` above.
+#[cfg(feature = "abi-gen")]
+impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T> {
+    fn emit_entries(
+        base: u64,
+        offset: u8,
+        name_prefix: &str,
+        out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+    ) {
+        out.push(pvm_contract_types::StorageLayoutEntry {
+            label: String::from(name_prefix),
+            slot: alloc::format!("{}", base),
+            offset,
+            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+        });
     }
 }
 
@@ -1794,13 +2004,23 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     }
 
     /// Number of inner arrays appended.
+    ///
+    /// Reverts with `Panic(0x22)` if the stored length is malformed; see
+    /// [`checked_len`](Self::checked_len) for the non-reverting variant.
     pub fn len(&self) -> u64 {
-        read_len_u64(&self.host, self.root.as_bytes())
+        read_len(&self.host, self.root.as_bytes())
     }
 
-    /// `true` if no inner arrays have been appended.
+    /// The length, or `None` if the stored length is malformed. Backs the
+    /// non-reverting `try_*` accessors.
+    fn checked_len(&self) -> Option<u64> {
+        try_read_len(&self.host, self.root.as_bytes())
+    }
+
+    /// `true` if no inner arrays have been appended. Non-reverting: a malformed
+    /// length reads as empty (`true`).
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.checked_len().is_none_or(|n| n == 0)
     }
 
     /// Read-only view of the inner array at index `i`. The returned [`Ref`]
@@ -1808,11 +2028,13 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `i >= len()`, consistent with flat
-    /// [`StorageVec::get`]. As there, the revert is a plain trap rather than
-    /// solc's ABI-encoded `Panic(0x32)`.
+    /// Reverts with `Panic(0x32)` (array out-of-bounds) if `i >= len()` (or
+    /// `Panic(0x22)` if the stored length is malformed), consistent with flat
+    /// [`StorageVec::get`].
     pub fn get(&self, i: u64) -> Ref<'_, StorageVec<T>> {
-        assert!(i < self.len(), "StorageVec::get: index out of bounds");
+        if i >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         // SAFETY: the inner handle is immediately wrapped in `Ref<'_, _>`,
         // which forwards only `&self` methods. The parent `&self` borrow
         // gates mutation: `grow`/`erase_last`/`set` require `&mut self` and
@@ -1822,7 +2044,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
 
     /// Read-only view of the inner array at `index`, returning `None` if out of bounds.
     pub fn try_get(&self, i: u64) -> Option<Ref<'_, StorageVec<T>>> {
-        if i >= self.len() {
+        if i >= self.checked_len()? {
             return None;
         }
         // SAFETY: see `get` — read-only `Ref` gates mutation.
@@ -1836,7 +2058,7 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
 
     /// Read-only view of the last inner array, or `None` if empty.
     pub fn last(&self) -> Option<Ref<'_, StorageVec<T>>> {
-        let len = self.len();
+        let len = self.checked_len()?;
         if len == 0 {
             None
         } else {
@@ -1849,7 +2071,8 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
         NestedStorageVecIter {
             vec: self,
             pos: 0,
-            len: self.len(),
+            // Non-reverting: a malformed length iterates as empty.
+            len: self.checked_len().unwrap_or(0),
         }
     }
 
@@ -1858,11 +2081,12 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     ///
     /// # Panics
     ///
-    /// Panics (reverts) if `i >= len()`. Append a new inner first via
-    /// [`grow`](Self::grow). As with flat [`StorageVec::set`], the revert is
-    /// a plain trap rather than solc's ABI-encoded `Panic(0x32)`.
+    /// Reverts with `Panic(0x32)` (array out-of-bounds) if `i >= len()`.
+    /// Append a new inner first via [`grow`](Self::grow).
     pub fn entry(&mut self, i: u64) -> RefMut<'_, StorageVec<T>> {
-        assert!(i < self.len(), "StorageVec::entry: index out of bounds");
+        if i >= self.len() {
+            panic_revert(&self.host, Panic::OutOfBoundsAccess);
+        }
         // SAFETY: `&mut self` proves mutating access through the parent
         // borrow; the inner handle just forwards that capability.
         RefMut::new(self.inner_handle(i))
@@ -1880,12 +2104,14 @@ impl<T: StorageEncode + StorageDecode> StorageVec<StorageVec<T>> {
     /// ```
     ///
     /// # Panics
-    /// Panics if the outer length would overflow `u64::MAX`.
+    /// Reverts with `Panic(0x41)` ("array too large") if the outer length
+    /// would overflow `u64::MAX`.
     pub fn grow(&mut self) -> RefMut<'_, StorageVec<T>> {
         let len = self.len();
-        let new_len = len
-            .checked_add(1)
-            .expect("StorageVec::grow: length overflow");
+        let new_len = match len.checked_add(1) {
+            Some(v) => v,
+            None => panic_revert(&self.host, Panic::OOM),
+        };
         write_len_u64(&self.host, self.root.as_bytes(), new_len);
         // SAFETY: `&mut self` proves mutating access through the parent
         // borrow; the freshly appended inner array is exclusively ours.
@@ -1969,17 +2195,25 @@ impl<T: StorageEncode + StorageDecode> StorageComponent for StorageVec<StorageVe
     const SLOTS: u64 = 1;
     const PACKED_BYTES: usize = 32;
 
-    fn new_at(slot: u64, offset: u8, host: Host) -> Self {
+    fn new_at(key: StorageKey, offset: u8, alone: bool, host: Host) -> Self {
         debug_assert_eq!(
             offset, 0,
             "StorageVec<StorageVec<T>> always full-slot; offset must be 0"
         );
-        let _ = offset;
+        // Full-slot component: `offset` / `alone` are irrelevant.
+        let _ = (offset, alone);
         // SAFETY: macro-only safe entry point. Same justification as the flat
         // `StorageVec<T>` `new_at` — bypass would require direct user calls
         // to `StorageVec::<StorageVec<T>>::new`, which is marked `unsafe`.
         // Turbofish disambiguates from the flat `StorageVec<T>::new`.
-        unsafe { StorageVec::<StorageVec<T>>::new(StorageKey::from_slot(slot), host) }
+        unsafe { StorageVec::<StorageVec<T>>::new(key, host) }
+    }
+
+    /// Recursively clear every inner array and reset the outer length —
+    /// solc's `delete matrix`. See [`StorageVec::clear`] (nested impl).
+    fn clear(&mut self) {
+        // Inherent `clear` (resolves before the trait method of the same name).
+        StorageVec::<StorageVec<T>>::clear(self)
     }
 }
 

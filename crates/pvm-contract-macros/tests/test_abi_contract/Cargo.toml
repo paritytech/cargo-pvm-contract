@@ -51,10 +51,14 @@ path = "src/storage_layout_composed.rs"
 name = "storage-layout-vec"
 path = "src/storage_layout_vec.rs"
 
+[[bin]]
+name = "proxy-raw-slot"
+path = "src/proxy_raw_slot.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-sdk = { path = "../../../pvm-contract-sdk", features = ["alloc"] }
-pallet-revive-uapi = { version = "0.11", default-features = false }
+pallet-revive-uapi = { version = "0.15", default-features = false }
 ruint = { version = "1.17", default-features = false }
 
 [features]

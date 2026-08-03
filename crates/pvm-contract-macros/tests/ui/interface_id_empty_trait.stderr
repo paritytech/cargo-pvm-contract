@@ -1,0 +1,5 @@
+error: #[interface_id]: the trait has no methods; an interface ID needs at least one
+ --> tests/ui/interface_id_empty_trait.rs:2:11
+  |
+2 | pub trait IEmpty {}
+  |           ^^^^^^

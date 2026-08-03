@@ -72,15 +72,22 @@ pub fn generate_abi_gen(
 fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
     use super::contract::Slot;
 
-    let auto_slot_consts = super::contract::auto_slot_consts(slot_fields);
+    // Layout JSON only needs the slot consts (no `alone` flags here), so the
+    // returned idents are unused.
+    let (auto_slot_consts, _) = super::contract::auto_slot_consts(slot_fields);
 
     let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
-        .map(|sf| {
-            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+        .filter_map(|sf| {
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match &sf.slot {
                 Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
+                // Raw external slots (e.g. EIP-1967) live outside solc's
+                // sequential storage layout — solc doesn't emit them in
+                // `storageLayout` either, so omit them here.
+                Slot::ExplicitRaw(_) => return None,
                 Slot::Auto => {
-                    let const_ident = quote::format_ident!("__pvm_storage_slot_{}", &sf.name);
+                    let const_ident =
+                        quote::format_ident!("{}{}", super::contract::AUTO_SLOT_PREFIX, &sf.name);
                     (quote! { #const_ident.slot }, quote! { #const_ident.offset })
                 }
             };
@@ -92,12 +99,12 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
                 quote! { "" },
             );
             let cfgs = &sf.cfg_attrs;
-            quote! {
+            Some(quote! {
                 #(#cfgs)*
                 {
                     #emit
                 }
-            }
+            })
         })
         .collect();
 
@@ -263,6 +270,26 @@ fn generate_abi_gen_impl(
         })
         .collect();
 
+    // A `#[non_reentrant]` method reverts with `ReentrancyGuardReentrantCall`,
+    // which is injected by the guard codegen and so is not in any method's
+    // `Result` error type. Register its (parameterless) signature in the ABI so
+    // tooling can decode the revert. Modeled on the framework-error path — no
+    // `__split_params` needed since it has no parameters.
+    let reentrancy_error_entry = if parsed.methods.iter().any(|m| m.is_non_reentrant) {
+        let sig = "ReentrancyGuardReentrantCall()";
+        quote! {
+            if !__seen_errors.iter().any(|s| *s == #sig) {
+                __seen_errors.push(#sig);
+                __items.push(::pvm_contract_sdk::AbiItem::Error {
+                    name: "ReentrancyGuardReentrantCall".into(),
+                    inputs: ::std::vec::Vec::new(),
+                });
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     let helper = quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
@@ -279,6 +306,8 @@ fn generate_abi_gen_impl(
             #receive_entry
 
             #(#error_entries)*
+
+            #reentrancy_error_entry
 
             #(#event_entries)*
 
@@ -511,6 +540,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::View,
             precomputed_selector: None,
+            is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -532,6 +562,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::Pure,
             precomputed_selector: None,
+            is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);

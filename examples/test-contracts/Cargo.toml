@@ -8,6 +8,10 @@ rust-version = "1.92"
 build = "build.rs"
 
 [[bin]]
+name = "proxy"
+path = "src/proxy.rs"
+
+[[bin]]
 name = "flipper_call"
 path = "src/flipper_call.rs"
 
@@ -22,6 +26,14 @@ path = "src/point_adder.rs"
 [[bin]]
 name = "flipper_delegate"
 path = "src/flipper_delegate.rs"
+
+[[bin]]
+name = "reentrancy_guard"
+path = "src/reentrancy_guard.rs"
+
+[[bin]]
+name = "reentrancy_attacker"
+path = "src/reentrancy_attacker.rs"
 
 [[bin]]
 name = "error_caller"
@@ -92,7 +104,7 @@ pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = [
     "alloc",
 ] }
 pvm-contract-builder-dsl = { path = "../../crates/pvm-contract-builder-dsl" }
-polkavm-derive = { version = "0.34.0" } # required by proc macro generated code
+polkavm-derive = { version = "0.35.0" } # required by proc macro generated code
 picoalloc = { version = "5", default-features = false }
 
 [features]

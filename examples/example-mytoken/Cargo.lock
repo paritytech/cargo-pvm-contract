@@ -703,7 +703,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-core",
  "picoalloc",
- "polkavm-derive 0.34.0",
+ "polkavm-derive 0.35.0",
  "pvm-bump-allocator",
  "pvm-contract-builder-dsl",
  "pvm-contract-macros",
@@ -1111,9 +1111,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "pallet-revive-proc-macro"
-version = "0.7.3"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2289893bc4dcb0b3f0ae92b1037cf605b45e6740c5b71d95a68fca503decbfd5"
+checksum = "7ccc894aeedbf838a18c90503d3d60a933435e4f0095c4f62f4b5a74208ac2d7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1122,9 +1122,9 @@ dependencies = [
 
 [[package]]
 name = "pallet-revive-uapi"
-version = "0.11.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6fbad22d6e4ae82c0a1c1335eb2b5f05fda2eaca4cdb732ec2bf354628c9bf"
+checksum = "83d6f3e18cd426d9954a263d0e7264faafb5dd88bce8e32c5ef4b85af797baeb"
 dependencies = [
  "bitflags 1.3.2",
  "const-crypto",
@@ -1210,9 +1210,9 @@ dependencies = [
 
 [[package]]
 name = "polkavm-common"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67b1bdbd3d706e8fe695403f501c218f20550e48181e2a56033665ecba3eb4c2"
+checksum = "b20e5a47dd9ad7bb43013676a18074fca2573dd8270774a7d2ad286b57bc710f"
 dependencies = [
  "picosimd",
 ]
@@ -1228,11 +1228,11 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2981ede1767664545b316b2a11ec881525001eef153625600def98570c18b223"
+checksum = "80796823e852d4ff90857dd184162ce3b5de739b34495aadef69d381005dcc5d"
 dependencies = [
- "polkavm-derive-impl-macro 0.34.0",
+ "polkavm-derive-impl-macro 0.35.0",
 ]
 
 [[package]]
@@ -1249,11 +1249,11 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive-impl"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d518dd9fc80788f35dcda8c64b72fcb3295bf5dfe75488ce8d26e555b0d071f"
+checksum = "b8eede5680fbaac211c5e5f78cd2fa55456eba819a0c02dc5ca08b3327268ff5"
 dependencies = [
- "polkavm-common 0.34.0",
+ "polkavm-common 0.35.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1271,11 +1271,11 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive-impl-macro"
-version = "0.34.0"
+version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01204891df42372536642f404a1b529fdd3764cc62277a6b4a77f6875fc403cc"
+checksum = "d345f00a91917abae726812c5a8683da571412f22ce6a523cfcdfea66f8459a9"
 dependencies = [
- "polkavm-derive-impl 0.34.0",
+ "polkavm-derive-impl 0.35.0",
  "syn 2.0.117",
 ]
 
@@ -1377,7 +1377,7 @@ name = "pvm-contract-builder-dsl"
 version = "0.3.0"
 dependencies = [
  "pallet-revive-uapi",
- "polkavm-derive 0.34.0",
+ "polkavm-derive 0.35.0",
  "pvm-contract-types",
  "ruint",
 ]
@@ -1411,7 +1411,7 @@ dependencies = [
 name = "pvm-contract-sdk"
 version = "0.3.0"
 dependencies = [
- "polkavm-derive 0.34.0",
+ "polkavm-derive 0.35.0",
  "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",

@@ -305,8 +305,53 @@ When a contract method returns `Err(e)`, the SDK encodes the error as ABI-compat
 
 | Error            | Selector     | Signature        | When                                  |
 | ---------------- | ------------ | ---------------- | ------------------------------------- |
-| `Error(string)`  | `0x08c379a0` | `Error(string)`  | Explicit revert with a message        |
-| `Panic(uint256)` | `0x4e487b71` | `Panic(uint256)` | Arithmetic overflow, division by zero |
+| `Error(string)`  | `0x08c379a0` | `Error(string)`  | Explicit revert with a message (`RevertString`) |
+| `Panic(uint256)` | `0x4e487b71` | `Panic(uint256)` | Runtime failures — see the code table below |
+
+
+### Panic Codes
+
+`Panic(uint256)` is `0x4e487b71` followed by a 32-byte code (big-endian). The
+SDK reverts with the following solc-compatible codes; the code byte occupies the
+last byte of the 32-byte word:
+
+| Code   | Meaning                                        | Emitted by |
+| ------ | ---------------------------------------------- | ---------- |
+| `0x00` | Generic / compiler-inserted panic              | explicit `Panic::Generic`; best-effort `#[contract]` panic-handler catch-all (see caveat) |
+| `0x01` | `assert(false)`                                | user code via `Panic::AssertFalse` |
+| `0x11` | Arithmetic overflow / underflow                | checked-math paths, storage slot-index arithmetic |
+| `0x12` | Division or modulo by zero                     | user code via `Panic::DivisionByZero` |
+| `0x21` | Invalid enum conversion                         | user code |
+| `0x22` | Incorrectly encoded storage byte array          | `StorageVec` on a corrupt length; **†** also on an over-range length `> u64::MAX` |
+| `0x31` | `.pop()` on an empty array                       | user code |
+| `0x32` | Array / bytes out-of-bounds access              | `StorageVec::get` / `set` out of bounds |
+| `0x41` | Allocated too much memory / array too large     | **†** `StorageVec::push` / `grow` past `u64::MAX` |
+| `0x51` | Call to a zero-initialised internal function    | user code |
+
+**† SDK-specific (not solc parity):** the `> u64::MAX` length case of `0x22` and
+the `push`/`grow`-past-`u64::MAX` case of `0x41` are SDK caps — `StorageVec`
+lengths and indices are `u64`. solc supports full `uint256` collection lengths
+and would neither revert at that bound nor use these codes there. (`0x22` for a
+genuinely *corrupt* length encoding, and every other row, do match solc.)
+
+**Auto-revert:** storage guards and the dispatch layer revert *automatically*
+with the correct code — e.g. `self.items.get(i)` reverts `Panic(0x32)` on an
+out-of-bounds index, matching solc, so contract authors don't hand-roll bounds
+checks. All of these go through the diverging `HostApi::revert` door (the shared
+`panic_revert(host, code)` encoder), distinct from the non-diverging success
+door `HostApi::return_value`; on `riscv64` both are the same
+`return_value(flags, data)` syscall differing only by the `REVERT` flag.
+
+**Panic-handler caveat (`0x00`):** the `#[contract]` panic handler maps an
+otherwise-uncaught Rust panic to `Panic(0x00)`, but release builds compile with
+`-Cpanic=immediate-abort` (for bytecode size), which lowers *implicit* panics —
+`unwrap`, slice out-of-bounds, an oversized error encode — straight to a trap
+**without** invoking the handler; the caller then sees a bare `ContractTrapped`
+with no revert data. Only the *explicit* `panic_revert` sites (storage
+bounds/length checks and user `Panic::*`) reliably emit decodable `Panic` data.
+Don't rely on the `0x00` catch-all for structured revert data — keep derived
+`SolError` payloads within the buffer and use explicit checks where you need a
+decodable revert.
 
 
 ### Custom Errors
@@ -326,8 +371,9 @@ The derive generates:
 
 - `SELECTOR` — first 4 bytes of `keccak256("InsufficientBalance(address,uint256,uint256)")`
 - `SIGNATURE` — the canonical signature string
-- `encode_params(&self, buf) -> usize` — ABI-encodes fields after the selector
+- `encode_to(&self, buf) -> usize` — writes the selector followed by the ABI-encoded fields into `buf`, returning the number of bytes written
 - `encoded_size() -> usize` — total revert data size (4 + encoded params)
+- `decode_at(input, offset) -> Result<Option<Self>, DecodeError>` — the symmetric decoder (returns `Ok(None)` when the selector doesn't match)
 
 ### Revert Data Layout
 
@@ -355,16 +401,23 @@ For a static custom error like `InsufficientBalance { account, required, availab
 
 ### Error Enums
 
-When a method can return multiple error types, use `sol_revert_enum!`:
+When a method can return multiple error types, derive `SolError` on an enum whose
+variants each wrap a single `#[derive(SolError)]` struct:
 
 ```rust,ignore
-pvm_contract_sdk::sol_revert_enum!(ContractError {
-    InsufficientBalance,
-    Unauthorized,
-});
+#[derive(pvm_contract_macros::SolError)]
+pub enum ContractError {
+    InsufficientBalance(InsufficientBalance),
+    Unauthorized(Unauthorized),
+}
 ```
 
-This generates an enum with `From` conversions and automatically includes `RevertString` and `Panic` variants. Each variant delegates to its inner type's encoding.
+The derive generates `From<InsufficientBalance>` / `From<Unauthorized>` conversions
+(so handlers can write `Err(InsufficientBalance { .. }.into())`) and an `encode_to` /
+`decode_at` / `error_signatures` impl that dispatches to the active variant's inner
+type. The enum's own `SELECTOR` is zeroed and its `SIGNATURE` is empty — the selector
+on the wire is always the inner error's. To surface `require`-style messages or
+arithmetic panics, add explicit `RevertString` / `Panic` variants to the enum.
 
 ### EmptyError
 
@@ -594,7 +647,8 @@ The macro generates size checks before decoding:
 ```rust,ignore
 let min_size = sum of head_size() for all parameters;
 if input.len() < min_size {
-    return_value(REVERT, &pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
+    // A mid-expression abort: diverges via the revert door (never an Outcome).
+    revert(&pvm_contract_sdk::framework_errors::INVALID_CALLDATA);
 }
 ```
 

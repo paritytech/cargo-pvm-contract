@@ -96,15 +96,16 @@ call()    — called on every subsequent interaction
 2. If calldata is empty and a `#[receive]` handler is present, dispatches there
 3. Otherwise extracts the 4-byte selector from `calldata[0..4]`, matches a registered method, decodes parameters via `SolDecode`, calls the user function, and encodes the return via `SolEncode`
 4. If the selector matches no method (or calldata is 1..=3 bytes), falls through to `#[fallback]` if present, else reverts
-5. If the user function returns `Err(e)`, the error is encoded via `SolRevert::revert_data` and returned with `REVERT` flags
+5. If the user function returns `Err(e)`, the error is encoded via `SolError::encode_to` and returned with `REVERT` flags
 
 ## Method, Constructor, Fallback, Receive
 
-- `#[method]` — public contract method. Optional `#[method(rename = "name")]` overrides the Solidity name (default: `snake_case` → `camelCase`).
+- `#[method]` — public contract method. `#[selector(name = "name")]` overrides the Solidity name (default: `snake_case` to `camelCase`); `#[method(rename = "name")]` is a supported alias.
 - `#[constructor]` — runs once at deployment. Must take `&mut self`; pure/view constructors are rejected because they cannot initialize storage.
 - `#[fallback]` — invoked when no method selector matches (or calldata is 1..=3 bytes).
 - `#[receive]` — invoked on plain value transfers (empty calldata). Must take `&mut self` and no other arguments. Implicitly payable; `#[payable]` is rejected as redundant.
 - `#[payable]` — marks a method as payable. Must be combined with `&mut self`. Adding it to a no-receiver or `&self` method is a compile error.
+- `#[non_reentrant]` — emits an OpenZeppelin-compatible reentrancy guard on a `#[method]`. Mode is inferred from the receiver: `&mut self` gives a full guard (OZ `nonReentrant`), `&self` a read-only check (OZ `nonReentrantView`). On re-entry the method reverts with the `ReentrancyGuardReentrantCall` error (OZ v5 selector). Only valid on a `#[method]` with a receiver — applying it to a pure method, constructor, fallback, or receive handler is a compile error. Only meaningful for contracts that opt into `CallFlags::ALLOW_REENTRY` (pallet-revive rejects reentrancy by default).
 
 When both `#[receive]` and `#[fallback]` are present, `receive` fires first on empty calldata.
 
@@ -223,7 +224,7 @@ impl Registry {
 }
 ```
 
-Out-of-bounds `get` / `set` revert via a plain trap (not solc's ABI-encoded `Panic(0x32)`); use `try_get` for a non-panicking read.
+Out-of-bounds `get` / `set` revert with solc's ABI-encoded `Panic(0x32)` (array out-of-bounds), matching Solidity; use `try_get` for a non-panicking read.
 
 **Nested and composite shapes.** Because an inner collection is a *handle* (not a `StorageEncode` value), the nested accessors return borrow guards (`Ref` / `RefMut`) rather than the inner collection by value — which also enforces the view gate (a `&self` outer can only hand out a read-only `Ref`):
 
@@ -247,30 +248,28 @@ These bypass the typed-storage view enforcement; the host's STATICCALL boundary 
 
 ## Error Handling
 
-The SDK splits error encoding into two traits:
+Error encoding is handled by a single trait, `SolError`, derived with `#[derive(SolError)]`:
 
-- `SolError` — implemented per error struct. Carries a 4-byte selector (`keccak256` of the canonical signature) and ABI-encodes its fields.
-- `SolRevert` — the dispatch-boundary trait. Has a blanket impl for any `T: SolError`; for error enums, use `sol_revert_enum!` to generate the enum plus the `SolRevert` impl with auto-injected `RevertString` and `Panic` variants.
+- On a **struct**, the derive computes the 4-byte selector (`keccak256` of the canonical signature derived from the struct name and fields) and emits `encode_to` (selector + ABI-encoded fields), `encoded_size`, and `decode_at`.
+- On an **enum** whose variants each wrap a single `SolError` struct, the derive emits `From` conversions plus an `encode_to` / `decode_at` / `error_signatures` impl that dispatches to the active variant's inner error. The enum's own `SELECTOR` is zeroed and `SIGNATURE` is empty — the wire selector is always the inner error's. Add explicit `RevertString` / `Panic` variants if you want `require`-style messages or arithmetic panics in the same enum.
 
 ```rust,ignore
-use pvm_contract_sdk::{sol_revert_enum, SolError};
+use pvm_contract_sdk::SolError;
 
 #[derive(SolError)]
-#[sol_error(name = "InsufficientBalance")]
 pub struct InsufficientBalance {
     pub required: U256,
     pub available: U256,
 }
 
-sol_revert_enum! {
-    pub enum TokenError {
-        InsufficientBalance(InsufficientBalance),
-    }
+#[derive(SolError)]
+pub enum TokenError {
+    InsufficientBalance(InsufficientBalance),
 }
 
 #[pvm_contract_sdk::method]
 pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-    // returning `Err(TokenError::InsufficientBalance { ... })` reverts with the
+    // returning `Err(InsufficientBalance { .. }.into())` reverts with the
     // ABI-encoded `InsufficientBalance(uint256,uint256)` payload that solc and
     // viem decode automatically.
 }
@@ -324,6 +323,32 @@ pub fn transfer(&mut self, to: Address, value: U256) {
 ```
 
 `#[indexed]` fields become topics (max 3 after the signature topic); the rest are ABI-encoded into the data payload.
+
+## Interfaces (`#[interface_id]`)
+
+`#[interface_id]` on a trait declares it as an on-chain interface and generates its ERC-165 interface ID — the XOR of the 4-byte selectors of its methods — as a defaulted associated constant:
+
+```rust,ignore
+#[pvm_contract_sdk::interface_id]
+pub trait IErc20 {
+    fn total_supply(&self) -> U256;
+    fn balance_of(&self, account: Address) -> U256;
+    #[selector(name = "transfer")]
+    fn transfer(&mut self, to: Address, amount: U256) -> bool;
+    // ...
+}
+
+// generated:
+// const INTERFACE_ID: [u8; 4];
+```
+
+`INTERFACE_ID` is a defaulted associated const, so read it through a concrete implementor: `<MyToken as IErc20>::INTERFACE_ID`. This is the value a contract returns from `supportsInterface(bytes4)`.
+
+- Each method's selector is `keccak256` of its canonical Solidity signature. The Solidity name defaults to the `camelCase` of the Rust name and is overridden with `#[selector(name = "...")]` — the same attribute used on `#[method]`.
+- Parameter types are resolved through their `SolEncode::SOL_NAME` at const-eval, so custom types (`#[derive(SolType)]` structs) work as parameters.
+- Adding the associated const makes the trait non-object-safe (it can no longer be used behind `dyn`).
+
+Compile errors: an empty trait, a generic method (its selector is undefined), a trait that already declares `INTERFACE_ID`, or two methods that produce the same selector (they would silently cancel in the XOR — rename one with `#[selector(name = "...")]`).
 
 ## ABI Generation
 
