@@ -872,6 +872,77 @@ contract Cube {
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Cube"));
 }
 
+// --- depth-3 `#[storage]` struct nesting (struct in struct in struct) -------
+//
+// The component-struct analogue of the depth-3 `uint256[][][]` vec test above:
+// three `#[storage]` sub-structs nested three deep (`DeepOuter` ⊃ `DeepMiddle`
+// ⊃ `DeepInner`), each adding a trailing full-slot sibling, embedded in the
+// contract with a trailing sibling of its own. Pins that `new_at` / `SLOTS` /
+// slot-banding recurse correctly at depth 3: the nested struct occupies a
+// contiguous 3-slot band (0..=2) and the contract's trailing `y` lands at slot
+// 3. A `SLOTS` mis-sum at any level would misplace a leaf or `y` and diverge
+// from solc's inline-struct-member layout.
+#[pvm_contract_sdk::storage]
+pub struct DeepInner {
+    pub v: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::storage]
+pub struct DeepMiddle {
+    pub inner: DeepInner,
+    pub w: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::storage]
+pub struct DeepOuter {
+    pub middle: DeepMiddle,
+    pub x: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::contract]
+mod deep_nest {
+    use super::*;
+    pub struct DeepNest {
+        pub outer: DeepOuter,
+        pub y: Lazy<U256>,
+    }
+    impl DeepNest {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.outer.middle.inner.v.set(&U256::from(1u64));
+            self.outer.middle.w.set(&U256::from(2u64));
+            self.outer.x.set(&U256::from(3u64));
+            self.y.set(&U256::from(4u64));
+        }
+    }
+}
+
+#[test]
+fn depth_three_nested_struct_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract DeepNest {
+    struct DeepInner  { uint256 v; }
+    struct DeepMiddle { DeepInner inner; uint256 w; }
+    struct DeepOuter  { DeepMiddle middle; uint256 x; }
+    DeepOuter outer;   // outer.middle.inner.v@0, outer.middle.w@1, outer.x@2
+    uint256 y;         // slot 3
+    function populate() external {
+        outer.middle.inner.v = 1;
+        outer.middle.w = 2;
+        outer.x = 3;
+        y = 4;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = deep_nest::DeepNest::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "DeepNest"));
+}
+
 // ---------------------------------------------------------------------------
 // Mutation / clearing: delete / remove / pop / overwrite vs solc's
 // SSTORE-of-zero deletion and read-modify-write semantics.

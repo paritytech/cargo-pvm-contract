@@ -47,7 +47,7 @@
 //!         const __pvm_storage_offset_allowances: ::pvm_contract_sdk::LayoutStep =
 //!             ::pvm_contract_sdk::layout_step_component::<Mapping<Address, Mapping<Address, U256>>>(
 //!                 __pvm_storage_offset_balances);
-//!         // Per-field `alone` flag: true iff no neighbour shares the slot.
+//!         // Per-field `alone` flag: true if no neighbour shares the slot.
 //!         const __pvm_storage_alone_total_supply: bool =
 //!             true && __pvm_storage_offset_total_supply.slot != __pvm_storage_offset_balances.slot;
 //!         const __pvm_storage_alone_balances: bool =
