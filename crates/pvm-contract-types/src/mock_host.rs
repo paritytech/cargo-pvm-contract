@@ -1649,8 +1649,8 @@ mod tests {
 
     #[test]
     fn env_accessors_via_host() {
-        use std::rc::Rc;
         use crate::host::Host;
+        use std::rc::Rc;
 
         let mut block = [0u8; 32];
         block[0] = 5;

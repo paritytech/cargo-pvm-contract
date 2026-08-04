@@ -135,6 +135,10 @@ pub trait HostApi {
     fn origin(&self, output: &mut [u8; 20]);
     fn code_hash(&self, addr: &[u8; 20], output: &mut [u8; 32]);
     fn code_size(&self, addr: &[u8; 20]) -> u64;
+    /// Returns true if the account at addr has deployed code.
+    fn has_code(&self, addr: &[u8; 20]) -> bool {
+        self.code_size(addr) > 0
+    }
     fn delegate_call(
         &self,
         flags: CallFlags,
@@ -1177,7 +1181,7 @@ pub struct Env(Host);
 impl Env {
     #[doc(hidden)]
     #[inline(always)]
-    pub fn new(host: Host) -> Self {
+    pub(crate) fn new(host: Host) -> Self {
         Env(host)
     }
 
@@ -1192,28 +1196,28 @@ impl Env {
     pub fn value(&self) -> crate::U256 {
         let mut b = [0u8; 32];
         self.0.value_transferred(&mut b);
-        crate::U256::from_be_bytes(b)
+        crate::U256::from_le_bytes(b)
     }
 
     #[inline(always)]
     pub fn block_number(&self) -> u64 {
         let mut b = [0u8; 32];
         self.0.block_number(&mut b);
-        u64::from_be_bytes(b[24..].try_into().unwrap())
+        u64::from_le_bytes(b[..8].try_into().unwrap())
     }
 
     #[inline(always)]
     pub fn timestamp(&self) -> u64 {
         let mut b = [0u8; 32];
         self.0.now(&mut b);
-        u64::from_be_bytes(b[24..].try_into().unwrap())
+        u64::from_le_bytes(b[..8].try_into().unwrap())
     }
 
     #[inline(always)]
     pub fn chain_id(&self) -> crate::U256 {
         let mut b = [0u8; 32];
         self.0.chain_id(&mut b);
-        crate::U256::from_be_bytes(b)
+        crate::U256::from_le_bytes(b)
     }
 }
 
