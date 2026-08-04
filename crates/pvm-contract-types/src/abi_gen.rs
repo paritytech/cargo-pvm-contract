@@ -247,20 +247,12 @@ pub trait StorageTypeName {
     /// handles via `pvm-storage`.
     fn name() -> String;
 
-    /// `true` for `#[derive(SolStorage)]` structs; `false` for everything
-    /// else (primitives, `#[storage]` sub-structs, container handles).
-    /// Structs need a solc-style `"struct Contract.Name"` type reference
-    /// plus a `types` table entry; everything else stays as a bare name.
-    const IS_STRUCT: bool = false;
-
-    /// Push this type's own member entries into `types`, keyed by its
-    /// solc-style qualified name. No-op default — only `#[derive(SolStorage)]`
-    /// structs override this.
+    /// Push this type's own member entries into `types`, returning the
+    /// type's `"type"` field value. Default: bare name, no registration —
+    /// correct for primitives. `#[derive(SolStorage)]` and `#[storage]`
+    /// override this to register the struct's shape and return its
+    /// solc-style qualified key.
     fn emit_members(_registry: &mut LayoutTypesRegistry, _contract_name: &str) -> String {
-        // Default: primitives never call this (IS_STRUCT == false gates it).
-        // Falls back to the bare name rather than an empty string, so a
-        // future bug that accidentally hits this path is visible in the
-        // output instead of silently emitting, ty: "".
         Self::name()
     }
 }

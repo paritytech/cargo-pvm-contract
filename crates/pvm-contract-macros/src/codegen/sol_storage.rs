@@ -351,8 +351,6 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 ::std::string::String::from(#struct_name_str)
             }
 
-            const IS_STRUCT: bool = true;
-
             fn emit_members(
                 registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
                 contract_name: &str,
@@ -921,8 +919,6 @@ fn generate_sol_storage_impls(
                     ::std::string::String::from(stringify!(#name))
                 }
 
-                const IS_STRUCT: bool = true;
-
                 #emit_members_body
             }
         })
@@ -1038,8 +1034,6 @@ fn generate_sol_storage_impls(
                 fn name() -> ::std::string::String {
                     ::std::string::String::from(stringify!(#name))
                 }
-
-                const IS_STRUCT: bool = true;
 
                 #emit_members_body
             }

@@ -958,13 +958,6 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
 /// `Lazy<T>` as a layout-emit leaf — a single entry at `(base, offset)`.
 /// `offset` carries the packed sub-word placement (e.g. a `Lazy<u128>`
 /// sharing a slot lands at offset 16) so the rendered layout matches solc.
-///
-/// When `T::IS_STRUCT` is true (a `#[derive(SolStorage)]` struct value),
-/// the entry's `type` is the solc-style qualified name
-/// (`"struct Contract.Name"`), and the struct's own member breakdown is
-/// registered into `types` (once per distinct type) via
-/// `T::emit_members`. Plain primitives (`IS_STRUCT == false`) keep their
-/// bare `StorageTypeName::name()` and never touch `types`.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
     fn emit_entries(
@@ -975,11 +968,7 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        let type_name = if T::IS_STRUCT {
-            T::emit_members(registry, contract_name)
-        } else {
-            <T as pvm_contract_types::StorageTypeName>::name()
-        };
+        let type_name = T::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
@@ -1169,10 +1158,7 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        // Mapping<K, V> — V's struct registration, mapping's own `ty` unchanged
-        if V::IS_STRUCT {
-            V::emit_members(registry, contract_name); // key not needed here, only registration matters
-        }
+        V::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
@@ -1949,9 +1935,7 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        if T::IS_STRUCT {
-            T::emit_members(registry, contract_name); // registration only, key discarded
-        }
+        T::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
