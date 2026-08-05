@@ -123,8 +123,6 @@ pub struct MethodInfo {
     pub return_types: Vec<syn::Type>,
     pub returns_result: bool,
     pub mutability: StateMutability,
-    /// When set, the selector is precomputed (e.g. from a `.sol` file).
-    pub precomputed_selector: Option<[u8; 4]>,
     /// `#[non_reentrant]`: emit a reentrancy guard.
     pub is_non_reentrant: bool,
 }
@@ -185,16 +183,9 @@ pub(super) fn generate_param_decoding(
 fn build_selector_const(method: &MethodInfo) -> TokenStream {
     let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
 
-    if let Some(selector) = method.precomputed_selector {
-        let [s0, s1, s2, s3] = selector;
-        quote! {
-            const #sel_ident: [u8; 4] = [#s0, #s1, #s2, #s3];
-        }
-    } else {
-        let sig_expr = build_method_signature_expr(&method.sol_name, &method.param_types);
-        quote! {
-            const #sel_ident: [u8; 4] = ::pvm_contract_sdk::const_selector(#sig_expr);
-        }
+    let sig_expr = build_method_signature_expr(&method.sol_name, &method.param_types);
+    quote! {
+        const #sel_ident: [u8; 4] = ::pvm_contract_sdk::const_selector(#sig_expr);
     }
 }
 
@@ -617,7 +608,6 @@ mod tests {
             return_types: vec![],
             returns_result: false,
             mutability,
-            precomputed_selector: Some([0xde, 0xad, 0xbe, 0xef]),
             is_non_reentrant: false,
         }
     }

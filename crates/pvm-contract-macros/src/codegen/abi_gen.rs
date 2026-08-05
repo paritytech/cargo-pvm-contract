@@ -539,7 +539,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::View,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -561,7 +560,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::Pure,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);

@@ -14,8 +14,6 @@ pub struct Ctxt {
     overloaded_functions: HashMap<Option<SolIdent>, HashMap<String, HashSet<String>>>,
     // ns => set[path]
     types: HashMap<Option<SolIdent>, HashSet<String>>,
-    // enums:
-    enums: HashMap<Option<SolIdent>, HashSet<String>>,
 }
 
 impl Ctxt {
@@ -35,23 +33,6 @@ impl Ctxt {
             .unwrap_or_default()
             || (if ns.is_none() {
                 self.types
-                    .get(&self.current_ns)
-                    .map(|map| map.contains(&name))
-                    .unwrap_or_default()
-            } else {
-                false
-            })
-    }
-
-    pub fn is_enum(&self, path: syn_solidity::SolPath) -> bool {
-        let (ns, name) = Self::parse_path(path);
-
-        self.enums
-            .get(&ns)
-            .map(|map| map.contains(&name))
-            .unwrap_or_default()
-            || (if ns.is_none() {
-                self.enums
                     .get(&self.current_ns)
                     .map(|map| map.contains(&name))
                     .unwrap_or_default()
@@ -120,8 +101,8 @@ impl Ctxt {
     pub fn visit_enum(&mut self, item: &syn_solidity::ItemEnum) {
         let ns = self.current_ns.clone();
 
-        self.enums
-            .entry(ns)
+        self.types
+            .entry(ns.clone())
             .or_default()
             .insert(item.name.to_string());
     }

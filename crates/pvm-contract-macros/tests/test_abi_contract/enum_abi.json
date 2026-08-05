@@ -1,0 +1,55 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "name": "setFlag",
+    "outputs": [
+      {
+        "components": [
+          {
+            "name": "",
+            "type": "uint8"
+          }
+        ],
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidCalldata",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CalldataTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnknownSelector",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NonPayableValueReceived",
+    "type": "error"
+  }
+]

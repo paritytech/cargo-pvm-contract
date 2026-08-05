@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{DeriveInput, Fields, Type};
+use quote::{ToTokens, quote};
+use syn::{DataEnum, DeriveInput, Fields, Type};
 
 use crate::signature::SolType;
 
@@ -9,12 +9,65 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let fields = match &input.data {
         syn::Data::Struct(data) => &data.fields,
-        syn::Data::Enum(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "SolType can only be derived for structs",
-            ));
+        syn::Data::Enum(data) => {
+            if !input.generics.params.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums without generic params",
+                ));
+            };
+
+            if !input
+                .attrs
+                .iter()
+                .find(|x| {
+                    x.meta
+                        .path()
+                        .get_ident()
+                        .is_some_and(|x| x.to_string() == "repr")
+                        && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
+                })
+                .is_some()
+            {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums with `#[repr(u8)]` attribute",
+                ));
+            }
+
+            if !input
+                .attrs
+                .iter()
+                .find(|x| {
+                    x.meta
+                        .path()
+                        .get_ident()
+                        .is_some_and(|x| x.to_string() == "repr")
+                        && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
+                })
+                .is_some()
+            {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums with `#[repr(u8)]` attribute",
+                ));
+            }
+            if data.variants.iter().any(|x| x.discriminant.is_some()) {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums without explicit discriminants",
+                ));
+            }
+
+            if !data.variants.iter().all(|x| x.fields.is_empty()) {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums without fields on it's variants",
+                ));
+            }
+            return generate_enum_sol_type(name, &data);
         }
+
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
@@ -42,6 +95,103 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
     } else {
         expand_static_sol_type(name, fields, &field_info)
     }
+}
+
+fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<TokenStream> {
+    let conversion = variant.variants.iter().enumerate().map(|(index, variant)| {
+        let name = &variant.ident;
+        let index = index as u8;
+        quote! {
+            #index => Ok(Self::#name),
+        }
+    });
+    let error = format!(
+        "enum `{}` must implement `Copy` trait\nthis error means you need to derive `Copy` and `Clone` for the enum `{}`",
+        name.to_string(),
+        name.to_string()
+    );
+    Ok(quote! {
+        impl TryFrom<u8> for #name {
+            type Error = ::pvm_contract_sdk::SolDefaultError;
+
+            fn try_from(m: u8) -> Result<#name, Self::Error> {
+                match m {
+                    #(#conversion)*
+                    _ => Err(::pvm_contract_sdk::SolDefaultError::Panic(::pvm_contract_sdk::Panic::EnumConversionFailure))
+                }
+            }
+        }
+
+        trait DoesNotImpl {
+            const IMPLS: bool = false;
+        }
+        impl<T: ?Sized> DoesNotImpl for T {}
+
+        struct EnumCopyCheck<T: ?Sized>(core::marker::PhantomData<T>);
+
+        #[allow(dead_code)]
+        impl<T: ?Sized + Copy> EnumCopyCheck<T> {
+            const IMPLS: bool = true;
+        }
+
+        const _: () = const {
+             {
+                assert!(<EnumCopyCheck<#name>>::IMPLS,#error)
+            }
+    };
+
+        impl ::pvm_contract_sdk::SolEncode for #name {
+            const IS_DYNAMIC: bool = u8::IS_DYNAMIC;
+            const SOL_NAME: &'static str = u8::SOL_NAME;
+            const HEAD_SIZE: usize = u8::HEAD_SIZE;
+
+            #[inline]
+            fn encode_body_len(&self) -> usize {
+                (*self as u8).encode_body_len()
+            }
+
+            fn encode_body_to(&self, buf: &mut [u8]) {
+                (*self as u8).encode_body_to(buf)
+            }
+
+            /// Indexed topic for a struct value is `keccak256(abi.encode(self))`
+            /// per the Solidity event spec, not the right-aligned default.
+            fn indexed_topic(&self) -> [u8; 32] {
+                const __ENC_SIZE: usize = u8::HEAD_SIZE;
+                let mut __buf = [0u8; __ENC_SIZE];
+                <Self as ::pvm_contract_sdk::SolEncode>::encode_to(self, &mut __buf);
+                ::pvm_contract_sdk::keccak256(&__buf)
+            }
+
+            #[cfg(feature = "abi-gen")]
+            fn abi_param(name: &str) -> ::pvm_contract_sdk::AbiParam {
+                extern crate alloc;
+                ::pvm_contract_sdk::AbiParam {
+                    name: "".to_string(),
+                    param_type: alloc::string::String::from("uint8"),
+                    components: vec![],
+                }
+            }
+        }
+
+        impl ::pvm_contract_sdk::StaticEncodedLen for #name {
+            const ENCODED_SIZE: usize = u8::ENCODED_SIZE;
+        }
+
+        impl ::pvm_contract_sdk::StaticDecode for #name {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self  {
+                u8::decode_unchecked(input, offset).try_into().unwrap()
+            }
+        }
+
+        impl ::pvm_contract_sdk::SolDecode for #name {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError>  {
+                u8::decode_at(input, offset).and_then(|x| #name::try_from(x).map_err(|_| ::pvm_contract_sdk::DecodeError))
+            }
+        }
+
+        impl ::pvm_contract_sdk::SolArrayElement for #name {}
+    })
 }
 
 fn expand_static_sol_type(
