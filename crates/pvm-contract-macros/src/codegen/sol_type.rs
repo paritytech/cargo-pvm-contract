@@ -17,17 +17,16 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
                 ));
             };
 
-            if !input
+            if input
                 .attrs
                 .iter()
                 .find(|x| {
                     x.meta
                         .path()
                         .get_ident()
-                        .is_some_and(|x| x.to_string() == "repr")
+                        .is_some_and(|x| *x == "repr")
                         && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
-                })
-                .is_some()
+                }).is_none()
             {
                 return Err(syn::Error::new_spanned(
                     input,
@@ -35,17 +34,16 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
                 ));
             }
 
-            if !input
+            if input
                 .attrs
                 .iter()
                 .find(|x| {
                     x.meta
                         .path()
                         .get_ident()
-                        .is_some_and(|x| x.to_string() == "repr")
+                        .is_some_and(|x| *x == "repr")
                         && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
-                })
-                .is_some()
+                }).is_none()
             {
                 return Err(syn::Error::new_spanned(
                     input,
@@ -65,7 +63,7 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
                     "SolType can only be derived for enums without fields on it's variants",
                 ));
             }
-            return generate_enum_sol_type(name, &data);
+            return generate_enum_sol_type(name, data);
         }
 
         syn::Data::Union(_) => {
@@ -107,8 +105,8 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
     });
     let error = format!(
         "enum `{}` must implement `Copy` trait\nthis error means you need to derive `Copy` and `Clone` for the enum `{}`",
-        name.to_string(),
-        name.to_string()
+        name,
+        name
     );
     Ok(quote! {
         impl TryFrom<u8> for #name {
