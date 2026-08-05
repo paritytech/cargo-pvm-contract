@@ -21,12 +21,10 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
                 .attrs
                 .iter()
                 .find(|x| {
-                    x.meta
-                        .path()
-                        .get_ident()
-                        .is_some_and(|x| *x == "repr")
+                    x.meta.path().get_ident().is_some_and(|x| *x == "repr")
                         && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
-                }).is_none()
+                })
+                .is_none()
             {
                 return Err(syn::Error::new_spanned(
                     input,
@@ -38,12 +36,10 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
                 .attrs
                 .iter()
                 .find(|x| {
-                    x.meta
-                        .path()
-                        .get_ident()
-                        .is_some_and(|x| *x == "repr")
+                    x.meta.path().get_ident().is_some_and(|x| *x == "repr")
                         && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
-                }).is_none()
+                })
+                .is_none()
             {
                 return Err(syn::Error::new_spanned(
                     input,
@@ -105,8 +101,7 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
     });
     let error = format!(
         "enum `{}` must implement `Copy` trait\nthis error means you need to derive `Copy` and `Clone` for the enum `{}`",
-        name,
-        name
+        name, name
     );
     Ok(quote! {
         impl TryFrom<u8> for #name {
