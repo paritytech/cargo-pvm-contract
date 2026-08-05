@@ -23,7 +23,7 @@ mod caller_check {
         pub fn record_caller(&mut self) {
             let caller = self.env().caller();
             let mut buf = [0u8; 32];
-            buf[12..32].copy_from_slice(&caller.as_ref());
+            buf[12..32].copy_from_slice(caller.as_ref());
             self.host().set_storage(StorageFlags::empty(), &LAST_CALLER_KEY, &buf);
         }
 
