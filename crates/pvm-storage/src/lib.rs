@@ -577,9 +577,11 @@ pub trait StorageLayoutEmit {
     ///
     /// Struct-typed leaves (a `#[storage]` sub-struct, or a `Lazy`/`Mapping`
     /// value whose type derives `SolStorage`) push exactly one entry into
-    /// `out` and register their own member breakdown into `types`, keyed by
-    /// their solc-style type name (e.g. `"struct Outer.Inner"`), instead of
-    /// flattening into `out`.
+    /// `out`, whose `type` field is a synthetic key (e.g.
+    /// `t_struct(Inner)0_storage`) into a `types` table entry describing the
+    /// struct's members that entry's own `label` holds the solc-style
+    /// qualified name (e.g. `"struct Outer.Inner"`) instead of flattening
+    /// into `out`.
     fn emit_entries(
         base: u64,
         offset: u8,

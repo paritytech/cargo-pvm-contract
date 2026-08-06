@@ -98,7 +98,10 @@ pub struct StorageLayoutEntry {
     pub ty: String,
 }
 
-// Adding the below derive to have it in sync with other declarations
+/// A single entry in the `types` table, describes a struct's shape
+/// (label, encoding, byte size, and member fields), keyed by a synthetic
+/// type key in `LayoutTypesRegistry`. Mirrors solc's `storageLayout.types`
+/// entry shape.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayoutTypeEntry {
     pub label: String, // "struct Outer.Inner"
@@ -123,11 +126,11 @@ impl LayoutTypesRegistry {
 
     /// Primitives: deterministic key, no counter, idempotent.
     ///
-    /// Not yet called anywhere in this PR: primitive types (`uint256`, `bool`,
-    /// etc.) aren't currently routed through the `types` table, only structs are
-    /// (see `register_struct`). This is included now as the reference
-    /// implementation for that follow-up work, so the
-    /// eventual change continues here rather than a fresh design with min effort.
+    /// Not yet called anywhere in this codebase: primitive types (`uint256`,
+    /// `bool`, etc.) aren't currently routed through the `types` table, only
+    /// structs are (see `register_struct`). Kept as the reference
+    /// implementation for that follow-up work, so it's a sample to start building
+    /// later rather than a fresh design.
     #[allow(dead_code)]
     pub fn register_primitive(&mut self, sol_name: &str, number_of_bytes: &str) -> String {
         let key = alloc::format!("t_{sol_name}");
@@ -174,7 +177,8 @@ impl LayoutTypesRegistry {
         let id = self.next_struct_id;
         // Unlike solc's astId-derived keys, we assign a simple incrementing
         // counter per contract, since this SDK has no AST to draw a stable ID
-        // from (see team decision, description: [https://github.com/paritytech/cargo-pvm-contract/pull/130]).
+        // from. This is a deliberate simplification, not a parity gap solc itself
+        // would recognize, see the module-level notes on synthetic vs. solc keys.
         self.next_struct_id += 1;
         let key = alloc::format!("t_struct({struct_name}){id}_storage");
         self.types.insert(
