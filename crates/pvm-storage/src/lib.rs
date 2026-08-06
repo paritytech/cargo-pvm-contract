@@ -1166,10 +1166,15 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
 /// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
 /// is always `0` here; it is threaded through for signature uniformity.
 ///
-/// Register V's struct shape into `types` if needed — the mapping's
-/// OWN type string (`mapping(K => V)`) still uses V's bare name via
-/// StorageTypeName, matching solc; only V's *own* entry in `types`
-/// needs the qualified name.
+/// Registers V's struct shape into `types` via `V::emit_members`, then
+/// resolves the returned key back to its registered label to build this
+/// mapping's own qualified type string
+/// (`"mapping(K => struct Contract.Name)"`). Confirmed against real solc
+/// output: solc qualifies the value type inside a mapping's label even
+/// though the value itself is a struct, not just at the value's own
+/// top-level entry. `emit_members` recurses correctly when `V` is itself a
+/// `Mapping`/`StorageVec`, so nested struct-valued containers qualify at
+/// every level.
 #[cfg(feature = "abi-gen")]
 impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeName>
     StorageLayoutEmit for Mapping<K, V>
@@ -1968,9 +1973,14 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
 /// `T` covers the nested `StorageVec<StorageVec<U256>>` shape too, since the
 /// inner `StorageVec<U256>` itself implements `StorageTypeName` above.
 ///
-/// Register T's struct shape into `types` if needed — StorageVec's OWN
-/// type string ("T[]") still uses T's bare name via StorageTypeName,
-/// matching solc; only T's *own* entry in `types` needs the qualified name.
+/// Registers T's struct shape into `types` via `T::emit_members`, then
+/// resolves the returned key back to its registered label to build this
+/// array's own qualified type string (`"struct Contract.Name[]"`).
+/// Confirmed against real solc output: `Point[]` labels as
+/// `"struct Contract.Point[]"`, not the bare name. `emit_members` recurses
+/// correctly when `T` is itself a `StorageVec`/`Mapping`, so
+/// `StorageVec<StorageVec<Struct>>` and `Mapping<K, StorageVec<Struct>>`
+/// qualify at every nesting level.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T> {
     fn emit_entries(

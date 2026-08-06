@@ -291,8 +291,8 @@ pub struct Point {
 
 /// Normalized `types` table entry — the struct's own shape, independent of
 /// solc's internal `t_struct(...)N_storage` key vs. our
-/// `t_struct(Name)_N_storage` key (only the `label` and `members`/`number_of_bytes`
-/// /`encoding` are compared, keyed by label since key formats differ by design).
+/// `t_struct(Name)N_storage` key (only the `label` and `members`/`number_of_bytes`
+/// `encoding` are compared, keyed by label since key formats differ by design).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct NormType {
     label: String,

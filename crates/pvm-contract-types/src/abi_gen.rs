@@ -172,8 +172,9 @@ impl LayoutTypesRegistry {
             return k.clone();
         }
         let id = self.next_struct_id;
-        // Irrespective of how the astIds and hence the naming for struct works.
-        // Due to implementation barriers, we would be having incremental astIds
+        // Unlike solc's astId-derived keys, we assign a simple incrementing
+        // counter per contract, since this SDK has no AST to draw a stable ID
+        // from (see team decision, description: [https://github.com/paritytech/cargo-pvm-contract/pull/130]).
         self.next_struct_id += 1;
         let key = alloc::format!("t_struct({struct_name}){id}_storage");
         self.types.insert(
