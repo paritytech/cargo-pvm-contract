@@ -687,3 +687,49 @@ fn mapping_of_storage_vec_of_struct_layout_json_qualifies_struct_name() {
          inside the array, matching solc. Got layout: {layout}",
     );
 }
+
+#[cfg(feature = "abi-gen")]
+#[allow(dead_code)]
+#[pvm_contract_macros::contract(no_main)]
+mod fixed_array_layout_contract {
+    use super::*;
+
+    pub struct FixedArrayRegistry {
+        pub points: Lazy<[PackedPoint; 3]>,
+        pub sel: Lazy<[u8; 4]>,
+    }
+
+    impl FixedArrayRegistry {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn fixed_array_of_struct_layout_json_qualifies_struct_name() {
+    let layout = fixed_array_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    let points = entries.iter().find(|e| e["label"] == "points").unwrap();
+    assert_eq!(
+        points["type"], "struct FixedArrayRegistry.PackedPoint[3]",
+        "Lazy<[Struct; N]> should qualify the struct name, matching solc \
+        (`Point[3]` → `struct Contract.Point[3]`). Got layout: {layout}",
+    );
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn fixed_array_of_bytes_layout_json_unaffected() {
+    let layout = fixed_array_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    let sel = entries.iter().find(|e| e["label"] == "sel").unwrap();
+    assert_eq!(
+        sel["type"], "bytes4",
+        "[u8; N] stays bytesN, never qualified — matches solc's bytes4 handling",
+    );
+}
