@@ -553,17 +553,19 @@ pub trait StorageComponent: Sized {
 // StorageLayoutEmit: per-struct hook for emitting layout JSON leaves.
 // ---------------------------------------------------------------------------
 
-/// Push flattened storage-layout entries for a composable storage component.
+/// Push a storage-layout entry for a composable storage component.
 ///
 /// The `#[contract]` macro generates the top-level `__storage_layout_json()`
 /// function by dispatching **every** storage field through this trait — there
-/// is no separate inlined-leaf path. `Lazy<T>` and `Mapping<K, V>` push a
-/// single entry; embedded `#[storage]` sub-structs recursively flatten their
-/// own fields, prefixing each entry's label with the field path
-/// (`erc20.total_supply`, `metadata.name`, …) to match solc's storage-layout
-/// convention. Adding a new storage component (e.g. a `StorageVec<T>`) is
-/// therefore a pure trait-impl task: implement this (and `StorageTypeName`)
-/// and the macro renders it with no codegen changes.
+/// is no separate inlined-leaf path. Every field pushes exactly one entry
+/// into `out`; struct-typed fields (embedded `#[storage]` sub-structs, or a
+/// `Lazy`/`Mapping`/`StorageVec` value whose type derives `SolStorage`)
+/// additionally register their own member breakdown into the `types`
+/// registry via `StorageTypeName::emit_members`, matching solc's
+/// storage-layout convention — no flattening into `out`. Adding a new
+/// storage component (e.g. a new container type) is therefore a pure
+/// trait-impl task: implement this (and `StorageTypeName`) and the macro
+/// renders it with no codegen changes.
 ///
 /// `#[storage]` auto-emits this impl. Hand-rolled storage components need to
 /// implement it explicitly to participate in abi-gen layout output.
@@ -579,8 +581,8 @@ pub trait StorageLayoutEmit {
     /// value whose type derives `SolStorage`) push exactly one entry into
     /// `out`, whose `type` field is a synthetic key (e.g.
     /// `t_struct(Inner)0_storage`) into a `types` table entry describing the
-    /// struct's members that entry's own `label` holds the solc-style
-    /// qualified name (e.g. `"struct Outer.Inner"`) instead of flattening
+    /// struct's members — that entry's own `label` holds the solc-style
+    /// qualified name (e.g. `"struct Outer.Inner"`) — instead of flattening
     /// into `out`.
     fn emit_entries(
         base: u64,
