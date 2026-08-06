@@ -71,9 +71,10 @@ pub fn generate_abi_gen(
 /// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
 /// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
 /// fields run through [`generate_layout_emit`] with an empty prefix —
-/// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
-/// `#[storage]` sub-structs dispatch through `StorageLayoutEmit::emit_entries`
-/// to recursively flatten their leaves with dotted labels.
+/// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries; embedded
+/// `#[storage]` sub-structs also push a single entry (no flattening),
+/// registering their own member breakdown into the `types` table via
+/// `StorageTypeName::emit_members`.
 fn storage_layout_helper(slot_fields: &[SlotField], contract_name_str: &str) -> TokenStream {
     use super::contract::Slot;
 
