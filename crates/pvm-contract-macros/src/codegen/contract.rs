@@ -883,63 +883,54 @@ fn collect_folded_error_type(
     error_types: &mut Vec<syn::Type>,
     seen_error_names: &mut Vec<String>,
 ) -> syn::Result<bool> {
-    let syn::ReturnType::Type(_, ty) = output else {
-        return Ok(false);
-    };
-    let syn::Type::Path(type_path) = ty.as_ref() else {
-        return Ok(false);
-    };
-    let Some(segment) = type_path.path.segments.last() else {
-        return Ok(false);
-    };
-    if segment.ident != "Result" {
-        return Ok(false);
-    }
-    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
-        return Ok(false);
-    };
-    let type_args: Vec<_> = args
-        .args
-        .iter()
-        .filter_map(|a| match a {
-            syn::GenericArgument::Type(t) => Some(t),
-            _ => None,
-        })
-        .collect();
-    if type_args.len() < 2 {
-        return Ok(false);
-    }
-    let err_ty = type_args[1];
-    let self_error = is_self_error_path(err_ty);
-    let concrete = if self_error {
-        match error_binding {
-            Some(bound) => bound.clone(),
-            None => {
-                return Err(syn::Error::new_spanned(
-                    err_ty,
-                    "folded method returns `Result<_, Self::Error>` but the interface has no \
-                     error binding; write `implements(ITrait<Error = YourError>)`",
-                ));
+    // Not a `Result<_, E>` return: nothing to register.
+    if let syn::ReturnType::Type(_, ty) = output
+        && let syn::Type::Path(type_path) = ty.as_ref()
+        && let Some(segment) = type_path.path.segments.last()
+        && segment.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(err_ty) = args
+            .args
+            .iter()
+            .filter_map(|a| match a {
+                syn::GenericArgument::Type(t) => Some(t),
+                _ => None,
+            })
+            .nth(1)
+    {
+        let self_error = is_self_error_path(err_ty);
+        let concrete = if self_error {
+            match error_binding {
+                Some(bound) => bound.clone(),
+                None => {
+                    return Err(syn::Error::new_spanned(
+                        err_ty,
+                        "folded method returns `Result<_, Self::Error>` but the interface has no \
+                         error binding; write `implements(ITrait<Error = YourError>)`",
+                    ));
+                }
             }
+        } else if type_references_self(err_ty) {
+            // Any other `Self`-referencing error type would substitute the binding
+            // for the wrong type (advertising it in the ABI while the runtime
+            // encodes something else), so reject it.
+            return Err(syn::Error::new_spanned(
+                err_ty,
+                "a folded method's error type must be a concrete type or exactly `Self::Error` \
+                 (resolved via the interface's `<Error = ...>` binding)",
+            ));
+        } else {
+            err_ty.clone()
+        };
+        let name = quote! { #concrete }.to_string();
+        if !seen_error_names.contains(&name) {
+            seen_error_names.push(name);
+            error_types.push(concrete);
         }
-    } else if type_references_self(err_ty) {
-        // Any other `Self`-referencing error type would substitute the binding for
-        // the wrong type (advertising it in the ABI while the runtime encodes
-        // something else), so reject it.
-        return Err(syn::Error::new_spanned(
-            err_ty,
-            "a folded method's error type must be a concrete type or exactly `Self::Error` \
-             (resolved via the interface's `<Error = ...>` binding)",
-        ));
+        Ok(self_error && error_binding.is_some())
     } else {
-        err_ty.clone()
-    };
-    let name = quote! { #concrete }.to_string();
-    if !seen_error_names.contains(&name) {
-        seen_error_names.push(name);
-        error_types.push(concrete);
+        Ok(false)
     }
-    Ok(self_error && error_binding.is_some())
 }
 
 /// Resolve the single interface `contract`/`interface` declaration in a `.sol`
