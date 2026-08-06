@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
-use crate::utils::{capitalize, to_camel_case, to_pascal_case, to_snake_case};
+use crate::utils::{capitalize, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(
