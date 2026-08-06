@@ -2,6 +2,7 @@ extern crate alloc;
 pub use pvm_contract_sdk::*;
 
 #[test]
+#[allow(clippy::too_many_arguments)]
 fn selector_parity() {
     mod t {
         use super::*;
