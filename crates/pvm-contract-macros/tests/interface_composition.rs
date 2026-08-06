@@ -346,6 +346,59 @@ mod matching {
         assert_eq!(route_u64("folded()"), 1); // from the folded a::IThing
         assert_eq!(route_u64("extra()"), 2); // from the non-folded b::IThing #[method]
     }
+
+    // Two distinct same-last-segment traits from different modules, both folded
+    // via qualified paths. The path-aware dedup allows this; a last-segment-only
+    // dedup would wrongly reject `implements(x::IThing, y::IThing)` as a duplicate.
+    pub mod x {
+        pub trait IThing {
+            fn x_val(&self) -> u64;
+        }
+    }
+    pub mod y {
+        pub trait IThing {
+            fn y_val(&self) -> u64;
+        }
+    }
+
+    #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
+    #[pvm_contract_macros::contract(implements(x::IThing, y::IThing))]
+    mod both {
+        use super::{x, y};
+
+        pub struct C;
+
+        impl C {
+            #[pvm_contract_macros::constructor]
+            pub fn new(&mut self) {}
+        }
+
+        impl x::IThing for C {
+            fn x_val(&self) -> u64 {
+                1
+            }
+        }
+
+        impl y::IThing for C {
+            fn y_val(&self) -> u64 {
+                2
+            }
+        }
+    }
+
+    #[test]
+    fn two_same_named_qualified_traits_both_fold() {
+        let mut contract = both::C::with_host(MockHostBuilder::new().build());
+        let mut buf = [0u8; both::MAX_RETURN_LEN];
+        for (sig, want) in [("xVal()", 1u64), ("yVal()", 2u64)] {
+            let mut out: &mut [u8] = &mut buf;
+            let outcome = both::route(&mut contract, const_selector(sig), &[], &mut out);
+            let Outcome::Return(n) = outcome else {
+                panic!("expected Return for `{sig}`, got {outcome:?}");
+            };
+            assert_eq!(u64::decode(out.view(n)).unwrap(), want);
+        }
+    }
 }
 
 mod attributes {

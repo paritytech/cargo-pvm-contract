@@ -1,0 +1,5 @@
+error: duplicate interface in `implements(...)`: another entry already covers this trait (they share a suffix); list distinct interfaces, qualifying the paths if two share a name
+ --> tests/ui/implements_duplicate.rs:9:52
+  |
+9 | #[pvm_contract_macros::contract(implements(IThing, IThing))]
+  |                                                    ^^^^^^

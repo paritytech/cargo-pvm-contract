@@ -164,18 +164,21 @@ impl Parse for ContractArgs {
                         ));
                     }
                     for r in refs {
-                        // A trait listed twice would fold its methods twice —
-                        // a duplicate-selector collision at best, confusing at
-                        // worst. Reject by last-segment ident (the matching key).
-                        let last = |p: &syn::Path| p.segments.last().map(|s| s.ident.clone());
-                        if args
-                            .implements
-                            .iter()
-                            .any(|existing| last(&existing.path) == last(&r.path))
-                        {
+                        // Reject an entry another already covers, using the same
+                        // suffix matching the fold uses (`trait_path_matches`): a
+                        // bare `IThing` and a qualified `a::IThing` overlap and would
+                        // double-fold, but distinct `a::IThing` / `b::IThing` are kept
+                        // (a genuine same-trait double-fold via different spellings is
+                        // still caught by the selector-collision guard).
+                        if args.implements.iter().any(|existing| {
+                            trait_path_matches(&existing.path, &r.path)
+                                || trait_path_matches(&r.path, &existing.path)
+                        }) {
                             return Err(syn::Error::new_spanned(
                                 &r.path,
-                                "duplicate interface in `implements(...)`",
+                                "duplicate interface in `implements(...)`: another entry already \
+                                 covers this trait (they share a suffix); list distinct interfaces, \
+                                 qualifying the paths if two share a name",
                             ));
                         }
                         args.implements.push(r);
@@ -853,16 +856,20 @@ fn is_self_error_path(ty: &syn::Type) -> bool {
     if tp.qself.is_some() {
         return false;
     }
-    let segs: Vec<_> = tp.path.segments.iter().collect();
     // Exactly `Self::Error`, with no generic arguments on either segment — a
     // `Self::Error<T>` is not the plain associated type the binding names, so it
     // falls through to the reject branch with a clear message rather than passing
     // the "exact" check and failing later with a worse diagnostic.
-    segs.len() == 2
-        && segs[0].ident == "Self"
-        && matches!(segs[0].arguments, syn::PathArguments::None)
-        && segs[1].ident == "Error"
-        && matches!(segs[1].arguments, syn::PathArguments::None)
+    let mut segs = tp.path.segments.iter();
+    match (segs.next(), segs.next(), segs.next()) {
+        (Some(a), Some(b), None) => {
+            a.ident == "Self"
+                && matches!(a.arguments, syn::PathArguments::None)
+                && b.ident == "Error"
+                && matches!(b.arguments, syn::PathArguments::None)
+        }
+        _ => false,
+    }
 }
 
 /// Register a folded method's error type for the ABI, substituting a `Self::Error`

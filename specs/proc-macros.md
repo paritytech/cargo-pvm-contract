@@ -360,7 +360,7 @@ pub trait IErc20 {
 - Parameter types are resolved through their `SolEncode::SOL_NAME` at const-eval, so custom types (`#[derive(SolType)]` structs) work as parameters.
 - Adding the associated const makes the trait non-object-safe (it can no longer be used behind `dyn`).
 
-Compile errors: an empty trait, a generic method (its selector is undefined), a `#[cfg]`-gated method (it would still contribute its selector to the XOR, so the ID wouldn't match the active method set), a trait that already declares `INTERFACE_ID`, or two methods that produce the same selector (they would silently cancel in the XOR — rename one with `#[selector(name = "...")]`).
+Compile errors: an empty trait, a generic method (its selector is undefined), a `#[cfg]`-gated method (it would still contribute its selector to the XOR, so the ID wouldn't match the active method set), a method with a default body (it would still be counted in `INTERFACE_ID` but is not folded into dispatch unless the impl restates it, so ERC-165 could advertise a method the contract doesn't serve), a trait that already declares `INTERFACE_ID`, or two methods that produce the same selector (they would silently cancel in the XOR — rename one with `#[selector(name = "...")]`).
 
 ## Interface Composition (`implements(...)`)
 
@@ -396,7 +396,7 @@ mod my_token {
 
 Compile errors: `implements()` empty or listing a duplicate trait; an interface with no matching `impl` in the module; an ambiguous match, where two distinct traits sharing the matched suffix both have an `impl` for the contract; an `impl` of the interface that targets no struct but the contract (all same-trait impls point elsewhere), or one that is generic or carries a `where` clause; a generic folded method; a no-receiver folded method; a folded method with a `Self::_`-rooted parameter *or return type* (e.g. `Self::Value`); a folded error type that nests `Self` (e.g. `Wrapper<Self::Error>` — write it concretely instead); a folded method returning `Result<_, Self::Error>` with no `<Error = Ty>` binding; a `<Error = Ty>` binding that disagrees with the impl's `type Error`; two dispatched methods (inherent or folded) that share a 4-byte selector; a lifecycle attribute (`#[constructor]`/`#[fallback]`/`#[receive]`) on a folded method (it always dispatches as an ordinary method — declare lifecycle handlers as inherent `impl` methods); and `#[cfg]`/`#[cfg_attr]` on a folded method *or on the folded* `impl` *block* (use an inherent `#[method]` for feature-gated entry points). Only the traits listed in `implements(...)` are folded — an `impl OtherTrait for Contract` not listed is left as an ordinary trait impl.
 
-Only the methods the `impl` block writes become entry points. A trait method that has a **default body** but isn't restated in the impl is *not* folded: a `.sol` interface flags it through the missing-implementation check, while without a `.sol` it is silently absent from both dispatch and the ABI. Restate the method in the `impl` to expose it.
+Only the methods the `impl` block writes become entry points. A trait method that has a **default body** but isn't restated in the impl is *not* folded: a `.sol` interface flags it through the missing-implementation check, while without a `.sol` it is silently absent from both dispatch and the ABI. Restate the method in the `impl` to expose it. (An `#[interface_id]` trait rejects default bodies outright, since a defaulted method would otherwise be counted in `INTERFACE_ID` while going undispatched.)
 
 ## ABI Generation
 

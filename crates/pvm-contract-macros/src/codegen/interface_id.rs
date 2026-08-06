@@ -66,6 +66,19 @@ pub fn expand_interface_id(mut input: ItemTrait) -> syn::Result<TokenStream> {
     for item in &mut input.items {
         let TraitItem::Fn(f) = item else { continue };
 
+        // Interface methods must be abstract. A default body still contributes its
+        // selector to INTERFACE_ID, but `implements(...)` only folds methods the
+        // impl restates, so a defaulted-but-unrestated method would be advertised
+        // by ERC-165 `supportsInterface` yet have no dispatch arm.
+        if f.default.is_some() {
+            return Err(syn::Error::new(
+                f.sig.ident.span(),
+                "#[interface_id]: interface methods must not have a default body; a defaulted \
+                 method still contributes its selector to INTERFACE_ID but is not dispatched \
+                 unless the impl restates it",
+            ));
+        }
+
         // A selector needs a concrete signature; generic methods have none.
         let generics = &f.sig.generics;
         if generics
