@@ -1136,6 +1136,30 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
             <V as pvm_contract_types::StorageTypeName>::name(),
         )
     }
+
+    /// Recursively resolves `V`'s qualified display string — if `V` is a
+    /// struct, this returns its registered `"struct Contract.Name"` label
+    /// (not the raw registry key); if `V` is itself a `Mapping<K2, V2>`,
+    /// this recurses through `V`'s own `emit_members` override, so
+    /// `Mapping<K1, Mapping<K2, Struct>>` correctly qualifies at every
+    /// nesting level, matching solc.
+    fn emit_members(
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        let v_key =
+            <V as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
+        let v_display = registry
+            .types
+            .get(&v_key)
+            .map(|entry| entry.label.clone())
+            .unwrap_or(v_key);
+        alloc::format!(
+            "mapping({} => {})",
+            <K as pvm_contract_types::StorageTypeName>::name(),
+            v_display,
+        )
+    }
 }
 
 /// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K => V)` entry.
@@ -1158,12 +1182,20 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        V::emit_members(registry, contract_name);
+        // let v_key = V::emit_members(registry, contract_name);
+        // let v_display = registry.types.get(&v_key)
+        //     .map(|entry| entry.label.clone())
+        //     .unwrap_or(v_key); // primitives: emit_members returns the bare name directly (no registry entry), so this fallback covers that case
+
+        let ty =
+            <Self as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
+
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+            ty,
+            // ty: alloc::format!("mapping({} => {})", <K as pvm_contract_types::StorageTypeName>::name(), v_display),
         });
     }
 }
@@ -1914,6 +1946,26 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
     fn name() -> alloc::string::String {
         alloc::format!("{}[]", <T as pvm_contract_types::StorageTypeName>::name())
     }
+
+    /// Recursively resolves `T`'s qualified display string, the same way
+    /// `Mapping<K, V>::emit_members` does — if `T` is a struct, returns its
+    /// registered `"struct Contract.Name"` label instead of the bare name;
+    /// if `T` is itself `StorageVec<T2>` or `Mapping<K2, T2>`, recurses
+    /// through `T`'s own override, so `StorageVec<StorageVec<Struct>>` and
+    /// `Mapping<K, StorageVec<Struct>>` qualify correctly at every level.
+    fn emit_members(
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        let t_key =
+            <T as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
+        let t_display = registry
+            .types
+            .get(&t_key)
+            .map(|entry| entry.label.clone())
+            .unwrap_or(t_key);
+        alloc::format!("{}[]", t_display)
+    }
 }
 
 /// `StorageVec<T>` as a layout-emit leaf — a single `T[]` entry. The length
@@ -1935,12 +1987,24 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        T::emit_members(registry, contract_name);
+        // let t_key = T::emit_members(registry, contract_name);
+        // let t_display = registry.types.get(&t_key)
+        //     .map(|entry| entry.label.clone())
+        //     .unwrap_or(t_key);
+
+        // out.push(pvm_contract_types::StorageLayoutEntry {
+        //     label: String::from(name_prefix),
+        //     slot: alloc::format!("{}", base),
+        //     offset,
+        //     ty: alloc::format!("{}[]", t_display),
+        // });
+        let ty =
+            <Self as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+            ty,
         });
     }
 }
