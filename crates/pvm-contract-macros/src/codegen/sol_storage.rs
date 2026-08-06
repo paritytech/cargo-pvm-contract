@@ -536,7 +536,6 @@ fn build_member_emit_pushes(
         .collect()
 }
 
-
 /// Emit the `StorageEncode` + `StorageDecode` impls for a SolStorage-derived
 /// struct. Supports both static layouts (all fields `Packable`) and
 /// dynamic-bodied layouts (fields include `String` / `Bytes` — solc-style
