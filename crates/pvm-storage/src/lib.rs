@@ -1182,11 +1182,6 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        // let v_key = V::emit_members(registry, contract_name);
-        // let v_display = registry.types.get(&v_key)
-        //     .map(|entry| entry.label.clone())
-        //     .unwrap_or(v_key); // primitives: emit_members returns the bare name directly (no registry entry), so this fallback covers that case
-
         let ty =
             <Self as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
 
@@ -1195,7 +1190,6 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
             slot: alloc::format!("{}", base),
             offset,
             ty,
-            // ty: alloc::format!("mapping({} => {})", <K as pvm_contract_types::StorageTypeName>::name(), v_display),
         });
     }
 }
@@ -1987,17 +1981,6 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T>
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
         registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
-        // let t_key = T::emit_members(registry, contract_name);
-        // let t_display = registry.types.get(&t_key)
-        //     .map(|entry| entry.label.clone())
-        //     .unwrap_or(t_key);
-
-        // out.push(pvm_contract_types::StorageLayoutEntry {
-        //     label: String::from(name_prefix),
-        //     slot: alloc::format!("{}", base),
-        //     offset,
-        //     ty: alloc::format!("{}[]", t_display),
-        // });
         let ty =
             <Self as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
