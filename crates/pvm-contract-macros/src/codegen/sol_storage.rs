@@ -503,6 +503,40 @@ fn build_emit_members_body(name: &syn::Ident, member_emit_pushes: &[TokenStream]
     }
 }
 
+/// Build the per-field `member_entries.push(...)` token blocks shared by both
+/// the dynamic and static branches of `generate_sol_storage_impls`. Each
+/// field's slot/offset comes from `Self::__STORAGE_LAYOUT`, and its `type` is
+/// resolved via `StorageTypeName::emit_members` so struct-valued fields (once
+/// supported) would qualify correctly the same way primitives do today.
+fn build_member_emit_pushes(
+    field_info: &[(Option<syn::Ident>, SolType)],
+    field_types: &[&Type],
+) -> Vec<TokenStream> {
+    field_info
+        .iter()
+        .zip(field_types.iter())
+        .enumerate()
+        .map(|(i, ((field_name, _), field_ty))| {
+            let label = match field_name {
+                Some(ident) => ident.to_string(),
+                None => i.to_string(),
+            };
+            quote! {
+                {
+                    let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
+                    member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                        label: ::std::string::String::from(#label),
+                        slot: __s.to_string(),
+                        offset: 32u8 - __o as u8 - <#field_ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES as u8,
+                        ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::emit_members(registry, contract_name),
+                    });
+                }
+            }
+        })
+        .collect()
+}
+
+
 /// Emit the `StorageEncode` + `StorageDecode` impls for a SolStorage-derived
 /// struct. Supports both static layouts (all fields `Packable`) and
 /// dynamic-bodied layouts (fields include `String` / `Bytes` — solc-style
@@ -789,28 +823,7 @@ fn generate_sol_storage_impls(
             Fields::Unit => quote! { Self },
         };
 
-        let member_emit_pushes: Vec<TokenStream> = field_info
-            .iter()
-            .zip(field_types.iter())
-            .enumerate()
-            .map(|(i, ((field_name, _), field_ty))| {
-                let label = match field_name {
-                    Some(ident) => ident.to_string(),
-                    None => i.to_string(),
-                };
-                quote! {
-                    {
-                        let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
-                        member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                            label: ::std::string::String::from(#label),
-                            slot: __s.to_string(),
-                            offset: 32u8 - __o as u8 - <#field_ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES as u8,
-                            ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::emit_members(registry, contract_name),
-                        });
-                    }
-                }
-            })
-            .collect();
+        let member_emit_pushes = build_member_emit_pushes(field_info, &field_types);
 
         let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
         Ok(quote! {
@@ -923,28 +936,7 @@ fn generate_sol_storage_impls(
             }
         })
     } else {
-        let member_emit_pushes: Vec<TokenStream> = field_info
-            .iter()
-            .zip(field_types.iter())
-            .enumerate()
-            .map(|(i, ((field_name, _), field_ty))| {
-                let label = match field_name {
-                    Some(ident) => ident.to_string(),
-                    None => i.to_string(),
-                };
-                quote! {
-                    {
-                        let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
-                        member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
-                            label: ::std::string::String::from(#label),
-                            slot: __s.to_string(),
-                            offset: 32u8 - __o as u8 - <#field_ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES as u8,
-                            ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::emit_members(registry, contract_name),
-                        });
-                    }
-                }
-            })
-            .collect();
+        let member_emit_pushes = build_member_emit_pushes(field_info, &field_types);
 
         let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
 
