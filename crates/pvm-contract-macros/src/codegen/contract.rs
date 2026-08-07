@@ -2498,6 +2498,11 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
             pub fn host(&self) -> &::pvm_contract_sdk::Host {
                 &self.host
             }
+
+            #[inline(always)]
+            pub fn env(&self) -> ::pvm_contract_sdk::Env {
+                self.host.env()
+            }
         }
 
         #[cfg(not(feature = "abi-gen"))]
@@ -5084,6 +5089,30 @@ mod tests {
         assert!(
             !s.contains("__pvm_assert_non_payable"),
             "receive is implicitly payable: call() must not invoke the non-payable guard; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn generates_env_accessor() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let tokens = expand_contract(ContractArgs::default(), item).unwrap();
+        let output = tokens.to_string();
+
+        assert!(
+            output.contains("pub fn env"),
+            "env() accessor should be generated on the struct"
         );
     }
 

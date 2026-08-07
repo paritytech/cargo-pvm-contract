@@ -40,6 +40,9 @@ pub use host::{
     ReturnFlags, StorageFlags,
 };
 
+#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+pub use host::Env;
+
 mod reentrancy;
 pub use reentrancy::ReentrancyGuardReentrantCall;
 #[doc(hidden)]
