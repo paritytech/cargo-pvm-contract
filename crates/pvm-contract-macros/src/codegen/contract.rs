@@ -723,9 +723,12 @@ fn parse_contract(
     sol_interface: Option<&syn_solidity::File>,
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
-    let sol_custom_types = sol_interface
-        .map(CustomTypes::from_file)
-        .unwrap_or_default();
+    let sol_custom_types = match sol_interface {
+        Some(file) => {
+            CustomTypes::from_file(file).map_err(|e| syn::Error::new_spanned(input, e))?
+        }
+        None => CustomTypes::default(),
+    };
     let content = input
         .content
         .as_ref()
@@ -1230,6 +1233,23 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         None
     };
 
+    // The macro reads the `.sol` with `fs::read_to_string` and hashes selectors
+    // from it (including struct field layouts), but cargo has no idea the file
+    // was read, so editing the `.sol` won't rebuild the crate and its selectors
+    // go stale. Emit an `include_bytes!` of the file: rustc records included
+    // files in the crate's dep-info, which cargo uses to trigger a rebuild.
+    let sol_dep_tracking = match &args.sol_path {
+        Some(path) => {
+            let full =
+                std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned();
+            quote! { const _: &[u8] = include_bytes!(#full); }
+        }
+        None => quote! {},
+    };
+
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
 
@@ -1712,6 +1732,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
+            #sol_dep_tracking
+
             // Module-level overlap checks: each emits a `const _: () = ...;`
             // item that const-evaluates a span-overlap assertion for a pair
             // of explicit-slot fields. cargo check evaluates module-level

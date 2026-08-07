@@ -747,8 +747,8 @@ fn is_rust_keyword(s: &str) -> bool {
             | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match" | "mod" | "move"
             | "mut" | "pub" | "ref" | "return" | "self" | "Self" | "static" | "struct" | "super"
             | "trait" | "true" | "type" | "unsafe" | "use" | "where" | "while"
-            // Edition-2018+ strict keywords.
-            | "async" | "await" | "dyn"
+            // Edition-2018+ strict keywords (`gen` reserved in 2024).
+            | "async" | "await" | "dyn" | "gen"
             // Reserved for future use.
             | "abstract" | "become" | "box" | "do" | "final" | "macro" | "override" | "priv"
             | "typeof" | "unsized" | "virtual" | "yield" | "try"
@@ -1052,6 +1052,12 @@ fn param_is_dynamic(type_name: &str, components: Option<&[AbiInput]>) -> bool {
     };
     if type_name.ends_with("[]") {
         return true;
+    }
+    // Fixed array `tuple[N]`: dynamic iff the element is. Recurse on the inner
+    // type name (keeping the same `components`, which describe the base tuple)
+    // before falling through to the field check.
+    if let Some((inner, _)) = split_fixed_array(type_name) {
+        return param_is_dynamic(inner, Some(components));
     }
     components
         .iter()
@@ -1365,6 +1371,7 @@ mod tests {
         assert_eq!(sanitize_rust_ident("ref"), "r#ref");
         assert_eq!(sanitize_rust_ident("move"), "r#move");
         assert_eq!(sanitize_rust_ident("type"), "r#type");
+        assert_eq!(sanitize_rust_ident("gen"), "r#gen");
         // Keywords that cannot be raw idents get a trailing underscore.
         assert_eq!(sanitize_rust_ident("Self"), "Self_");
         assert_eq!(sanitize_rust_ident("crate"), "crate_");
@@ -1394,6 +1401,8 @@ mod tests {
         assert!(!param_is_dynamic("tuple[3]", Some(&static_comps)));
         assert!(param_is_dynamic("tuple", Some(&dyn_comps)));
         assert!(param_is_dynamic("tuple[]", Some(&static_comps)));
+        assert!(param_is_dynamic("tuple[][3]", Some(&static_comps)));
+        assert!(!param_is_dynamic("tuple[2][3]", Some(&static_comps)));
     }
 
     #[test]

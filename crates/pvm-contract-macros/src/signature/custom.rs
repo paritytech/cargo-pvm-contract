@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use syn_solidity::{File, Item, ItemContract, ItemEnum, ItemStruct, ItemUdt, Type};
+use syn_solidity::{File, Item, Type};
 
 /// A user-defined Solidity type, reduced to what a canonical signature needs.
 enum CustomDef {
@@ -23,41 +23,41 @@ pub struct CustomTypes {
 }
 
 impl CustomTypes {
-    pub fn from_file(file: &File) -> Self {
+    pub fn from_file(file: &File) -> Result<Self, String> {
         let mut this = Self::default();
-        this.visit_items(&file.items);
-        this
+        this.visit_items(&file.items)?;
+        Ok(this)
     }
 
-    fn visit_items(&mut self, items: &[Item]) {
+    fn visit_items(&mut self, items: &[Item]) -> Result<(), String> {
         for item in items {
             match item {
-                Item::Struct(x) => self.visit_struct(x),
-                Item::Enum(x) => self.visit_enum(x),
-                Item::Udt(x) => self.visit_udt(x),
-                Item::Contract(x) => self.visit_contract(x),
+                Item::Struct(x) => {
+                    let fields = x.fields.iter().map(|f| f.ty.clone()).collect();
+                    self.declare(x.name.as_string(), CustomDef::Struct(fields))?;
+                }
+                Item::Enum(x) => self.declare(x.name.as_string(), CustomDef::Enum)?,
+                Item::Udt(x) => self.declare(x.name.as_string(), CustomDef::Udt(x.ty.clone()))?,
+                Item::Contract(x) => self.visit_items(&x.body)?,
                 _ => (),
             }
         }
+        Ok(())
     }
 
-    fn visit_contract(&mut self, contract: &ItemContract) {
-        self.visit_items(&contract.body);
-    }
-
-    fn visit_struct(&mut self, item: &ItemStruct) {
-        let fields = item.fields.iter().map(|f| f.ty.clone()).collect();
-        self.defs
-            .insert(item.name.as_string(), CustomDef::Struct(fields));
-    }
-
-    fn visit_enum(&mut self, item: &ItemEnum) {
-        self.defs.insert(item.name.as_string(), CustomDef::Enum);
-    }
-
-    fn visit_udt(&mut self, item: &ItemUdt) {
-        self.defs
-            .insert(item.name.as_string(), CustomDef::Udt(item.ty.clone()));
+    /// Rejects two declarations that share a simple name: types are keyed by
+    /// that name, so a duplicate would otherwise silently resolve to whichever
+    /// expanded last, corrupting the selector of every function that used the
+    /// other.
+    fn declare(&mut self, name: String, def: CustomDef) -> Result<(), String> {
+        if self.defs.contains_key(&name) {
+            return Err(format!(
+                "two Solidity user-defined types are both named `{name}`; \
+                 rename one in the interface to avoid the collision"
+            ));
+        }
+        self.defs.insert(name, def);
+        Ok(())
     }
 
     /// The canonical ABI name of `ty`, as it appears in a function signature.
@@ -125,7 +125,7 @@ mod tests {
     use super::*;
 
     fn types(src: &str) -> CustomTypes {
-        CustomTypes::from_file(&syn_solidity::parse2(src.parse().unwrap()).unwrap())
+        CustomTypes::from_file(&syn_solidity::parse2(src.parse().unwrap()).unwrap()).unwrap()
     }
 
     fn name_of(types: &CustomTypes, ty: &str) -> String {
@@ -189,5 +189,28 @@ mod tests {
     fn self_referential_struct_terminates() {
         let t = types("struct S { S[] children; uint256 v; }");
         assert_eq!(name_of(&t, "S"), "(S[],uint256)");
+    }
+
+    #[test]
+    fn same_named_types_collide() {
+        let src = "interface A { struct Point { uint64 x; } }
+                   interface B { struct Point { uint64 x; uint64 y; } }";
+        let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+        let err = CustomTypes::from_file(&file)
+            .err()
+            .expect("expected a collision error");
+        assert!(err.contains("both named `Point`"), "{err}");
+    }
+
+    #[test]
+    fn mutually_recursive_structs_terminate() {
+        // solc rejects these as infinitely sized, but syn_solidity parses them,
+        // so the resolver must not recurse forever: a name already being
+        // expanded falls back to its bare form.
+        let t = types(
+            "struct A { B b; uint64 v; }
+             struct B { A a; }",
+        );
+        assert_eq!(name_of(&t, "A"), "((A),uint64)");
     }
 }

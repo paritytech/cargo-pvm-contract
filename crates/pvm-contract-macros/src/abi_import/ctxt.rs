@@ -133,11 +133,11 @@ impl Ctxt {
             .insert(item.name.to_string());
     }
 
-    pub fn visit_file(&mut self, file: &File) {
+    pub fn visit_file(&mut self, file: &File) -> Result<(), String> {
         // Signatures expand user-defined types, so every declaration in the
         // file has to be registered before any function is visited — a struct
         // may be declared after the function that takes it.
-        self.custom_types = CustomTypes::from_file(file);
+        self.custom_types = CustomTypes::from_file(file)?;
         file.items.iter().for_each(|item| match item {
             Item::Contract(contract) if contract.is_interface() => {
                 self.with_ns(contract.name.clone(), |ctxt: &mut Ctxt| {
@@ -150,6 +150,7 @@ impl Ctxt {
             Item::Enum(enum_) => self.visit_enum(enum_),
             _ => (),
         });
+        Ok(())
     }
 
     fn visit_contract(&mut self, contract: &ItemContract) {
