@@ -26,16 +26,6 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
                     "SolType can only be derived for enums with `#[repr(u8)]` attribute",
                 ));
             }
-
-            if !input.attrs.iter().any(|x| {
-                x.meta.path().get_ident().is_some_and(|x| *x == "repr")
-                    && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
-            }) {
-                return Err(syn::Error::new_spanned(
-                    input,
-                    "SolType can only be derived for enums with `#[repr(u8)]` attribute",
-                ));
-            }
             if data.variants.iter().any(|x| x.discriminant.is_some()) {
                 return Err(syn::Error::new_spanned(
                     input,
