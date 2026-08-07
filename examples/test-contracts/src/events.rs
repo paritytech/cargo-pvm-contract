@@ -32,11 +32,10 @@ mod events {
             self.host()
                 .set_storage(StorageFlags::empty(), &VALUE_KEY, &val.to_be_bytes::<32>());
 
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
+            let caller = self.env().caller();
 
             let event = ValueChanged {
-                who: pvm_contract_sdk::Address(caller),
+                who: caller,
                 old_value: old,
                 new_value: val,
             };
