@@ -137,10 +137,9 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
             /// Indexed topic for a struct value is `keccak256(abi.encode(self))`
             /// per the Solidity event spec, not the right-aligned default.
             fn indexed_topic(&self) -> [u8; 32] {
-                const __ENC_SIZE: usize = u8::HEAD_SIZE;
-                let mut __buf = [0u8; __ENC_SIZE];
-                <Self as ::pvm_contract_sdk::SolEncode>::encode_to(self, &mut __buf);
-                ::pvm_contract_sdk::keccak256(&__buf)
+                let mut slot = [0u8; 32];
+                self.encode_body_to(&mut slot);
+                slot
             }
 
             #[cfg(feature = "abi-gen")]
