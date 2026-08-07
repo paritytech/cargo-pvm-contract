@@ -166,6 +166,9 @@ pub(super) struct ParsedContract {
     /// Idents of structs in the module body carrying `#[derive(SolEvent)]`.
     /// Used by the abi-gen codepath to emit event entries for no-sol contracts.
     pub(super) event_idents: Vec<Ident>,
+    /// Compile-time assertions that a Rust param (when custom-typed) or return
+    /// ABI-encodes exactly as the matching `.sol` type. Emitted at module scope.
+    pub(super) sig_asserts: Vec<TokenStream>,
 }
 
 /// A storage field on the contract struct.
@@ -446,6 +449,66 @@ fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
                 extract_result_ok_type(ty).into_iter().collect()
             } else {
                 extract_output_types(ty)
+            }
+        }
+    }
+}
+
+/// Builds a `const _: () = assert!(...)` that checks `rust_ty` ABI-encodes as
+/// `sol_canonical` (the `.sol` type's canonical name), by comparing
+/// `<rust_ty as SolEncode>::SOL_NAME` against it. Both spell a struct as its
+/// flattened field tuple, so a Rust struct whose fields drift from the `.sol`
+/// fails the build. `location` labels the offending param or return in the
+/// assertion message.
+fn sol_name_assert(rust_ty: &syn::Type, sol_canonical: &str, location: &str) -> TokenStream {
+    let msg = format!(
+        "{location}: the Rust type does not ABI-encode as the `.sol` type `{sol_canonical}` \
+         (a struct must declare the same field types, in order)"
+    );
+    quote! {
+        const _: () = assert!(
+            ::pvm_contract_sdk::str_eq(
+                <#rust_ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
+                #sol_canonical
+            ),
+            #msg
+        );
+    }
+}
+
+/// The `.sol` return list folded into one canonical ABI name, matching how a
+/// Rust success type encodes: a single return keeps its own name, multiple
+/// returns become a tuple, and no returns yield `None`.
+fn sol_return_canonical(
+    sol_func: &syn_solidity::ItemFunction,
+    types: &CustomTypes,
+) -> Option<String> {
+    let names: Vec<String> = sol_func
+        .returns
+        .as_ref()?
+        .returns
+        .types()
+        .map(|t| types.canonical_name(t))
+        .collect();
+    match names.len() {
+        0 => None,
+        1 => names.into_iter().next(),
+        _ => Some(format!("({})", names.join(","))),
+    }
+}
+
+/// The Rust "success" return type the dispatch encodes: the `Ok` type of a
+/// `Result<T, E>`, or the bare return type, with `()` treated as no return.
+fn rust_success_type(output: &syn::ReturnType) -> Option<syn::Type> {
+    match output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, ty) => {
+            if is_result_return_type(output) {
+                extract_result_ok_type(ty)
+            } else if is_unit_return_type(output) {
+                None
+            } else {
+                Some((**ty).clone())
             }
         }
     }
@@ -879,6 +942,7 @@ fn parse_contract(
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
     let mut event_idents: Vec<Ident> = Vec::new();
+    let mut sig_asserts: Vec<TokenStream> = Vec::new();
 
     for item in &content.1 {
         // Collect event structs with #[derive(SolEvent)]
@@ -1050,20 +1114,52 @@ fn parse_contract(
                         .parameters
                         .types()
                         .map(|x| x.clone().try_into())
-                        .collect::<Result<Vec<SolType>, String>>();
-                    check_signature_compatibility(
-                        func,
-                        &sol_func.name().to_string(),
-                        &sig.map_err(|x| {
+                        .collect::<Result<Vec<SolType>, String>>()
+                        .map_err(|x| {
                             syn::Error::new_spanned(
                                 func,
                                 format!(
                                     "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
                                 ),
                             )
-                        })?,
+                        })?;
+                    check_signature_compatibility(
+                        func,
+                        &sol_func.name().to_string(),
+                        &sig,
                         &param_types,
                     )?;
+                    // `check_signature_compatibility` can only compare types it
+                    // resolves from syntax: it skips params with custom types and
+                    // never inspects returns. Emit compile-time assertions for
+                    // exactly those gaps, comparing each Rust type's `SOL_NAME`
+                    // against the `.sol` canonical name.
+                    let sol_fn_label = sol_func.name().to_string();
+                    let sol_param_tys: Vec<_> = sol_func.parameters.types().collect();
+                    for (i, rust_ty) in param_types.iter().enumerate() {
+                        let sol_custom = sig.get(i).is_some_and(|s| s.has_custom_types());
+                        let rust_custom =
+                            SolType::from_rust_type(rust_ty).is_some_and(|r| r.has_custom_types());
+                        if (sol_custom || rust_custom)
+                            && let Some(sol_ty) = sol_param_tys.get(i)
+                        {
+                            let canonical = sol_custom_types.canonical_name(sol_ty);
+                            sig_asserts.push(sol_name_assert(
+                                rust_ty,
+                                &canonical,
+                                &format!("`{sol_fn_label}` parameter {i}"),
+                            ));
+                        }
+                    }
+                    if let Some(rust_ret) = rust_success_type(&func.sig.output)
+                        && let Some(canonical) = sol_return_canonical(sol_func, &sol_custom_types)
+                    {
+                        sig_asserts.push(sol_name_assert(
+                            &rust_ret,
+                            &canonical,
+                            &format!("`{sol_fn_label}` return"),
+                        ));
+                    }
                     implemented_sol_methods.push(sol_func.name.clone());
                     let selector =
                         compute_selector(&compute_function_signature(sol_func, &sol_custom_types));
@@ -1200,6 +1296,7 @@ fn parse_contract(
         receive_returns_result,
         error_types,
         event_idents,
+        sig_asserts,
     })
 }
 
@@ -1256,6 +1353,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
+    let sig_asserts = &parsed.sig_asserts;
 
     let struct_name = parsed.struct_name.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(
@@ -1733,6 +1831,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
             #sol_dep_tracking
+
+            // Signature assertions (`const _: () = assert!(...)` items) for what
+            // the syntactic check misses: params with custom types, and every
+            // return. Each compares a Rust type's `SOL_NAME` to the `.sol`
+            // canonical name; cargo check evaluates them, so a struct whose
+            // fields drift from the interface fails before build/link.
+            #(#sig_asserts)*
 
             // Module-level overlap checks: each emits a `const _: () = ...;`
             // item that const-evaluates a span-overlap assertion for a pair

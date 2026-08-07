@@ -122,6 +122,8 @@ pub use pvm_contract_types::{
     // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
     panic_revert,
     read_word_offset,
+    // Compile-time `&str` equality for `#[contract]` signature assertions
+    str_eq,
     value_transferred_is_nonzero,
 };
 

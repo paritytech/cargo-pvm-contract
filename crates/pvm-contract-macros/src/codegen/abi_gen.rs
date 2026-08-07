@@ -416,6 +416,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
@@ -526,6 +527,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         }
     }
 
@@ -621,6 +623,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -671,6 +674,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -714,6 +718,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
