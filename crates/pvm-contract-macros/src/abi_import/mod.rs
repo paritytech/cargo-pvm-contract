@@ -353,6 +353,9 @@ fn expand_items<'a>(
 }
 
 pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+    if let Err(e) = crate::utils::reject_sol_imports(file) {
+        return quote! { compile_error!(#e); };
+    }
     let mut ctxt = Ctxt::default();
     if let Err(e) = ctxt.visit_file(file) {
         return quote! { compile_error!(#e); };

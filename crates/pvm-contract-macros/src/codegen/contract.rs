@@ -135,9 +135,11 @@ fn load_sol_interface(path: &str) -> Result<syn_solidity::File, String> {
     let full_path = std::path::Path::new(&manifest_dir).join(path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
-    syn::parse_str(&source)
+    let file: syn_solidity::File = syn::parse_str(&source)
         .and_then(syn_solidity::parse2)
-        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))
+        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
+    crate::utils::reject_sol_imports(&file)?;
+    Ok(file)
 }
 
 pub(super) struct ParsedContract {

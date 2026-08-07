@@ -295,6 +295,12 @@ const _: () = {
     assert!(!str_eq("uint", "uint256"));
 };
 
+/// Rejection message shared by every `.sol` parser (the `#[contract]` /
+/// `abi_import!` macros, the builder's ABI generation, and the scaffolder);
+/// kept here because `pvm-contract-types` is their common dependency.
+pub const SOL_IMPORT_UNSUPPORTED: &str =
+    "`.sol` `import` is not supported; inline the imported types into this file.";
+
 /// Computes the 4-byte Solidity function selector at compile time.
 pub const fn const_selector(sig: &str) -> [u8; 4] {
     let hash = const_keccak256(sig.as_bytes());

@@ -3,6 +3,7 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
+use pvm_contract_types::SOL_IMPORT_UNSUPPORTED;
 pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam};
 
 pub fn generate_abi_for_bin(
@@ -363,6 +364,27 @@ pub(crate) fn resolve_bin_source_path(
     Ok(manifest_dir.join("src/bin").join(format!("{bin_name}.rs")))
 }
 
+/// A `.sol` file's top-level `import` directives (imports are always top-level).
+fn contains_import(file: &syn_solidity::File) -> bool {
+    file.items
+        .iter()
+        .any(|item| matches!(item, syn_solidity::Item::Import(_)))
+}
+
+/// Reject `.sol` `import` directives. None of the build-time parsers follow
+/// imports, so an imported type resolves to its bare name and silently yields a
+/// wrong selector; callers must inline the imported declarations. A source that
+/// doesn't parse as Solidity has no import to reject here (real parse errors
+/// surface later in the ABI/codegen path).
+pub fn reject_sol_imports(source: &str) -> Result<()> {
+    if let Ok(file) = syn::parse_str::<syn_solidity::File>(source)
+        && contains_import(&file)
+    {
+        anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
+    }
+    Ok(())
+}
+
 pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> {
     let content = std::fs::read_to_string(sol_path)
         .with_context(|| format!("Failed to read sol file: {}", sol_path.display()))?;
@@ -384,6 +406,10 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
             };
         }
     };
+
+    if contains_import(&file) {
+        anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
+    }
 
     // Flatten items, descending into contract/interface/library bodies.
     let mut flat: Vec<&syn_solidity::Item> = Vec::new();
@@ -657,6 +683,19 @@ mod tests {
     use expect_test::expect;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn reject_sol_imports_flags_import_and_allows_plain() {
+        let with_import = r#"pragma solidity ^0.8.0;
+import "./Types.sol";
+interface I { function f() external; }"#;
+        let err = reject_sol_imports(with_import).unwrap_err().to_string();
+        assert!(err.contains("import"), "{err}");
+
+        let plain = r#"pragma solidity ^0.8.0;
+interface I { function f() external; }"#;
+        reject_sol_imports(plain).expect("plain interface has no import");
+    }
 
     #[test]
     fn generate_abi_from_sol_recursive_struct_does_not_overflow() {
