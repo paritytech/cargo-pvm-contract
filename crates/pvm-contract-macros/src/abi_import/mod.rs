@@ -360,7 +360,7 @@ fn expand_enum(x: &syn_solidity::ItemEnum) -> TokenStream {
         .iter()
         .map(|x| format_ident!("{}", x.ident.to_string()));
     let res = quote! {
-        #[derive(PartialEq, Eq, Debug, Clone, Copy, ::pvm_contract_sdk::SolType)]
+        #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
         #[repr(u8)]
         pub enum #name {
             #(#variants),*
@@ -3092,7 +3092,7 @@ mod test {
                     pub b: super::B,
                 }
             }
-            #[derive(PartialEq, Eq, Debug, Clone, Copy, ::pvm_contract_sdk::SolType)]
+            #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
             #[repr(u8)]
             pub enum B {
                 First,

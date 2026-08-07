@@ -89,10 +89,15 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
             #index => Ok(Self::#name),
         }
     });
-    let error = format!(
-        "enum `{}` must implement `Copy` trait\nthis error means you need to derive `Copy` and `Clone` for the enum `{}`",
-        name, name
-    );
+    let conversion_u8 = variant.variants.iter().enumerate().map(|(index, variant)| {
+        let path = name;
+        let name = &variant.ident;
+        let index = index as u8;
+        quote! {
+            #path::#name => #index,
+        }
+    });
+
     Ok(quote! {
         impl TryFrom<u8> for #name {
             type Error = ::pvm_contract_sdk::SolDefaultError;
@@ -105,23 +110,13 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
             }
         }
 
-        trait DoesNotImpl {
-            const IMPLS: bool = false;
-        }
-        impl<T: ?Sized> DoesNotImpl for T {}
-
-        struct EnumCopyCheck<T: ?Sized>(core::marker::PhantomData<T>);
-
-        #[allow(dead_code)]
-        impl<T: ?Sized + Copy> EnumCopyCheck<T> {
-            const IMPLS: bool = true;
-        }
-
-        const _: () = const {
-             {
-                assert!(<EnumCopyCheck<#name>>::IMPLS,#error)
+        impl From<&#name> for u8 {
+            fn from(m: &#name) -> Self {
+                match m {
+                    #(#conversion_u8)*
+                }
             }
-    };
+        }
 
         impl ::pvm_contract_sdk::SolEncode for #name {
             const IS_DYNAMIC: bool = u8::IS_DYNAMIC;
@@ -130,11 +125,13 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
 
             #[inline]
             fn encode_body_len(&self) -> usize {
-                (*self as u8).encode_body_len()
+                let dispatch: u8 = self.into();
+                dispatch.encode_body_len()
             }
 
             fn encode_body_to(&self, buf: &mut [u8]) {
-                (*self as u8).encode_body_to(buf)
+                let dispatch: u8 = self.into();
+                dispatch.encode_body_to(buf)
             }
 
             /// Indexed topic for a struct value is `keccak256(abi.encode(self))`
