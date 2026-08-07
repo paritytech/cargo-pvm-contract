@@ -765,7 +765,7 @@ mod test {
                             call_builder: CallBuilder::<View, (), (u64)> {
                                 payload: (),
                                 selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!("get_count(", ")"),
+                                    ::pvm_contract_sdk::const_format::concatcp!("getCount(", ")"),
                                 ),
                                 witness: View::default(),
                                 call_limits: Default::default(),
@@ -784,7 +784,7 @@ mod test {
                                 payload: (flag),
                                 selector: ::pvm_contract_sdk::const_selector(
                                     ::pvm_contract_sdk::const_format::concatcp!(
-                                        "set_flag(", < bool as ::pvm_contract_sdk::SolEncode >
+                                        "setFlag(", < bool as ::pvm_contract_sdk::SolEncode >
                                         ::SOL_NAME, ")"
                                     ),
                                 ),
@@ -1786,7 +1786,7 @@ mod test {
                             call_builder: CallBuilder::<View, (), ((u64, alloc::string::String))> {
                                 payload: (),
                                 selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!("get_named(", ")"),
+                                    ::pvm_contract_sdk::const_format::concatcp!("getNamed(", ")"),
                                 ),
                                 witness: View::default(),
                                 call_limits: Default::default(),
@@ -2139,7 +2139,7 @@ mod test {
                                 payload: (account),
                                 selector: ::pvm_contract_sdk::const_selector(
                                     ::pvm_contract_sdk::const_format::concatcp!(
-                                        "balance_of(", < Address as ::pvm_contract_sdk::SolEncode >
+                                        "balanceOf(", < Address as ::pvm_contract_sdk::SolEncode >
                                         ::SOL_NAME, ")"
                                     ),
                                 ),
@@ -2482,7 +2482,7 @@ mod test {
                                 payload: (voter),
                                 selector: ::pvm_contract_sdk::const_selector(
                                     ::pvm_contract_sdk::const_format::concatcp!(
-                                        "send_voter_info(", < super::Voter as
+                                        "sendVoterInfo(", < super::Voter as
                                         ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
                                     ),
                                 ),
