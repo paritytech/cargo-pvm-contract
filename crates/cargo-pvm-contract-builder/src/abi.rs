@@ -419,17 +419,20 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     // value types) for resolution, keyed by the type's name.
     let mut structs: CustomMap = std::collections::HashMap::new();
     for item in &flat {
-        match item {
-            syn_solidity::Item::Struct(s) => {
-                structs.insert(s.name.to_string(), CustomDef::Struct(s));
-            }
-            syn_solidity::Item::Enum(e) => {
-                structs.insert(e.name.to_string(), CustomDef::Enum);
-            }
-            syn_solidity::Item::Udt(u) => {
-                structs.insert(u.name.to_string(), CustomDef::Udt(&u.ty));
-            }
-            _ => {}
+        let (name, def) = match item {
+            syn_solidity::Item::Struct(s) => (s.name.to_string(), CustomDef::Struct(s)),
+            syn_solidity::Item::Enum(e) => (e.name.to_string(), CustomDef::Enum),
+            syn_solidity::Item::Udt(u) => (u.name.to_string(), CustomDef::Udt(&u.ty)),
+            _ => continue,
+        };
+        // Keyed by simple name, so a duplicate would silently overwrite and
+        // corrupt the ABI of everything using the other one. Reject it, matching
+        // the macro's resolver.
+        if structs.insert(name.clone(), def).is_some() {
+            anyhow::bail!(
+                "two Solidity user-defined types are both named `{name}`; \
+                 rename one in the interface to avoid the collision"
+            );
         }
     }
 
