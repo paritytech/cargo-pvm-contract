@@ -1,6 +1,17 @@
+use crate::signature::CustomTypes;
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn_solidity::ItemFunction;
+use syn_solidity::{File, Item, ItemFunction};
+
+/// Reject `.sol` `import` directives. The macro parsers don't follow imports, so
+/// an imported type resolves to its bare name and silently yields a wrong
+/// selector; the interface must inline the imported declarations.
+pub fn reject_sol_imports(file: &File) -> Result<(), String> {
+    if file.items.iter().any(|i| matches!(i, Item::Import(_))) {
+        return Err(pvm_contract_types::SOL_IMPORT_UNSUPPORTED.to_string());
+    }
+    Ok(())
+}
 
 /// Build the const-eval expression for a method's canonical Solidity signature,
 /// e.g. `concatcp!("transfer(", <Address>::SOL_NAME, ",", <U256>::SOL_NAME, ")")`.
@@ -156,10 +167,15 @@ pub fn capitalize(s: &str) -> String {
     }
 }
 
-pub fn compute_function_signature(item: &ItemFunction) -> String {
-    let mut name = format!("{}{}", item.name(), item.call_type());
-    if name.rfind(",").is_some_and(|x| x == name.len() - 2) {
-        name.remove(name.len() - 2);
-    }
-    name
+/// The canonical Solidity signature the selector is hashed from. `types` must
+/// carry the user-defined types declared alongside the function: a struct
+/// parameter hashes as the tuple of its fields (`Point` -> `(uint64,uint64)`),
+/// not as its declared name, and the same holds for enums and value types.
+pub fn compute_function_signature(item: &ItemFunction, types: &CustomTypes) -> String {
+    let params: Vec<String> = item
+        .parameters
+        .types()
+        .map(|ty| types.canonical_name(ty))
+        .collect();
+    format!("{}({})", item.name(), params.join(","))
 }
