@@ -22,6 +22,31 @@
 //!   captured halt via [`MockHost::run_until_halt`](super::MockHost::run_until_halt),
 //!   which downcasts the panic payload and re-throws non-halt panics so
 //!   contract bugs aren't silently swallowed.
+//!
+//! # Where a new host operation belongs
+//!
+//! Three layers, and the distinction is worth keeping because the first one is
+//! also the mock seam — anything added there has to be implemented, or correctly
+//! re-forwarded, by every implementor:
+//!
+//! 1. **[`HostApi`] — one method per pallet-revive syscall.** Byte-level
+//!    signatures, `&self` receiver. The only permitted departures from
+//!    `pallet_revive_uapi::HostFn` are those the seam forces: the
+//!    `return_value`/`revert` split (one syscall, projected by its flag value, so
+//!    success can be non-diverging on host targets while revert diverges on
+//!    both) and the `-> !` cfg-gating described above. **No defaulted methods and
+//!    no derived queries** — a default body is a silent correctness trap for
+//!    wrapper implementors like [`Host`], which would re-derive it from the
+//!    primitives and ignore whatever the backing `HostApi` said.
+//! 2. **Free functions generic over `H: HostApi`** for cheap predicates the
+//!    framework itself needs — see
+//!    [`value_transferred_is_nonzero`](crate::value_transferred_is_nonzero),
+//!    which the payable guard uses. These are dispatch plumbing, not user
+//!    surface.
+//! 3. **[`Env`] for user-facing typed reads.** Anything a contract author should
+//!    reach for: typed returns instead of raw buffers, and the little-endian
+//!    decoding done for them. [`Env::has_code`] is the model for a derived read —
+//!    no syscall of its own, built on [`HostApi::code_size`].
 
 pub use pallet_revive_uapi::{CallFlags, ReturnErrorCode, ReturnFlags, StorageFlags};
 
@@ -47,6 +72,29 @@ pub trait ContractContext: crate::__private::Sealed {
     /// The borrow on `Self` is the load-bearing piece of the gate; the host
     /// returned here is then used internally by the call builder.
     fn host(&self) -> &Host;
+
+    /// Read-only transaction/block context — the typed equivalent of Solidity's
+    /// `msg.*` / `block.*` globals. See [`Env`].
+    ///
+    /// Provided rather than required: every context root already exposes a
+    /// [`Host`], and [`Env`] holds nothing else. Defining it here means it is
+    /// reachable through the `&impl ContractContext` bound that cross-contract
+    /// call builders impose, so a DSL helper written against that bound can
+    /// read context without going back to `cx.host()`.
+    ///
+    /// The `#[contract]` macro also emits an *inherent* `env()` on the storage
+    /// struct. Inherent methods win method resolution, so that one applies
+    /// inside contract bodies and this trait need not be in scope there — the
+    /// same arrangement as [`ContractContext::host`].
+    ///
+    /// `unreachable_code` is allowed for the same reason as on [`Host::env`]:
+    /// on a host target without `alloc` both `Host` and `Env` are uninhabited,
+    /// so the body is vacuous there and a no-op everywhere else.
+    #[inline(always)]
+    #[allow(unreachable_code)]
+    fn env(&self) -> Env {
+        self.host().env()
+    }
 }
 
 /// Stateless [`ContractContext`] root.
@@ -59,6 +107,10 @@ pub trait ContractContext: crate::__private::Sealed {
 ///
 /// `Host` is `Copy` on `riscv64` (ZST) and `Clone` on host targets (one
 /// `Rc::clone`), so the owned shape costs nothing in production.
+///
+/// Context reads go through [`ContractContext::env`], so `cx.env().caller()`
+/// works on a `Context` (and on any `&impl ContractContext`) without reaching
+/// for the `host` field.
 ///
 /// **Not `Clone`** — same gating contract as the macro-generated storage
 /// struct: a `&self` method that gets `&Context` cannot smuggle out a
@@ -100,6 +152,41 @@ impl ContractContext for Context {
 /// `consume_all_gas` and `terminate` are `-> !` on both targets — a syscall
 /// on `riscv64`, a typed-payload panic on host targets that
 /// [`MockHost::run_until_halt`](super::MockHost::run_until_halt) catches.
+///
+/// # Byte order of 32-byte buffers
+///
+/// Two categories, and mixing them up is silent corruption rather than a
+/// compile error, so it is worth stating once:
+///
+/// **Numbers are little-endian.** `balance`, `balance_of`, `chain_id`,
+/// `base_fee`, `value_transferred`, `now`, and `block_number` write their
+/// output little-endian, because that is what pallet-revive writes
+/// (`to_little_endian` in the runtime's `vm/pvm/env.rs`). Inputs are symmetric —
+/// every 32-byte numeric argument is read back with `U256::from_little_endian`:
+/// `value` on [`HostApi::call`], [`HostApi::call_evm`] and
+/// [`HostApi::instantiate`]; `deposit` on [`HostApi::call`] and
+/// [`HostApi::instantiate`]; `deposit_limit` on [`HostApi::delegate_call`]; and
+/// `block_number` on [`HostApi::block_hash`]. (The `_evm` variants carry no
+/// deposit, and `delegate_call` carries no value — a delegatecall runs in the
+/// caller's frame.) [`Env`] has a typed accessor for every one of
+/// those seven outputs — [`balance`](Env::balance),
+/// [`balance_of`](Env::balance_of), [`chain_id`](Env::chain_id),
+/// [`base_fee`](Env::base_fee), [`value`](Env::value),
+/// [`timestamp`](Env::timestamp), [`block_number`](Env::block_number) — so
+/// prefer it over decoding the raw buffers by hand.
+///
+/// **Identifiers are opaque bytes.** `address`, `caller`, `origin`,
+/// `block_author`, `code_hash`, and `block_hash` outputs are `H160`/`H256`
+/// values copied verbatim. They are not numbers and are not byte-swapped, so
+/// "endianness" does not apply to them.
+///
+/// Note this is a different convention from contract *storage* slots and *ABI*
+/// encoding, both of which are big-endian to match solc. The little-endian rule
+/// covers only the host-call boundary described above.
+///
+/// Any implementor — including test mocks — must uphold this. `MockHost`'s
+/// numeric builder setters take typed values and encode little-endian for
+/// exactly this reason.
 #[allow(clippy::too_many_arguments)]
 pub trait HostApi {
     fn address(&self, output: &mut [u8; 20]);
@@ -135,10 +222,6 @@ pub trait HostApi {
     fn origin(&self, output: &mut [u8; 20]);
     fn code_hash(&self, addr: &[u8; 20], output: &mut [u8; 32]);
     fn code_size(&self, addr: &[u8; 20]) -> u64;
-    /// Returns true if the account at addr has deployed code.
-    fn has_code(&self, addr: &[u8; 20]) -> bool {
-        self.code_size(addr) > 0
-    }
     fn delegate_call(
         &self,
         flags: CallFlags,
@@ -1174,10 +1257,86 @@ impl HostApi for Host {
     }
 }
 
-#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+/// Read-only accessor for chain context — the typed equivalent of Solidity's
+/// `msg.*` / `block.*` globals and of the `<address>` members that read chain
+/// state.
+///
+/// Obtained from [`Host::env()`]: `self.env()` inside a `#[contract]` method,
+/// `host.env()` in a DSL handler. Holds only a cloned `Host` handle (a ZST on
+/// riscv64, one `Rc` bump on host targets) and no state of its own, so
+/// constructing one per use is free.
+///
+/// Current-frame reads, all zero-argument:
+///
+/// | Accessor | Solidity | Returns |
+/// |---|---|---|
+/// | [`caller`](Env::caller) | `msg.sender` | [`Address`](crate::Address) |
+/// | [`origin`](Env::origin) | `tx.origin` | [`Address`](crate::Address) |
+/// | [`address`](Env::address) | `address(this)` | [`Address`](crate::Address) |
+/// | [`value`](Env::value) | `msg.value` | [`U256`](crate::U256) |
+/// | [`balance`](Env::balance) | `address(this).balance` | [`U256`](crate::U256) |
+/// | [`base_fee`](Env::base_fee) | `block.basefee` | [`U256`](crate::U256) |
+/// | [`block_number`](Env::block_number) | `block.number` | `u64` |
+/// | [`timestamp`](Env::timestamp) | `block.timestamp` | `u64` |
+/// | [`chain_id`](Env::chain_id) | `block.chainid` | `u64` |
+///
+/// Address queries, parameterized by the account being asked about:
+///
+/// | Accessor | Solidity | Returns |
+/// |---|---|---|
+/// | [`balance_of`](Env::balance_of) | `addr.balance` | [`U256`](crate::U256) |
+/// | [`has_code`](Env::has_code) | `addr.code.length != 0` | `bool` |
+///
+/// Every accessor takes `&self`, so they are all available to `view` methods.
+/// A `pure` method has no receiver and therefore no `env()` — the same
+/// restriction solc applies.
+///
+/// These decode the host's little-endian numeric buffers (see the byte-order
+/// note on [`HostApi`]); using them is how you avoid getting that wrong by hand.
+///
+/// # Return widths
+///
+/// The host reports every one of these as 32 bytes, but that width is
+/// EVM-compatibility packaging, not the value's actual range. Each accessor
+/// returns the type matching what pallet-revive actually holds:
+///
+/// - `block.number` is `BlockNumberFor<T>`, widened to 32 bytes for the ABI.
+///   Frame bounds that associated type only by `AtLeast32Bit`, so its width is
+///   the runtime's choice; every real runtime uses `u32`.
+/// - `block.timestamp` is a `u64` millisecond moment divided down to seconds.
+/// - `block.chainid` is declared `type ChainId: Get<u64>`.
+/// - `msg.value` is a genuine 256-bit balance, so it stays [`U256`](crate::U256).
+/// - Balances (`address(this).balance`, `addr.balance`) are reported in EVM
+///   units — the native balance scaled by pallet-revive's `NativeToEthRatio` —
+///   and so are 256-bit too.
+/// - `block.basefee` is `uint256` in Solidity, and pallet-revive guarantees no
+///   narrower width for it.
+///
+/// The three `u64` accessors therefore narrow to the low 8 bytes, and they do it
+/// without a range check. Two of the three widths pallet-revive guarantees
+/// outright: the timestamp is a `u64` moment, and the chain ID is declared
+/// `Get<u64>`. `block.number` rests on the weaker footing above — `u64` there is
+/// runtime convention, not a pallet guarantee — so the honest statement is that
+/// no reachable runtime puts data in the high 24 bytes, rather than that none
+/// can. Paying a check on every read to cover a runtime with more than
+/// `u64::MAX` blocks is not a trade worth making, but the reasoning is
+/// convention for `block_number` and proof only for the other two.
+///
+/// The balance-shaped reads — [`value`](Env::value), [`balance`](Env::balance),
+/// [`balance_of`](Env::balance_of) and [`base_fee`](Env::base_fee) — genuinely
+/// need 256 bits, and they keep them.
 pub struct Env(Host);
 
-#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+/// Narrow a little-endian 32-byte host value to `u64`.
+///
+/// The high 24 bytes are ignored, with no range check. See "Return widths" on
+/// [`Env`] for which of the narrowed widths pallet-revive guarantees and which
+/// one rests on runtime convention.
+#[inline(always)]
+fn narrow_to_u64(b: [u8; 32]) -> u64 {
+    u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+}
+
 impl Env {
     #[doc(hidden)]
     #[inline(always)]
@@ -1185,6 +1344,10 @@ impl Env {
         Env(host)
     }
 
+    /// The immediate caller (Solidity `msg.sender`).
+    ///
+    /// Under `delegatecall` this is the delegating contract's caller, matching
+    /// EVM semantics.
     #[inline(always)]
     pub fn caller(&self) -> crate::Address {
         let mut b = [0u8; 20];
@@ -1192,6 +1355,42 @@ impl Env {
         crate::Address(b)
     }
 
+    /// The account that signed the transaction (Solidity `tx.origin`).
+    ///
+    /// Unlike [`Env::caller`] this is the outermost sender and is unchanged by
+    /// intermediate contract calls, so it is the same value at every depth of a
+    /// call stack.
+    ///
+    /// **Do not use it for authorization.** `origin() == owner` passes for *any*
+    /// contract the owner is tricked into calling, which is the classic
+    /// phishing-via-intermediary hole; authorize on [`Env::caller`] instead.
+    /// Legitimate uses are narrow — mainly "is this the top-level frame?"
+    /// (`caller() == origin()`).
+    #[inline(always)]
+    pub fn origin(&self) -> crate::Address {
+        let mut b = [0u8; 20];
+        self.0.origin(&mut b);
+        crate::Address(b)
+    }
+
+    /// This contract's own address (Solidity `address(this)`).
+    ///
+    /// Under `delegatecall` this is the *delegating* contract's address — the
+    /// executing code's storage context, not the address the code was loaded
+    /// from — matching EVM semantics.
+    #[inline(always)]
+    pub fn address(&self) -> crate::Address {
+        let mut b = [0u8; 20];
+        self.0.address(&mut b);
+        crate::Address(b)
+    }
+
+    /// Value transferred with this call (Solidity `msg.value`).
+    ///
+    /// Always zero in a non-payable method reached through external dispatch —
+    /// the dispatch prelude reverts before the body runs if value was attached.
+    /// (An internal Rust call from a payable method into another method's body
+    /// skips that prelude and observes the frame's actual value.)
     #[inline(always)]
     pub fn value(&self) -> crate::U256 {
         let mut b = [0u8; 32];
@@ -1199,34 +1398,119 @@ impl Env {
         crate::U256::from_le_bytes(b)
     }
 
+    /// This contract's own balance (Solidity `address(this).balance`).
+    ///
+    /// Reported in EVM units — pallet-revive scales the native balance by
+    /// `NativeToEthRatio` — so this stays [`U256`](crate::U256); see "Return
+    /// widths" on [`Env`].
+    ///
+    /// Like the EVM, the value transferred with the current call is already
+    /// included: pallet-revive performs the transfer before handing control to
+    /// the contract, so a payable method sees the post-credit balance.
+    ///
+    /// It is the *reducible* balance (free, `Preservation::Preserve`), so it
+    /// excludes the existential deposit and anything locked or held. That is a
+    /// narrower quantity than EVM's `balance`, which has no ED to reserve.
+    #[inline(always)]
+    pub fn balance(&self) -> crate::U256 {
+        let mut b = [0u8; 32];
+        self.0.balance(&mut b);
+        crate::U256::from_le_bytes(b)
+    }
+
+    /// [EIP-1559](https://eips.ethereum.org/EIPS/eip-1559) base fee of the
+    /// current block (Solidity `block.basefee`).
+    ///
+    /// Stays [`U256`](crate::U256): Solidity declares `block.basefee` as
+    /// `uint256`, and unlike [`Env::block_number`] / [`Env::timestamp`] /
+    /// [`Env::chain_id`], pallet-revive guarantees no narrower width for it.
+    #[inline(always)]
+    pub fn base_fee(&self) -> crate::U256 {
+        let mut b = [0u8; 32];
+        self.0.base_fee(&mut b);
+        crate::U256::from_le_bytes(b)
+    }
+
+    /// Current block number (Solidity `block.number`).
+    ///
+    /// Narrowed from the host's 32 bytes to the low 8. See "Return widths" on
+    /// [`Env`].
     #[inline(always)]
     pub fn block_number(&self) -> u64 {
         let mut b = [0u8; 32];
         self.0.block_number(&mut b);
-        u64::from_le_bytes(b[..8].try_into().unwrap())
+        narrow_to_u64(b)
     }
 
+    /// Current block timestamp in seconds (Solidity `block.timestamp`).
+    ///
+    /// Narrowed like [`Env::block_number`].
     #[inline(always)]
     pub fn timestamp(&self) -> u64 {
         let mut b = [0u8; 32];
         self.0.now(&mut b);
-        u64::from_le_bytes(b[..8].try_into().unwrap())
+        narrow_to_u64(b)
     }
 
+    /// [EIP-155](https://eips.ethereum.org/EIPS/eip-155) chain ID (Solidity
+    /// `block.chainid`).
+    ///
+    /// `u64` because that is pallet-revive's own declared width
+    /// (`type ChainId: Get<u64>`); narrowed like [`Env::block_number`].
     #[inline(always)]
-    pub fn chain_id(&self) -> crate::U256 {
+    pub fn chain_id(&self) -> u64 {
         let mut b = [0u8; 32];
         self.0.chain_id(&mut b);
+        narrow_to_u64(b)
+    }
+
+    /// Balance of the account at `addr` (Solidity `addr.balance`).
+    ///
+    /// Named after the host syscall, which `pallet_revive_uapi`, [`HostApi`]
+    /// and `MockHostBuilder` all spell `balance_of`. This is the *chain's*
+    /// balance of an account — unrelated to any ERC-20 `balance_of` method the
+    /// contract itself defines, which is reached as `self.balance_of(addr)`
+    /// rather than `self.env().balance_of(addr)`.
+    ///
+    /// Same units and same reducible-balance caveat as [`Env::balance`], which
+    /// is the dedicated syscall for the contract's own address and cheaper than
+    /// passing [`Env::address`] here.
+    #[inline(always)]
+    pub fn balance_of(&self, addr: crate::Address) -> crate::U256 {
+        let mut b = [0u8; 32];
+        self.0.balance_of(&addr.0, &mut b);
         crate::U256::from_le_bytes(b)
+    }
+
+    /// Whether the account at `addr` has non-empty code (Solidity
+    /// `addr.code.length != 0`).
+    ///
+    /// Returns `code_size(addr) > 0`.
+    ///
+    /// Not an "is this a contract" test: an address in its own constructor has
+    /// no code yet and reads `false`, and an
+    /// [EIP-7702](https://eips.ethereum.org/EIPS/eip-7702) delegated EOA carries
+    /// code and reads `true`.
+    #[inline(always)]
+    pub fn has_code(&self, addr: crate::Address) -> bool {
+        self.0.code_size(&addr.0) > 0
     }
 }
 
-#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
 impl Host {
     /// Return a read-only environment accessor.
     ///
     /// Usage: `self.env().caller()` on macro contracts, `host.env().caller()` on DSL handlers.
+    ///
+    /// On a host target without `alloc` both `Host` and `Env` are uninhabited, so
+    /// the body is vacuous — hence the `unreachable_code` allow, which is a no-op
+    /// in the configurations where a `Host` can actually be constructed.
+    ///
+    /// `clone_on_copy` is allowed because `Host` is `Copy` in two of its three
+    /// cfg arms (riscv64 ZST, uninhabited) but `Clone`-only in the `Rc`-backed
+    /// arm — `.clone()` is the one spelling valid in all three.
     #[inline(always)]
+    #[allow(unreachable_code, clippy::clone_on_copy)]
     pub fn env(&self) -> Env {
         Env::new(self.clone())
     }

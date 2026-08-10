@@ -75,6 +75,7 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    Env,
     EventTopics,
     Host,
     HostApi,
@@ -126,9 +127,6 @@ pub use pvm_contract_types::{
     str_eq,
     value_transferred_is_nonzero,
 };
-
-#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
-pub use pvm_contract_types::Env;
 
 /// Reentrancy guard helpers emitted by the `#[non_reentrant]` codegen.
 /// Not part of the public API surface.

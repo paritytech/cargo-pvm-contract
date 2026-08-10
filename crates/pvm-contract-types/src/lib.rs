@@ -36,12 +36,9 @@ pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, Context, ContractContext, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode,
-    ReturnFlags, StorageFlags,
+    CallFlags, Context, ContractContext, Env, Host, HostApi, HostResult, PolkaVmHost,
+    ReturnErrorCode, ReturnFlags, StorageFlags,
 };
-
-#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
-pub use host::Env;
 
 mod reentrancy;
 pub use reentrancy::ReentrancyGuardReentrantCall;

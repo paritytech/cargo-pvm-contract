@@ -415,7 +415,7 @@ fn finalize_response(host: &Host, output: &mut [u8], result: HandlerResult) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvm_contract_types::{Host, MockHost};
+    use pvm_contract_types::{Host, MockHost, U256};
 
     const DEPOSIT: Selector = [0xde, 0x00, 0x00, 0x01];
     const TRANSFER: Selector = [0x7f, 0x00, 0x00, 0x02];
@@ -572,10 +572,7 @@ mod tests {
         let mock = Rc::new(
             MockHostBuilder::new()
                 .calldata(vec![0xff, 0xff, 0xff, 0xff])
-                .value_transferred([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 1,
-                ])
+                .value_transferred(U256::from(1u8))
                 .build(),
         );
         let rv = mock.expect_revert(|| {
@@ -594,10 +591,7 @@ mod tests {
         let mock = Rc::new(
             MockHostBuilder::new()
                 .calldata(vec![0xff, 0xff, 0xff, 0xff])
-                .value_transferred([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 1,
-                ])
+                .value_transferred(U256::from(1u8))
                 .build(),
         );
         ContractBuilder::new()

@@ -73,7 +73,7 @@ mod my_token {
 }
 ```
 
-The macro injects a `pub host: Host` field on the storage struct and a `fn host(&self) -> &Host` accessor. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`. On host targets the macro also emits a `Foo::with_host(backend: impl HostApi)` test constructor that wires up the storage fields against the backend without running the `#[constructor]` (seed state on the backend directly).
+The macro injects a `pub host: Host` field on the storage struct, a `fn host(&self) -> &Host` accessor, and a `fn env(&self) -> Env` read-only environment accessor (`caller`, `origin`, `address`, `value`, `balance`, `base_fee`, `block_number`, `timestamp`, `chain_id`, plus the address queries `balance_of` and `has_code` — the typed equivalents of Solidity's `msg.*` / `tx.origin` / `address(this)` / `block.*` and the `<address>` members; see [Environment Access](specs/proc-macros.md#environment-access)). Both take `&self`, so `view` methods can use them; a `pure` method has no receiver and therefore has neither. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`. On host targets the macro also emits a `Foo::with_host(backend: impl HostApi)` test constructor that wires up the storage fields against the backend without running the `#[constructor]` (seed state on the backend directly).
 
 **DSL API** (explicit, manual dispatch):
 ```rust
@@ -84,7 +84,7 @@ ContractBuilder::new()
     .dispatch_impl::<256>(&host)
 ```
 
-DSL handlers take a concrete `&Host` (same type the macro path injects on the storage struct). For typed cross-contract calls, handlers wrap a cloned host in `Context::new(host.clone())` — `Context` impls `ContractContext` so it can be passed to `.call(&mut cx)` / `.delegate_call(&mut cx)`. `Host::clone()` is `Copy` on riscv64 (ZST) and a single `Rc::clone` on host targets. Because the wrapper carries only the host handle (no storage state), the borrow checker cannot enforce view-vs-mutating in DSL; use the `#[contract]` macro path if you need that static guarantee. The same `Context` type is used in unit tests, where it owns a `Host` backed by a `MockHost`.
+DSL handlers take a concrete `&Host` (same type the macro path injects on the storage struct). For typed cross-contract calls, handlers wrap a cloned host in `Context::new(host.clone())` — `Context` impls `ContractContext` so it can be passed to `.call(&mut cx)` / `.delegate_call(&mut cx)`. `Host::clone()` is `Copy` on riscv64 (ZST) and a single `Rc::clone` on host targets. `ContractContext::env()` is a provided method, so `cx.env().caller()` works on a `Context` and on any `&impl ContractContext` helper (the macro's inherent `env()` on the storage struct shadows it, so contract bodies need no import). Because the wrapper carries only the host handle (no storage state), the borrow checker cannot enforce view-vs-mutating in DSL; use the `#[contract]` macro path if you need that static guarantee. The same `Context` type is used in unit tests, where it owns a `Host` backed by a `MockHost`.
 
 ### Macro-Generated Code
 
@@ -367,7 +367,7 @@ mod my_token {
 
         #[method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.caller();
+            let caller = self.env().caller();
             let mut cell = self.balances.entry(&caller);
             let bal = cell.get();
             if bal < amount {
@@ -466,6 +466,16 @@ Contracts interact with the runtime through `pallet_revive_uapi::HostFnImpl`:
 - `api::deposit_event(&topics, &data)` — emit events
 - `api::hash_keccak_256(&input, &mut output)` — Keccak-256 hashing
 
+### Where a new host operation belongs
+
+Three layers. The rule exists because layer 1 is also the mock seam, so anything added there must be implemented — or correctly re-forwarded — by every implementor (`PolkaVmHost`, the `Host` wrapper, `MockHost`, the uninhabited no-alloc arm).
+
+1. **`HostApi` — one method per pallet-revive syscall.** Byte-level signatures, `&self` receiver. It currently covers all 38 `pallet_revive_uapi::HostFn` syscalls with no gaps. The only permitted departures are the ones the seam forces: the `return_value` / `revert` split (one syscall projected by its flag value, so success can be non-diverging on host targets while revert diverges on both) and the `-> !` cfg-gating. **No defaulted methods, no derived queries** — a default body is a silent correctness trap, since a wrapper like `Host` re-derives it from the primitives and ignores whatever the backing `HostApi` said, and nothing in the language forces the wrapper to re-forward it.
+2. **Free functions generic over `H: HostApi`** for cheap predicates the framework needs internally — e.g. `value_transferred_is_nonzero`, used by the payable guard. Dispatch plumbing, not user surface.
+3. **`Env` for user-facing typed reads** — typed returns instead of raw buffers, little-endian decoding handled. `Env::has_code` (built on `HostApi::code_size`; pallet-revive has no such syscall) is the model for a derived read.
+
+`Env` covers Solidity's `msg.*` / `block.*` globals plus the `<address>` members that read chain state — including every little-endian numeric output `HostApi` has (`balance`, `balance_of`, `base_fee`, `chain_id`, `value_transferred`, `now`, `block_number`), so no contract needs to hand-decode one. It is named `has_code`, not `is_contract`, deliberately: code length is `false` for a contract running its own constructor and can be `true` for an EOA carrying an EIP-7702 delegation designator — the reasons OpenZeppelin removed `Address.isContract()` in v5.
+
 ## Prerequisites
 
 - **Rust 1.92+** (stable) — workspace MSRV
@@ -552,7 +562,7 @@ Seven MyToken variants as separate binaries:
 
 ### test-contracts
 
-Multi-binary project (19 contracts) for E2E integration tests:
+Multi-binary project (23 contracts) for E2E integration tests:
 
 - `flipper` — boolean toggle
 - `storage-types` — all primitive type storage roundtrips
@@ -562,9 +572,12 @@ Multi-binary project (19 contracts) for E2E integration tests:
 - `dynamic-types` — String, Vec<u8>, Vec<U256>
 - `composite-types` — fixed arrays, tuples
 - `constructor-args` — constructor with parameters
-- `caller-check` — `api::caller()` access
+- `caller-check` — `env()` context reads (`caller`, `origin`, `address`, `block_number`, `timestamp`, `chain_id`); two instances are chained (EOA → middle → callee) to pin `caller` vs `origin`, and the three numeric reads are compared against the node's own view to pin their little-endian decoding
 - `error-handling` — `#[derive(SolError)]` (struct + enum) ABI-encoded revert flow
 - `payable` / `receive` / `receive_dsl` — `#[payable]`, `#[receive]`, and DSL receive handlers
+- `proxy` — EIP-1967 upgradeable proxy; exercises `#[slot(raw = KEY)]` on the polkavm target
+- `reentrancy_guard` + `reentrancy_attacker` — `#[non_reentrant]` guard fixture and its attacking caller
+- `precompiles` — typed precompile wrappers (`ecrecover`, P-256 verify) against the real runtime
 - Cross-contract: `flipper_call`, `flipper_delegate`, `flipper_instantiate` (`call`/`delegate_call`/`instantiate` via `abi_import!`), `point_adder` + `point_adder_call` (struct args across a call), `error_caller` (decoding a callee's `SolError` revert)
 
 ### Building examples
@@ -617,7 +630,7 @@ crates/
   pvm-contract-e2e-tests/       E2E + integration test harness
 examples/
   example-mytoken/              7 MyToken variants
-  test-contracts/               19 test contracts with .sol interfaces
+  test-contracts/               23 test contracts (19 with .sol interfaces)
 specs/
   abi.md                        ABI encoding specification (includes error encoding)
   architecture.md               Architecture overview

@@ -2012,7 +2012,7 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
         ));
     }
 
-    // Inject the `host()` accessor. The generated struct has a private `host`
+    // Inject the `host()` accessor. The generated struct has a `pub host`
     // field; contract method bodies reach the host via `self.host()`.
     //
     // Also auto-implement `ContractContext` (and its sealing trait) on the
