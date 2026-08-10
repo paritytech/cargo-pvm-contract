@@ -43,6 +43,18 @@ impl Ctxt {
             })
     }
 
+    pub fn is_in_toplevel(&self, path: syn_solidity::SolPath) -> bool {
+        let (ns, name) = Self::parse_path(path.clone());
+        if ns.is_none() {
+            self.types
+                .get(&None)
+                .map(|map| map.contains(&name))
+                .unwrap_or_default()
+        } else {
+            false
+        }
+    }
+
     pub fn set_ns(&mut self, ns: SolIdent) {
         self.current_ns = Some(ns);
     }
@@ -109,7 +121,7 @@ impl Ctxt {
         let ns = self.current_ns.clone();
 
         self.types
-            .entry(ns.clone())
+            .entry(ns)
             .or_default()
             .insert(item.name.to_string());
     }

@@ -213,11 +213,17 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
                 let ns = ns
                     .map(|x| {
                         let ident = format_ident!("{}", x);
-                        quote! { super::#ident }
+                        quote! { super::#ident:: }
                     })
-                    .or_else(|| Some(quote! {super}));
+                    .or_else(|| {
+                        if ctxt.is_in_toplevel(custom.clone()) {
+                            Some(quote! {super::})
+                        } else {
+                            Some(quote! {})
+                        }
+                    });
                 let path = format_ident!("{}", path);
-                let path = Some(quote! {::#path});
+                let path = Some(quote! {#path});
                 let path = [ns, path];
                 let path = path.into_iter();
                 quote! {
@@ -2496,17 +2502,17 @@ mod test {
                 > Ballot<Mutability, Inputs, Outputs, false> {
                     pub fn send_voter_info(
                         mut self,
-                        voter: super::Voter,
-                    ) -> Ballot<NonPayable, (super::Voter), (), true> {
-                        Ballot::<NonPayable, (super::Voter), (), true> {
+                        voter: Voter,
+                    ) -> Ballot<NonPayable, (Voter), (), true> {
+                        Ballot::<NonPayable, (Voter), (), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<NonPayable, (super::Voter), ()> {
+                            call_builder: CallBuilder::<NonPayable, (Voter), ()> {
                                 payload: (voter),
                                 selector: const {
                                     ::pvm_contract_sdk::const_selector(
                                         ::pvm_contract_sdk::const_format::concatcp!(
-                                            "sendVoterInfo(", < super::Voter as
-                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                            "sendVoterInfo(", < Voter as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
                                         ),
                                     )
                                 },
@@ -2872,16 +2878,16 @@ mod test {
                     Inputs: SolEncode,
                     Outputs: SolDecode,
                 > Ballot<Mutability, Inputs, Outputs, false> {
-                    pub fn add(mut self, b: super::A) -> Ballot<NonPayable, (super::A), (), true> {
-                        Ballot::<NonPayable, (super::A), (), true> {
+                    pub fn add(mut self, b: A) -> Ballot<NonPayable, (A), (), true> {
+                        Ballot::<NonPayable, (A), (), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<NonPayable, (super::A), ()> {
+                            call_builder: CallBuilder::<NonPayable, (A), ()> {
                                 payload: (b),
                                 selector: const {
                                     ::pvm_contract_sdk::const_selector(
                                         ::pvm_contract_sdk::const_format::concatcp!(
-                                            "add(", < super::A as ::pvm_contract_sdk::SolEncode >
-                                            ::SOL_NAME, ")"
+                                            "add(", < A as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
+                                            ")"
                                         ),
                                     )
                                 },
@@ -3125,6 +3131,304 @@ mod test {
             pub enum B {
                 First,
                 Second,
+            }
+        "#]]
+        .assert_eq(&file);
+    }
+
+    #[test]
+    fn enum_expand_2() {
+        let file = quote! {
+            #![abi_import(alloc = true)]
+            pragma solidity ^0.8.0;
+            interface VoteB {
+                enum Color { Red, Green, Blue }
+                function pick(Color c) external view returns (Color);
+            }
+        };
+        let file = {
+            let file = syn_solidity::parse2(file).unwrap();
+            let tokens = expand_to_module(&file, true).to_token_stream();
+            prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+        };
+
+        expect_test::expect![[r#"
+            use pvm_contract_sdk::*;
+            pub mod vote_b {
+                use super::*;
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
+            interface VoteB {
+                enum Color { Red, Green, Blue }
+                function pick(Color c) external view returns (Color);
+            }
+            ```*/
+                ///
+                pub struct VoteB<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > VoteB<Mutability, Inputs, Outputs, false> {
+                    pub fn pick(mut self, c: Color) -> VoteB<View, (Color), (Color), true> {
+                        VoteB::<View, (Color), (Color), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (Color), (Color)> {
+                                payload: (c),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "pick(", < Color as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                allow_reentry: false,
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                }
+                impl VoteB<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> VoteB<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
+                    }
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > VoteB<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call.
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a delegated call to another contract.
+                    ///
+                    /// Always requires `&mut impl ContractContext` regardless of the
+                    /// callee's declared mutability: the callee runs in caller's
+                    /// storage context, so even a "view" callee can mutate state.
+                    pub fn delegate_call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract.
+                    pub fn delegate_call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .delegate_call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> VoteB<View, Inputs, Outputs, true> {
+                    /// Perform a call to a `view` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> VoteB<Pure, Inputs, Outputs, true> {
+                    /// Perform a call to a `pure` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > VoteB<NonPayable, Inputs, Outputs, true> {
+                    /// Perform a call to a `nonpayable` callee. Caller must take
+                    /// `&mut self` — `&self` (view) caller methods cannot construct
+                    /// the `&mut impl ContractContext` argument.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> VoteB<Payable, Inputs, Outputs, true> {
+                    /// Perform a call to a `payable` callee. Caller must take
+                    /// `&mut self`.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                    /// Instantiate another contract by it's code_hash. Always
+                    /// requires `&mut impl ContractContext`: instantiation transfers
+                    /// value, emits a deploy event, and bumps the caller's nonce.
+                    pub fn instantiate_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .instantiate_raw(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf.as_mut_slice(),
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        let output = self
+                            .call_builder
+                            .extract_output(&host, output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call.
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
+                }
+                #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
+                #[repr(u8)]
+                pub enum Color {
+                    Red,
+                    Green,
+                    Blue,
+                }
             }
         "#]]
         .assert_eq(&file);
