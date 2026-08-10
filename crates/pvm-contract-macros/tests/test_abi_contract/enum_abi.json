@@ -7,7 +7,7 @@
   {
     "inputs": [
       {
-        "name": "",
+        "name": "flag",
         "type": "uint8"
       }
     ],
@@ -16,7 +16,7 @@
       {
         "components": [
           {
-            "name": "",
+            "name": "b",
             "type": "uint8"
           }
         ],
