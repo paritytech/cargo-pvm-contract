@@ -845,6 +845,21 @@ fn scaffold_from_sol_macro_keyword_fn_and_param_names() {
 }
 
 #[test]
+fn scaffold_from_sol_dsl_keyword_fn_and_param_names() {
+    // The DSL mirror of `scaffold_from_sol_macro_keyword_fn_and_param_names`.
+    // A parameter named after a Rust keyword is emitted bare and must be
+    // raw-identified; the function name must *not* be, because it is only ever
+    // emitted as `{name}_handler` and as a `SCREAMING_SELECTOR` const stem,
+    // where an `r#` would not parse.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "DslKwNames",
+        "    function move(uint256 ref) external returns (uint256);",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "dsl-kw-names", "dsl", Some("bump"), &sol);
+}
+
+#[test]
 fn scaffold_from_sol_macro_struct_no_alloc() {
     // A struct with only static fields needs no allocator, so `--allocator
     // no-alloc` must scaffold and build. Guards the alloc classification from

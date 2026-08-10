@@ -915,7 +915,13 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             _ => None,
         })
         .map(|(name, inputs, outputs)| -> Result<DslFunctionInfo> {
-            let name_snake = sanitize_rust_ident(&name.to_case(Case::Snake));
+            // Unlike the macro path, the DSL name is only ever emitted as
+            // `{name}_handler` and as the stem of a `SCREAMING_SELECTOR` const,
+            // neither of which can collide with a Rust keyword. Raw-identifying
+            // it would instead leak the `r#` into both — `R#MOVE_SELECTOR` does
+            // not parse. Parameter names below still need sanitizing, because
+            // those are emitted bare.
+            let name_snake = name.to_case(Case::Snake);
             let screaming = name_snake.to_case(Case::ScreamingSnake);
             let selector_const = format!("{screaming}_SELECTOR");
 
