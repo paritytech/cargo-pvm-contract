@@ -9,10 +9,9 @@ use super::dispatch::{
     generate_router, size_check,
 };
 use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
-use crate::signature::{CustomTypes, SolType, compute_selector};
+use crate::signature::{CustomTypes, SolType};
 use crate::utils::{
-    compute_function_signature, extract_selector_rename, to_camel_case, to_snake_case,
-    validate_sol_identifier,
+    extract_selector_rename, to_camel_case, to_snake_case, validate_sol_identifier,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1063,8 +1062,7 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
 
-                let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
-                    sol_interface
+                let (sol_name, mutability) = if let Some(sol_iface) = sol_interface
                     && let Some(sol_iface) = {
                         let mut items = sol_iface.items.iter().filter_map(|x| match x {
                             Item::Contract(item_contract) if item_contract.is_interface() => {
@@ -1163,8 +1161,6 @@ fn parse_contract(
                         ));
                     }
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector =
-                        compute_selector(&compute_function_signature(sol_func, &sol_custom_types));
                     let sol_mutability = match sol_func.attributes.mutability() {
                         Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
                         Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
@@ -1179,15 +1175,11 @@ fn parse_contract(
                             inferred_mutability,
                         ));
                     }
-                    (
-                        sol_func.name().to_string(),
-                        Some(selector),
-                        inferred_mutability,
-                    )
+                    (sol_func.name().to_string(), inferred_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    (sol_name, None, inferred_mutability)
+                    (sol_name, inferred_mutability)
                 };
 
                 methods.push(MethodInfo {
@@ -1198,7 +1190,6 @@ fn parse_contract(
                     return_types,
                     returns_result,
                     mutability,
-                    precomputed_selector,
                     is_non_reentrant,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
