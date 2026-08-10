@@ -1353,9 +1353,9 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 /// - [`pvm_contract_core::call::CallLimits`] for call limits
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
-    let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
+    let (file, alloc, sol_path) = parse_macro_input!(input with abi_import::parse::parse_macro);
 
-    abi_import::expand_to_module(&file, alloc).into()
+    abi_import::expand_to_module(&file, alloc, sol_path.as_deref()).into()
 }
 
 /// Derive the [`SolEvent`] trait for a struct, enabling Solidity-compatible

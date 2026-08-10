@@ -831,6 +831,128 @@ fn scaffold_from_sol_macro_struct_keyword_field() {
 }
 
 #[test]
+fn scaffold_from_sol_macro_keyword_fn_and_param_names() {
+    // A Solidity function or parameter named after a Rust keyword has to be
+    // raw-identified, or the generated signature does not parse. The macro
+    // strips the `r#` when deriving the Solidity name, so `move` still matches
+    // the interface and keeps its selector.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "KwNames",
+        "    function move(uint256 ref, uint256 gen) external returns (uint256);",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "kw-names", "macro", Some("bump"), &sol);
+}
+
+#[test]
+fn scaffold_from_sol_macro_struct_no_alloc() {
+    // A struct with only static fields needs no allocator, so `--allocator
+    // no-alloc` must scaffold and build. Guards the alloc classification from
+    // over-reporting structs as dynamic.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "StaticStruct",
+        "    struct Point { uint64 x; uint64 y; }\n\
+         \x20   function addPoint(Point calldata a, Point calldata b) external pure returns (Point memory);\n\
+         \x20   function fixed3(Point[3] calldata pts) external pure returns (uint64);",
+    );
+    scaffold_from_sol_and_build(
+        &temp_dir,
+        "struct-no-alloc",
+        "macro",
+        Some("no-alloc"),
+        &sol,
+    );
+}
+
+#[test]
+fn scaffold_from_sol_macro_file_level_struct() {
+    // A struct declared outside the interface gets an undotted `internalType`
+    // (`struct Point`, no `IFoo.` prefix), a different parse path from the
+    // interface-scoped form the other tests cover.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = "// SPDX-License-Identifier: UNLICENSED\n\
+         pragma solidity ^0.8.20;\n\
+         struct Point { uint64 x; uint64 y; }\n\
+         interface FileLevel {\n\
+         \x20   function addPoint(Point calldata a) external pure returns (Point memory);\n\
+         }\n";
+    scaffold_from_sol_and_build(&temp_dir, "file-level-struct", "macro", Some("bump"), sol);
+}
+
+#[test]
+fn scaffold_rejects_struct_shadowing_prelude() {
+    // A `.sol` `struct Address` would generate an item that silently shadows
+    // the prelude's `Address`, making every `address` parameter decode as the
+    // struct while the project still compiles. Must fail at scaffold time.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "ShadowIface",
+        "    struct Address { uint64 lo; uint64 hi; }\n\
+         \x20   function pack(Address calldata a) external pure returns (uint64);\n\
+         \x20   function owner(address who) external view returns (uint64);",
+    );
+    let output = scaffold_init_expect_failure(&temp_dir, "shadow-iface", "macro", &sol);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Address") && stderr.contains("shadow"),
+        "expected a shadowing rejection, got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn scaffold_rejects_struct_fields_colliding_after_snake_case() {
+    // `myField` and `my_field` are distinct Solidity members that collapse to
+    // one Rust field name, which would emit a struct with a duplicate field.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "CollideIface",
+        "    struct S { uint64 myField; uint64 my_field; }\n\
+         \x20   function f(S calldata s) external pure returns (uint64);",
+    );
+    let output = scaffold_init_expect_failure(&temp_dir, "collide-iface", "macro", &sol);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("my_field"),
+        "expected a field-collision rejection, got stderr: {stderr}"
+    );
+}
+
+/// Run `init` from a `.sol` expecting it to fail, returning the raw output so
+/// the caller can assert on the diagnostic.
+fn scaffold_init_expect_failure(
+    temp_dir: &TempDir,
+    name: &str,
+    api_style: &str,
+    sol_content: &str,
+) -> std::process::Output {
+    let sol_path = temp_dir.path().join(format!("{name}.sol"));
+    std::fs::write(&sol_path, sol_content).expect("write .sol fixture");
+
+    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cargo-pvm-contract"));
+    cmd.current_dir(temp_dir.path())
+        .env("CARGO_PVM_CONTRACT_PATH", workspace_path())
+        .arg("pvm-contract")
+        .arg("init")
+        .arg("--init-type")
+        .arg("new")
+        .arg("--api-style")
+        .arg(api_style)
+        .arg("--allocator")
+        .arg("bump")
+        .arg("--name")
+        .arg(name)
+        .arg("--sol-file")
+        .arg(&sol_path);
+    let output = cmd.output().expect("run cargo pvm-contract init");
+    assert!(
+        !output.status.success(),
+        "expected scaffold to fail for `{name}`"
+    );
+    output
+}
+
+#[test]
 fn scaffold_rejects_dsl_tuple() {
     let temp_dir = TempDir::new().expect("temp dir");
     let sol = sol_interface(

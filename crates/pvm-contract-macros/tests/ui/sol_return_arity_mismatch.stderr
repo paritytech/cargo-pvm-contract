@@ -1,0 +1,6 @@
+error: `a` returns nothing, but the `.sol` interface declares it returns `uint64`
+  --> tests/ui/sol_return_arity_mismatch.rs:14:9
+   |
+14 | /         #[pvm_contract_macros::method]
+15 | |         pub fn a(&self) {}
+   | |__________________________^

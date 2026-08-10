@@ -43,6 +43,9 @@ struct GeneratedStruct {
 
 struct GeneratedField {
     name: String,
+    /// The field's Solidity name, kept only so a snake_case collision can name
+    /// both offending members in the error.
+    sol_name: String,
     rust_type: String,
 }
 
@@ -565,13 +568,16 @@ fn extract_function_info(
             continue;
         };
 
-        let name_snake = name.to_case(Case::Snake);
+        let name_snake = sanitize_rust_ident(&name.to_case(Case::Snake));
         let mut param_strs = Vec::with_capacity(inputs.len());
         for (i, p) in inputs.iter().enumerate() {
             let param_name = if p.name.is_empty() {
                 format!("arg{i}")
             } else {
-                p.name.to_case(Case::Snake)
+                // A Solidity parameter may be named after a Rust keyword
+                // (`ref`, `gen`, `move`), which would otherwise emit a
+                // signature that doesn't parse.
+                sanitize_rust_ident(&p.name.to_case(Case::Snake))
             };
             let rust_type = abi_param_rust_type(
                 &p.type_name,
@@ -731,6 +737,40 @@ fn is_valid_ident(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Identifiers the generated module already binds, which a generated struct
+/// must not reuse. `Contract` is the contract struct in the template; the rest
+/// come from `use pvm_contract_sdk::prelude::*` and the alloc-mode imports
+/// (`Bytes`, `String`, `Vec`).
+///
+/// A collision here is not merely a name clash: an explicit item silently
+/// *shadows* a glob import, so a `.sol` declaring `struct Address` would make
+/// every `address` parameter decode as that struct — the project compiles and
+/// the method reverts (or mis-decodes) on-chain. Reject at scaffold time
+/// instead, per this module's "never emit code we know is wrong" rule.
+const RESERVED_STRUCT_NAMES: [&str; 18] = [
+    // Declared by the template.
+    "Contract",
+    // `pvm_contract_sdk::prelude::*`.
+    "Address",
+    "DecodeError",
+    "EmptyError",
+    "Host",
+    "HostApi",
+    "I256",
+    "PolkaVmHost",
+    "ReturnFlags",
+    "SolDecode",
+    "SolEncode",
+    "SolError",
+    "StaticEncodedLen",
+    "StorageFlags",
+    "U256",
+    // Alloc-mode imports.
+    "Bytes",
+    "String",
+    "Vec",
+];
+
 /// Make a Solidity identifier safe to emit as a Rust identifier. A Solidity
 /// `struct`/field name can be a Rust keyword (e.g. a field named `ref`), which
 /// would otherwise produce non-compiling code. Raw-identify where allowed;
@@ -774,10 +814,19 @@ fn register_struct(
     if reg.by_path.contains_key(path) {
         return Ok(());
     }
+    if RESERVED_STRUCT_NAMES.contains(&rust_name) {
+        anyhow::bail!(
+            "the Solidity struct `{path}` maps to the Rust type `{rust_name}`, which the \
+             generated contract module already binds (the contract struct or a \
+             `pvm_contract_sdk` prelude import). A struct by that name would shadow it and \
+             silently change how other parameters decode. Rename it in the interface, or \
+             edit the generated file manually."
+        );
+    }
     if let Some(other) = reg.name_owner.get(rust_name) {
         anyhow::bail!(
             "two Solidity structs (`{other}` and `{path}`) both map to the Rust type \
-             `{rust_name}`; rename one in the interface to avoid the collision"
+             `{rust_name}`; rename one in the interface, or edit the generated file manually"
         );
     }
     // Mark as seen before recursing so a self-referential struct terminates.
@@ -799,8 +848,25 @@ fn register_struct(
             reg,
         )
         .with_context(|| format!("in field `{field_name}` of struct `{rust_name}`"))?;
+        // Snake-casing is lossy: `myField` and `my_field` are distinct Solidity
+        // members that collapse to the same Rust ident, which would emit a
+        // struct with a duplicate field (`E0124`) only discovered when the user
+        // builds. Reject here instead.
+        if let Some(prev) = fields
+            .iter()
+            .find(|f: &&GeneratedField| f.name == field_name)
+        {
+            anyhow::bail!(
+                "fields `{}` and `{}` of Solidity struct `{rust_name}` both map to the Rust \
+                 field name `{field_name}`; rename one in the interface, or edit the \
+                 generated file manually",
+                prev.sol_name,
+                c.name,
+            );
+        }
         fields.push(GeneratedField {
             name: field_name,
+            sol_name: c.name.clone(),
             rust_type,
         });
     }
@@ -849,7 +915,7 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             _ => None,
         })
         .map(|(name, inputs, outputs)| -> Result<DslFunctionInfo> {
-            let name_snake = name.to_case(Case::Snake);
+            let name_snake = sanitize_rust_ident(&name.to_case(Case::Snake));
             let screaming = name_snake.to_case(Case::ScreamingSnake);
             let selector_const = format!("{screaming}_SELECTOR");
 
@@ -871,7 +937,7 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
                     let param_name = if p.name.is_empty() {
                         format!("arg{i}")
                     } else {
-                        p.name.to_case(Case::Snake)
+                        sanitize_rust_ident(&p.name.to_case(Case::Snake))
                     };
                     let rust_type = solidity_to_rust_type(&p.type_name)?;
                     // Angle-bracket the type so compound shapes like
@@ -1386,6 +1452,79 @@ mod tests {
         // Non-keywords pass through untouched.
         assert_eq!(sanitize_rust_ident("from"), "from");
         assert_eq!(sanitize_rust_ident("amount"), "amount");
+    }
+
+    #[test]
+    fn reserved_struct_name_rejected() {
+        // `Address` comes in through the template's `prelude::*` glob, and a
+        // local item silently shadows a glob import — so a generated `Address`
+        // would make every `address` parameter decode as this struct while the
+        // project still compiles. Reject at scaffold time.
+        for reserved in ["Address", "U256", "Contract", "Vec"] {
+            let comps = vec![input("x", "uint64")];
+            let mut reg = StructRegistry::default();
+            let err = abi_param_rust_type(
+                "tuple",
+                Some(&format!("struct IFoo.{reserved}")),
+                Some(&comps),
+                &mut reg,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(reserved), "expected `{reserved}` in: {err}");
+            assert!(err.contains("shadow"), "expected shadowing note in: {err}");
+        }
+    }
+
+    #[test]
+    fn non_reserved_struct_name_accepted() {
+        // Guard against the deny-list being over-broad: a name that merely
+        // resembles a prelude item must still scaffold.
+        let comps = vec![input("x", "uint64")];
+        let mut reg = StructRegistry::default();
+        let ty = abi_param_rust_type(
+            "tuple",
+            Some("struct IFoo.AddressBook"),
+            Some(&comps),
+            &mut reg,
+        )
+        .unwrap();
+        assert_eq!(ty, "AddressBook");
+    }
+
+    #[test]
+    fn fields_colliding_after_snake_case_rejected() {
+        // `myField` and `my_field` are distinct Solidity members that both
+        // snake_case to `my_field`, which would emit a struct with a duplicate
+        // field (E0124) only discovered when the user builds.
+        let comps = vec![input("myField", "uint64"), input("my_field", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", Some("struct IFoo.S"), Some(&comps), &mut reg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("my_field"), "{err}");
+        assert!(err.contains("myField"), "{err}");
+    }
+
+    #[test]
+    fn keyword_param_and_function_names_sanitized() {
+        // A Solidity parameter or function named after a Rust keyword must be
+        // raw-identified, or the generated signature does not parse. The macro
+        // strips the `r#` when deriving the Solidity name, so the `.sol` lookup
+        // still matches.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![AbiItem::Function {
+                    name: "move".to_string(),
+                    inputs: vec![input("ref", "uint256"), input("gen", "uint256")],
+                    outputs: vec![],
+                    state_mutability: "nonpayable".to_string(),
+                }],
+            },
+        };
+        let (functions, _) = extract_function_info(&metadata).unwrap();
+        assert_eq!(functions[0].name_snake, "r#move");
+        assert_eq!(functions[0].params, "r#ref: U256, r#gen: U256");
     }
 
     #[test]

@@ -352,7 +352,14 @@ fn expand_items<'a>(
     })
 }
 
-pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+/// `sol_path` is the file the interface was read from, when `abi_import!` was
+/// given a path rather than inline Solidity. It is only used to register a
+/// rebuild dependency; see `dep_tracking`.
+pub fn expand_to_module(
+    file: &File,
+    alloc: bool,
+    sol_path: Option<&std::path::Path>,
+) -> TokenStream {
     if let Err(e) = crate::utils::reject_sol_imports(file) {
         return quote! { compile_error!(#e); };
     }
@@ -611,12 +618,28 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
     }).collect::<Vec<TokenStream>>();
 
     let user_types = expand_items(file.items.iter(), alloc, &mut ctxt);
+    let dep_tracking = dep_tracking(sol_path);
 
     quote! {
         use pvm_contract_sdk::*;
 
+        #dep_tracking
+
         #(#modules)*
         #(#user_types)*
+    }
+}
+
+/// Register the interface file as a rebuild dependency. The macro reads it with
+/// `fs::read_to_string` and hashes selectors from it — including struct field
+/// layouts — but cargo has no idea the file was read, so editing it would leave
+/// the compiled selectors stale. `include_bytes!` makes rustc record the file in
+/// the crate's dep-info, which cargo uses to trigger a rebuild. The constant is
+/// `const _`, so the bytes never reach the object file.
+fn dep_tracking(sol_path: Option<&std::path::Path>) -> TokenStream {
+    match sol_path.and_then(|p| p.to_str()) {
+        Some(path) => quote! { const _: &[u8] = include_bytes!(#path); },
+        None => quote! {},
     }
 }
 
@@ -654,7 +677,7 @@ mod test {
             #tts
         })
         .unwrap();
-        let tokens = expand_to_module(&file, true).to_token_stream();
+        let tokens = expand_to_module(&file, true, None).to_token_stream();
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
     }
 
@@ -2370,7 +2393,7 @@ mod test {
         };
         let file = {
             let file = syn_solidity::parse2(file).unwrap();
-            let tokens = expand_to_module(&file, true).to_token_stream();
+            let tokens = expand_to_module(&file, true, None).to_token_stream();
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
         expect_test::expect![[r#"

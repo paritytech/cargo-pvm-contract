@@ -35,7 +35,12 @@ pub fn build_method_signature_expr(sol_name: &str, param_types: &[syn::Type]) ->
 
 /// Convert snake_case to camelCase, the default Solidity name for a Rust method.
 /// The leading segment stays lower-case (`balance_of` becomes `balanceOf`).
+///
+/// A method whose Solidity name is a Rust keyword has to be declared as a raw
+/// identifier (`pub fn r#move`), which stringifies with its `r#` prefix; strip
+/// it so the derived Solidity name is `move` and still matches the interface.
 pub fn to_camel_case(snake: &str) -> String {
+    let snake = snake.strip_prefix("r#").unwrap_or(snake);
     let mut result = String::new();
     let mut next_upper = false;
     for (i, c) in snake.chars().enumerate() {
@@ -178,4 +183,26 @@ pub fn compute_function_signature(item: &ItemFunction, types: &CustomTypes) -> S
         .map(|ty| types.canonical_name(ty))
         .collect();
     format!("{}({})", item.name(), params.join(","))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camel_case_of_plain_snake_ident() {
+        assert_eq!(to_camel_case("balance_of"), "balanceOf");
+        assert_eq!(to_camel_case("flip"), "flip");
+    }
+
+    #[test]
+    fn camel_case_strips_raw_identifier_prefix() {
+        // A method whose Solidity name is a Rust keyword must be declared as a
+        // raw identifier; the derived Solidity name has to drop the `r#` or it
+        // will not match the interface.
+        assert_eq!(to_camel_case("r#move"), "move");
+        assert_eq!(to_camel_case("r#type"), "type");
+        // The prefix is only stripped at the start, never mid-identifier.
+        assert_eq!(to_camel_case("transfer_from"), "transferFrom");
+    }
 }

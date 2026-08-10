@@ -1099,7 +1099,15 @@ fn parse_contract(
                                 if explicit_rename.is_some() {
                                     name.as_string() == rename
                                 } else {
-                                    name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                                    // `to_camel_case` is how the ABI and selector paths derive a
+                                    // method's Solidity name, so it has to be accepted here too:
+                                    // the snake_case comparisons alone miss any name with a digit
+                                    // boundary (`fixed3` snake-cases to `fixed_3` in the
+                                    // scaffolder, but back to `fixed3` here), leaving a scaffolded
+                                    // project that cannot find its own interface function.
+                                    name.as_string() == rename
+                                        || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                                        || name.as_string() == to_camel_case(&rust_fn_name)
                                 }
                             }) => Some(item_function),
                            _ => None
@@ -1153,14 +1161,39 @@ fn parse_contract(
                             ));
                         }
                     }
-                    if let Some(rust_ret) = rust_success_type(&func.sig.output)
-                        && let Some(canonical) = sol_return_canonical(sol_func, &sol_custom_types)
-                    {
-                        sig_asserts.push(sol_name_assert(
+                    // Compare the return *presence* as well as its type: an
+                    // assertion can only be emitted when both sides have a type,
+                    // so a method that returns nothing where the `.sol` declares
+                    // a return (or the reverse) would otherwise slip through and
+                    // ship an ABI that disagrees with what dispatch encodes.
+                    match (
+                        rust_success_type(&func.sig.output),
+                        sol_return_canonical(sol_func, &sol_custom_types),
+                    ) {
+                        (Some(rust_ret), Some(canonical)) => sig_asserts.push(sol_name_assert(
                             &rust_ret,
                             &canonical,
                             &format!("`{sol_fn_label}` return"),
-                        ));
+                        )),
+                        (None, Some(canonical)) => {
+                            return Err(syn::Error::new_spanned(
+                                func,
+                                format!(
+                                    "`{sol_fn_label}` returns nothing, but the `.sol` interface \
+                                     declares it returns `{canonical}`"
+                                ),
+                            ));
+                        }
+                        (Some(_), None) => {
+                            return Err(syn::Error::new_spanned(
+                                &func.sig.output,
+                                format!(
+                                    "`{sol_fn_label}` returns a value, but the `.sol` interface \
+                                     declares no return type"
+                                ),
+                            ));
+                        }
+                        (None, None) => (),
                     }
                     implemented_sol_methods.push(sol_func.name.clone());
                     let selector =

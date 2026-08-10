@@ -234,7 +234,21 @@ pub trait SolError: Sized {
 
 The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a different parameter shape.
 
-Solidity `struct` parameters/returns (ABI `tuple`) are supported on the **macro** path: `abi_param_rust_type` walks the ABI `components` and generates a `#[derive(SolType)]` struct for each named struct (deduped by `internalType`, nested structs emitted before their parents), handling `Point`, `Point[]`, and `Point[N]` shapes. The **DSL** path still rejects tuples (it can't emit the `SolType` derive it would need) with a message pointing at `--api-style macro`.
+Solidity `struct` parameters/returns (ABI `tuple`) are supported on the **macro** path: `abi_param_rust_type` walks the ABI `components` and generates a `#[derive(SolType)]` struct for each named struct (deduped by `internalType`, nested structs emitted before their parents), handling `Point`, `Point[]`, and `Point[N]` shapes. The **DSL** path rejects tuples (it can't emit the `SolType` derive it would need) with a message pointing at `--api-style macro`. That restriction is currently broader than the underlying limitation — a *static* struct would decode through the DSL template's existing `StaticEncodedLen`/`decode_at` path; only dynamic structs genuinely can't — so narrowing it later is a refinement, not a reversal.
+
+Names are checked, not just types. The scaffolder rejects at scaffold time rather than emitting code that fails (or worse, silently mis-decodes) at build time:
+
+- A generated struct whose Rust name would collide with something the template already binds — the contract struct or a `pvm_contract_sdk::prelude::*` import (`RESERVED_STRUCT_NAMES`). This matters because an explicit item *shadows* a glob import, so a `.sol` declaring `struct Address` would otherwise make every `address` parameter decode as that struct while the project still compiles.
+- Two struct fields that collapse to one Rust name after snake_casing (`myField` + `my_field`), which would emit a duplicate field.
+- Solidity identifiers that are Rust keywords are raw-identified via `sanitize_rust_ident` — struct names, struct fields, function names, and parameter names. `to_camel_case` in `pvm-contract-macros` strips the `r#` when deriving a method's Solidity name, so `pub fn r#move` still matches `move` in the interface and keeps its selector.
+
+### `.sol` ↔ Rust consistency checks
+
+Three layers guard the interface against the implementation drifting from it:
+
+1. **`check_signature_compatibility`** compares parameter types it can resolve from syntax alone. It skips any parameter involving a custom type, because a proc macro cannot inspect another struct's field layout from tokens.
+2. **Signature assertions** (`sig_asserts`) close that gap at const-eval: for custom-typed parameters and for returns, the macro emits `const _: () = assert!(str_eq(<T as SolEncode>::SOL_NAME, "<sol canonical>"))`. Both sides spell a struct as its flattened field tuple, so a Rust struct whose fields drift from the `.sol` fails `cargo check`.
+3. **Return presence** is compared separately: an assertion can only be emitted when both sides have a type, so a method returning nothing where the `.sol` declares a return (or the reverse) is rejected outright — otherwise the shipped ABI would disagree with what dispatch encodes.
 
 ### Type Support Matrix
 
