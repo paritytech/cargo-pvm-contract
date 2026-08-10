@@ -282,6 +282,14 @@ fn init_from_example_files_inner(
     let contract_name = contract_name.to_case(Case::Kebab);
     let sol_file_name = sol_file_name.to_string();
 
+    // solc resolves imports for the ABI, but only this entry file is copied into
+    // the project, so the build-time macro re-parse would see an unresolved
+    // import and hash a wrong selector. Fail here with the same message the
+    // build-time parsers give.
+    if let Ok(source) = std::str::from_utf8(sol_contents) {
+        cargo_pvm_contract_builder::reject_sol_imports(source)?;
+    }
+
     log::debug!("Extracting metadata from {sol_file_name}");
     let (metadata, actual_contract_name) =
         extract_solc_metadata_from_bytes(sol_contents, &sol_file_name)?;
@@ -1391,6 +1399,17 @@ mod tests {
             field_pairs(&reg.order[0]),
             vec![("r#ref", "U256"), ("from", "Address")]
         );
+    }
+
+    #[test]
+    fn scaffold_rejects_sol_import() {
+        // The import check runs before solc/filesystem work, so this fails fast
+        // rather than scaffolding a project that won't build.
+        let sol = b"import \"./Types.sol\";\ninterface I { function f() external; }";
+        let err = init_from_example_files_inner(sol, "I.sol", None, "import-test", false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("import"), "{err}");
     }
 
     #[test]

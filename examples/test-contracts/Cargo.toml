@@ -95,6 +95,10 @@ path = "src/receive.rs"
 name = "receive_dsl"
 path = "src/receive_dsl.rs"
 
+[[bin]]
+name = "precompiles"
+path = "src/precompiles.rs"
+
 [dependencies]
 pvm-contract-sdk = { path = "../../crates/pvm-contract-sdk", features = [
     "alloc",

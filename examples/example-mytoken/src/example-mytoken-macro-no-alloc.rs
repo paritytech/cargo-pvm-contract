@@ -75,8 +75,8 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.get_caller();
-            let sender_balance = self.balance_of(caller.into());
+            let caller = self.env().caller();
+            let sender_balance = self.balance_of(caller);
 
             if sender_balance < amount {
                 return Err(InsufficientBalance.into());
@@ -87,6 +87,7 @@ mod my_token {
             let new_recipient_balance = recipient_balance + amount;
 
             let to: [u8; 20] = to.into();
+            let caller: [u8; 20] = caller.into();
             self.set_balance(&caller, new_sender_balance);
             self.set_balance(&to, new_recipient_balance);
             self.emit_transfer(&caller, &to, amount);
@@ -133,12 +134,6 @@ mod my_token {
             let key = self.balance_key(addr);
             self.host()
                 .set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
-        }
-
-        fn get_caller(&self) -> [u8; 20] {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            caller
         }
 
         fn emit_transfer(&self, from: &[u8; 20], to: &[u8; 20], value: U256) {

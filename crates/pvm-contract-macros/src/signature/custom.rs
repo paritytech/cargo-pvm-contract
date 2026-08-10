@@ -26,7 +26,60 @@ impl CustomTypes {
     pub fn from_file(file: &File) -> Result<Self, String> {
         let mut this = Self::default();
         this.visit_items(&file.items)?;
+        this.check_resolvable(&file.items)?;
         Ok(this)
+    }
+
+    /// Reject a custom type used in a function parameter/return or struct field
+    /// that the file never declares: with no declaration there is nothing to
+    /// expand, so `resolve` falls back to the bare name and hashes the selector
+    /// from that rather than the type's canonical ABI form, silently producing
+    /// the wrong selector. Imports aren't followed, so every referenced type
+    /// must be declared here.
+    fn check_resolvable(&self, items: &[Item]) -> Result<(), String> {
+        for item in items {
+            match item {
+                Item::Struct(s) => {
+                    for field in s.fields.iter() {
+                        self.check_declared(&field.ty)?;
+                    }
+                }
+                Item::Function(f) => {
+                    for ty in f.parameters.types() {
+                        self.check_declared(ty)?;
+                    }
+                    if let Some(returns) = &f.returns {
+                        for ty in returns.returns.types() {
+                            self.check_declared(ty)?;
+                        }
+                    }
+                }
+                Item::Contract(c) => self.check_resolvable(&c.body)?,
+                _ => (),
+            }
+        }
+        Ok(())
+    }
+
+    /// Recurse through arrays/tuples and reject the first `Custom` type absent
+    /// from `defs`.
+    fn check_declared(&self, ty: &Type) -> Result<(), String> {
+        match ty {
+            Type::Array(arr) => self.check_declared(&arr.ty),
+            Type::Tuple(tuple) => tuple.types.iter().try_for_each(|t| self.check_declared(t)),
+            Type::Custom(path) => {
+                let name = path.last().as_string();
+                if self.defs.contains_key(&name) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "undeclared type `{name}` in the `.sol` interface; declare it in this file \
+                         (imports are not followed)"
+                    ))
+                }
+            }
+            _ => Ok(()),
+        }
     }
 
     fn visit_items(&mut self, items: &[Item]) -> Result<(), String> {
@@ -200,6 +253,44 @@ mod tests {
             .err()
             .expect("expected a collision error");
         assert!(err.contains("both named `Point`"), "{err}");
+    }
+
+    #[test]
+    fn qualified_same_named_types_are_rejected() {
+        let src = r#"
+            interface IFoo { struct Point { uint64 x; uint64 y; } }
+            interface Irrelevant { struct Point { bool exists; } }
+            interface Relevant { function add(IFoo.Point a, IFoo.Point b) external; }
+        "#;
+        let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+        let err = CustomTypes::from_file(&file)
+            .err()
+            .expect("two `Point` types must be rejected");
+        assert!(err.contains("both named `Point`"), "{err}");
+    }
+
+    #[test]
+    fn undeclared_custom_type_is_rejected() {
+        let src = "interface I { function f(Missing m) external; }";
+        let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+        let err = CustomTypes::from_file(&file)
+            .err()
+            .expect("undeclared type must be rejected");
+        assert!(err.contains("undeclared type `Missing`"), "{err}");
+    }
+
+    #[test]
+    fn same_named_udt_aliases_collide() {
+        // Two `type X is ...` aliases sharing a simple name: keyed by simple
+        // name like structs, so a duplicate is rejected rather than silently
+        // resolving to one underlying type.
+        let src = "interface A { type Id is uint64; }
+                   interface B { type Id is address; }";
+        let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+        let err = CustomTypes::from_file(&file)
+            .err()
+            .expect("two `Id` aliases must be rejected");
+        assert!(err.contains("both named `Id`"), "{err}");
     }
 
     #[test]
