@@ -1,0 +1,51 @@
+[
+  {
+    "type": "function",
+    "name": "getOwner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getInitialSupply",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "error",
+    "name": "InvalidCalldata",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CalldataTooLarge",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NonPayableValueReceived",
+    "inputs": []
+  }
+]

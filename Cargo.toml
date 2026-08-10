@@ -13,6 +13,7 @@ members = [
     "crates/pvm-solc-differential",
     "crates/pvm-contract-e2e-tests",
     "crates/cargo-pvm-contract-extrinsics",
+    "crates/pvm-viem-roundtrip",
 ]
 resolver = "2"
 

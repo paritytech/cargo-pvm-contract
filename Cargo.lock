@@ -4943,6 +4943,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pvm-viem-roundtrip"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "cargo-pvm-contract-builder",
+ "pvm-contract-sdk",
+ "pvm-contract-types",
+ "ruint",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

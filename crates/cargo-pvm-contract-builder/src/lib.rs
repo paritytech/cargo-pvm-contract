@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-pub use abi::AbiJson;
+pub use abi::{AbiJson, generate_abi_for_bin, generate_storage_layout_for_bin};
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
@@ -615,26 +615,27 @@ fn cargo_supports_z_flag(flag: &str, work_dir: &Path, remove_toolchain_env: bool
     probe.status().map(|s| s.success()).unwrap_or(false)
 }
 
-fn generate_abi_file(
+/// Render the ABI JSON for a binary exactly as [`PvmBuilder`] would write it to
+/// `target/{profile}/{bin}.abi.json`, without running the PolkaVM build.
+///
+/// Returns `Ok(None)` when the binary contains no `#[contract]` module. The
+/// rendered string is a bare ABI array, or a `{"abi": [...], "storageLayout": {...}}`
+/// object when the contract declares storage fields.
+pub fn render_abi_json(
     manifest_dir: &Path,
     bin_name: &str,
-    output_path: &Path,
     target_root: Option<&Path>,
     features: Option<&str>,
-) -> Result<()> {
-    let abi = match abi::generate_abi_for_bin(manifest_dir, bin_name, target_root, features) {
-        Ok(Some(abi)) => abi,
-        Ok(None) => {
-            eprintln!("No pvm_contract found, skipping ABI generation");
-            return Ok(());
-        }
-        Err(e) => {
-            return Err(e).context("Failed to generate ABI");
-        }
+) -> Result<Option<String>> {
+    let abi = match generate_abi_for_bin(manifest_dir, bin_name, target_root, features)
+        .context("Failed to generate ABI")?
+    {
+        Some(abi) => abi,
+        None => return Ok(None),
     };
 
     let storage_layout =
-        abi::generate_storage_layout_for_bin(manifest_dir, bin_name, target_root, features)?;
+        generate_storage_layout_for_bin(manifest_dir, bin_name, target_root, features)?;
 
     let json = if let Some(layout) = storage_layout {
         let abi_value = serde_json::to_value(&abi).context("Failed to serialize ABI")?;
@@ -645,6 +646,36 @@ fn generate_abi_file(
         .context("Failed to serialize ABI + storageLayout")?
     } else {
         serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?
+    };
+
+    Ok(Some(json))
+}
+
+/// Render the ABI JSON for a standalone Solidity interface, using the same
+/// parser the `.sol` build path uses.
+///
+/// Returns `Ok(None)` when the file declares nothing that maps to an ABI item.
+/// Contract binaries go through [`render_abi_json`]; this exists so a `.sol`
+/// file can be exercised on its own, without a Rust contract implementing it.
+pub fn render_abi_from_sol(sol_path: &Path) -> Result<Option<String>> {
+    let Some(abi) = abi::generate_abi_from_sol(sol_path)? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        serde_json::to_string_pretty(&abi).context("Failed to serialize ABI to JSON")?,
+    ))
+}
+
+fn generate_abi_file(
+    manifest_dir: &Path,
+    bin_name: &str,
+    output_path: &Path,
+    target_root: Option<&Path>,
+    features: Option<&str>,
+) -> Result<()> {
+    let Some(json) = render_abi_json(manifest_dir, bin_name, target_root, features)? else {
+        eprintln!("No pvm_contract found, skipping ABI generation");
+        return Ok(());
     };
 
     fs::write(output_path, json)

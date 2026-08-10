@@ -74,6 +74,53 @@ jobs:
       - name: Run e2e tests
         run: cargo test -p pvm-contract-e2e-tests -- --test-threads=1
 
+  viem-roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.92
+          components: rust-src
+      # Only the one Rust-path ABI fixture needs this: the builder compiles and
+      # runs that binary for the host with `-Zbuild-std`. The 18 `.sol`-backed
+      # fixtures are derived by parsing the Solidity interface, with no build at
+      # all, and the `abi-surface` contract is compiled as part of the generator
+      # crate itself.
+      - name: Install Rust nightly for the abi-gen host run
+        run: rustup toolchain install nightly-2026-02-01 --component rust-src --profile minimal
+      - name: Regenerate ABI fixtures and golden vectors
+        run: cargo run -p pvm-viem-roundtrip --bin gen-viem-fixtures
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: ts/viem-roundtrip/pnpm-lock.yaml
+      - name: Install TypeScript dependencies
+        working-directory: ts/viem-roundtrip
+        run: pnpm install --frozen-lockfile
+      - name: Regenerate the as-const ABI module
+        working-directory: ts/viem-roundtrip
+        run: pnpm gen:abis
+      # The fixtures are checked in, so any ABI or encoding change shows up here
+      # as a reviewable diff instead of being silently absorbed. To re-bless a
+      # legitimate change, run the two generator commands above locally and
+      # commit the result.
+      - name: Fail on fixture drift
+        run: git diff --exit-code -- ts/viem-roundtrip/fixtures ts/viem-roundtrip/src/generated
+      - name: Run the viem round-trip suite
+        working-directory: ts/viem-roundtrip
+        run: pnpm test
+      - name: Check viem's TypeScript inference over the emitted ABIs
+        working-directory: ts/viem-roundtrip
+        run: pnpm typecheck
+
   check-examples:
     runs-on: ubuntu-latest
     steps:

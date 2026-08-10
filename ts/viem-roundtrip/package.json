@@ -1,0 +1,19 @@
+{
+  "name": "@pvm-contract/viem-roundtrip",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Checks the ABI JSON emitted by cargo-pvm-contract against viem, byte for byte",
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "gen:abis": "node scripts/gen-abi-ts.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.9",
+    "typescript": "5.9.3",
+    "vitest": "3.2.7",
+    "viem": "2.55.11"
+  }
+}

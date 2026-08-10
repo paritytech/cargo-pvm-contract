@@ -1,0 +1,51 @@
+[
+  {
+    "type": "function",
+    "name": "delegateFlipper",
+    "inputs": [
+      {
+        "name": "addr",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "get",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "error",
+    "name": "InvalidCalldata",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CalldataTooLarge",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NonPayableValueReceived",
+    "inputs": []
+  }
+]

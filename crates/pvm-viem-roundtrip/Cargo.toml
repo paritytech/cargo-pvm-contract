@@ -1,0 +1,36 @@
+[package]
+name = "pvm-viem-roundtrip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Generates the golden ABI + encoding vectors consumed by the viem round-trip TypeScript suite"
+publish = false
+
+[dependencies]
+# The SDK's own encoders are the ground truth the TypeScript suite is compared
+# against, so the vectors must come from exactly the traits contracts use.
+pvm-contract-sdk = { path = "../pvm-contract-sdk", features = [
+    "alloc",
+    "std",
+    "abi-gen",
+] }
+pvm-contract-types = { path = "../pvm-contract-types", features = [
+    "alloc",
+    "std",
+    "abi-gen",
+] }
+# Renders the `.abi.json` for a contract binary through the same code path the
+# real build writes to disk, without the riscv build or the PolkaVM link.
+cargo-pvm-contract-builder = { path = "../cargo-pvm-contract-builder" }
+ruint = { workspace = true, default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+# `abi-gen` is on by default: `SolEncode::abi_param` and the macro-generated
+# `__abi_json()` accessor (used by the in-crate `abi-surface` contract) are
+# both gated on it, and this crate exists only to emit those.
+default = ["abi-gen"]
+abi-gen = []

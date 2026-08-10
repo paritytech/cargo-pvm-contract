@@ -1,0 +1,569 @@
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "name": "supply",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "version",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "echoInts",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "int8"
+      },
+      {
+        "name": "b",
+        "type": "int16"
+      },
+      {
+        "name": "c",
+        "type": "int32"
+      },
+      {
+        "name": "d",
+        "type": "int64"
+      },
+      {
+        "name": "e",
+        "type": "int128"
+      },
+      {
+        "name": "f",
+        "type": "int256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoBytesN",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "bytes1"
+      },
+      {
+        "name": "b",
+        "type": "bytes4"
+      },
+      {
+        "name": "c",
+        "type": "bytes20"
+      },
+      {
+        "name": "d",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes4"
+      },
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoBytesVsUint8",
+    "inputs": [
+      {
+        "name": "packed",
+        "type": "bytes"
+      },
+      {
+        "name": "spread",
+        "type": "uint8[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes"
+      },
+      {
+        "name": "",
+        "type": "uint8[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoStrings",
+    "inputs": [
+      {
+        "name": "xs",
+        "type": "string[]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoPairs",
+    "inputs": [
+      {
+        "name": "xs",
+        "type": "tuple[]",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple[]",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoFixedStrings",
+    "inputs": [
+      {
+        "name": "xs",
+        "type": "string[2]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "string[2]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoFixedUints",
+    "inputs": [
+      {
+        "name": "xs",
+        "type": "uint256[3]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256[3]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "mixed",
+    "inputs": [
+      {
+        "name": "id",
+        "type": "uint256"
+      },
+      {
+        "name": "name",
+        "type": "string"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "string"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoPair",
+    "inputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "echoProfile",
+    "inputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "id",
+            "type": "uint256"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "tags",
+            "type": "uint32[]"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "id",
+            "type": "uint256"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "tags",
+            "type": "uint32[]"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "touch",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "deposit",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "alwaysFails",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "guarded",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "overloaded",
+    "inputs": [
+      {
+        "name": "v",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "overloaded",
+    "inputs": [
+      {
+        "name": "v",
+        "type": "string"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "receive",
+    "stateMutability": "payable"
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientBalance",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DetailedFailure",
+    "inputs": [
+      {
+        "name": "",
+        "type": "string"
+      },
+      {
+        "name": "",
+        "type": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Panic",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "Error",
+    "inputs": [
+      {
+        "name": "",
+        "type": "string"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "event",
+    "name": "Indexed3",
+    "inputs": [
+      {
+        "name": "who",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "tag",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "note",
+        "type": "uint64",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IndexedDynamic",
+    "inputs": [
+      {
+        "name": "name",
+        "type": "string",
+        "indexed": true
+      },
+      {
+        "name": "payload",
+        "type": "bytes",
+        "indexed": true
+      },
+      {
+        "name": "note",
+        "type": "string",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IndexedComposite",
+    "inputs": [
+      {
+        "name": "pair",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ],
+        "indexed": true
+      },
+      {
+        "name": "values",
+        "type": "uint256[]",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "AnonymousPing",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "b",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "c",
+        "type": "bool",
+        "indexed": false
+      }
+    ],
+    "anonymous": true
+  },
+  {
+    "type": "error",
+    "name": "InvalidCalldata",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CalldataTooLarge",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NonPayableValueReceived",
+    "inputs": []
+  }
+]

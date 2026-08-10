@@ -1,0 +1,651 @@
+[
+  {
+    "type": "function",
+    "name": "bareAliases",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint256"
+      },
+      {
+        "name": "b",
+        "type": "int256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      },
+      {
+        "name": "",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "elementary",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "address"
+      },
+      {
+        "name": "b",
+        "type": "bool"
+      },
+      {
+        "name": "c",
+        "type": "string"
+      },
+      {
+        "name": "d",
+        "type": "bytes"
+      },
+      {
+        "name": "e",
+        "type": "bytes1"
+      },
+      {
+        "name": "f",
+        "type": "bytes17"
+      },
+      {
+        "name": "g",
+        "type": "bytes32"
+      },
+      {
+        "name": "h",
+        "type": "uint8"
+      },
+      {
+        "name": "i",
+        "type": "uint128"
+      },
+      {
+        "name": "j",
+        "type": "int8"
+      },
+      {
+        "name": "k",
+        "type": "int256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "oddWidths",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint24"
+      },
+      {
+        "name": "b",
+        "type": "uint40"
+      },
+      {
+        "name": "c",
+        "type": "int72"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint200"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "byteArray",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint8[2]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8[2]"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "userDefined",
+    "inputs": [
+      {
+        "name": "status",
+        "type": "uint8"
+      },
+      {
+        "name": "at",
+        "type": "uint64"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "takesPair",
+    "inputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "takesNested",
+    "inputs": [
+      {
+        "name": "n",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "inner",
+            "type": "tuple",
+            "components": [
+              {
+                "name": "lo",
+                "type": "uint64"
+              },
+              {
+                "name": "hi",
+                "type": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "inner",
+            "type": "tuple",
+            "components": [
+              {
+                "name": "lo",
+                "type": "uint64"
+              },
+              {
+                "name": "hi",
+                "type": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "owner",
+            "type": "address"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "takesProfile",
+    "inputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "id",
+            "type": "uint256"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "tags",
+            "type": "uint32[]"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "id",
+            "type": "uint256"
+          },
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "tags",
+            "type": "uint32[]"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "takesBundle",
+    "inputs": [
+      {
+        "name": "b",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "dynamicPairs",
+            "type": "tuple[]",
+            "components": [
+              {
+                "name": "lo",
+                "type": "uint64"
+              },
+              {
+                "name": "hi",
+                "type": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "fixedPairs",
+            "type": "tuple[2]",
+            "components": [
+              {
+                "name": "lo",
+                "type": "uint64"
+              },
+              {
+                "name": "hi",
+                "type": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "tags",
+            "type": "bytes4[3]"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "dynamicPairs",
+            "type": "tuple[]",
+            "components": [
+              {
+                "name": "lo",
+                "type": "uint64"
+              },
+              {
+                "name": "hi",
+                "type": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "fixedPairs",
+            "type": "tuple[2]",
+            "components": [
+              {
+                "name": "lo",
+                "type": "uint64"
+              },
+              {
+                "name": "hi",
+                "type": "uint64"
+              }
+            ]
+          },
+          {
+            "name": "tags",
+            "type": "bytes4[3]"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "inlineTuple",
+    "inputs": [
+      {
+        "name": "t",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "",
+            "type": "uint256"
+          },
+          {
+            "name": "",
+            "type": "bool"
+          }
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "",
+            "type": "uint256"
+          },
+          {
+            "name": "",
+            "type": "bool"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "nestedArrays",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint256[][2]"
+      },
+      {
+        "name": "b",
+        "type": "string[][]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256[3][]"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "function",
+    "name": "userDefinedArrays",
+    "inputs": [
+      {
+        "name": "s",
+        "type": "uint8[]"
+      },
+      {
+        "name": "t",
+        "type": "uint64[2]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8[]"
+      }
+    ],
+    "stateMutability": "pure"
+  },
+  {
+    "type": "error",
+    "name": "Unauthorized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientBalance",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address"
+      },
+      {
+        "name": "required",
+        "type": "uint256"
+      },
+      {
+        "name": "available",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DetailedFailure",
+    "inputs": [
+      {
+        "name": "reason",
+        "type": "string"
+      },
+      {
+        "name": "code",
+        "type": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CompositeFailure",
+    "inputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ]
+      },
+      {
+        "name": "values",
+        "type": "uint256[]"
+      }
+    ]
+  },
+  {
+    "type": "event",
+    "name": "Simple",
+    "inputs": [
+      {
+        "name": "who",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IndexedDynamic",
+    "inputs": [
+      {
+        "name": "name",
+        "type": "string",
+        "indexed": true
+      },
+      {
+        "name": "payload",
+        "type": "bytes",
+        "indexed": true
+      },
+      {
+        "name": "note",
+        "type": "string",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IndexedComposite",
+    "inputs": [
+      {
+        "name": "p",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "lo",
+            "type": "uint64"
+          },
+          {
+            "name": "hi",
+            "type": "uint64"
+          }
+        ],
+        "indexed": true
+      },
+      {
+        "name": "values",
+        "type": "uint256[]",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "ThreeIndexed",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "b",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "c",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "d",
+        "type": "uint64",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Anonymous",
+    "inputs": [
+      {
+        "name": "a",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "b",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "c",
+        "type": "bool",
+        "indexed": false
+      }
+    ],
+    "anonymous": true
+  },
+  {
+    "type": "error",
+    "name": "InvalidCalldata",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CalldataTooLarge",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NonPayableValueReceived",
+    "inputs": []
+  }
+]
