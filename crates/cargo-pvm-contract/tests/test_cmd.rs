@@ -916,6 +916,26 @@ fn scaffold_rejects_struct_shadowing_prelude() {
 }
 
 #[test]
+fn scaffold_rejects_non_literal_array_size() {
+    // solc folds `uint256[N]` (constant `N`) for the ABI the scaffolder
+    // consumes, but the generated project's own `.sol` re-parse cannot, and
+    // would hash a dynamic-array selector. Must fail at scaffold time.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = "// SPDX-License-Identifier: UNLICENSED\n\
+         pragma solidity ^0.8.20;\n\
+         uint256 constant N = 3;\n\
+         interface ConstArr {\n\
+         \x20   function f(uint256[N] calldata xs) external pure returns (uint256);\n\
+         }\n";
+    let output = scaffold_init_expect_failure(&temp_dir, "const-arr", "macro", sol);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("number literal"),
+        "expected a non-literal-array-size rejection, got stderr: {stderr}"
+    );
+}
+
+#[test]
 fn scaffold_rejects_struct_fields_colliding_after_snake_case() {
     // `myField` and `my_field` are distinct Solidity members that collapse to
     // one Rust field name, which would emit a struct with a duplicate field.

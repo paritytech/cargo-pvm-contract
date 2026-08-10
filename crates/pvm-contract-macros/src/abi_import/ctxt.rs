@@ -86,7 +86,7 @@ impl Ctxt {
             .and_then(|f| f.get(&item.name().to_string()))
             .is_some_and(|x| x.len() > 1)
         {
-            let name = to_snake_case(&item.name().to_string());
+            let name = to_snake_case(&item.name().as_string());
 
             format!(
                 "{}_{}",
@@ -94,7 +94,9 @@ impl Ctxt {
                 const_hex::encode(compute_selector(&self.function_signature(item)))
             )
         } else {
-            to_snake_case(&item.name().to_string())
+            // `as_string()` strips the `r#` syn-solidity puts on keyword names;
+            // the caller escapes the result back into a valid Rust identifier.
+            to_snake_case(&item.name().as_string())
         }
     }
 

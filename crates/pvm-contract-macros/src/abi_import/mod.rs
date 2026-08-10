@@ -4,7 +4,7 @@ use quote::{format_ident, quote};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
 use crate::signature::compute_selector;
-use crate::utils::{capitalize, to_pascal_case, to_snake_case};
+use crate::utils::{capitalize, keyword_safe_ident, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(
@@ -17,7 +17,7 @@ pub fn expand_function(
     let func_name = if is_constructor {
         format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
-        format_ident!("{}", ctxt.function_name(func))
+        keyword_safe_ident(&ctxt.function_name(func))
     };
     let selector: Vec<TokenStream> = if is_constructor {
         [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
@@ -37,7 +37,7 @@ pub fn expand_function(
                 .as_ref()
                 .unwrap_or(&SolIdent::new(&format!("s{}", index)))
                 .to_string();
-            let name = format_ident!("{}", to_snake_case(name));
+            let name = keyword_safe_ident(&to_snake_case(name));
             quote! {#name: #typ}
         });
         quote! { #(#args),* }
@@ -64,7 +64,7 @@ pub fn expand_function(
         let name = name
             .as_ref()
             .map_or_else(|| format!("s{index}"), |v| v.to_string());
-        format_ident!("{}", to_snake_case(&name))
+        keyword_safe_ident(&to_snake_case(&name))
     });
 
     let state_mutability = if is_constructor {
@@ -2365,6 +2365,34 @@ mod test {
             }
         "#]]
         .assert_eq(&file);
+    }
+
+    /// A `.sol` function or parameter named after a Rust keyword must expand to
+    /// a raw identifier (`fn r#move(..., r#ref: ...)`) — `format_ident!` panics
+    /// on a bare keyword — and its selector must hash the plain Solidity name
+    /// (`move(uint256)`), not syn-solidity's raw `r#move` spelling.
+    #[test]
+    fn keyword_named_function_and_param() {
+        let file = quote! {
+            interface KwImport {
+                function move(uint256 ref) external;
+            }
+        };
+        let parsed = syn_solidity::parse2(file).unwrap();
+        let tokens = expand_to_module(&parsed, false, None).to_token_stream();
+        let out = prettyplease::unparse(&syn::parse2(tokens).unwrap());
+
+        assert!(
+            out.contains("fn r#move"),
+            "method not raw-identified:\n{out}"
+        );
+        assert!(out.contains("r#ref"), "param not raw-identified:\n{out}");
+        let sel = crate::signature::compute_selector("move(uint256)");
+        let sel_str = format!(
+            "selector: [{}u8, {}u8, {}u8, {}u8]",
+            sel[0], sel[1], sel[2], sel[3]
+        );
+        assert!(out.contains(&sel_str), "selector not canonical:\n{out}");
     }
 
     #[test]

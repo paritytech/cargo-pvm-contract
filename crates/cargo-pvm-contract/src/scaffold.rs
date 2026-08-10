@@ -291,6 +291,10 @@ fn init_from_example_files_inner(
     // build-time parsers give.
     if let Ok(source) = std::str::from_utf8(sol_contents) {
         cargo_pvm_contract_builder::reject_sol_imports(source)?;
+        // Same reasoning for `uint256[N]` with a named constant: solc folds it
+        // for the ABI this scaffold consumes, but the generated project's own
+        // `.sol` re-parse cannot, and would hash a dynamic-array selector.
+        cargo_pvm_contract_builder::reject_non_literal_array_sizes(source)?;
     }
 
     log::debug!("Extracting metadata from {sol_file_name}");
@@ -556,6 +560,10 @@ fn extract_function_info(
 ) -> Result<(Vec<MacroFunctionInfo>, Vec<GeneratedStruct>)> {
     let mut registry = StructRegistry::default();
     let mut functions = Vec::new();
+    // Rust fn name -> the Solidity function that claimed it. snake_casing is
+    // lossy (`myMethod` and `my_method` collapse), which would emit two
+    // methods with one name.
+    let mut seen_fns: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for item in &metadata.output.abi {
         let AbiItem::Function {
@@ -568,8 +576,18 @@ fn extract_function_info(
             continue;
         };
 
+        reject_dollar_ident(name, "function")?;
         let name_snake = sanitize_rust_ident(&name.to_case(Case::Snake));
+        if let Some(other) = seen_fns.insert(name_snake.clone(), name.clone()) {
+            anyhow::bail!(
+                "functions `{other}` and `{name}` both map to the Rust method name \
+                 `{name_snake}`; rename one in the interface, or edit the generated \
+                 file manually"
+            );
+        }
         let mut param_strs = Vec::with_capacity(inputs.len());
+        let mut seen_params: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for (i, p) in inputs.iter().enumerate() {
             let param_name = if p.name.is_empty() {
                 format!("arg{i}")
@@ -577,8 +595,17 @@ fn extract_function_info(
                 // A Solidity parameter may be named after a Rust keyword
                 // (`ref`, `gen`, `move`), which would otherwise emit a
                 // signature that doesn't parse.
+                reject_dollar_ident(&p.name, "parameter")?;
                 sanitize_rust_ident(&p.name.to_case(Case::Snake))
             };
+            if let Some(other) = seen_params.insert(param_name.clone(), p.name.clone()) {
+                anyhow::bail!(
+                    "parameters `{other}` and `{}` of `{name}` both map to the Rust \
+                     name `{param_name}`; rename one in the interface, or edit the \
+                     generated file manually",
+                    p.name,
+                );
+            }
             let rust_type = abi_param_rust_type(
                 &p.type_name,
                 p.internal_type.as_deref(),
@@ -771,6 +798,20 @@ const RESERVED_STRUCT_NAMES: [&str; 18] = [
     "Vec",
 ];
 
+/// Reject a Solidity identifier containing `$`. Legal in Solidity, but there
+/// is no Rust spelling for it, and the generated project's own `.sol` re-parse
+/// (syn-solidity) cannot read it either — so rather than emit code that fails
+/// later with a parser error, refuse with the actionable message here.
+fn reject_dollar_ident(name: &str, what: &str) -> Result<()> {
+    if name.contains('$') {
+        anyhow::bail!(
+            "{what} `{name}`: Solidity identifiers containing `$` are not supported; \
+             rename it in the interface"
+        );
+    }
+    Ok(())
+}
+
 /// Make a Solidity identifier safe to emit as a Rust identifier. A Solidity
 /// `struct`/field name can be a Rust keyword (e.g. a field named `ref`), which
 /// would otherwise produce non-compiling code. Raw-identify where allowed;
@@ -839,6 +880,7 @@ fn register_struct(
         let field_name = if c.name.is_empty() {
             format!("field{i}")
         } else {
+            reject_dollar_ident(&c.name, "struct field")?;
             sanitize_rust_ident(&c.name.to_case(Case::Snake))
         };
         let rust_type = abi_param_rust_type(
@@ -915,6 +957,7 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             _ => None,
         })
         .map(|(name, inputs, outputs)| -> Result<DslFunctionInfo> {
+            reject_dollar_ident(name, "function")?;
             // Unlike the macro path, the DSL name is only ever emitted as
             // `{name}_handler` and as the stem of a `SCREAMING_SELECTOR` const,
             // neither of which can collide with a Rust keyword. Raw-identifying
@@ -943,6 +986,7 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
                     let param_name = if p.name.is_empty() {
                         format!("arg{i}")
                     } else {
+                        reject_dollar_ident(&p.name, "parameter")?;
                         sanitize_rust_ident(&p.name.to_case(Case::Snake))
                     };
                     let rust_type = solidity_to_rust_type(&p.type_name)?;
@@ -1531,6 +1575,90 @@ mod tests {
         let (functions, _) = extract_function_info(&metadata).unwrap();
         assert_eq!(functions[0].name_snake, "r#move");
         assert_eq!(functions[0].params, "r#ref: U256, r#gen: U256");
+    }
+
+    fn function_item(name: &str, inputs: Vec<AbiInput>) -> AbiItem {
+        AbiItem::Function {
+            name: name.to_string(),
+            inputs,
+            outputs: vec![],
+            state_mutability: "nonpayable".to_string(),
+        }
+    }
+
+    #[test]
+    fn functions_colliding_after_snake_case_rejected() {
+        // `myMethod` and `my_method` are distinct Solidity functions (distinct
+        // selectors) that collapse to one Rust method name, which would emit
+        // two `pub fn my_method`.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("myMethod", vec![]),
+                    function_item("my_method", vec![]),
+                ],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(
+            err.contains("myMethod") && err.contains("my_method"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn params_colliding_after_snake_case_rejected() {
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item(
+                    "f",
+                    vec![input("myArg", "uint256"), input("my_arg", "uint256")],
+                )],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("myArg") && err.contains("my_arg"), "{err}");
+    }
+
+    #[test]
+    fn dollar_identifiers_rejected() {
+        // `$` is legal in Solidity but has no Rust spelling, and the generated
+        // project's own `.sol` re-parse (syn-solidity) cannot read it either.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("foo$bar", vec![])],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("foo$bar") && err.contains('$'), "{err}");
+
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("f", vec![input("a$b", "uint256")])],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("a$b"), "{err}");
+
+        // Struct field, via the tuple mapper.
+        let comps = vec![input("x$y", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", Some("struct IFoo.S"), Some(&comps), &mut reg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("x$y"), "{err}");
     }
 
     #[test]

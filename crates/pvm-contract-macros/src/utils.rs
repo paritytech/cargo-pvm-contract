@@ -58,6 +58,25 @@ pub fn to_camel_case(snake: &str) -> String {
     result
 }
 
+/// Turn a Solidity-derived name into a Rust identifier, escaping Rust
+/// keywords. A `.sol` function or parameter may legally be named `move` or
+/// `ref`; emitting that bare (or feeding it to `format_ident!`, which panics
+/// on keywords) breaks the generated bindings. Raw-identify where possible;
+/// the few keywords `r#` cannot escape get a `_` suffix. A leading `r#` on the
+/// input (syn-solidity stringifies keyword idents raw) is stripped first so
+/// the escape is applied once.
+pub fn keyword_safe_ident(name: &str) -> proc_macro2::Ident {
+    let name = name.strip_prefix("r#").unwrap_or(name);
+    let span = proc_macro2::Span::call_site();
+    if matches!(name, "crate" | "self" | "super" | "Self" | "_") {
+        proc_macro2::Ident::new(&format!("{name}_"), span)
+    } else if syn::parse_str::<syn::Ident>(name).is_ok() {
+        proc_macro2::Ident::new(name, span)
+    } else {
+        proc_macro2::Ident::new_raw(name, span)
+    }
+}
+
 /// A Solidity identifier is `[a-zA-Z_$][a-zA-Z0-9_$]*`.
 pub fn is_valid_solidity_identifier(s: &str) -> bool {
     let mut chars = s.chars();
@@ -176,13 +195,18 @@ pub fn capitalize(s: &str) -> String {
 /// carry the user-defined types declared alongside the function: a struct
 /// parameter hashes as the tuple of its fields (`Point` -> `(uint64,uint64)`),
 /// not as its declared name, and the same holds for enums and value types.
+///
+/// The name goes through `as_string()`, not `Display`: syn-solidity stores a
+/// Rust-keyword function name (`move`, `ref`) as a raw identifier, and
+/// `Display` keeps the `r#` — hashing `r#move(...)` would silently diverge
+/// from solc and every ABI consumer.
 pub fn compute_function_signature(item: &ItemFunction, types: &CustomTypes) -> String {
     let params: Vec<String> = item
         .parameters
         .types()
         .map(|ty| types.canonical_name(ty))
         .collect();
-    format!("{}({})", item.name(), params.join(","))
+    format!("{}({})", item.name().as_string(), params.join(","))
 }
 
 #[cfg(test)]
@@ -193,6 +217,20 @@ mod tests {
     fn camel_case_of_plain_snake_ident() {
         assert_eq!(to_camel_case("balance_of"), "balanceOf");
         assert_eq!(to_camel_case("flip"), "flip");
+    }
+
+    #[test]
+    fn signature_of_keyword_named_function_has_no_raw_prefix() {
+        // syn-solidity stores a Rust-keyword function name as a raw identifier,
+        // and `SolIdent`'s `Display` keeps the `r#`. The canonical signature
+        // must not: solc and every ABI consumer hash `move(uint256)`, so a
+        // selector derived from `r#move(uint256)` would be silently wrong.
+        let f: syn_solidity::ItemFunction =
+            syn::parse_str("function move(uint256 ref) external;").unwrap();
+        assert_eq!(
+            compute_function_signature(&f, &CustomTypes::default()),
+            "move(uint256)"
+        );
     }
 
     #[test]

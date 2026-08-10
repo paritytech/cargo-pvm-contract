@@ -304,6 +304,15 @@ const _: () = {
 pub const SOL_IMPORT_UNSUPPORTED: &str =
     "`.sol` `import` is not supported; inline the imported types into this file.";
 
+/// Rejection message for a fixed-size array whose length is not a number
+/// literal (`uint256[N]` with `N` a named constant). The build-time parsers do
+/// not evaluate constants, so the type would silently canonicalize as the
+/// *dynamic* `uint256[]` — a different selector and ABI than solc's folded
+/// `uint256[3]`. Shared for the same reason as [`SOL_IMPORT_UNSUPPORTED`].
+pub const SOL_NON_LITERAL_ARRAY_SIZE: &str = "fixed-size array length must be a number literal in the `.sol` interface: named \
+     constants are not evaluated, so the type would be treated as a dynamic array and \
+     produce a selector that differs from solc's. Replace the constant with its value.";
+
 /// Computes the 4-byte Solidity function selector at compile time.
 pub const fn const_selector(sig: &str) -> [u8; 4] {
     let hash = const_keccak256(sig.as_bytes());
