@@ -383,8 +383,13 @@ fn expand_items<'a>(
 }
 
 pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+    if let Err(e) = crate::utils::reject_sol_imports(file) {
+        return quote! { compile_error!(#e); };
+    }
     let mut ctxt = Ctxt::default();
-    ctxt.visit_file(file);
+    if let Err(e) = ctxt.visit_file(file) {
+        return quote! { compile_error!(#e); };
+    }
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));

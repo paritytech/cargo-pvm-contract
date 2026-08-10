@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use syn_solidity::{File, Item, ItemContract, ItemFunction, SolIdent};
 
 use crate::{
-    signature::compute_selector,
+    signature::{CustomTypes, compute_selector},
     utils::{compute_function_signature, to_snake_case},
 };
 
@@ -14,6 +14,8 @@ pub struct Ctxt {
     overloaded_functions: HashMap<Option<SolIdent>, HashMap<String, HashSet<String>>>,
     // ns => set[path]
     types: HashMap<Option<SolIdent>, HashSet<String>>,
+    // definitions of the above, for expanding them in canonical signatures
+    custom_types: CustomTypes,
 }
 
 impl Ctxt {
@@ -53,6 +55,11 @@ impl Ctxt {
         res
     }
 
+    /// The canonical signature of `item`, with any user-defined type expanded.
+    pub fn function_signature(&self, item: &ItemFunction) -> String {
+        compute_function_signature(item, &self.custom_types)
+    }
+
     pub fn function_name(&self, item: &ItemFunction) -> String {
         if self
             .overloaded_functions
@@ -65,7 +72,7 @@ impl Ctxt {
             format!(
                 "{}_{}",
                 name,
-                const_hex::encode(compute_selector(&compute_function_signature(item)))
+                const_hex::encode(compute_selector(&self.function_signature(item)))
             )
         } else {
             to_snake_case(&item.name().to_string())
@@ -107,7 +114,11 @@ impl Ctxt {
             .insert(item.name.to_string());
     }
 
-    pub fn visit_file(&mut self, file: &File) {
+    pub fn visit_file(&mut self, file: &File) -> Result<(), String> {
+        // Signatures expand user-defined types, so every declaration in the
+        // file has to be registered before any function is visited — a struct
+        // may be declared after the function that takes it.
+        self.custom_types = CustomTypes::from_file(file)?;
         file.items.iter().for_each(|item| match item {
             Item::Contract(contract) if contract.is_interface() => {
                 self.with_ns(contract.name.clone(), |ctxt: &mut Ctxt| {
@@ -120,6 +131,7 @@ impl Ctxt {
             Item::Enum(enum_) => self.visit_enum(enum_),
             _ => (),
         });
+        Ok(())
     }
 
     fn visit_contract(&mut self, contract: &ItemContract) {
@@ -136,7 +148,7 @@ impl Ctxt {
     }
 
     fn visit_function(&mut self, ns: SolIdent, function: &ItemFunction) {
-        let sig = compute_function_signature(function);
+        let sig = self.function_signature(function);
         match self
             .overloaded_functions
             .entry(Some(ns))

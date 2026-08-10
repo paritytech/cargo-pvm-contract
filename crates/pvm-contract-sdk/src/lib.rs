@@ -122,8 +122,13 @@ pub use pvm_contract_types::{
     // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
     panic_revert,
     read_word_offset,
+    // Compile-time `&str` equality for `#[contract]` signature assertions
+    str_eq,
     value_transferred_is_nonzero,
 };
+
+#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
+pub use pvm_contract_types::Env;
 
 /// Reentrancy guard helpers emitted by the `#[non_reentrant]` codegen.
 /// Not part of the public API surface.
