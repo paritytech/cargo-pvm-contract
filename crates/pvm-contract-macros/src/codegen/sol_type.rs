@@ -128,9 +128,9 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
             fn abi_param(name: &str) -> ::pvm_contract_sdk::AbiParam {
                 extern crate alloc;
                 ::pvm_contract_sdk::AbiParam {
-                    name: "".to_string(),
+                    name: alloc::string::String::from(name),
                     param_type: alloc::string::String::from("uint8"),
-                    components: vec![],
+                    components: alloc::vec![],
                 }
             }
         }

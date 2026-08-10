@@ -3,7 +3,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn_solidity::{File, ItemFunction, SolIdent};
 pub mod parse;
-use crate::utils::{capitalize, to_pascal_case, to_snake_case};
+use crate::utils::{build_method_signature_expr, capitalize, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(
@@ -22,31 +22,24 @@ pub fn expand_function(
         let sel: Vec<TokenStream> = [0u8; 4].into_iter().map(|x| quote! { #x }).collect();
         quote! {[#(#sel),*]}
     } else {
-        pub fn build_method_signature_expr(
-            sol_name: &str,
-            param_types: &[TokenStream],
-        ) -> TokenStream {
-            let prefix = format!("{sol_name}(");
-            let mut parts: Vec<TokenStream> = vec![quote! { #prefix }];
-            for (i, ty) in param_types.iter().enumerate() {
-                if i > 0 {
-                    parts.push(quote! { "," });
-                }
-                parts.push(quote! { <#ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME });
-            }
-            parts.push(quote! { ")" });
-            quote! { ::pvm_contract_sdk::const_format::concatcp!(#(#parts),*) }
-        }
         let sig_expr = build_method_signature_expr(
             &func.name().to_string(),
             &func
                 .parameters
                 .types()
                 .map(|x| to_rust_type(x, true, ctxt))
-                .collect::<Vec<TokenStream>>(),
+                .map(|x| {
+                    syn::parse2::<syn::Type>(x)
+                        .unwrap_or_else(|err| panic!("invalid rust type generated;\nerror: {err}"))
+                })
+                .collect::<Vec<syn::Type>>(),
         );
 
-        quote! { ::pvm_contract_sdk::const_selector(#sig_expr) }
+        quote! {
+            const {
+                ::pvm_contract_sdk::const_selector(#sig_expr)
+            }
+        }
     };
     let args = if func.parameters.is_empty() {
         quote! {}
@@ -736,12 +729,15 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<Pure, (u64, u64), (u64)> {
                                 payload: (a, b),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "add(", < u64 as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
-                                        ",", < u64 as ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "add(", < u64 as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
+                                            ",", < u64 as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
+                                            ")"
+                                        ),
+                                    )
+                                },
                                 witness: Pure::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -754,9 +750,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (), ()> {
                                 payload: (),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!("deposit(", ")"),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("deposit(", ")"),
+                                    )
+                                },
                                 witness: Payable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -769,9 +767,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (), (u64)> {
                                 payload: (),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!("getCount(", ")"),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("getCount(", ")"),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -787,12 +787,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (bool), ()> {
                                 payload: (flag),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "setFlag(", < bool as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "setFlag(", < bool as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -810,14 +812,16 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (Address, U256, u32), (bool)> {
                                 payload: (to, amount, nonce),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "transfer(", < Address as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ",", < U256 as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ",", < u32 as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "transfer(", < Address as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ",", < U256 as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ",", < u32 as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1126,9 +1130,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (), ((u64, u64))> {
                                 payload: (),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!("origin(", ")"),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("origin(", ")"),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1158,12 +1164,14 @@ mod test {
                                 (((u64, u64), (u64, u64))),
                             > {
                                 payload: (line),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "reflect(", < ((u64, u64), (u64, u64)) as
-                                        ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "reflect(", < ((u64, u64), (u64, u64)) as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1474,12 +1482,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, ((U256, U256)), ((U256, U256))> {
                                 payload: (value),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "touch(", < (U256, U256) as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "touch(", < (U256, U256) as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1790,9 +1800,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (), ((u64, alloc::string::String))> {
                                 payload: (),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!("getNamed(", ")"),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("getNamed(", ")"),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1823,13 +1835,15 @@ mod test {
                                 (u64),
                             > {
                                 payload: (data, flag),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "process(", < (u64, alloc::string::String) as
-                                        ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ",", < bool as
-                                        ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "process(", < (u64, alloc::string::String) as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ",", < bool as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2142,12 +2156,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (Address), (U256)> {
                                 payload: (account),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "balanceOf(", < Address as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "balanceOf(", < Address as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2485,12 +2501,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (super::Voter), ()> {
                                 payload: (voter),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "sendVoterInfo(", < super::Voter as
-                                        ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "sendVoterInfo(", < super::Voter as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2511,13 +2529,15 @@ mod test {
                                 (),
                             > {
                                 payload: (a, b),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "add(", < super::Point as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ",", < super::Point as
-                                        ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "add(", < super::Point as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ",", < super::Point as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2856,12 +2876,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (super::A), ()> {
                                 payload: (b),
-                                selector: ::pvm_contract_sdk::const_selector(
-                                    ::pvm_contract_sdk::const_format::concatcp!(
-                                        "add(", < super::A as ::pvm_contract_sdk::SolEncode >
-                                        ::SOL_NAME, ")"
-                                    ),
-                                ),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "add(", < super::A as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
