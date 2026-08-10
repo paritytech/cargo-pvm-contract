@@ -217,6 +217,12 @@ pub use pvm_contract_types::serde_json;
 /// ```ignore
 /// use pvm_contract_sdk::prelude::*;
 /// ```
+///
+/// Adding a name here also reserves it in the scaffolder: a generated struct of
+/// the same name would shadow this glob import and silently change how that
+/// parameter decodes, so `RESERVED_STRUCT_NAMES` in
+/// `crates/cargo-pvm-contract/src/scaffold.rs` must list it too. The
+/// `reserved_struct_names_cover_sdk_prelude` test there enforces it.
 pub mod prelude {
     pub use crate::{
         Address,

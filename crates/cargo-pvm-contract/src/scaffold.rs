@@ -774,6 +774,11 @@ fn is_valid_ident(s: &str) -> bool {
 /// every `address` parameter decode as that struct — the project compiles and
 /// the method reverts (or mis-decodes) on-chain. Reject at scaffold time
 /// instead, per this module's "never emit code we know is wrong" rule.
+///
+/// Reserved regardless of allocator mode, even though `Bytes`/`String`/`Vec`
+/// are only imported when one is enabled: the same interface should scaffold
+/// the same way either way, and a name accepted in no-alloc mode would break
+/// the moment the project adds `allocator = "bump"`.
 const RESERVED_STRUCT_NAMES: [&str; 18] = [
     // Declared by the template.
     "Contract",
@@ -858,10 +863,11 @@ fn register_struct(
     if RESERVED_STRUCT_NAMES.contains(&rust_name) {
         anyhow::bail!(
             "the Solidity struct `{path}` maps to the Rust type `{rust_name}`, which the \
-             generated contract module already binds (the contract struct or a \
-             `pvm_contract_sdk` prelude import). A struct by that name would shadow it and \
-             silently change how other parameters decode. Rename it in the interface, or \
-             edit the generated file manually."
+             generated contract module binds — or would bind once an allocator is enabled \
+             (the contract struct, a `pvm_contract_sdk` prelude import, or an alloc-mode \
+             import). A struct by that name would shadow it and silently change how other \
+             parameters decode. Rename it in the interface, or edit the generated file \
+             manually."
         );
     }
     if let Some(other) = reg.name_owner.get(rust_name) {
@@ -1524,6 +1530,59 @@ mod tests {
             assert!(err.contains(reserved), "expected `{reserved}` in: {err}");
             assert!(err.contains("shadow"), "expected shadowing note in: {err}");
         }
+    }
+
+    /// `RESERVED_STRUCT_NAMES` is a hand-copy of the SDK prelude, and this
+    /// crate cannot depend on the SDK to assert against it directly. Read the
+    /// prelude out of the sibling crate's source instead: a name added there
+    /// but not here would silently reopen the shadowing hole the deny-list
+    /// exists to close, and nothing else in the workspace would notice.
+    ///
+    /// Only a subset check — the deny-list deliberately carries extras the
+    /// prelude does not (`Contract` from the template, and the alloc-mode
+    /// `Bytes`/`String`/`Vec` imports).
+    #[test]
+    fn reserved_struct_names_cover_sdk_prelude() {
+        let sdk =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../pvm-contract-sdk/src/lib.rs");
+        let source =
+            std::fs::read_to_string(&sdk).unwrap_or_else(|e| panic!("read {}: {e}", sdk.display()));
+
+        let prelude = source
+            .split_once("pub mod prelude {")
+            .expect("SDK no longer declares `pub mod prelude`")
+            .1;
+        let uses = prelude
+            .split_once("pub use crate::{")
+            .expect("prelude no longer re-exports through `pub use crate::{ .. }`")
+            .1
+            .split_once("};")
+            .expect("unterminated `pub use crate::{ .. }` in prelude")
+            .0;
+
+        let exported: Vec<&str> = uses
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or("").trim())
+            .flat_map(|line| line.split(','))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert!(
+            !exported.is_empty(),
+            "parsed no names out of the SDK prelude; the parser needs updating"
+        );
+
+        let missing: Vec<&str> = exported
+            .into_iter()
+            .filter(|name| !RESERVED_STRUCT_NAMES.contains(name))
+            .collect();
+        assert_eq!(
+            missing,
+            Vec::<&str>::new(),
+            "`pvm_contract_sdk::prelude` exports these names but \
+             `RESERVED_STRUCT_NAMES` does not reserve them, so a `.sol` struct \
+             by that name would shadow the import and silently mis-decode"
+        );
     }
 
     #[test]
