@@ -29,8 +29,9 @@ pub fn expand_function(
                 .types()
                 .map(|x| to_rust_type(x, true, ctxt))
                 .map(|x| {
-                    syn::parse2::<syn::Type>(x)
-                        .unwrap_or_else(|err| panic!("invalid rust type generated;\nerror: {err}"))
+                    syn::parse2::<syn::Type>(x.clone()).unwrap_or_else(|err| {
+                        panic!("invalid rust type generated;\nerror: {err}\ntype:{x}")
+                    })
                 })
                 .collect::<Vec<syn::Type>>(),
         );
