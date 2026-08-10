@@ -169,7 +169,9 @@ fn generate_abi_param_fn(
         .zip(field_types.iter())
         .map(|((field_name, _), field_ty)| {
             let name_str = match field_name {
-                Some(ident) => ident.to_string(),
+                // A raw identifier (e.g. `r#type`) stringifies with its `r#`
+                // prefix; strip it so the ABI field name matches the source.
+                Some(ident) => ident.to_string().trim_start_matches("r#").to_string(),
                 None => String::new(),
             };
             quote! {

@@ -9,7 +9,7 @@ use super::dispatch::{
     generate_router, size_check,
 };
 use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
-use crate::signature::{SolType, compute_selector};
+use crate::signature::{CustomTypes, SolType, compute_selector};
 use crate::utils::{
     compute_function_signature, extract_selector_rename, to_camel_case, to_snake_case,
     validate_sol_identifier,
@@ -219,9 +219,11 @@ fn load_sol_interface(path: &str) -> Result<syn_solidity::File, String> {
     let full_path = std::path::Path::new(&manifest_dir).join(path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
-    syn::parse_str(&source)
+    let file: syn_solidity::File = syn::parse_str(&source)
         .and_then(syn_solidity::parse2)
-        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))
+        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
+    crate::utils::reject_sol_imports(&file)?;
+    Ok(file)
 }
 
 pub(super) struct ParsedContract {
@@ -254,6 +256,9 @@ pub(super) struct ParsedContract {
     /// matches the impl's actual `type Error`. Emitted inside the module so the
     /// ABI-advertised error type can't silently drift from the encoded one.
     pub(super) folded_error_asserts: Vec<TokenStream>,
+    /// Compile-time assertions that a Rust param (when custom-typed) or return
+    /// ABI-encodes exactly as the matching `.sol` type. Emitted at module scope.
+    pub(super) sig_asserts: Vec<TokenStream>,
 }
 
 /// A storage field on the contract struct.
@@ -534,6 +539,66 @@ fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
                 extract_result_ok_type(ty).into_iter().collect()
             } else {
                 extract_output_types(ty)
+            }
+        }
+    }
+}
+
+/// Builds a `const _: () = assert!(...)` that checks `rust_ty` ABI-encodes as
+/// `sol_canonical` (the `.sol` type's canonical name), by comparing
+/// `<rust_ty as SolEncode>::SOL_NAME` against it. Both spell a struct as its
+/// flattened field tuple, so a Rust struct whose fields drift from the `.sol`
+/// fails the build. `location` labels the offending param or return in the
+/// assertion message.
+fn sol_name_assert(rust_ty: &syn::Type, sol_canonical: &str, location: &str) -> TokenStream {
+    let msg = format!(
+        "{location}: the Rust type does not ABI-encode as the `.sol` type `{sol_canonical}` \
+         (a struct must declare the same field types, in order)"
+    );
+    quote! {
+        const _: () = assert!(
+            ::pvm_contract_sdk::str_eq(
+                <#rust_ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
+                #sol_canonical
+            ),
+            #msg
+        );
+    }
+}
+
+/// The `.sol` return list folded into one canonical ABI name, matching how a
+/// Rust success type encodes: a single return keeps its own name, multiple
+/// returns become a tuple, and no returns yield `None`.
+fn sol_return_canonical(
+    sol_func: &syn_solidity::ItemFunction,
+    types: &CustomTypes,
+) -> Option<String> {
+    let names: Vec<String> = sol_func
+        .returns
+        .as_ref()?
+        .returns
+        .types()
+        .map(|t| types.canonical_name(t))
+        .collect();
+    match names.len() {
+        0 => None,
+        1 => names.into_iter().next(),
+        _ => Some(format!("({})", names.join(","))),
+    }
+}
+
+/// The Rust "success" return type the dispatch encodes: the `Ok` type of a
+/// `Result<T, E>`, or the bare return type, with `()` treated as no return.
+fn rust_success_type(output: &syn::ReturnType) -> Option<syn::Type> {
+    match output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, ty) => {
+            if is_result_return_type(output) {
+                extract_result_ok_type(ty)
+            } else if is_unit_return_type(output) {
+                None
+            } else {
+                Some((**ty).clone())
             }
         }
     }
@@ -970,6 +1035,8 @@ fn resolve_sol_method<'a>(
     explicit_rename: &Option<String>,
     param_types: &[syn::Type],
     inferred_mutability: StateMutability,
+    sol_custom_types: &CustomTypes,
+    sig_asserts: &mut Vec<TokenStream>,
 ) -> syn::Result<(String, [u8; 4], &'a syn_solidity::ItemFunction)> {
     let rust_fn_name = func.sig.ident.to_string();
     let rename = explicit_rename
@@ -1004,20 +1071,16 @@ fn resolve_sol_method<'a>(
         .parameters
         .types()
         .map(|x| x.clone().try_into())
-        .collect::<Result<Vec<SolType>, String>>();
-    check_signature_compatibility(
-        func,
-        &sol_func.name().to_string(),
-        &sig.map_err(|x| {
+        .collect::<Result<Vec<SolType>, String>>()
+        .map_err(|x| {
             syn::Error::new_spanned(
                 func,
                 format!(
                     "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
                 ),
             )
-        })?,
-        param_types,
-    )?;
+        })?;
+    check_signature_compatibility(func, &sol_func.name().to_string(), &sig, param_types)?;
 
     let sol_mutability = match sol_func.attributes.mutability() {
         Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
@@ -1034,7 +1097,36 @@ fn resolve_sol_method<'a>(
         ));
     }
 
-    let selector = compute_selector(&compute_function_signature(sol_func));
+    // Conformance assertions for what the syntactic check can't cover: params
+    // with custom types (skipped there) and the return (unchecked there). Each
+    // compares the Rust type's `SOL_NAME` to the `.sol` canonical name.
+    let sol_fn_label = sol_func.name().to_string();
+    let sol_param_tys: Vec<_> = sol_func.parameters.types().collect();
+    for (i, rust_ty) in param_types.iter().enumerate() {
+        let sol_custom = sig.get(i).is_some_and(|s| s.has_custom_types());
+        let rust_custom = SolType::from_rust_type(rust_ty).is_some_and(|r| r.has_custom_types());
+        if (sol_custom || rust_custom)
+            && let Some(sol_ty) = sol_param_tys.get(i)
+        {
+            let canonical = sol_custom_types.canonical_name(sol_ty);
+            sig_asserts.push(sol_name_assert(
+                rust_ty,
+                &canonical,
+                &format!("`{sol_fn_label}` parameter {i}"),
+            ));
+        }
+    }
+    if let Some(rust_ret) = rust_success_type(&func.sig.output)
+        && let Some(canonical) = sol_return_canonical(sol_func, sol_custom_types)
+    {
+        sig_asserts.push(sol_name_assert(
+            &rust_ret,
+            &canonical,
+            &format!("`{sol_fn_label}` return"),
+        ));
+    }
+
+    let selector = compute_selector(&compute_function_signature(sol_func, sol_custom_types));
     Ok((sol_func.name().to_string(), selector, sol_func))
 }
 
@@ -1069,6 +1161,8 @@ fn fold_interface_methods(
     sol_contract: Option<&syn_solidity::ItemContract>,
     implemented_sol_methods: &mut Vec<Option<syn_solidity::SolIdent>>,
     folded_error_asserts: &mut Vec<TokenStream>,
+    sol_custom_types: &CustomTypes,
+    sig_asserts: &mut Vec<TokenStream>,
 ) -> syn::Result<()> {
     for iface in implements {
         let iface_str = iface
@@ -1257,6 +1351,8 @@ fn fold_interface_methods(
                             &explicit_rename,
                             &param_types,
                             mutability,
+                            sol_custom_types,
+                            sig_asserts,
                         )?;
                         implemented_sol_methods.push(sol_func.name.clone());
                         (name, Some(selector))
@@ -1334,6 +1430,12 @@ fn parse_contract(
     implements: &[InterfaceRef],
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
+    let sol_custom_types = match sol_interface {
+        Some(file) => {
+            CustomTypes::from_file(file).map_err(|e| syn::Error::new_spanned(input, e))?
+        }
+        None => CustomTypes::default(),
+    };
     let content = input
         .content
         .as_ref()
@@ -1537,6 +1639,7 @@ fn parse_contract(
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
     let mut event_idents: Vec<Ident> = Vec::new();
+    let mut sig_asserts: Vec<TokenStream> = Vec::new();
 
     for item in &content.1 {
         // Collect event structs with #[derive(SolEvent)]
@@ -1679,6 +1782,8 @@ fn parse_contract(
                             &explicit_rename,
                             &param_types,
                             inferred_mutability,
+                            &sol_custom_types,
+                            &mut sig_asserts,
                         )?;
                         implemented_sol_methods.push(sol_func.name.clone());
                         (name, Some(selector), inferred_mutability)
@@ -1728,6 +1833,8 @@ fn parse_contract(
             sol_contract,
             &mut implemented_sol_methods,
             &mut folded_error_asserts,
+            &sol_custom_types,
+            &mut sig_asserts,
         )?;
     }
 
@@ -1824,6 +1931,7 @@ fn parse_contract(
         error_types,
         event_idents,
         folded_error_asserts,
+        sig_asserts,
     })
 }
 
@@ -1857,12 +1965,30 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         None
     };
 
+    // The macro reads the `.sol` with `fs::read_to_string` and hashes selectors
+    // from it (including struct field layouts), but cargo has no idea the file
+    // was read, so editing the `.sol` won't rebuild the crate and its selectors
+    // go stale. Emit an `include_bytes!` of the file: rustc records included
+    // files in the crate's dep-info, which cargo uses to trigger a rebuild.
+    let sol_dep_tracking = match &args.sol_path {
+        Some(path) => {
+            let full =
+                std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned();
+            quote! { const _: &[u8] = include_bytes!(#full); }
+        }
+        None => quote! {},
+    };
+
     let parsed = parse_contract(&input, sol_interface.as_ref(), &args.implements)?;
     let use_alloc = args.allocator.is_some();
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
+    let sig_asserts = &parsed.sig_asserts;
 
     let struct_name = parsed.struct_name.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(
@@ -2340,6 +2466,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
+            #sol_dep_tracking
+
+            // Signature assertions (`const _: () = assert!(...)` items) for what
+            // the syntactic check misses: params with custom types, and every
+            // return. Each compares a Rust type's `SOL_NAME` to the `.sol`
+            // canonical name; cargo check evaluates them, so a struct whose
+            // fields drift from the interface fails before build/link.
+            #(#sig_asserts)*
+
             // Module-level overlap checks: each emits a `const _: () = ...;`
             // item that const-evaluates a span-overlap assertion for a pair
             // of explicit-slot fields. cargo check evaluates module-level

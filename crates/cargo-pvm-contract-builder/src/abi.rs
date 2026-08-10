@@ -3,6 +3,7 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
+use pvm_contract_types::SOL_IMPORT_UNSUPPORTED;
 pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam};
 
 pub fn generate_abi_for_bin(
@@ -363,6 +364,27 @@ pub(crate) fn resolve_bin_source_path(
     Ok(manifest_dir.join("src/bin").join(format!("{bin_name}.rs")))
 }
 
+/// A `.sol` file's top-level `import` directives (imports are always top-level).
+fn contains_import(file: &syn_solidity::File) -> bool {
+    file.items
+        .iter()
+        .any(|item| matches!(item, syn_solidity::Item::Import(_)))
+}
+
+/// Reject `.sol` `import` directives. None of the build-time parsers follow
+/// imports, so an imported type resolves to its bare name and silently yields a
+/// wrong selector; callers must inline the imported declarations. A source that
+/// doesn't parse as Solidity has no import to reject here (real parse errors
+/// surface later in the ABI/codegen path).
+pub fn reject_sol_imports(source: &str) -> Result<()> {
+    if let Ok(file) = syn::parse_str::<syn_solidity::File>(source)
+        && contains_import(&file)
+    {
+        anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
+    }
+    Ok(())
+}
+
 pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> {
     let content = std::fs::read_to_string(sol_path)
         .with_context(|| format!("Failed to read sol file: {}", sol_path.display()))?;
@@ -385,6 +407,10 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         }
     };
 
+    if contains_import(&file) {
+        anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
+    }
+
     // Flatten items, descending into contract/interface/library bodies.
     let mut flat: Vec<&syn_solidity::Item> = Vec::new();
     collect_items(&file.items, &mut flat);
@@ -393,17 +419,20 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     // value types) for resolution, keyed by the type's name.
     let mut structs: CustomMap = std::collections::HashMap::new();
     for item in &flat {
-        match item {
-            syn_solidity::Item::Struct(s) => {
-                structs.insert(s.name.to_string(), CustomDef::Struct(s));
-            }
-            syn_solidity::Item::Enum(e) => {
-                structs.insert(e.name.to_string(), CustomDef::Enum);
-            }
-            syn_solidity::Item::Udt(u) => {
-                structs.insert(u.name.to_string(), CustomDef::Udt(&u.ty));
-            }
-            _ => {}
+        let (name, def) = match item {
+            syn_solidity::Item::Struct(s) => (s.name.to_string(), CustomDef::Struct(s)),
+            syn_solidity::Item::Enum(e) => (e.name.to_string(), CustomDef::Enum),
+            syn_solidity::Item::Udt(u) => (u.name.to_string(), CustomDef::Udt(&u.ty)),
+            _ => continue,
+        };
+        // Keyed by simple name, so a duplicate would silently overwrite and
+        // corrupt the ABI of everything using the other one. Reject it, matching
+        // the macro's resolver.
+        if structs.insert(name.clone(), def).is_some() {
+            anyhow::bail!(
+                "two Solidity user-defined types are both named `{name}`; \
+                 rename one in the interface to avoid the collision"
+            );
         }
     }
 
@@ -466,12 +495,17 @@ fn collect_items<'a>(items: &'a [syn_solidity::Item], out: &mut Vec<&'a syn_soli
 }
 
 fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &CustomMap) -> AbiParam {
-    let name = decl
-        .name
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let name = decl.name.as_ref().map(unraw).unwrap_or_default();
     type_to_abi_param(&name, &decl.ty, structs, &mut Vec::new())
+}
+
+/// Render a syn-solidity identifier as its ABI name. syn-solidity stores an
+/// identifier that collides with a Rust keyword (e.g. a Solidity field named
+/// `ref`) as a raw identifier (`r#ref`); strip the `r#` so the ABI matches the
+/// Solidity source.
+fn unraw<T: std::fmt::Display>(ident: T) -> String {
+    let s = ident.to_string();
+    s.strip_prefix("r#").map(str::to_string).unwrap_or(s)
 }
 
 /// Build an [`AbiParam`] for a `name: ty` declaration, expanding named structs
@@ -542,11 +576,7 @@ fn type_to_abi_param(
                     active.push(custom);
                     let mut components = Vec::with_capacity(def.fields.len());
                     for field in def.fields.iter() {
-                        let field_name = field
-                            .name
-                            .as_ref()
-                            .map(|n| n.to_string())
-                            .unwrap_or_default();
+                        let field_name = field.name.as_ref().map(unraw).unwrap_or_default();
                         components.push(type_to_abi_param(&field_name, &field.ty, structs, active));
                     }
                     active.pop();
@@ -633,7 +663,7 @@ fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> AbiItem {
         .parameters
         .iter()
         .map(|p| {
-            let name = p.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+            let name = p.name.as_ref().map(unraw).unwrap_or_default();
             let param = type_to_abi_param(&name, &p.ty, structs, &mut Vec::new());
             AbiEventParam {
                 name: param.name,
@@ -656,6 +686,19 @@ mod tests {
     use expect_test::expect;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn reject_sol_imports_flags_import_and_allows_plain() {
+        let with_import = r#"pragma solidity ^0.8.0;
+import "./Types.sol";
+interface I { function f() external; }"#;
+        let err = reject_sol_imports(with_import).unwrap_err().to_string();
+        assert!(err.contains("import"), "{err}");
+
+        let plain = r#"pragma solidity ^0.8.0;
+interface I { function f() external; }"#;
+        reject_sol_imports(plain).expect("plain interface has no import");
+    }
 
     #[test]
     fn generate_abi_from_sol_recursive_struct_does_not_overflow() {
@@ -757,6 +800,74 @@ interface Tokens {
             .unwrap();
         assert_eq!(inputs[0].param_type, "uint8");
         assert_eq!(inputs[1].param_type, "uint256");
+    }
+
+    #[test]
+    fn unraw_strips_raw_identifier_prefix() {
+        assert_eq!(unraw("r#ref"), "ref");
+        assert_eq!(unraw("amount"), "amount");
+    }
+
+    #[test]
+    fn generate_abi_from_sol_struct_field_keyword_name_is_not_raw() {
+        // A struct field whose name is a Rust keyword (`ref`) parses as a raw
+        // identifier; the ABI must report the plain Solidity name, not `r#ref`.
+        let (_d, path) = write_sol(
+            "Kw.sol",
+            r#"pragma solidity ^0.8.0;
+
+struct Order {
+    address from;
+    uint256 ref;
+    uint256 amount;
+}
+
+interface Kw {
+    function place(Order o) external;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function { name, inputs, .. } if name == "place" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let field_names: Vec<&str> = inputs[0]
+            .components
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(field_names, vec!["from", "ref", "amount"]);
+    }
+
+    #[test]
+    fn generate_abi_from_sol_event_param_keyword_name_is_not_raw() {
+        let (_d, path) = write_sol(
+            "KwEvent.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface KwEvent {
+    event Placed(address indexed from, uint256 ref, uint256 amount);
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Event { name, inputs, .. } if name == "Placed" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let param_names: Vec<&str> = inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(param_names, vec!["from", "ref", "amount"]);
     }
 
     fn write_sol(name: &str, body: &str) -> (TempDir, std::path::PathBuf) {

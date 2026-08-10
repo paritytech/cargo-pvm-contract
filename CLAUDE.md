@@ -95,7 +95,7 @@ The `#[contract]` macro generates two PolkaVM entry points:
 
 Dispatch uses an "Outcome-in-route" model: arms don't call the host on the success path. `route(this, selector, input, out) -> Outcome` (generic over the `OutSink` output buffer) has each arm validate input size -> decode parameters via `SolDecode` -> call the user function -> encode the return via `SolEncode` into the caller-owned buffer `out`, and return `Outcome::Return(len)`; unmatched selectors return `Outcome::Unhandled`. The single `finalize_outcome` call maps `Return` to the `return_value` success door (`Unhandled` falls through to fallback/revert). **Reverts never flow through `Outcome`** — a method's own `Err(e)` (encoded via `SolError::encode_to` into `out`) and every framework abort (input size check, malformed-calldata decode, payable guard, storage `panic_revert`) all diverge directly via `Host::revert` (`-> !`, `REVERT` flags). So `Outcome` has just two variants (`Return`, `Unhandled`), there's one revert path, and one test idiom (`expect_revert`/`assert_reverts!`) for every revert. The no-alloc `OutSink` is a fixed `&mut [u8]` sized to `MAX_RETURN_LEN`; the alloc one is a stack buffer with a `Vec` spill for dynamic returns.
 
-Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time.
+Selectors are Keccak-256 of the canonical Solidity signature (first 4 bytes), computed at compile time. When the signature comes from a `.sol` interface (the `#[contract("Foo.sol")]` and `abi_import!` paths), user-defined types are expanded to their canonical ABI form first — a struct becomes the tuple of its field types (`Point` -> `(uint64,uint64)`), an `enum` becomes `uint8`, and a `type X is T` becomes `T` — matching solc, `cast`, and the generated `.abi.json`.
 
 ### Contract Attribute Arguments
 
@@ -281,7 +281,9 @@ pub trait SolError: Sized {
 
 ### Scaffolder type mapping
 
-The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (tuples, non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a non-tuple parameter shape.
+The scaffolder (`cargo pvm-contract init --init-type new --sol-file Foo.sol`) maps Solidity ABI types to SDK types via `solidity_to_rust_type` in `crates/cargo-pvm-contract/src/scaffold.rs`. Unrecognized or unsupported Solidity types (non-canonical numeric widths, malformed type names) are rejected at scaffold time with `error: unsupported Solidity type: "X"` rather than silently substituting a default. If you hit this, the type isn't yet supported — file an issue, edit the generated file manually, or use a different parameter shape.
+
+Solidity `struct` parameters/returns (ABI `tuple`) are supported on the **macro** path: `abi_param_rust_type` walks the ABI `components` and generates a `#[derive(SolType)]` struct for each named struct (deduped by `internalType`, nested structs emitted before their parents), handling `Point`, `Point[]`, and `Point[N]` shapes. The **DSL** path still rejects tuples (it can't emit the `SolType` derive it would need) with a message pointing at `--api-style macro`.
 
 ### Type Support Matrix
 

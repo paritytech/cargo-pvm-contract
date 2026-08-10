@@ -417,6 +417,7 @@ mod tests {
             error_types: vec![],
             event_idents: vec![],
             folded_error_asserts: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
@@ -528,6 +529,7 @@ mod tests {
             error_types: vec![],
             event_idents: vec![],
             folded_error_asserts: vec![],
+            sig_asserts: vec![],
         }
     }
 
@@ -626,6 +628,7 @@ mod tests {
             error_types: vec![],
             event_idents: vec![],
             folded_error_asserts: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -677,6 +680,7 @@ mod tests {
             error_types: vec![],
             event_idents: vec![],
             folded_error_asserts: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -721,6 +725,7 @@ mod tests {
             error_types: vec![],
             event_idents: vec![],
             folded_error_asserts: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
