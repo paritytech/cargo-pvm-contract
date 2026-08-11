@@ -217,12 +217,14 @@ pub trait StorageEncode {
     /// `keccak256(slot) + i`) rather than the fixed slot-buffer codec.
     ///
     /// Static types (primitives, fixed arrays, tuples, fully-static structs)
-    /// leave this `false`. It gates two compile-time guards:
+    /// leave this `false`. Two consumers:
     /// - `StorageEncode for [T; N]` const-asserts `!T::HAS_DYNAMIC_BODY`,
-    ///   rejecting `[String; N]` (use [`StorageVec<T>`] instead).
-    /// - `StorageVec<T>::clear_at` uses it to choose between a plain
-    ///   slot-zeroing clear and `T::clear_storage` (which also tears down
-    ///   spilled body chunks).
+    ///   rejecting `[String; N]` (use [`StorageVec<T>`] instead) — a
+    ///   compile-time guard.
+    /// - the leaf `StorageType` impls derive `NEEDS_RECURSIVE_CLEAR` from it,
+    ///   which routes `StorageVec<T>::clear` between a bulk slot-zeroing clear
+    ///   and per-element recursion (`clear_at` → `T::clear_storage`, which also
+    ///   tears down spilled body chunks) — a runtime dispatch.
     ///
     /// [`StorageVec<T>`]: https://docs.rs/pvm-storage
     const HAS_DYNAMIC_BODY: bool = false;
@@ -396,20 +398,6 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
     /// Decode from `slots`, which must have length `STORAGE_SLOTS`.
     fn from_slots(slots: &[[u8; 32]]) -> Self;
 
-    /// All-zero slots → `None`; otherwise decode via [`from_slots`]. This is
-    /// the canonical Solidity-compat presence check for static types: if
-    /// every slot reads as zero, the type was never written (or was
-    /// explicitly cleared to zero — solc/EVM cannot distinguish those).
-    ///
-    /// [`from_slots`]: Self::from_slots
-    fn try_from_slots(slots: &[[u8; 32]]) -> Option<Self> {
-        if slots.iter().all(|s| s == &[0u8; 32]) {
-            None
-        } else {
-            Some(Self::from_slots(slots))
-        }
-    }
-
     /// Default host-aware read. Per-type [`StorageDecode::read_from_storage`]
     /// impls for static types delegate here.
     #[inline]
@@ -469,7 +457,13 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
             host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
             inc_be_32(&mut k);
         }
-        Self::try_from_slots(&slots[..used])
+        // All-zero → `None` (Solidity-compat presence: an all-zero static value
+        // is indistinguishable from never-written); otherwise decode.
+        if slots[..used].iter().all(|s| s == &[0u8; 32]) {
+            None
+        } else {
+            Some(Self::from_slots(&slots[..used]))
+        }
     }
 }
 
@@ -1381,8 +1375,20 @@ pub(crate) fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
 pub(crate) fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
     let mut slot_bytes = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
-    match decode_dyn_header(&slot_bytes) {
-        DynHeader::Inline { len } => alloc::vec::Vec::from(&slot_bytes[..len]),
+    read_dynamic_bytes_from_header(host, slot, &slot_bytes)
+}
+
+/// Decode a dynamic value from an already-fetched header slot, materialising
+/// any spilled body. Lets a caller that has already SLOAD'd the header (e.g.
+/// the presence peek in `try_read_from_storage`) avoid re-reading it.
+#[cfg(feature = "alloc")]
+pub(crate) fn read_dynamic_bytes_from_header(
+    host: &Host,
+    slot: &[u8; 32],
+    header: &[u8; 32],
+) -> alloc::vec::Vec<u8> {
+    match decode_dyn_header(header) {
+        DynHeader::Inline { len } => alloc::vec::Vec::from(&header[..len]),
         DynHeader::Spilled { len } => read_dyn_body(host, slot, len),
     }
 }
@@ -1454,8 +1460,10 @@ impl StorageDecode for alloc::string::String {
         if header == [0u8; 32] {
             return None;
         }
-        // Header is non-zero → some value was written; load body.
-        Some(Self::read_from_storage(host, base_key))
+        // Header is non-zero → some value was written; decode from the header
+        // we already read (no second SLOAD of the header slot).
+        let bytes = read_dynamic_bytes_from_header(host, base_key, &header);
+        Some(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 

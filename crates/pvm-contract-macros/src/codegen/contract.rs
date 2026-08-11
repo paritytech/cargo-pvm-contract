@@ -1466,7 +1466,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     Slot::ExplicitRaw(expr) => (
                         quote! { ::pvm_contract_sdk::StorageKey::from_raw(#expr) },
                         quote! {
-                            (32 - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES) as u8
+                            (32 - <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES) as u8
                         },
                         quote! { true },
                     ),
@@ -2208,7 +2208,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     //
     // The harder case — overlap of multi-slot composites, e.g.
     // `#[slot(0)] foo: Lazy<(U256, U256)>; #[slot(1)] bar: Lazy<U256>;` —
-    // requires reading `<Ty as StorageComponent>::SLOTS` at const-eval time
+    // requires reading `<Ty as StorageType>::SLOTS` at const-eval time
     // and is handled by [`explicit_slot_overlap_checks`] emitting
     // `const _: () = ...;` items alongside the other slot-chain consts.
     //
@@ -2295,7 +2295,7 @@ pub(super) fn explicit_slot_full_slot_only_checks(slot_fields: &[SlotField]) -> 
                 #[allow(non_upper_case_globals)]
                 const #check_ident: () = {
                     ::core::assert!(
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES == 32,
+                        <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES == 32,
                         #msg,
                     );
                 };
@@ -2340,9 +2340,9 @@ pub(super) fn explicit_slot_overlap_checks(slot_fields: &[SlotField]) -> Vec<Tok
                 #[allow(non_upper_case_globals)]
                 const #check_ident: () = {
                     let a_end: u64 =
-                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageType>::SLOTS;
                     let b_end: u64 =
-                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageType>::SLOTS;
                     ::core::assert!(
                         !((#a_slot) < b_end && (#b_slot) < a_end),
                         #msg,
@@ -3559,7 +3559,7 @@ mod tests {
         );
         // Sub-word types are placed right-aligned at 32 - PACKED_BYTES.
         assert!(
-            output.contains("(32 - < Lazy < Address > as :: pvm_contract_sdk :: StorageComponent > :: PACKED_BYTES) as u8"),
+            output.contains("(32 - < Lazy < Address > as :: pvm_contract_sdk :: StorageType > :: PACKED_BYTES) as u8"),
             "raw sub-word field should be right-aligned at 32 - PACKED_BYTES.\n\
              Expanded output:\n{output}"
         );

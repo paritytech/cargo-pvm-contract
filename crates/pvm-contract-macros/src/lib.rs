@@ -424,8 +424,9 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///     pub extern "C" fn call() {
 ///         let host = ::pvm_contract_sdk::Host::new();
 ///         let mut this = MyToken {
-///             // #[slot(N)] fields would be initialised here with
-///             // field: <Type>::new(StorageKey::from_slot(N), host.clone()),
+///             // storage fields would be initialised here via the safe door
+///             // field: <Type as ::pvm_contract_sdk::StorageComponent>::new_at(
+///             //     StorageKey::from_slot(N), offset, alone, host.clone()),
 ///             host,
 ///         };
 ///         let call_data_len = HostFnImpl::call_data_size() as usize;
@@ -586,12 +587,17 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Derives [`StorageComponent`] for a struct so it can be embedded as a field
 /// inside another `#[storage]` struct or directly inside the `#[contract]`
-/// storage struct.
+/// storage struct. Also derives a container [`StorageType`] (`get`/`entry`
+/// hand out a `Ref`/`RefMut<Self>` guard) so the struct can be a value of
+/// `Mapping<K, Self>` or an element of `StorageVec<Self>`.
 ///
-/// Field slots are auto-numbered in declaration order; the embedded struct's
-/// `SLOTS` is the sum of its fields' `SLOTS`. The contract struct's
-/// auto-numbering uses these `SLOTS` constants to assign contiguous ranges,
-/// so embedding nests cleanly without manual slot math.
+/// Field slots are auto-numbered in declaration order; the struct's `SLOTS` is
+/// the layout walker's **packed** slot count (`step.next_slot + 1`), so
+/// adjacent sub-word fields (e.g. two `Lazy<u128>`) share a slot solc-style
+/// rather than each claiming a fresh one. The contract struct's auto-numbering
+/// uses this `SLOTS` constant to assign contiguous ranges, so embedding — and
+/// using the struct as a `StorageVec` element (where `SLOTS` is the stride) —
+/// nests cleanly without manual slot math.
 ///
 /// # Example
 ///
@@ -1234,7 +1240,10 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// Derive the storage-layout traits ([`StorageEncode`], [`StorageDecode`],
 /// and the `StaticStorageEncode`/`StaticStorageDecode` refinement for static
 /// structs) for a struct that can be used as a `Lazy<S>` / `Mapping<_, S>`
-/// value.
+/// value. Also derives the leaf `StorageType` + `SimpleStorageType`
+/// (`Get<'a> = Self`, `GetMut<'a> = Lazy<Self>`), so the struct composes as a
+/// by-value element of `Mapping<K, S>` / `StorageVec<S>` — `get` returns the
+/// value, `insert`/`push` take it by value.
 ///
 /// This derive is **separate from `#[derive(SolType)]`** — `SolType` covers
 /// ABI encoding (calldata, return values, event fields) and is meaningful
@@ -1251,7 +1260,8 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// If any field is not yet storage-compatible (nested SolType structs,
-/// `Vec<T>` for `T != u8`, fixed arrays of non-`u8`, tuples), the derive
+/// `Vec<T>` — use `Bytes` for `bytes`-shaped values, fixed arrays of
+/// non-`u8`, tuples), the derive
 /// emits a `compile_error!` at expansion time — visible to `cargo check`
 /// and `trybuild`, unlike the prior `const STORAGE_SLOTS = panic!(...)`
 /// stub that only fired during MIR const-eval at `cargo build` time.

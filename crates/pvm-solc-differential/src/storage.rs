@@ -302,7 +302,7 @@ mod maps {
             self.balances
                 .insert(&Address::from(ADDR_A), &U256::from(1000u64));
             self.allowances
-                .view_mut(&Address::from(ADDR_A))
+                .entry(&Address::from(ADDR_A))
                 .insert(&Address::from(ADDR_B), &U256::from(777u64));
         }
     }
@@ -662,6 +662,326 @@ contract DynStruct {
     let mut c = dyn_struct::DynStruct::with_host(mock.clone());
     c.populate();
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "DynStruct"));
+}
+
+// --- packed `#[storage]` sub-struct footprint (SLOTS = walker packed count) -
+//
+// Pins the `#[storage]`-attribute `SLOTS` fix against solc: a sub-struct whose
+// two `uint128` fields pack into ONE slot must advertise `SLOTS = 1`, so the
+// sibling field after it lands at the very next slot (no gap). solc places the
+// struct member's a/b in slot 0 and the trailing `x` in slot 1; a naive
+// per-field `SLOTS = 2` would push `x` to slot 2 and diverge here.
+
+/// `#[storage]` sub-struct with two packed `uint128` fields (share slot 0).
+#[pvm_contract_sdk::storage]
+pub struct PackedGroup {
+    pub a: Lazy<u128>,
+    pub b: Lazy<u128>,
+}
+
+#[pvm_contract_sdk::contract]
+mod packed_substruct {
+    use super::*;
+    pub struct PackedSubstruct {
+        pub g: PackedGroup,
+        pub x: Lazy<U256>,
+    }
+    impl PackedSubstruct {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.g.a.set(&1u128);
+            self.g.b.set(&2u128);
+            self.x.set(&U256::from(3u64));
+        }
+    }
+}
+
+#[test]
+fn packed_substruct_sibling_slot_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract PackedSubstruct {
+    struct PackedGroup { uint128 a; uint128 b; }
+    PackedGroup g;   // a,b packed into slot 0
+    uint256 x;       // slot 1 (would be slot 2 under a naive per-field SLOTS)
+    function populate() external { g.a = 1; g.b = 2; x = 3; }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = packed_substruct::PackedSubstruct::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "PackedSubstruct"));
+}
+
+// A `#[storage]` struct as a `StorageVec` element: the element stride is the
+// struct's packed `SLOTS` (1 here), so element `i` roots at `keccak256(slot)+i`
+// with a/b packed per element — matching solc's `PackedGroup[]`.
+#[pvm_contract_sdk::contract]
+mod vec_of_packed_struct {
+    use super::*;
+    pub struct VecOfPacked {
+        pub items: StorageVec<PackedGroup>,
+    }
+    impl VecOfPacked {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            {
+                let mut e0 = self.items.grow();
+                e0.a.set(&10u128);
+                e0.b.set(&11u128);
+            }
+            {
+                let mut e1 = self.items.grow();
+                e1.a.set(&20u128);
+                e1.b.set(&21u128);
+            }
+        }
+    }
+}
+
+#[test]
+fn vec_of_packed_struct_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecOfPacked {
+    struct PackedGroup { uint128 a; uint128 b; }
+    PackedGroup[] items;   // slot 0 = length; element i at keccak256(0)+i (a,b packed)
+    function populate() external {
+        items.push(); items[0].a = 10; items[0].b = 11;
+        items.push(); items[1].a = 20; items[1].b = 21;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_of_packed_struct::VecOfPacked::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecOfPacked"));
+}
+
+// A multi-slot value element in a StorageVec (element `SLOTS > 1`): each
+// `[U256; 3]` occupies 3 consecutive slots, so element `i` roots at
+// `keccak256(slot) + i*3`. Exercises the `S::SLOTS > 1` element-stride branch
+// of `slot_index_for` — matching solc's `uint256[3][]`.
+#[pvm_contract_sdk::contract]
+mod vec_multislot {
+    use super::*;
+    pub struct VecMultiSlot {
+        pub rows: StorageVec<[U256; 3]>,
+    }
+    impl VecMultiSlot {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.rows
+                .push(&[U256::from(1u64), U256::from(2u64), U256::from(3u64)]);
+            self.rows
+                .push(&[U256::from(4u64), U256::from(5u64), U256::from(6u64)]);
+        }
+    }
+}
+
+#[test]
+fn vec_of_multislot_array_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecMultiSlot {
+    uint256[3][] rows;   // slot 0 = length; element i at keccak256(0)+i*3
+    function populate() external {
+        rows.push(); rows[0][0] = 1; rows[0][1] = 2; rows[0][2] = 3;
+        rows.push(); rows[1][0] = 4; rows[1][1] = 5; rows[1][2] = 6;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_multislot::VecMultiSlot::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecMultiSlot"));
+}
+
+// A richer `#[storage]` sub-struct: three DIFFERENT sub-word widths
+// (`u8`/`u32`/`u64`) pack into slot 0, then a full-slot `U256` takes slot 1 —
+// so the walker's `SLOTS` is 2, while the naive per-field sum would be 4. The
+// following sibling (`next`) must therefore land at slot 2, not slot 4. This
+// exercises the `slots_expr` layout walker across mixed field widths (not just
+// the `2×u128` case) with a 2-slot naive-vs-packed divergence.
+#[pvm_contract_sdk::storage]
+pub struct Header {
+    pub version: Lazy<u8>,
+    pub count: Lazy<u32>,
+    pub stamp: Lazy<u64>,
+    pub root: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::contract]
+mod packed_mixed {
+    use super::*;
+    pub struct PackedMixed {
+        pub hdr: Header,
+        pub next: Lazy<U256>,
+    }
+    impl PackedMixed {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.hdr.version.set(&7u8);
+            self.hdr.count.set(&1000u32);
+            self.hdr.stamp.set(&42u64);
+            self.hdr.root.set(&U256::from(99u64));
+            self.next.set(&U256::from(123u64));
+        }
+    }
+}
+
+#[test]
+fn packed_mixed_width_substruct_sibling_slot_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract PackedMixed {
+    struct Header { uint8 version; uint32 count; uint64 stamp; uint256 root; }
+    Header hdr;   // version/count/stamp packed into slot 0; root -> slot 1
+    uint256 next; // slot 2 (naive per-field SLOTS=4 would put it at slot 4)
+    function populate() external {
+        hdr.version = 7; hdr.count = 1000; hdr.stamp = 42; hdr.root = 99;
+        next = 123;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = packed_mixed::PackedMixed::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "PackedMixed"));
+}
+
+// --- depth-3 nesting (T[][][]) — the "arbitrary depth, zero per-shape code" claim
+//
+// Exercises the generic container path three levels deep: `grow` at each level
+// and `push` at the leaf, with `offset`/`alone`/slot derivation threaded all the
+// way down. Matches solc's `uint256[][][]`.
+#[pvm_contract_sdk::contract]
+mod cube {
+    use super::*;
+    pub struct Cube {
+        pub cube: StorageVec<StorageVec<StorageVec<U256>>>,
+    }
+    impl Cube {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            {
+                let mut plane0 = self.cube.grow(); // cube[0]
+                {
+                    let mut row = plane0.grow(); // cube[0][0]
+                    row.push(&U256::from(7u64));
+                    row.push(&U256::from(8u64));
+                }
+                plane0.grow(); // cube[0][1] (empty)
+            }
+            {
+                let mut plane1 = self.cube.grow(); // cube[1]
+                let mut row = plane1.grow(); // cube[1][0]
+                row.push(&U256::from(9u64));
+            }
+        }
+    }
+}
+
+#[test]
+fn depth_three_nested_vec_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract Cube {
+    uint256[][][] cube;   // slot 0
+    function populate() external {
+        cube.push();                                  // cube[0]
+        cube[0].push(); cube[0][0].push(7); cube[0][0].push(8);
+        cube[0].push();                               // cube[0][1] (empty)
+        cube.push();                                  // cube[1]
+        cube[1].push(); cube[1][0].push(9);
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = cube::Cube::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Cube"));
+}
+
+// --- depth-3 `#[storage]` struct nesting (struct in struct in struct) -------
+//
+// The component-struct analogue of the depth-3 `uint256[][][]` vec test above:
+// three `#[storage]` sub-structs nested three deep (`DeepOuter` ⊃ `DeepMiddle`
+// ⊃ `DeepInner`), each adding a trailing full-slot sibling, embedded in the
+// contract with a trailing sibling of its own. Pins that `new_at` / `SLOTS` /
+// slot-banding recurse correctly at depth 3: the nested struct occupies a
+// contiguous 3-slot band (0..=2) and the contract's trailing `y` lands at slot
+// 3. A `SLOTS` mis-sum at any level would misplace a leaf or `y` and diverge
+// from solc's inline-struct-member layout.
+#[pvm_contract_sdk::storage]
+pub struct DeepInner {
+    pub v: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::storage]
+pub struct DeepMiddle {
+    pub inner: DeepInner,
+    pub w: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::storage]
+pub struct DeepOuter {
+    pub middle: DeepMiddle,
+    pub x: Lazy<U256>,
+}
+
+#[pvm_contract_sdk::contract]
+mod deep_nest {
+    use super::*;
+    pub struct DeepNest {
+        pub outer: DeepOuter,
+        pub y: Lazy<U256>,
+    }
+    impl DeepNest {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.outer.middle.inner.v.set(&U256::from(1u64));
+            self.outer.middle.w.set(&U256::from(2u64));
+            self.outer.x.set(&U256::from(3u64));
+            self.y.set(&U256::from(4u64));
+        }
+    }
+}
+
+#[test]
+fn depth_three_nested_struct_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract DeepNest {
+    struct DeepInner  { uint256 v; }
+    struct DeepMiddle { DeepInner inner; uint256 w; }
+    struct DeepOuter  { DeepMiddle middle; uint256 x; }
+    DeepOuter outer;   // outer.middle.inner.v@0, outer.middle.w@1, outer.x@2
+    uint256 y;         // slot 3
+    function populate() external {
+        outer.middle.inner.v = 1;
+        outer.middle.w = 2;
+        outer.x = 3;
+        y = 4;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = deep_nest::DeepNest::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "DeepNest"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1132,6 +1452,112 @@ contract Matrix {
     let mut c = nested_vec::NestedVec::with_host(mock.clone());
     c.populate();
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "Matrix"));
+}
+
+/// `mapping(uint256 => uint256)[]` — a dynamic array of mappings, one of the
+/// shapes newly composable via the `StorageType` unification (issue #108).
+/// solc lays the outer length at slot `S`, each element mapping's root at
+/// `keccak256(pad(S)) + i` (the mapping itself stores nothing there), and its
+/// entries at `keccak256(pad(k) ++ (keccak256(pad(S)) + i))`.
+#[pvm_contract_sdk::contract]
+mod vec_of_map {
+    use super::*;
+    pub struct VecOfMap {
+        pub arr: StorageVec<Mapping<U256, U256>>,
+    }
+    impl VecOfMap {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            // Two `push()`-equivalents (mappings can't be pushed by value).
+            self.arr.grow();
+            self.arr.grow();
+            self.arr
+                .entry(0)
+                .insert(&U256::from(1u64), &U256::from(111u64));
+            self.arr
+                .entry(1)
+                .insert(&U256::from(2u64), &U256::from(222u64));
+            self.arr
+                .entry(1)
+                .insert(&U256::from(3u64), &U256::from(333u64));
+        }
+    }
+}
+
+#[test]
+fn vec_of_mapping_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecOfMap {
+    mapping(uint256 => uint256)[] arr;   // slot 0
+    function populate() external {
+        arr.push();
+        arr.push();
+        arr[0][1] = 111;
+        arr[1][2] = 222;
+        arr[1][3] = 333;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_of_map::VecOfMap::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecOfMap"));
+}
+
+/// Nested-array `delete` parity (issue #108, fix C2): after populating a
+/// `uint256[][]` and then clearing it, solc's `delete` recursively zeroes every
+/// inner element; the SDK's `clear` must do the same (no stranded inner
+/// storage). A `keep` field is left set so the comparison isn't a trivial
+/// empty-vs-empty — a leak would show up as extra non-zero inner slots.
+#[pvm_contract_sdk::contract]
+mod nested_vec_clear {
+    use super::*;
+    pub struct NestedVecClear {
+        pub rows: StorageVec<StorageVec<U256>>,
+        pub keep: Lazy<U256>,
+    }
+    impl NestedVecClear {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            {
+                let mut r0 = self.rows.grow();
+                r0.push(&U256::from(1u64));
+                r0.push(&U256::from(2u64));
+            }
+            {
+                let mut r1 = self.rows.grow();
+                r1.push(&U256::from(3u64));
+            }
+            self.rows.clear();
+            self.keep.set(&U256::from(9u64));
+        }
+    }
+}
+
+#[test]
+fn nested_vec_clear_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract NestedVecClear {
+    uint256[][] rows;   // slot 0
+    uint256 keep;       // slot 1
+    function populate() external {
+        rows.push(); rows[0].push(1); rows[0].push(2);
+        rows.push(); rows[1].push(3);
+        delete rows;
+        keep = 9;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = nested_vec_clear::NestedVecClear::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "NestedVecClear"));
 }
 
 /// `mapping(address => uint256[])` — each key derives a `StorageVec` root at

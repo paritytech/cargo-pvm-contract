@@ -12,7 +12,7 @@
 //! provides the generic `#[slot(raw = KEY)]` mechanism.
 
 use pvm_contract_sdk::{
-    Address, Host, Lazy, MockHost, MockHostBuilder, StorageComponent, StorageKey,
+    Address, Host, Lazy, MockHost, MockHostBuilder, StorageComponent, StorageKey, StorageType,
 };
 
 /// `bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)`.
@@ -59,7 +59,7 @@ fn proxy() -> (UpgradeableProxy, MockHost) {
     let contract = UpgradeableProxy {
         impl_addr: <Lazy<Address> as StorageComponent>::new_at(
             StorageKey::from_raw(IMPLEMENTATION_SLOT),
-            (32 - <Lazy<Address> as StorageComponent>::PACKED_BYTES) as u8,
+            (32 - <Lazy<Address> as StorageType>::PACKED_BYTES) as u8,
             true,
             host.clone(),
         ),
