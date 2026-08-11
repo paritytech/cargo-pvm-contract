@@ -55,6 +55,18 @@ impl Ctxt {
         }
     }
 
+    pub fn is_in_current_scope(&self, path: syn_solidity::SolPath) -> bool {
+        let (ns, name) = Self::parse_path(path.clone());
+        if ns.is_none() {
+            self.types
+                .get(&self.current_ns)
+                .map(|map| map.contains(&name))
+                .unwrap_or_default()
+        } else {
+            false
+        }
+    }
+
     pub fn set_ns(&mut self, ns: SolIdent) {
         self.current_ns = Some(ns);
     }

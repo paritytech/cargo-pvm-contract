@@ -27,7 +27,7 @@ pub fn expand_function(
             &func
                 .parameters
                 .types()
-                .map(|x| to_rust_type(x, true, ctxt))
+                .map(|x| to_rust_type(x, alloc, ctxt))
                 .map(|x| {
                     syn::parse2::<syn::Type>(x.clone()).unwrap_or_else(|err| {
                         panic!("invalid rust type generated;\nerror: {err}\ntype:{x}")
@@ -216,7 +216,9 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
                         quote! { super::#ident:: }
                     })
                     .or_else(|| {
-                        if ctxt.is_in_toplevel(custom.clone()) {
+                        if ctxt.is_in_toplevel(custom.clone())
+                            && !ctxt.is_in_current_scope(custom.clone())
+                        {
                             Some(quote! {super::})
                         } else {
                             Some(quote! {})
