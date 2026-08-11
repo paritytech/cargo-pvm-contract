@@ -25,9 +25,7 @@ mod receive_contract {
 
         #[pvm_contract_sdk::receive]
         pub fn receive(&mut self) {
-            let mut buf = [0u8; 32];
-            self.host().value_transferred(&mut buf);
-            let value = U256::from_le_bytes(buf);
+            let value = self.env().value();
 
             let total = self.read_u256(&TOTAL_KEY);
             self.write_u256(&TOTAL_KEY, total.saturating_add(value));

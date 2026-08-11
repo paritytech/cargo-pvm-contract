@@ -26,7 +26,7 @@ mod my_token {
         #[pvm_contract_sdk::constructor]
         pub fn new(&mut self, initial: U256) {
             self.total_supply.set(&initial);
-            let caller = self.caller();
+            let caller = self.env().caller();
             self.balances.insert(&caller, &initial);
         }
 
@@ -124,6 +124,72 @@ Solidity `stateMutability` is inferred from the Rust receiver shape. There is no
 
 If a `.sol` interface is provided, the macro rejects any mismatch between the Rust-inferred mutability and the `.sol` declaration.
 
+## Environment Access
+
+The macro injects a `pub host: Host` field on the contract struct (the field name `host` is reserved) and two accessors:
+
+```rust,ignore
+pub fn host(&self) -> &Host;   // raw HostApi surface
+pub fn env(&self) -> Env;      // read-only transaction/block context
+```
+
+`env()` is the typed equivalent of Solidity's `msg.*` / `block.*` globals:
+
+| Accessor                    | Solidity                | Returns   |
+| --------------------------- | ----------------------- | --------- |
+| `self.env().caller()`       | `msg.sender`            | `Address` |
+| `self.env().origin()`       | `tx.origin`             | `Address` |
+| `self.env().address()`      | `address(this)`         | `Address` |
+| `self.env().value()`        | `msg.value`             | `U256`    |
+| `self.env().balance()`      | `address(this).balance` | `U256`    |
+| `self.env().base_fee()`     | `block.basefee`         | `U256`    |
+| `self.env().block_number()` | `block.number`          | `u64`     |
+| `self.env().timestamp()`    | `block.timestamp`       | `u64`     |
+| `self.env().chain_id()`     | `block.chainid`         | `u64`     |
+
+Plus the `<address>` members that read chain state, parameterized by the account being asked about:
+
+| Accessor                      | Solidity                | Returns |
+| ----------------------------- | ----------------------- | ------- |
+| `self.env().balance_of(addr)` | `addr.balance`          | `U256`  |
+| `self.env().has_code(addr)`   | `addr.code.length != 0` | `bool`  |
+
+```rust,ignore
+#[pvm_contract_sdk::method]
+pub fn owner_is_caller(&self) -> bool {
+    self.owner.get() == self.env().caller()
+}
+```
+
+Both accessors take `&self`, so they are available to `view` methods. A `pure` method has no receiver and therefore has neither — the same boundary solc enforces (see [Mutability Inference](#mutability-inference)). A method that needs `caller`, block context, or any other host call must be `view` (`&self`) or stronger.
+
+`Env` holds only a cloned `Host` handle — a ZST on riscv64, one `Rc` bump on host targets — so constructing one per use costs nothing. `value()` is always zero in a non-payable method reached through external dispatch, because the dispatch prelude reverts before the body runs if value was attached (an internal Rust call from a payable method skips that prelude).
+
+**`caller()` vs `origin()`.** `caller()` is the immediate sender and changes at every call boundary; `origin()` is the transaction signer and is the same at every depth. Authorize on `caller()` — an `origin() == owner` check passes for *any* contract the owner is tricked into calling, which is the classic phishing-via-intermediary hole. `origin()`'s legitimate uses are narrow, mainly the top-level-frame test `caller() == origin()`. `address()` is `address(this)`, and under `delegatecall` it is the *delegating* contract's address (the storage context the code executes against), matching EVM semantics.
+
+**Byte order.** The host reports numeric 32-byte values (`value`, `chain_id`, balances, block number, timestamp) **little-endian**; identifiers (`caller`, `origin`, `address`, `block_author`, `code_hash`, `block_hash`) are opaque byte strings that are not byte-swapped. `env()` decodes the numeric ones for you, which is the main reason to prefer it over reading raw buffers through `self.host()`. Note this differs from storage slots and ABI encoding, which are big-endian to match solc. `block_number()`, `timestamp()` and `chain_id()` return `u64` — the width pallet-revive actually holds (`BlockNumberFor<T>`, a millisecond moment, and `ChainId: Get<u64>`); the 32-byte host width is EVM-compatibility packaging. They read the buffer's low 8 bytes and ignore the high 24, with no range check. That's a guarantee for the timestamp and chain ID; for the block number it's runtime convention, since frame bounds `BlockNumberFor<T>` only by `AtLeast32Bit` and it is `u32` in every real runtime. The balance-shaped reads stay `U256`: `value()` and the two balances are genuinely 256-bit (pallet-revive reports balances in EVM units, scaling the native balance by `NativeToEthRatio`), and `base_fee()` is `uint256` in Solidity with no narrower pallet-guaranteed width.
+
+**DSL handlers** get the same accessor from the `Host` they are handed:
+
+```rust,ignore
+fn transfer_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResult {
+    let caller: [u8; 20] = host.env().caller().into();
+    /* ... */
+}
+```
+
+`env()` is also a provided method on `ContractContext`, so a handler that already wrapped its host for typed cross-contract calls reads context off the wrapper (`cx.env().caller()`), and so does any helper written against the `&impl ContractContext` bound those call builders impose. The macro-generated inherent `env()` on the storage struct takes precedence over the trait method, so contract bodies never need the trait in scope.
+
+**Testing.** `MockHostBuilder`'s numeric setters take typed values and encode little-endian, so seeded state reads back through `env()` unchanged:
+
+```rust,ignore
+let mock = MockHostBuilder::new().caller([0xAA; 20]).block_number(258).build();
+let contract = MyToken::with_host(mock);
+assert_eq!(contract.env().block_number(), 258);
+```
+
+The `*_raw` setters store 32 bytes verbatim; use them only when a test asserts byte layout.
+
 ## Storage
 
 Storage helpers live in `pvm-storage` (re-exported from `pvm-contract-sdk`). The primary types are `Lazy<T>` (single value at a fixed slot), `Mapping<K, V>` (key-value), and `StorageVec<T>` (dynamic array, Solidity `T[]`). Fixed-size arrays `[T; N]` (Solidity `T[N]`, static element) are supported as values inside any of these.
@@ -154,7 +220,7 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.caller();
+            let caller = self.env().caller();
             let mut cell = self.balances.entry(&caller);
             let bal = cell.get();
             if bal < amount {
@@ -318,7 +384,7 @@ pub struct Transfer {
 #[pvm_contract_sdk::method]
 pub fn transfer(&mut self, to: Address, value: U256) {
     // ... state updates ...
-    Transfer { from: self.caller(), to, value }.emit(self.host());
+    Transfer { from: self.env().caller(), to, value }.emit(self.host());
 }
 ```
 

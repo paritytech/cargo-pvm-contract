@@ -1,0 +1,7 @@
+error: SolType can only be derived for enums with `#[repr(u8)]` attribute
+ --> tests/ui/enum_no_repr.rs:2:1
+  |
+2 | / enum T {
+3 | |     F,
+4 | | }
+  | |_^

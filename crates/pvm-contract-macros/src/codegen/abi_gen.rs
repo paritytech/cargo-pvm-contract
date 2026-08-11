@@ -416,6 +416,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
@@ -526,6 +527,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         }
     }
 
@@ -539,7 +541,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::View,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -561,7 +562,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::Pure,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -621,6 +621,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -671,6 +672,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -714,6 +716,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {

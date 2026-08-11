@@ -75,6 +75,7 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    Env,
     EventTopics,
     Host,
     HostApi,
@@ -122,6 +123,8 @@ pub use pvm_contract_types::{
     // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
     panic_revert,
     read_word_offset,
+    // Compile-time `&str` equality for `#[contract]` signature assertions
+    str_eq,
     value_transferred_is_nonzero,
 };
 
@@ -140,6 +143,11 @@ pub use pvm_contract_core::call::{
     CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
     StateMutability, View,
 };
+
+// Typed wrappers for the builtin Ethereum precompiles (ecrecover, P256Verify)
+// plus fixed-address constants for the full builtin set. Callable from `&self`
+// (view) methods via `precompiles::ecrecover(self.host(), …)`.
+pub use pvm_contract_core::precompiles;
 
 // Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
 // 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones

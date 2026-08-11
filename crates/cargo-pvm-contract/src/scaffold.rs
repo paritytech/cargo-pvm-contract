@@ -28,6 +28,22 @@ struct ContractMacroTemplate<'a> {
     use_alloc: bool,
     sol_file_name: Option<&'a str>,
     functions: Vec<MacroFunctionInfo>,
+    /// `#[derive(SolType)]` structs generated for the Solidity `struct` (ABI
+    /// `tuple`) types referenced by the interface. Emitted inside the contract
+    /// module, above the storage struct.
+    structs: Vec<GeneratedStruct>,
+}
+
+/// A `#[derive(SolType)]` struct the scaffolder emits for a Solidity `struct`
+/// (ABI `tuple`) parameter or return.
+struct GeneratedStruct {
+    name: String,
+    fields: Vec<GeneratedField>,
+}
+
+struct GeneratedField {
+    name: String,
+    rust_type: String,
 }
 
 #[derive(Template)]
@@ -117,9 +133,19 @@ enum AbiItem {
 
 #[derive(Debug, Deserialize, Clone)]
 struct AbiInput {
+    #[serde(default)]
     name: String,
     #[serde(rename = "type")]
     type_name: String,
+    /// solc's fully-qualified name for the type, e.g. `struct IFoo.Point`.
+    /// Present only for tuple (struct) parameters; used to name the generated
+    /// Rust struct.
+    #[serde(rename = "internalType", default)]
+    internal_type: Option<String>,
+    /// Field descriptors for a tuple (Solidity `struct`) parameter. `None` for
+    /// every non-tuple type.
+    #[serde(default)]
+    components: Option<Vec<AbiInput>>,
     #[serde(rename = "indexed")]
     _indexed: Option<bool>,
 }
@@ -130,6 +156,10 @@ struct AbiOutput {
     _name: String,
     #[serde(rename = "type")]
     type_name: String,
+    #[serde(rename = "internalType", default)]
+    internal_type: Option<String>,
+    #[serde(default)]
+    components: Option<Vec<AbiInput>>,
 }
 
 pub fn init_new_contract(contract_name: &str, use_dsl: bool, use_alloc: bool) -> Result<()> {
@@ -171,7 +201,7 @@ pub fn init_new_contract(contract_name: &str, use_dsl: bool, use_alloc: bool) ->
     let lib_rs_content = if use_dsl {
         generate_dsl_contract(use_alloc, vec![])?
     } else {
-        generate_macro_contract(use_alloc, None, vec![])?
+        generate_macro_contract(use_alloc, None, vec![], vec![])?
     };
     fs::write(
         target_dir.join(format!("src/{contract_name}.rs")),
@@ -252,6 +282,14 @@ fn init_from_example_files_inner(
     let contract_name = contract_name.to_case(Case::Kebab);
     let sol_file_name = sol_file_name.to_string();
 
+    // solc resolves imports for the ABI, but only this entry file is copied into
+    // the project, so the build-time macro re-parse would see an unresolved
+    // import and hash a wrong selector. Fail here with the same message the
+    // build-time parsers give.
+    if let Ok(source) = std::str::from_utf8(sol_contents) {
+        cargo_pvm_contract_builder::reject_sol_imports(source)?;
+    }
+
     log::debug!("Extracting metadata from {sol_file_name}");
     let (metadata, actual_contract_name) =
         extract_solc_metadata_from_bytes(sol_contents, &sol_file_name)?;
@@ -308,8 +346,12 @@ fn init_from_example_files_inner(
                 inputs, outputs, ..
             } = item
             {
-                inputs.iter().any(|p| is_dynamic_sol_type(&p.type_name))
-                    || outputs.iter().any(|o| is_dynamic_sol_type(&o.type_name))
+                inputs
+                    .iter()
+                    .any(|p| param_is_dynamic(&p.type_name, p.components.as_deref()))
+                    || outputs
+                        .iter()
+                        .any(|o| param_is_dynamic(&o.type_name, o.components.as_deref()))
             } else {
                 false
             }
@@ -383,8 +425,8 @@ fn init_from_example_files_inner(
         let functions = extract_dsl_function_info(&metadata)?;
         generate_dsl_contract(use_alloc, functions)?
     } else {
-        let functions = extract_function_info(&metadata)?;
-        generate_macro_contract(use_alloc, Some(&sol_file_name), functions)?
+        let (functions, structs) = extract_function_info(&metadata)?;
+        generate_macro_contract(use_alloc, Some(&sol_file_name), functions, structs)?
     };
     fs::write(
         target_dir.join(format!("src/{actual_contract_kebab}.rs")),
@@ -485,11 +527,13 @@ fn generate_macro_contract(
     use_alloc: bool,
     sol_file_name: Option<&str>,
     functions: Vec<MacroFunctionInfo>,
+    structs: Vec<GeneratedStruct>,
 ) -> Result<String> {
     ContractMacroTemplate {
         use_alloc,
         sol_file_name,
         functions,
+        structs,
     }
     .render()
     .context("Failed to render macro contract template")
@@ -504,69 +548,267 @@ fn generate_dsl_contract(use_alloc: bool, functions: Vec<DslFunctionInfo>) -> Re
     .context("Failed to render dsl contract template")
 }
 
-fn extract_function_info(metadata: &ContractMetadata) -> Result<Vec<MacroFunctionInfo>> {
-    metadata
-        .output
-        .abi
-        .iter()
-        .filter_map(|item| match item {
-            AbiItem::Function {
-                name,
-                inputs,
-                outputs,
-                state_mutability,
-            } => Some((name, inputs, outputs, state_mutability)),
-            _ => None,
-        })
-        .map(
-            |(name, inputs, outputs, state_mutability)| -> Result<MacroFunctionInfo> {
-                let name_snake = name.to_case(Case::Snake);
-                let params = inputs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| -> Result<String> {
-                        let param_name = if p.name.is_empty() {
-                            format!("arg{i}")
-                        } else {
-                            p.name.to_case(Case::Snake)
-                        };
-                        Ok(format!(
-                            "{param_name}: {}",
-                            solidity_to_rust_type(&p.type_name)?
-                        ))
-                    })
-                    .collect::<Result<Vec<_>>>()?
-                    .join(", ");
-                // Scaffolded bodies are `todo!()` so the error variant only
-                // needs to be in scope; matches the constructor's choice in
-                // the template. Users replace `EmptyError` with their own
-                // error type when they fill in real bodies.
-                let return_type = if outputs.is_empty() {
-                    "Result<(), pvm_contract_sdk::EmptyError>".to_string()
-                } else if outputs.len() == 1 {
-                    format!(
-                        "Result<{}, pvm_contract_sdk::EmptyError>",
-                        solidity_to_rust_type(&outputs[0].type_name)?
+fn extract_function_info(
+    metadata: &ContractMetadata,
+) -> Result<(Vec<MacroFunctionInfo>, Vec<GeneratedStruct>)> {
+    let mut registry = StructRegistry::default();
+    let mut functions = Vec::new();
+
+    for item in &metadata.output.abi {
+        let AbiItem::Function {
+            name,
+            inputs,
+            outputs,
+            state_mutability,
+        } = item
+        else {
+            continue;
+        };
+
+        let name_snake = name.to_case(Case::Snake);
+        let mut param_strs = Vec::with_capacity(inputs.len());
+        for (i, p) in inputs.iter().enumerate() {
+            let param_name = if p.name.is_empty() {
+                format!("arg{i}")
+            } else {
+                p.name.to_case(Case::Snake)
+            };
+            let rust_type = abi_param_rust_type(
+                &p.type_name,
+                p.internal_type.as_deref(),
+                p.components.as_deref(),
+                &mut registry,
+            )
+            .with_context(|| format!("in parameter `{param_name}` of `{name}`"))?;
+            param_strs.push(format!("{param_name}: {rust_type}"));
+        }
+        let params = param_strs.join(", ");
+
+        // Scaffolded bodies are `todo!()` so the error variant only needs to be
+        // in scope; matches the constructor's choice in the template. Users
+        // replace `EmptyError` with their own error type when they fill in real
+        // bodies.
+        let return_type = if outputs.is_empty() {
+            "Result<(), pvm_contract_sdk::EmptyError>".to_string()
+        } else if outputs.len() == 1 {
+            let ret = abi_param_rust_type(
+                &outputs[0].type_name,
+                outputs[0].internal_type.as_deref(),
+                outputs[0].components.as_deref(),
+                &mut registry,
+            )
+            .with_context(|| format!("in return type of `{name}`"))?;
+            format!("Result<{ret}, pvm_contract_sdk::EmptyError>")
+        } else {
+            let mut types = Vec::with_capacity(outputs.len());
+            for o in outputs {
+                types.push(
+                    abi_param_rust_type(
+                        &o.type_name,
+                        o.internal_type.as_deref(),
+                        o.components.as_deref(),
+                        &mut registry,
                     )
-                } else {
-                    let types = outputs
-                        .iter()
-                        .map(|o| solidity_to_rust_type(&o.type_name))
-                        .collect::<Result<Vec<_>>>()?
-                        .join(", ");
-                    format!("Result<({types}), pvm_contract_sdk::EmptyError>")
-                };
-                let (receiver, payable_attr) = receiver_from_mutability(state_mutability)?;
-                Ok(MacroFunctionInfo {
-                    name_snake,
-                    params,
-                    return_type,
-                    receiver,
-                    payable_attr,
-                })
-            },
+                    .with_context(|| format!("in return type of `{name}`"))?,
+                );
+            }
+            format!(
+                "Result<({}), pvm_contract_sdk::EmptyError>",
+                types.join(", ")
+            )
+        };
+        let (receiver, payable_attr) = receiver_from_mutability(state_mutability)?;
+        functions.push(MacroFunctionInfo {
+            name_snake,
+            params,
+            return_type,
+            receiver,
+            payable_attr,
+        });
+    }
+
+    Ok((functions, registry.order))
+}
+
+/// Accumulates `#[derive(SolType)]` struct definitions discovered while mapping
+/// Solidity `tuple` (struct) parameters to Rust types.
+#[derive(Default)]
+struct StructRegistry {
+    /// Canonical Solidity path (e.g. `IFoo.Point`) -> generated Rust name.
+    /// Doubles as the recursion guard for self-referential structs.
+    by_path: std::collections::HashMap<String, String>,
+    /// Generated Rust name -> the Solidity path that owns it, to detect two
+    /// distinct structs colliding on the same simple name.
+    name_owner: std::collections::HashMap<String, String>,
+    /// Emission order; a nested struct is pushed before the struct that
+    /// contains it.
+    order: Vec<GeneratedStruct>,
+}
+
+/// Map an ABI parameter (which may be a `tuple`/struct, possibly wrapped in
+/// array suffixes) to a Rust type, registering any `#[derive(SolType)]` structs
+/// it needs into `reg`. Non-tuple types fall through to
+/// [`solidity_to_rust_type`].
+fn abi_param_rust_type(
+    type_name: &str,
+    internal_type: Option<&str>,
+    components: Option<&[AbiInput]>,
+    reg: &mut StructRegistry,
+) -> Result<String> {
+    // solc emits `components` iff the type is (an array of) a tuple.
+    match components {
+        Some(comps) => tuple_rust_type(type_name, internal_type, comps, reg),
+        None => solidity_to_rust_type(type_name),
+    }
+}
+
+/// Handle a tuple-based ABI type: `tuple`, `tuple[]`, `tuple[N]`, and nested
+/// combinations. `components` always describes the base tuple's fields;
+/// `internal_type` carries the struct's Solidity name (with any array suffix).
+fn tuple_rust_type(
+    type_name: &str,
+    internal_type: Option<&str>,
+    components: &[AbiInput],
+    reg: &mut StructRegistry,
+) -> Result<String> {
+    if let Some(inner) = type_name.strip_suffix("[]") {
+        let elem = tuple_rust_type(inner, internal_type, components, reg)?;
+        return Ok(format!("Vec<{elem}>"));
+    }
+    if let Some((inner, n)) = split_fixed_array(type_name) {
+        let elem = tuple_rust_type(inner, internal_type, components, reg)?;
+        return Ok(format!("[{elem}; {n}]"));
+    }
+    if type_name != "tuple" {
+        anyhow::bail!("unsupported tuple type: {type_name:?}");
+    }
+    let (path, rust_name) = struct_names_from_internal_type(internal_type)?;
+    register_struct(&path, &rust_name, components, reg)?;
+    Ok(rust_name)
+}
+
+/// Split a fixed-array suffix `T[N]` into `(T, N)`. Mirrors the parse in
+/// [`solidity_to_rust_type`].
+fn split_fixed_array(t: &str) -> Option<(&str, usize)> {
+    let bracket = t.rfind('[')?;
+    let n: usize = t[bracket + 1..].strip_suffix(']')?.parse().ok()?;
+    Some((&t[..bracket], n))
+}
+
+/// Derive `(solidity_path, rust_name)` from a tuple's `internalType`, e.g.
+/// `struct IFoo.Point[]` -> (`IFoo.Point`, `Point`). The path uniquely
+/// identifies the struct; the Rust name is its final `.`-separated segment.
+fn struct_names_from_internal_type(internal_type: Option<&str>) -> Result<(String, String)> {
+    let it = internal_type.ok_or_else(|| {
+        anyhow::anyhow!(
+            "tuple parameter has no `internalType`, so the scaffolder cannot derive a \
+             struct name for it. Edit the generated file manually."
         )
-        .collect()
+    })?;
+    // Strip solc's `struct ` prefix and any trailing array groups
+    // (`Point[][3]` -> `Point`).
+    let mut base = it.strip_prefix("struct ").unwrap_or(it).trim();
+    while let Some(b) = base.rfind('[') {
+        if base[b..].ends_with(']') {
+            base = base[..b].trim_end();
+        } else {
+            break;
+        }
+    }
+    let segment = base
+        .rsplit('.')
+        .next()
+        .filter(|s| is_valid_ident(s))
+        .ok_or_else(|| {
+            anyhow::anyhow!("could not derive a valid Rust struct name from internalType {it:?}")
+        })?;
+    Ok((base.to_string(), sanitize_rust_ident(segment)))
+}
+
+fn is_valid_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Make a Solidity identifier safe to emit as a Rust identifier. A Solidity
+/// `struct`/field name can be a Rust keyword (e.g. a field named `ref`), which
+/// would otherwise produce non-compiling code. Raw-identify where allowed;
+/// suffix `_` for the few keywords that cannot be raw idents.
+fn sanitize_rust_ident(name: &str) -> String {
+    // Keywords that `r#` cannot escape.
+    const NON_RAW: [&str; 4] = ["crate", "self", "super", "Self"];
+    if NON_RAW.contains(&name) {
+        return format!("{name}_");
+    }
+    if is_rust_keyword(name) {
+        return format!("r#{name}");
+    }
+    name.to_string()
+}
+
+fn is_rust_keyword(s: &str) -> bool {
+    matches!(
+        s,
+        // Strict keywords.
+        "as" | "break" | "const" | "continue" | "crate" | "else" | "enum" | "extern" | "false"
+            | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match" | "mod" | "move"
+            | "mut" | "pub" | "ref" | "return" | "self" | "Self" | "static" | "struct" | "super"
+            | "trait" | "true" | "type" | "unsafe" | "use" | "where" | "while"
+            // Edition-2018+ strict keywords (`gen` reserved in 2024).
+            | "async" | "await" | "dyn" | "gen"
+            // Reserved for future use.
+            | "abstract" | "become" | "box" | "do" | "final" | "macro" | "override" | "priv"
+            | "typeof" | "unsized" | "virtual" | "yield" | "try"
+    )
+}
+
+/// Register a struct (and, recursively, its tuple-typed fields) into `reg`.
+fn register_struct(
+    path: &str,
+    rust_name: &str,
+    components: &[AbiInput],
+    reg: &mut StructRegistry,
+) -> Result<()> {
+    // Already registered, or currently registering (self-referential struct).
+    if reg.by_path.contains_key(path) {
+        return Ok(());
+    }
+    if let Some(other) = reg.name_owner.get(rust_name) {
+        anyhow::bail!(
+            "two Solidity structs (`{other}` and `{path}`) both map to the Rust type \
+             `{rust_name}`; rename one in the interface to avoid the collision"
+        );
+    }
+    // Mark as seen before recursing so a self-referential struct terminates.
+    reg.by_path.insert(path.to_string(), rust_name.to_string());
+    reg.name_owner
+        .insert(rust_name.to_string(), path.to_string());
+
+    let mut fields = Vec::with_capacity(components.len());
+    for (i, c) in components.iter().enumerate() {
+        let field_name = if c.name.is_empty() {
+            format!("field{i}")
+        } else {
+            sanitize_rust_ident(&c.name.to_case(Case::Snake))
+        };
+        let rust_type = abi_param_rust_type(
+            &c.type_name,
+            c.internal_type.as_deref(),
+            c.components.as_deref(),
+            reg,
+        )
+        .with_context(|| format!("in field `{field_name}` of struct `{rust_name}`"))?;
+        fields.push(GeneratedField {
+            name: field_name,
+            rust_type,
+        });
+    }
+    reg.order.push(GeneratedStruct {
+        name: rust_name.to_string(),
+        fields,
+    });
+    Ok(())
 }
 
 /// Map a Solidity `stateMutability` string to the Rust receiver and (optional)
@@ -770,13 +1012,16 @@ fn solidity_to_rust_type(sol_type: &str) -> Result<String> {
         return Ok(format!("[u8; {n}]"));
     }
 
-    // 7. Tuple — AbiInput/AbiOutput drop the `components` field, so the
-    //    sub-structure is gone by the time we see `"tuple"` here.
-    //    Tuple-decoder codegen will be added later; reject for now.
+    // 7. Tuple — the macro scaffolder maps these through `abi_param_rust_type`
+    //    (which has the `components` sub-structure) into generated
+    //    `#[derive(SolType)]` structs. Reaching this arm means a tuple hit a
+    //    path without component info (the DSL scaffolder, which cannot emit the
+    //    SolType derive it would need).
     if sol_type == "tuple" {
         anyhow::bail!(
-            "tuple types are not yet supported by the scaffolder. \
-             Please edit the generated file manually or use a non-tuple parameter shape."
+            "tuple (struct) types are not supported by the DSL scaffolder. \
+             Re-run with `--api-style macro`, which generates a `#[derive(SolType)]` \
+             struct for each Solidity struct."
         );
     }
 
@@ -804,6 +1049,27 @@ fn is_dynamic_sol_type(t: &str) -> bool {
     // Bare `bytes` / `string`. Sized variants like `bytes32` map to `[u8; N]`
     // which is static, so they fall through this match and return false.
     matches!(t, "bytes" | "string")
+}
+
+/// Component-aware dynamic-type check. A tuple is dynamic if it is a dynamic
+/// array (`tuple[]`) or if any of its fields is dynamic; otherwise this defers
+/// to [`is_dynamic_sol_type`] on the type name.
+fn param_is_dynamic(type_name: &str, components: Option<&[AbiInput]>) -> bool {
+    let Some(components) = components else {
+        return is_dynamic_sol_type(type_name);
+    };
+    if type_name.ends_with("[]") {
+        return true;
+    }
+    // Fixed array `tuple[N]`: dynamic iff the element is. Recurse on the inner
+    // type name (keeping the same `components`, which describe the base tuple)
+    // before falling through to the field check.
+    if let Some((inner, _)) = split_fixed_array(type_name) {
+        return param_is_dynamic(inner, Some(components));
+    }
+    components
+        .iter()
+        .any(|c| param_is_dynamic(&c.type_name, c.components.as_deref()))
 }
 
 fn resolve_target_json() -> Result<(PathBuf, String)> {
@@ -961,14 +1227,201 @@ mod tests {
     }
 
     #[test]
-    fn tuple_rejected_with_clear_message() {
-        // Special-cased because we also check the message content — users
-        // need a "tuple" mention to know how to work around the limitation.
+    fn tuple_rejected_by_bare_string_mapper() {
+        // `solidity_to_rust_type` has no component info, so it can only reject
+        // tuples (the DSL scaffolder path). The macro path routes tuples through
+        // `abi_param_rust_type` instead. Message must point at `--api-style macro`.
         let e = solidity_to_rust_type("tuple").unwrap_err();
+        let msg = e.to_string();
         assert!(
-            e.to_string().contains("tuple"),
+            msg.contains("tuple"),
             "expected tuple-mentioning error, got {e}"
         );
+        assert!(msg.contains("macro"), "expected macro hint, got {e}");
+    }
+
+    fn input(name: &str, ty: &str) -> AbiInput {
+        AbiInput {
+            name: name.to_string(),
+            type_name: ty.to_string(),
+            internal_type: None,
+            components: None,
+            _indexed: None,
+        }
+    }
+
+    fn tuple_input(name: &str, ty: &str, internal: &str, comps: Vec<AbiInput>) -> AbiInput {
+        AbiInput {
+            name: name.to_string(),
+            type_name: ty.to_string(),
+            internal_type: Some(internal.to_string()),
+            components: Some(comps),
+            _indexed: None,
+        }
+    }
+
+    fn field_pairs(s: &GeneratedStruct) -> Vec<(&str, &str)> {
+        s.fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.rust_type.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn tuple_generates_sol_type_struct() {
+        let comps = vec![input("x", "uint64"), input("y", "uint64")];
+        let mut reg = StructRegistry::default();
+        let ty = abi_param_rust_type("tuple", Some("struct IFoo.Point"), Some(&comps), &mut reg)
+            .unwrap();
+        assert_eq!(ty, "Point");
+        assert_eq!(reg.order.len(), 1);
+        assert_eq!(reg.order[0].name, "Point");
+        assert_eq!(field_pairs(&reg.order[0]), vec![("x", "u64"), ("y", "u64")]);
+    }
+
+    #[test]
+    fn tuple_array_shapes() {
+        let comps = vec![input("x", "uint64"), input("y", "uint64")];
+        let mut reg = StructRegistry::default();
+        assert_eq!(
+            abi_param_rust_type(
+                "tuple[]",
+                Some("struct IFoo.Point[]"),
+                Some(&comps),
+                &mut reg
+            )
+            .unwrap(),
+            "Vec<Point>"
+        );
+        let mut reg = StructRegistry::default();
+        assert_eq!(
+            abi_param_rust_type(
+                "tuple[3]",
+                Some("struct IFoo.Point[3]"),
+                Some(&comps),
+                &mut reg
+            )
+            .unwrap(),
+            "[Point; 3]"
+        );
+    }
+
+    #[test]
+    fn nested_struct_registered_before_parent() {
+        let point = vec![input("x", "uint64"), input("y", "uint64")];
+        let nested = vec![
+            tuple_input("p", "tuple", "struct IFoo.Point", point),
+            input("label", "uint256"),
+        ];
+        let mut reg = StructRegistry::default();
+        let ty = abi_param_rust_type("tuple", Some("struct IFoo.Nested"), Some(&nested), &mut reg)
+            .unwrap();
+        assert_eq!(ty, "Nested");
+        // Dependency (`Point`) must precede the struct that embeds it.
+        let names: Vec<&str> = reg.order.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["Point", "Nested"]);
+        assert_eq!(
+            field_pairs(&reg.order[1]),
+            vec![("p", "Point"), ("label", "U256")]
+        );
+    }
+
+    #[test]
+    fn duplicate_struct_registered_once() {
+        let comps = vec![input("x", "uint64"), input("y", "uint64")];
+        let mut reg = StructRegistry::default();
+        abi_param_rust_type("tuple", Some("struct IFoo.Point"), Some(&comps), &mut reg).unwrap();
+        abi_param_rust_type(
+            "tuple[]",
+            Some("struct IFoo.Point[]"),
+            Some(&comps),
+            &mut reg,
+        )
+        .unwrap();
+        assert_eq!(reg.order.len(), 1);
+    }
+
+    #[test]
+    fn colliding_struct_names_rejected() {
+        let comps = vec![input("x", "uint64")];
+        let mut reg = StructRegistry::default();
+        abi_param_rust_type("tuple", Some("struct A.Point"), Some(&comps), &mut reg).unwrap();
+        let err = abi_param_rust_type("tuple", Some("struct B.Point"), Some(&comps), &mut reg)
+            .unwrap_err();
+        assert!(err.to_string().contains("Point"), "got {err}");
+    }
+
+    #[test]
+    fn tuple_without_internal_type_rejected() {
+        let comps = vec![input("x", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", None, Some(&comps), &mut reg).unwrap_err();
+        assert!(err.to_string().contains("internalType"), "got {err}");
+    }
+
+    #[test]
+    fn internal_type_name_parsing() {
+        for it in [
+            "struct IFoo.Point",
+            "struct IFoo.Point[]",
+            "struct IFoo.Point[][3]",
+        ] {
+            assert_eq!(
+                struct_names_from_internal_type(Some(it)).unwrap(),
+                ("IFoo.Point".to_string(), "Point".to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn keyword_idents_sanitized() {
+        // Raw-identifiable keywords.
+        assert_eq!(sanitize_rust_ident("ref"), "r#ref");
+        assert_eq!(sanitize_rust_ident("move"), "r#move");
+        assert_eq!(sanitize_rust_ident("type"), "r#type");
+        assert_eq!(sanitize_rust_ident("gen"), "r#gen");
+        // Keywords that cannot be raw idents get a trailing underscore.
+        assert_eq!(sanitize_rust_ident("Self"), "Self_");
+        assert_eq!(sanitize_rust_ident("crate"), "crate_");
+        // Non-keywords pass through untouched.
+        assert_eq!(sanitize_rust_ident("from"), "from");
+        assert_eq!(sanitize_rust_ident("amount"), "amount");
+    }
+
+    #[test]
+    fn tuple_keyword_field_raw_identified() {
+        let comps = vec![input("ref", "uint256"), input("from", "address")];
+        let mut reg = StructRegistry::default();
+        let ty = abi_param_rust_type("tuple", Some("struct IFoo.Order"), Some(&comps), &mut reg)
+            .unwrap();
+        assert_eq!(ty, "Order");
+        assert_eq!(
+            field_pairs(&reg.order[0]),
+            vec![("r#ref", "U256"), ("from", "Address")]
+        );
+    }
+
+    #[test]
+    fn scaffold_rejects_sol_import() {
+        // The import check runs before solc/filesystem work, so this fails fast
+        // rather than scaffolding a project that won't build.
+        let sol = b"import \"./Types.sol\";\ninterface I { function f() external; }";
+        let err = init_from_example_files_inner(sol, "I.sol", None, "import-test", false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("import"), "{err}");
+    }
+
+    #[test]
+    fn tuple_dynamic_classification() {
+        let static_comps = vec![input("x", "uint64"), input("y", "address")];
+        let dyn_comps = vec![input("name", "string")];
+        assert!(!param_is_dynamic("tuple", Some(&static_comps)));
+        assert!(!param_is_dynamic("tuple[3]", Some(&static_comps)));
+        assert!(param_is_dynamic("tuple", Some(&dyn_comps)));
+        assert!(param_is_dynamic("tuple[]", Some(&static_comps)));
+        assert!(param_is_dynamic("tuple[][3]", Some(&static_comps)));
+        assert!(!param_is_dynamic("tuple[2][3]", Some(&static_comps)));
     }
 
     #[test]

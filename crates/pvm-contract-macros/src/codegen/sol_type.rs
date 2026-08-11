@@ -1,6 +1,6 @@
 use proc_macro2::TokenStream;
-use quote::quote;
-use syn::{DeriveInput, Fields, Type};
+use quote::{ToTokens, quote};
+use syn::{DataEnum, DeriveInput, Fields, Type};
 
 use crate::signature::SolType;
 
@@ -9,12 +9,39 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let fields = match &input.data {
         syn::Data::Struct(data) => &data.fields,
-        syn::Data::Enum(_) => {
-            return Err(syn::Error::new_spanned(
-                input,
-                "SolType can only be derived for structs",
-            ));
+        syn::Data::Enum(data) => {
+            if !input.generics.params.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums without generic params",
+                ));
+            };
+
+            if !input.attrs.iter().any(|x| {
+                x.meta.path().get_ident().is_some_and(|x| *x == "repr")
+                    && x.to_token_stream().to_string() == quote! { #[repr(u8)] }.to_string()
+            }) {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums with `#[repr(u8)]` attribute",
+                ));
+            }
+            if data.variants.iter().any(|x| x.discriminant.is_some()) {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums without explicit discriminants",
+                ));
+            }
+
+            if !data.variants.iter().all(|x| x.fields.is_empty()) {
+                return Err(syn::Error::new_spanned(
+                    input,
+                    "SolType can only be derived for enums without fields on it's variants",
+                ));
+            }
+            return generate_enum_sol_type(name, data);
         }
+
         syn::Data::Union(_) => {
             return Err(syn::Error::new_spanned(
                 input,
@@ -42,6 +69,90 @@ pub fn expand_sol_type(input: DeriveInput) -> syn::Result<TokenStream> {
     } else {
         expand_static_sol_type(name, fields, &field_info)
     }
+}
+
+fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<TokenStream> {
+    let conversion = variant.variants.iter().enumerate().map(|(index, variant)| {
+        let name = &variant.ident;
+        let index = index as u8;
+        quote! {
+            #index => Ok(Self::#name),
+        }
+    });
+    let conversion_u8 = variant.variants.iter().enumerate().map(|(index, variant)| {
+        let path = name;
+        let name = &variant.ident;
+        let index = index as u8;
+        quote! {
+            #path::#name => #index,
+        }
+    });
+
+    Ok(quote! {
+        impl TryFrom<u8> for #name {
+            type Error = ::pvm_contract_sdk::SolDefaultError;
+
+            fn try_from(m: u8) -> Result<#name, Self::Error> {
+                match m {
+                    #(#conversion)*
+                    _ => Err(::pvm_contract_sdk::SolDefaultError::Panic(::pvm_contract_sdk::Panic::EnumConversionFailure))
+                }
+            }
+        }
+
+        impl From<&#name> for u8 {
+            fn from(m: &#name) -> Self {
+                match m {
+                    #(#conversion_u8)*
+                }
+            }
+        }
+
+        impl ::pvm_contract_sdk::SolEncode for #name {
+            const IS_DYNAMIC: bool = u8::IS_DYNAMIC;
+            const SOL_NAME: &'static str = u8::SOL_NAME;
+            const HEAD_SIZE: usize = u8::HEAD_SIZE;
+
+            #[inline]
+            fn encode_body_len(&self) -> usize {
+                let dispatch: u8 = self.into();
+                dispatch.encode_body_len()
+            }
+
+            fn encode_body_to(&self, buf: &mut [u8]) {
+                let dispatch: u8 = self.into();
+                dispatch.encode_body_to(buf)
+            }
+
+            #[cfg(feature = "abi-gen")]
+            fn abi_param(name: &str) -> ::pvm_contract_sdk::AbiParam {
+                extern crate alloc;
+                ::pvm_contract_sdk::AbiParam {
+                    name: alloc::string::String::from(name),
+                    param_type: alloc::string::String::from("uint8"),
+                    components: alloc::vec![],
+                }
+            }
+        }
+
+        impl ::pvm_contract_sdk::StaticEncodedLen for #name {
+            const ENCODED_SIZE: usize = u8::ENCODED_SIZE;
+        }
+
+        impl ::pvm_contract_sdk::StaticDecode for #name {
+            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self  {
+                u8::decode_unchecked(input, offset).try_into().unwrap()
+            }
+        }
+
+        impl ::pvm_contract_sdk::SolDecode for #name {
+            fn decode_at(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError>  {
+                u8::decode_at(input, offset).and_then(|x| #name::try_from(x).map_err(|_| ::pvm_contract_sdk::DecodeError))
+            }
+        }
+
+        impl ::pvm_contract_sdk::SolArrayElement for #name {}
+    })
 }
 
 fn expand_static_sol_type(
@@ -169,7 +280,9 @@ fn generate_abi_param_fn(
         .zip(field_types.iter())
         .map(|((field_name, _), field_ty)| {
             let name_str = match field_name {
-                Some(ident) => ident.to_string(),
+                // A raw identifier (e.g. `r#type`) stringifies with its `r#`
+                // prefix; strip it so the ABI field name matches the source.
+                Some(ident) => ident.to_string().trim_start_matches("r#").to_string(),
                 None => String::new(),
             };
             quote! {

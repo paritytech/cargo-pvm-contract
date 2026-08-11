@@ -36,8 +36,8 @@ pub use serde_json;
 
 mod host;
 pub use host::{
-    CallFlags, Context, ContractContext, Host, HostApi, HostResult, PolkaVmHost, ReturnErrorCode,
-    ReturnFlags, StorageFlags,
+    CallFlags, Context, ContractContext, Env, Host, HostApi, HostResult, PolkaVmHost,
+    ReturnErrorCode, ReturnFlags, StorageFlags,
 };
 
 mod reentrancy;
@@ -270,6 +270,36 @@ pub trait SolArrayElement: SolEncode {}
 pub const fn const_keccak256(data: &[u8]) -> [u8; 32] {
     keccak_const::Keccak256::new().update(data).finalize()
 }
+
+/// Compile-time `&str` equality (`==` on `&str` is not available in `const`).
+/// Used by `#[contract]`-generated signature assertions.
+pub const fn str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+const _: () = {
+    assert!(str_eq("", ""));
+    assert!(str_eq("uint256", "uint256"));
+    assert!(!str_eq("uint256", "uint128"));
+    assert!(!str_eq("uint", "uint256"));
+};
+
+/// Rejection message shared by every `.sol` parser (the `#[contract]` /
+/// `abi_import!` macros, the builder's ABI generation, and the scaffolder);
+/// kept here because `pvm-contract-types` is their common dependency.
+pub const SOL_IMPORT_UNSUPPORTED: &str =
+    "`.sol` `import` is not supported; inline the imported types into this file.";
 
 /// Computes the 4-byte Solidity function selector at compile time.
 pub const fn const_selector(sig: &str) -> [u8; 4] {
