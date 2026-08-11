@@ -762,6 +762,47 @@ contract VecOfPacked {
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecOfPacked"));
 }
 
+// A multi-slot value element in a StorageVec (element `SLOTS > 1`): each
+// `[U256; 3]` occupies 3 consecutive slots, so element `i` roots at
+// `keccak256(slot) + i*3`. Exercises the `S::SLOTS > 1` element-stride branch
+// of `slot_index_for` — matching solc's `uint256[3][]`.
+#[pvm_contract_sdk::contract]
+mod vec_multislot {
+    use super::*;
+    pub struct VecMultiSlot {
+        pub rows: StorageVec<[U256; 3]>,
+    }
+    impl VecMultiSlot {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.rows
+                .push(&[U256::from(1u64), U256::from(2u64), U256::from(3u64)]);
+            self.rows
+                .push(&[U256::from(4u64), U256::from(5u64), U256::from(6u64)]);
+        }
+    }
+}
+
+#[test]
+fn vec_of_multislot_array_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract VecMultiSlot {
+    uint256[3][] rows;   // slot 0 = length; element i at keccak256(0)+i*3
+    function populate() external {
+        rows.push(); rows[0][0] = 1; rows[0][1] = 2; rows[0][2] = 3;
+        rows.push(); rows[1][0] = 4; rows[1][1] = 5; rows[1][2] = 6;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = vec_multislot::VecMultiSlot::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "VecMultiSlot"));
+}
+
 // A richer `#[storage]` sub-struct: three DIFFERENT sub-word widths
 // (`u8`/`u32`/`u64`) pack into slot 0, then a full-slot `U256` takes slot 1 —
 // so the walker's `SLOTS` is 2, while the naive per-field sum would be 4. The

@@ -1913,6 +1913,14 @@ impl<S: StorageType> StorageVec<S> {
     /// Remove the last element, clearing its storage (recursively for
     /// container elements). Returns `true` if an element was removed.
     ///
+    /// **`Mapping` elements are the exception — they are *not* cleared:** a
+    /// mapping's entries live at underivable keys, so its `clear_at` is a no-op
+    /// and the entries survive, matching solc's `delete` on a `mapping[]`. If
+    /// the freed index is later reused (a subsequent [`grow`](Self::grow) /
+    /// `push`), those stale entries remain observable at the reused slot — a
+    /// re-grown `Mapping` element does *not* start empty. Explicitly `delete`
+    /// the known keys if you need a clean slate.
+    ///
     /// Unlike [`pop`](Self::pop) (leaf-only, returns the value), this works
     /// for any element shape and does not return the removed element — a
     /// container element cannot be materialized by value.
