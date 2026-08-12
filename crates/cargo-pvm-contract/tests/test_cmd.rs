@@ -953,6 +953,69 @@ fn scaffold_rejects_struct_fields_colliding_after_snake_case() {
     );
 }
 
+#[test]
+fn scaffold_rejects_method_name_bound_by_the_template() {
+    // `impl Contract` already defines `new` (the template's constructor) and
+    // the `host` / `with_host` accessors the `#[contract]` macro injects. A
+    // `.sol` function mapping onto one of them builds into an `E0592` reported
+    // against the macro expansion, not the interface that caused it.
+    for (sol_name, project) in [
+        ("New", "reserved-new"),
+        ("host", "reserved-host"),
+        ("withHost", "reserved-with-host"),
+    ] {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let sol = sol_interface(
+            "ReservedIface",
+            &format!("    function {sol_name}() external;"),
+        );
+        let output = scaffold_init_expect_failure(&temp_dir, project, "macro", &sol);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(sol_name) && stderr.contains("already defines"),
+            "expected a reserved-method rejection for `{sol_name}`, got stderr: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn scaffold_rejects_dsl_functions_colliding_after_snake_case() {
+    // Two Solidity functions that collapse to one Rust name emit duplicate
+    // `{name}_handler` fns and duplicate `{NAME}_SELECTOR` consts.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "DslCollideFn",
+        "    function myMethod() external;\n\
+         \x20   function my_method() external;",
+    );
+    let output = scaffold_init_expect_failure(&temp_dir, "dsl-collide-fn", "dsl", &sol);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("myMethod") && stderr.contains("my_method"),
+        "expected a DSL function-collision rejection, got stderr: {stderr}"
+    );
+}
+
+#[test]
+fn scaffold_rejects_dsl_params_colliding_after_snake_case() {
+    // The DSL emits parameters as `let` bindings, so a collision *shadows*
+    // rather than clashing: the project builds clean and the first parameter is
+    // silently unreachable. That silence is why this has to fail at scaffold
+    // time — unlike the macro path's duplicate fn argument, nothing downstream
+    // catches it.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "DslCollideParam",
+        "    function f(uint256 myArg, uint256 my_arg) external;",
+    );
+    let output = scaffold_init_expect_failure(&temp_dir, "dsl-collide-param", "dsl", &sol);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("myArg") && stderr.contains("my_arg"),
+        "expected a DSL parameter-collision rejection, got stderr: {stderr}"
+    );
+}
+
 /// Run `init` from a `.sol` expecting it to fail, returning the raw output so
 /// the caller can assert on the diagnostic.
 fn scaffold_init_expect_failure(

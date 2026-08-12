@@ -578,6 +578,14 @@ fn extract_function_info(
 
         reject_dollar_ident(name, "function")?;
         let name_snake = sanitize_rust_ident(&name.to_case(Case::Snake));
+        if RESERVED_METHOD_NAMES.contains(&name_snake.as_str()) {
+            anyhow::bail!(
+                "the Solidity function `{name}` maps to the Rust method name `{name_snake}`, \
+                 which `impl Contract` already defines (the template's constructor, or an \
+                 accessor the `#[contract]` macro injects). Rename it in the interface, or \
+                 edit the generated file manually."
+            );
+        }
         if let Some(other) = seen_fns.insert(name_snake.clone(), name.clone()) {
             anyhow::bail!(
                 "functions `{other}` and `{name}` both map to the Rust method name \
@@ -803,6 +811,23 @@ const RESERVED_STRUCT_NAMES: [&str; 18] = [
     "Vec",
 ];
 
+/// Method names `impl Contract` already defines, which a scaffolded method
+/// must not reuse. `new` is the template's `#[constructor]`; `host` and
+/// `with_host` are injected by the `#[contract]` macro (the storage accessor
+/// and the host-target test constructor).
+///
+/// The type-namespace analogue is [`RESERVED_STRUCT_NAMES`]. This one fails
+/// loudly rather than silently — two inherent methods of one name is `E0592`,
+/// not a shadow — but the diagnostic points into the macro expansion (`host`
+/// additionally trips `E0034`, because the generated dispatch calls
+/// `this.host()` and the call becomes ambiguous), so the interface that caused
+/// it is not obvious from the build output. Reject at scaffold time instead.
+///
+/// Deliberately *not* listed: `route`, `deploy`, and `call` are free functions
+/// in the generated module, not inherent methods, so a `.sol` function of the
+/// same name does not collide.
+const RESERVED_METHOD_NAMES: [&str; 3] = ["new", "host", "with_host"];
+
 /// Reject a Solidity identifier containing `$`. Legal in Solidity, but there
 /// is no Rust spelling for it, and the generated project's own `.sol` re-parse
 /// (syn-solidity) cannot read it either — so rather than emit code that fails
@@ -949,6 +974,10 @@ fn receiver_from_mutability(sm: &str) -> Result<(String, String)> {
 }
 
 fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunctionInfo>> {
+    // Mirrors the macro path's `seen_fns`. snake_casing is lossy, and the DSL
+    // name is emitted twice — as `{name}_handler` and as the stem of
+    // `{NAME}_SELECTOR` — so a collision defines both items twice (`E0428`).
+    let mut seen_fns: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     metadata
         .output
         .abi
@@ -971,6 +1000,13 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             // not parse. Parameter names below still need sanitizing, because
             // those are emitted bare.
             let name_snake = name.to_case(Case::Snake);
+            if let Some(other) = seen_fns.insert(name_snake.clone(), name.clone()) {
+                anyhow::bail!(
+                    "functions `{other}` and `{name}` both map to the Rust handler name \
+                     `{name_snake}_handler`; rename one in the interface, or edit the \
+                     generated file manually"
+                );
+            }
             let screaming = name_snake.to_case(Case::ScreamingSnake);
             let selector_const = format!("{screaming}_SELECTOR");
 
@@ -985,6 +1021,13 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             // so the loop carries state and must stay imperative — keep this
             // out of `.fold(...)`.
             let mut offset_expr = String::new();
+            // A DSL parameter is emitted as a `let` binding, so two that
+            // collapse to one Rust name *shadow* rather than clash: the project
+            // builds clean and the first parameter is silently unreachable.
+            // That is the same silent-mis-decode hazard `RESERVED_STRUCT_NAMES`
+            // exists to close, so reject it here too.
+            let mut seen_params: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
             let params: Vec<DslParam> = inputs
                 .iter()
                 .enumerate()
@@ -995,6 +1038,14 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
                         reject_dollar_ident(&p.name, "parameter")?;
                         sanitize_rust_ident(&p.name.to_case(Case::Snake))
                     };
+                    if let Some(other) = seen_params.insert(param_name.clone(), p.name.clone()) {
+                        anyhow::bail!(
+                            "parameters `{other}` and `{}` of `{name}` both map to the Rust \
+                             name `{param_name}`; rename one in the interface, or edit the \
+                             generated file manually",
+                            p.name,
+                        );
+                    }
                     let rust_type = solidity_to_rust_type(&p.type_name)?;
                     // Angle-bracket the type so compound shapes like
                     // `[U256; 3]` / `Vec<U256>` parse as qualified paths;
@@ -1552,16 +1603,29 @@ mod tests {
             .split_once("pub mod prelude {")
             .expect("SDK no longer declares `pub mod prelude`")
             .1;
-        let uses = prelude
-            .split_once("pub use crate::{")
-            .expect("prelude no longer re-exports through `pub use crate::{ .. }`")
-            .1
-            .split_once("};")
-            .expect("unterminated `pub use crate::{ .. }` in prelude")
-            .0;
 
-        let exported: Vec<&str> = uses
-            .lines()
+        // Every `pub use crate::{ .. }` block, not just the first: a second one
+        // (a `#[cfg(feature = "alloc")]` re-export is the obvious candidate)
+        // would otherwise go unchecked, silently reopening the shadowing hole
+        // this test exists to close.
+        let blocks: Vec<&str> = prelude
+            .match_indices("pub use crate::{")
+            .map(|(i, pat)| {
+                prelude[i + pat.len()..]
+                    .split_once("};")
+                    .expect("unterminated `pub use crate::{ .. }` in prelude")
+                    .0
+            })
+            .collect();
+        assert!(
+            !blocks.is_empty(),
+            "prelude no longer re-exports through `pub use crate::{{ .. }}`; \
+             the parser needs updating"
+        );
+
+        let exported: Vec<&str> = blocks
+            .iter()
+            .flat_map(|uses| uses.lines())
             .map(|line| line.split("//").next().unwrap_or("").trim())
             .flat_map(|line| line.split(','))
             .map(str::trim)
@@ -1666,6 +1730,94 @@ mod tests {
             err.contains("myMethod") && err.contains("my_method"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn reserved_method_name_rejected() {
+        // `impl Contract` already defines `new` (the template's constructor),
+        // `host`, and `with_host` (injected by `#[contract]`). A `.sol` function
+        // mapping onto one of them emits a second inherent method of the same
+        // name — `E0592`, reported against the macro expansion rather than the
+        // interface that caused it.
+        for sol_name in ["New", "host", "withHost"] {
+            let metadata = ContractMetadata {
+                output: MetadataOutput {
+                    abi: vec![function_item(sol_name, vec![])],
+                },
+            };
+            let err = extract_function_info(&metadata)
+                .err()
+                .unwrap_or_else(|| panic!("`{sol_name}` must be rejected"))
+                .to_string();
+            assert!(err.contains(sol_name), "expected `{sol_name}` in: {err}");
+            assert!(
+                err.contains("already defines"),
+                "expected a reserved-method note in: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_reserved_method_name_accepted() {
+        // Guard against the deny-list being over-broad: a name that merely
+        // resembles a reserved one must still scaffold.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("newOwner", vec![]),
+                    function_item("hostName", vec![]),
+                ],
+            },
+        };
+        let (functions, _) = extract_function_info(&metadata).unwrap();
+        assert_eq!(
+            functions.iter().map(|f| &f.name_snake).collect::<Vec<_>>(),
+            ["new_owner", "host_name"]
+        );
+    }
+
+    #[test]
+    fn dsl_functions_colliding_after_snake_case_rejected() {
+        // The DSL mirror of `functions_colliding_after_snake_case_rejected`:
+        // the name is emitted as both `{name}_handler` and `{NAME}_SELECTOR`,
+        // so a collision defines each twice.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("myMethod", vec![]),
+                    function_item("my_method", vec![]),
+                ],
+            },
+        };
+        let err = extract_dsl_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(
+            err.contains("myMethod") && err.contains("my_method"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn dsl_params_colliding_after_snake_case_rejected() {
+        // Unlike the macro path's duplicate *fn argument* (a hard error), a DSL
+        // parameter is emitted as a `let` binding, so a collision shadows: the
+        // project builds clean with the first parameter unreachable. Silent, so
+        // it must be rejected at scaffold time.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item(
+                    "f",
+                    vec![input("myArg", "uint256"), input("my_arg", "uint256")],
+                )],
+            },
+        };
+        let err = extract_dsl_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("myArg") && err.contains("my_arg"), "{err}");
     }
 
     #[test]

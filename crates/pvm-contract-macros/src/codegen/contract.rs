@@ -934,6 +934,10 @@ fn parse_contract(
     let mut constructor_returns_result = false;
     let mut constructor_inputs = Vec::new();
     let mut constructor_is_payable = false;
+    // Kept so the `.sol` cross-check below can attribute its errors to the
+    // constructor. The interface is only resolved once, after this loop, so the
+    // check cannot run inside the `#[constructor]` arm itself.
+    let mut constructor_fn: Option<syn::ImplItemFn> = None;
     let mut fallback_name = None;
     let mut fallback_returns_result = false;
     let mut fallback_is_payable = false;
@@ -985,6 +989,7 @@ fn parse_contract(
                     ));
                 }
                 constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
+                constructor_fn = Some(func.clone());
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
@@ -1259,6 +1264,70 @@ fn parse_contract(
             }
         }
     {
+        // Hold the constructor to the same two layers as a `#[method]`. The
+        // method lookup cannot reach it: a constructor is an `Item::Function`
+        // with `FunctionKind::Constructor` and `name: None`, so the by-name
+        // `find_map` never matches one. Without this, constructor parameters
+        // get neither `check_signature_compatibility` nor a signature
+        // assertion, while the builder still emits a constructor entry into
+        // `.abi.json` from this same `.sol` — so a drifted Rust constructor
+        // ships an ABI telling deployers to encode something the contract does
+        // not decode. There is no selector involved, so the failure is silent
+        // mis-initialization rather than a dead entry point.
+        //
+        // Only cross-checked when the interface actually declares a
+        // constructor. solc rejects `constructor` inside an `interface`, so
+        // most `.sol` files have none and their Rust constructor is
+        // unconstrained, exactly as before.
+        if let Some(ctor_fn) = &constructor_fn
+            && let Some(sol_ctor) = sol_iface.body.iter().find_map(|f| match f {
+                syn_solidity::Item::Function(item_function)
+                    if matches!(
+                        item_function.kind,
+                        syn_solidity::FunctionKind::Constructor(_)
+                    ) =>
+                {
+                    Some(item_function)
+                }
+                _ => None,
+            })
+        {
+            let param_types: Vec<syn::Type> = constructor_inputs
+                .iter()
+                .map(|(_, ty)| ty.clone())
+                .collect();
+            let sig = sol_ctor
+                .parameters
+                .types()
+                .map(|x| x.clone().try_into())
+                .collect::<Result<Vec<SolType>, String>>()
+                .map_err(|x| {
+                    syn::Error::new_spanned(
+                        ctor_fn,
+                        format!(
+                            "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
+                        ),
+                    )
+                })?;
+            check_signature_compatibility(ctor_fn, "constructor", &sig, &param_types)?;
+            let sol_param_tys: Vec<_> = sol_ctor.parameters.types().collect();
+            for (i, rust_ty) in param_types.iter().enumerate() {
+                let sol_custom = sig.get(i).is_some_and(|s| s.has_custom_types());
+                let rust_custom =
+                    SolType::from_rust_type(rust_ty).is_some_and(|r| r.has_custom_types());
+                if (sol_custom || rust_custom)
+                    && let Some(sol_ty) = sol_param_tys.get(i)
+                {
+                    let canonical = sol_custom_types.canonical_name(sol_ty);
+                    sig_asserts.push(sol_name_assert(
+                        rust_ty,
+                        &canonical,
+                        &format!("`constructor` parameter {i}"),
+                    ));
+                }
+            }
+        }
+
         let missing: Vec<_> = sol_iface
             .body
             .iter()
