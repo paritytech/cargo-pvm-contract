@@ -962,6 +962,7 @@ fn scaffold_rejects_method_name_bound_by_the_template() {
     for (sol_name, project) in [
         ("New", "reserved-new"),
         ("host", "reserved-host"),
+        ("env", "reserved-env"),
         ("withHost", "reserved-with-host"),
     ] {
         let temp_dir = TempDir::new().expect("temp dir");

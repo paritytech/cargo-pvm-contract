@@ -812,9 +812,15 @@ const RESERVED_STRUCT_NAMES: [&str; 18] = [
 ];
 
 /// Method names `impl Contract` already defines, which a scaffolded method
-/// must not reuse. `new` is the template's `#[constructor]`; `host` and
-/// `with_host` are injected by the `#[contract]` macro (the storage accessor
-/// and the host-target test constructor).
+/// must not reuse. `new` is the template's `#[constructor]`; `host`, `env`, and
+/// `with_host` are injected by the `#[contract]` macro (the storage accessor,
+/// the environment accessor, and the host-target test constructor).
+///
+/// Keep this in sync with the `impl #struct_name` blocks in
+/// `pvm-contract-macros/src/codegen/contract.rs` — those are the source of
+/// truth, and unlike [`RESERVED_STRUCT_NAMES`] (which
+/// `reserved_struct_names_cover_sdk_prelude` pins to the SDK prelude) there is
+/// no single declaration site to test against.
 ///
 /// The type-namespace analogue is [`RESERVED_STRUCT_NAMES`]. This one fails
 /// loudly rather than silently — two inherent methods of one name is `E0592`,
@@ -826,7 +832,7 @@ const RESERVED_STRUCT_NAMES: [&str; 18] = [
 /// Deliberately *not* listed: `route`, `deploy`, and `call` are free functions
 /// in the generated module, not inherent methods, so a `.sol` function of the
 /// same name does not collide.
-const RESERVED_METHOD_NAMES: [&str; 3] = ["new", "host", "with_host"];
+const RESERVED_METHOD_NAMES: [&str; 4] = ["new", "host", "env", "with_host"];
 
 /// Reject a Solidity identifier containing `$`. Legal in Solidity, but there
 /// is no Rust spelling for it, and the generated project's own `.sol` re-parse
@@ -1739,7 +1745,7 @@ mod tests {
         // mapping onto one of them emits a second inherent method of the same
         // name — `E0592`, reported against the macro expansion rather than the
         // interface that caused it.
-        for sol_name in ["New", "host", "withHost"] {
+        for sol_name in ["New", "host", "env", "withHost"] {
             let metadata = ContractMetadata {
                 output: MetadataOutput {
                     abi: vec![function_item(sol_name, vec![])],

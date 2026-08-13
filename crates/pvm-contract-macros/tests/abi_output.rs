@@ -100,7 +100,7 @@ fn storage_layout_mixed_produces_valid_abi() {
 /// composed storage flattens correctly under abi-gen: each leaf becomes a
 /// dotted-label entry (`erc20.total_supply`, `metadata.name`, …) via
 /// `StorageLayoutEmit::emit_entries`, with slot ranges chained through
-/// the sub-structs' `StorageComponent::SLOTS`.
+/// the sub-structs' `StorageType::SLOTS`.
 #[test]
 fn storage_layout_composed_produces_valid_abi() {
     expect_test::expect_file!("./test_abi_contract/abi_storage_layout_composed.json")
@@ -128,4 +128,11 @@ fn storage_layout_vec_produces_valid_abi() {
 fn storage_layout_raw_slot_omits_external_slot() {
     expect_test::expect_file!("./test_abi_contract/abi_proxy_raw_slot.json")
         .assert_eq(&cargo_run_abi("proxy-raw-slot"))
+}
+
+/// Contract that has enum params
+#[test]
+fn enum_abi() {
+    expect_test::expect_file!("./test_abi_contract/enum_abi.json")
+        .assert_eq(&cargo_run_abi("enum-abi"))
 }

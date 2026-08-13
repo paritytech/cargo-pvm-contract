@@ -9,10 +9,9 @@ use super::dispatch::{
     generate_router, size_check,
 };
 use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
-use crate::signature::{CustomTypes, SolType, compute_selector};
+use crate::signature::{CustomTypes, SolType};
 use crate::utils::{
-    compute_function_signature, extract_selector_rename, to_camel_case, to_snake_case,
-    validate_sol_identifier,
+    extract_selector_rename, to_camel_case, to_snake_case, validate_sol_identifier,
 };
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1068,8 +1067,7 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
 
-                let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
-                    sol_interface
+                let (sol_name, mutability) = if let Some(sol_iface) = sol_interface
                     && let Some(sol_iface) = {
                         let mut items = sol_iface.items.iter().filter_map(|x| match x {
                             Item::Contract(item_contract) if item_contract.is_interface() => {
@@ -1201,8 +1199,6 @@ fn parse_contract(
                         (None, None) => (),
                     }
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector =
-                        compute_selector(&compute_function_signature(sol_func, &sol_custom_types));
                     let sol_mutability = match sol_func.attributes.mutability() {
                         Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
                         Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
@@ -1217,15 +1213,11 @@ fn parse_contract(
                             inferred_mutability,
                         ));
                     }
-                    (
-                        sol_func.name().to_string(),
-                        Some(selector),
-                        inferred_mutability,
-                    )
+                    (sol_func.name().to_string(), inferred_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    (sol_name, None, inferred_mutability)
+                    (sol_name, inferred_mutability)
                 };
 
                 methods.push(MethodInfo {
@@ -1236,7 +1228,6 @@ fn parse_contract(
                     return_types,
                     returns_result,
                     mutability,
-                    precomputed_selector,
                     is_non_reentrant,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
@@ -1577,7 +1568,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                     Slot::ExplicitRaw(expr) => (
                         quote! { ::pvm_contract_sdk::StorageKey::from_raw(#expr) },
                         quote! {
-                            (32 - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES) as u8
+                            (32 - <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES) as u8
                         },
                         quote! { true },
                     ),
@@ -2319,7 +2310,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     //
     // The harder case — overlap of multi-slot composites, e.g.
     // `#[slot(0)] foo: Lazy<(U256, U256)>; #[slot(1)] bar: Lazy<U256>;` —
-    // requires reading `<Ty as StorageComponent>::SLOTS` at const-eval time
+    // requires reading `<Ty as StorageType>::SLOTS` at const-eval time
     // and is handled by [`explicit_slot_overlap_checks`] emitting
     // `const _: () = ...;` items alongside the other slot-chain consts.
     //
@@ -2406,7 +2397,7 @@ pub(super) fn explicit_slot_full_slot_only_checks(slot_fields: &[SlotField]) -> 
                 #[allow(non_upper_case_globals)]
                 const #check_ident: () = {
                     ::core::assert!(
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES == 32,
+                        <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES == 32,
                         #msg,
                     );
                 };
@@ -2451,9 +2442,9 @@ pub(super) fn explicit_slot_overlap_checks(slot_fields: &[SlotField]) -> Vec<Tok
                 #[allow(non_upper_case_globals)]
                 const #check_ident: () = {
                     let a_end: u64 =
-                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageType>::SLOTS;
                     let b_end: u64 =
-                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageType>::SLOTS;
                     ::core::assert!(
                         !((#a_slot) < b_end && (#b_slot) < a_end),
                         #msg,
@@ -3670,7 +3661,7 @@ mod tests {
         );
         // Sub-word types are placed right-aligned at 32 - PACKED_BYTES.
         assert!(
-            output.contains("(32 - < Lazy < Address > as :: pvm_contract_sdk :: StorageComponent > :: PACKED_BYTES) as u8"),
+            output.contains("(32 - < Lazy < Address > as :: pvm_contract_sdk :: StorageType > :: PACKED_BYTES) as u8"),
             "raw sub-word field should be right-aligned at 32 - PACKED_BYTES.\n\
              Expanded output:\n{output}"
         );

@@ -12,8 +12,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use alloy_core::primitives::Address as AlloyAddress;
+use alloy_core::sol;
 use alloy_core::sol_types::SolValue;
 use proptest::prelude::*;
+use proptest_derive::Arbitrary;
 use pvm_contract_sdk::SolType;
 use pvm_contract_sdk::{Address, Bytes, SolDecode, SolEncode, U256};
 
@@ -905,4 +907,47 @@ fn return_encoding_roundtrip_advanced() {
         <((u64, u64), alloc::string::String)>::decode(&buf).unwrap(),
         nested
     );
+}
+
+// ========================================================================
+// Static custom enum — proptest roundtrip
+// ========================================================================
+
+#[test]
+fn encode_decode_enum_type_static_proptest() {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, SolType, Arbitrary)]
+    #[repr(u8)]
+    enum R {
+        First,
+        Second,
+        Third,
+    }
+
+    sol!(
+        #[derive(Debug)]
+        enum B {
+            First,
+            Second,
+            Third,
+        }
+    );
+
+    impl From<R> for B {
+        fn from(value: R) -> Self {
+            match value {
+                R::First => B::First,
+                R::Second => B::Second,
+                R::Third => B::Third,
+            }
+        }
+    }
+
+    proptest!(|(a: R)| {
+        let val = a;
+        let alloy = B::from(val).abi_encode();
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(&buf, &alloy);
+        prop_assert_eq!(R::decode(&buf).unwrap(), val);
+    });
 }

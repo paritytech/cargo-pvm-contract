@@ -158,7 +158,7 @@ pub(super) fn generate_layout_emit(
     // bytes (distance from the most-significant byte). solc's `storageLayout`
     // counts `offset` from the least-significant byte, so convert here —
     // `solc_offset = 32 - high - size`, where `size` is the field's packed
-    // width (`StorageComponent::PACKED_BYTES`). Right-alignment holds for every
+    // width (`StorageType::PACKED_BYTES`). Right-alignment holds for every
     // value type in solc storage (integers, bool, address, `bytesN`), and
     // full-slot leaves (`PACKED_BYTES == 32`, `high == 0`) map to `0`
     // unchanged, so this one formula covers every leaf. The leaf `emit_entries`
@@ -168,7 +168,7 @@ pub(super) fn generate_layout_emit(
         {
             let __high: u8 = #offset_expr;
             32u8 - __high
-                - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES as u8
+                - <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES as u8
         }
     };
     quote! {

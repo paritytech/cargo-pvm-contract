@@ -1,7 +1,7 @@
 // A `#[derive(SolStorage)]` value struct cannot have a field that is itself a
 // struct (a packed value field). The derive rejects it with a compile error
 // that points the user at the working, solc-identical approach: make both
-// structs `#[storage]` and access via `.view()` / `.view_mut()`.
+// structs `#[storage]` and access via `get` / `entry`.
 //
 // This pins the tailored hint for the nested-struct (`SolType::Custom`) case,
 // distinct from the generic "drop SolStorage for ABI" hint used for other
