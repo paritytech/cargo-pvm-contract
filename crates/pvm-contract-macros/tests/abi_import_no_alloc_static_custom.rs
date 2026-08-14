@@ -5,6 +5,8 @@
 //!
 //! Selectors: `keccak("pick(uint8)")[..4]` = `0x92feb99a`,
 //! `keccak("add((uint64,uint64))")[..4]` = `0xd5e60374`.
+#![allow(clippy::too_many_arguments)]
+
 extern crate alloc;
 pub use pvm_contract_sdk::*;
 
