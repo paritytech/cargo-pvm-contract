@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(env -u CARGO -u RUSTUP_TOOLCHAIN cargo test -p pvm-contract-macros --test zz_tmp_enum_dispatch --message-format short)",
+      "Bash(rm -f crates/pvm-contract-macros/tests/zz_tmp_enum_dispatch.rs && git status --short && echo CLEAN)",
+      "Bash(cargo +nightly fmt -p pvm-contract-macros)"
+    ],
+    "additionalDirectories": [
+      "/Volumes/Samsung/work/cargo-pvm-contract.pkhry-fix-resolution/crates/pvm-contract-macros/tests"
+    ]
+  }
+}

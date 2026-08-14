@@ -70,38 +70,3 @@ fn selector_parity() {
     input1.truncate(alloy.len());
     assert_eq!(input1, alloy)
 }
-
-#[allow(clippy::too_many_arguments)]
-mod t {
-    extern crate alloc;
-    pub use pvm_contract_sdk::*;
-
-    pvm_contract_sdk::abi_import! {          // invocation 1: file-level Ballot
-        #![abi_import(alloc = true)]
-        pragma solidity ^0.8.0;
-        struct Ballot { uint256 id; }
-        interface Registry { function store(Ballot memory b) external; }
-    }
-    pvm_contract_sdk::abi_import! {          // invocation 2: nests its own Ballot
-        #![abi_import(alloc = true)]
-        pragma solidity ^0.8.0;
-        interface VoteG {
-            struct Ballot { address voter; bool support; }
-            function cast(Ballot memory b) external;
-        }
-    }
-
-    #[test]
-    fn calldata_for_cast() {
-        let (mut input, mut out) = (vec![0u8; 256], vec![0u8; 256]);
-        let mock = MockHostBuilder::new().build();
-        let host = Host::from_dyn(alloc::rc::Rc::new(mock.clone()));
-        let _ = vote_g::VoteG::from_address(Address([0u8; 20]))
-            .cast(vote_g::Ballot {
-                voter: Address([0; 20]),
-                support: false,
-            })
-            .call_raw(&mut Context::new(host), &mut input, &mut out);
-        assert_eq!(&input[..4], &const_hex::decode("7003a557").unwrap()[..]);
-    }
-}

@@ -1,0 +1,5 @@
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_udt_bad_underlying.rs:6:19
+  |
+6 |     type MyStr is string;
+  |                   ^^^^^^

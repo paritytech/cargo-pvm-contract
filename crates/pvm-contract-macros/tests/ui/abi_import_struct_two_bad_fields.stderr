@@ -1,0 +1,11 @@
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_struct_two_bad_fields.rs:5:9
+  |
+5 |         string a;
+  |         ^^^^^^
+
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_struct_two_bad_fields.rs:6:9
+  |
+6 |         bytes b;
+  |         ^^^^^
