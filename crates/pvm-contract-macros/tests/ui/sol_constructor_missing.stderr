@@ -1,0 +1,10 @@
+error: the `.sol` interface declares a constructor with parameters, but this contract has no `#[constructor]`; the generated ABI would tell deployers to encode arguments that `deploy()` never decodes
+  --> tests/ui/sol_constructor_missing.rs:6:1
+   |
+ 6 | / mod c {
+ 7 | |     pub struct C;
+ 8 | |
+ 9 | |     impl C {
+...  |
+13 | | }
+   | |_^

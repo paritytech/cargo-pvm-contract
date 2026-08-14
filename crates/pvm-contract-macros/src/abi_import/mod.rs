@@ -255,21 +255,22 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
 
 fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
     let fields = x.fields.iter().enumerate().map(|(idx, x)| {
-        let name = format_ident!(
-            "{}",
-            to_snake_case(
-                &x.name
-                    .clone()
-                    .map(|x| x.as_string())
-                    .unwrap_or(format!("param_{}", idx))
-            )
-        );
+        // `keyword_safe_ident`, not `format_ident!`: `as_string()` strips the
+        // `r#` syn-solidity puts on a keyword name, so a field named `ref` would
+        // be emitted bare as `pub ref: U256` and fail to parse. The function and
+        // parameter paths above already do this.
+        let name = keyword_safe_ident(&to_snake_case(
+            &x.name
+                .clone()
+                .map(|x| x.as_string())
+                .unwrap_or(format!("param_{}", idx)),
+        ));
         let typ = to_rust_type(&x.ty, alloc, ctxt);
         quote! {
             pub #name: #typ
         }
     });
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     quote! {
         #[derive(SolType, PartialEq, Eq,  Debug)]
         pub struct #name {
@@ -280,21 +281,22 @@ fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> 
 
 fn expand_error(x: &syn_solidity::ItemError, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
     let fields = x.parameters.iter().enumerate().map(|(idx, x)| {
-        let name = format_ident!(
-            "{}",
-            to_snake_case(
-                &x.name
-                    .clone()
-                    .map(|x| x.as_string())
-                    .unwrap_or(format!("param_{}", idx))
-            )
-        );
+        // `keyword_safe_ident`, not `format_ident!`: `as_string()` strips the
+        // `r#` syn-solidity puts on a keyword name, so a field named `ref` would
+        // be emitted bare as `pub ref: U256` and fail to parse. The function and
+        // parameter paths above already do this.
+        let name = keyword_safe_ident(&to_snake_case(
+            &x.name
+                .clone()
+                .map(|x| x.as_string())
+                .unwrap_or(format!("param_{}", idx)),
+        ));
         let typ = to_rust_type(&x.ty, alloc, ctxt);
         quote! {
             pub #name: #typ
         }
     });
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     quote! {
         #[derive(SolError, PartialEq, Eq, Debug)]
         pub struct #name {
@@ -304,7 +306,7 @@ fn expand_error(x: &syn_solidity::ItemError, ctxt: &mut Ctxt, alloc: bool) -> To
 }
 
 fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     let typ = to_rust_type(&x.ty, alloc, ctxt);
     let sol_typ = x.ty.abi_name();
     quote! {
@@ -355,7 +357,7 @@ fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenS
     }
 }
 fn expand_enum(x: &syn_solidity::ItemEnum) -> TokenStream {
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     let variants = x
         .variants
         .iter()

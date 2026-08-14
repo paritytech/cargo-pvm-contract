@@ -1213,7 +1213,15 @@ fn parse_contract(
                             inferred_mutability,
                         ));
                     }
-                    (sol_func.name().to_string(), inferred_mutability)
+                    // `as_string()`, not `Display`: this name is hashed into the
+                    // selector (via `MethodInfo::sol_name` ->
+                    // `build_method_signature_expr`) and emitted into the
+                    // abi-gen JSON. syn-solidity stores a Rust-keyword name as a
+                    // raw identifier and `Display` keeps the `r#`, which would
+                    // hash `r#move(uint256)` — silently uncallable, and
+                    // disagreeing with the `.abi.json` the builder derives from
+                    // this same `.sol`.
+                    (sol_func.name().as_string(), inferred_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
@@ -1270,18 +1278,39 @@ fn parse_contract(
         // constructor. solc rejects `constructor` inside an `interface`, so
         // most `.sol` files have none and their Rust constructor is
         // unconstrained, exactly as before.
+        let sol_ctor = sol_iface.body.iter().find_map(|f| match f {
+            syn_solidity::Item::Function(item_function)
+                if matches!(
+                    item_function.kind,
+                    syn_solidity::FunctionKind::Constructor(_)
+                ) =>
+            {
+                Some(item_function)
+            }
+            _ => None,
+        });
+
+        // The mirror of the method-side "Missing implementations" check. A
+        // parameterised `.sol` constructor with no `#[constructor]` to decode it
+        // still reaches the shipped `.abi.json` — the builder emits that entry
+        // from this same `.sol` — so deployers ABI-encode arguments the default
+        // `deploy()` never reads and storage silently stays zero. A
+        // zero-parameter `.sol` constructor is consistent with the default
+        // `deploy()`, so it needs no implementation.
+        if constructor_fn.is_none()
+            && let Some(sol_ctor) = sol_ctor
+            && !sol_ctor.parameters.is_empty()
+        {
+            return Err(syn::Error::new_spanned(
+                input,
+                "the `.sol` interface declares a constructor with parameters, but this \
+                 contract has no `#[constructor]`; the generated ABI would tell deployers \
+                 to encode arguments that `deploy()` never decodes",
+            ));
+        }
+
         if let Some(ctor_fn) = &constructor_fn
-            && let Some(sol_ctor) = sol_iface.body.iter().find_map(|f| match f {
-                syn_solidity::Item::Function(item_function)
-                    if matches!(
-                        item_function.kind,
-                        syn_solidity::FunctionKind::Constructor(_)
-                    ) =>
-                {
-                    Some(item_function)
-                }
-                _ => None,
-            })
+            && let Some(sol_ctor) = sol_ctor
         {
             let param_types: Vec<syn::Type> = constructor_inputs
                 .iter()
@@ -3047,6 +3076,48 @@ mod tests {
             .expect_err("allocator_size should require an allocator");
 
         assert!(error.to_string().contains("`allocator_size` requires"));
+    }
+
+    /// A `.sol` function named after a Rust keyword must hash its selector over
+    /// the plain Solidity name. syn-solidity stores such a name as a raw
+    /// identifier and `SolIdent`'s `Display` keeps the `r#`, so taking the name
+    /// via `to_string()` would hash `r#move(uint256)` — a selector no solc,
+    /// cast, or viem caller would ever send, making the method silently
+    /// uncallable while the project builds green. The `.abi.json` the builder
+    /// emits from the same `.sol` says `move`, so the two shipped artifacts
+    /// would disagree.
+    #[test]
+    fn sol_keyword_method_hashes_unraw_signature() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn r#move(&mut self, r#ref: U256) -> U256 { r#ref }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let args = ContractArgs {
+            sol_path: Some("tests/ui/fixtures/KwSelector.sol".to_string()),
+            ..ContractArgs::default()
+        };
+        let output = expand_contract(args, item).unwrap().to_string();
+
+        assert!(
+            output.contains("\"move(\""),
+            "selector signature not canonical:\n{output}"
+        );
+        assert!(
+            !output.contains("\"r#move(\""),
+            "raw prefix leaked into the hashed signature:\n{output}"
+        );
     }
 
     #[test]

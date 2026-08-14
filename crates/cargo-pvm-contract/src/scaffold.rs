@@ -67,6 +67,19 @@ struct MacroFunctionInfo {
     /// `#[pvm_contract_sdk::payable]` attribute line if the function is
     /// payable; empty otherwise. Emitted on a line above `#[method]`.
     payable_attr: String,
+    /// `#[pvm_contract_sdk::selector(name = "...")]` line, emitted whenever the
+    /// Solidity name is not literally the generated Rust name.
+    ///
+    /// Without it the macro has to *recover* the Solidity name from the Rust
+    /// one by camelCasing, and that round-trip is not total: the scaffolder
+    /// snake_cases with `convert_case`, which groups acronyms (`tokenURI` ->
+    /// `token_uri`), while the macro's `to_camel_case` cannot restore the
+    /// original capitalisation (`token_uri` -> `tokenUri`). The scaffolded
+    /// project then fails its own build with "No matching Solidity function
+    /// found" — for `tokenURI`, i.e. any ERC-721 interface. Naming the function
+    /// explicitly removes the dependency on the round-trip entirely and routes
+    /// the macro through its exact-match rename path.
+    selector_attr: String,
 }
 
 struct DslFunctionInfo {
@@ -577,7 +590,9 @@ fn extract_function_info(
         };
 
         reject_dollar_ident(name, "function")?;
-        let name_snake = sanitize_rust_ident(&name.to_case(Case::Snake));
+        let snake = name.to_case(Case::Snake);
+        reject_non_ident(&snake, name, "function")?;
+        let name_snake = sanitize_rust_ident(&snake);
         if RESERVED_METHOD_NAMES.contains(&name_snake.as_str()) {
             anyhow::bail!(
                 "the Solidity function `{name}` maps to the Rust method name `{name_snake}`, \
@@ -604,7 +619,9 @@ fn extract_function_info(
                 // (`ref`, `gen`, `move`), which would otherwise emit a
                 // signature that doesn't parse.
                 reject_dollar_ident(&p.name, "parameter")?;
-                sanitize_rust_ident(&p.name.to_case(Case::Snake))
+                let snake = p.name.to_case(Case::Snake);
+                reject_non_ident(&snake, &p.name, "parameter")?;
+                sanitize_rust_ident(&snake)
             };
             if let Some(other) = seen_params.insert(param_name.clone(), p.name.clone()) {
                 anyhow::bail!(
@@ -659,12 +676,22 @@ fn extract_function_info(
             )
         };
         let (receiver, payable_attr) = receiver_from_mutability(state_mutability)?;
+        // Only when the names actually differ — a `.sol` `flip` scaffolds as
+        // `flip` and needs no annotation. Over-emitting would be harmless (the
+        // macro's rename path is an exact match on the same string), so err
+        // toward emitting.
+        let selector_attr = if *name == name_snake {
+            String::new()
+        } else {
+            format!("#[pvm_contract_sdk::selector(name = \"{name}\")]\n         ")
+        };
         functions.push(MacroFunctionInfo {
             name_snake,
             params,
             return_type,
             receiver,
             payable_attr,
+            selector_attr,
         });
     }
 
@@ -787,9 +814,15 @@ fn is_valid_ident(s: &str) -> bool {
 /// are only imported when one is enabled: the same interface should scaffold
 /// the same way either way, and a name accepted in no-alloc mode would break
 /// the moment the project adds `allocator = "bump"`.
-const RESERVED_STRUCT_NAMES: [&str; 18] = [
+const RESERVED_STRUCT_NAMES: [&str; 19] = [
     // Declared by the template.
     "Contract",
+    // From the Rust prelude, not the SDK's: the template's constructor returns
+    // `Result<(), EmptyError>`, so a generated `pub struct Result` shadows
+    // `core::result::Result` in the same module and the constructor fails with
+    // `E0107` (0 generic arguments expected, 2 supplied). `Ok`/`Err` need no
+    // entry — a braced struct does not shadow the value namespace.
+    "Result",
     // `pvm_contract_sdk::prelude::*`.
     "Address",
     "DecodeError",
@@ -843,6 +876,31 @@ fn reject_dollar_ident(name: &str, what: &str) -> Result<()> {
         anyhow::bail!(
             "{what} `{name}`: Solidity identifiers containing `$` are not supported; \
              rename it in the interface"
+        );
+    }
+    Ok(())
+}
+
+/// Reject a Solidity name whose snake_cased form is not a valid Rust
+/// identifier.
+///
+/// `to_case(Case::Snake)` drops leading underscores, so a perfectly legal
+/// Solidity name can come out of it unusable: `_` and `__` both become the
+/// empty string, and `_9` becomes `9`. solc accepts all three and emits them in
+/// the ABI. The templates interpolate the result directly, so without this the
+/// scaffolder emits `pub fn (`, `pub fn 9(`, `pub 9: u64,` or `fn 9_handler` —
+/// a syntax error the user only discovers when they build.
+///
+/// `emitted` is the identifier that actually reaches the template, which is not
+/// always the snake form itself: the DSL wraps a function name as
+/// `{name}_handler`, so an empty name is fine there but a digit-leading one is
+/// not. Check the spelling that gets written, not the intermediate.
+fn reject_non_ident(emitted: &str, sol_name: &str, what: &str) -> Result<()> {
+    if !is_valid_ident(emitted) {
+        anyhow::bail!(
+            "{what} `{sol_name}` maps to `{emitted}`, which is not a valid Rust \
+             identifier (snake_casing drops leading underscores); rename it in the \
+             interface, or edit the generated file manually"
         );
     }
     Ok(())
@@ -918,7 +976,9 @@ fn register_struct(
             format!("field{i}")
         } else {
             reject_dollar_ident(&c.name, "struct field")?;
-            sanitize_rust_ident(&c.name.to_case(Case::Snake))
+            let snake = c.name.to_case(Case::Snake);
+            reject_non_ident(&snake, &c.name, "struct field")?;
+            sanitize_rust_ident(&snake)
         };
         let rust_type = abi_param_rust_type(
             &c.type_name,
@@ -1006,6 +1066,11 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             // not parse. Parameter names below still need sanitizing, because
             // those are emitted bare.
             let name_snake = name.to_case(Case::Snake);
+            // The DSL never emits the bare name — it emits `{name}_handler` and
+            // `{NAME}_SELECTOR` — so an empty snake form is harmless here
+            // (`_handler`) while a digit-leading one is not (`9_handler`).
+            // Check the spelling that is actually written.
+            reject_non_ident(&format!("{name_snake}_handler"), name, "function")?;
             if let Some(other) = seen_fns.insert(name_snake.clone(), name.clone()) {
                 anyhow::bail!(
                     "functions `{other}` and `{name}` both map to the Rust handler name \
@@ -1042,7 +1107,9 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
                         format!("arg{i}")
                     } else {
                         reject_dollar_ident(&p.name, "parameter")?;
-                        sanitize_rust_ident(&p.name.to_case(Case::Snake))
+                        let snake = p.name.to_case(Case::Snake);
+                        reject_non_ident(&snake, &p.name, "parameter")?;
+                        sanitize_rust_ident(&snake)
                     };
                     if let Some(other) = seen_params.insert(param_name.clone(), p.name.clone()) {
                         anyhow::bail!(
@@ -1573,7 +1640,7 @@ mod tests {
         // local item silently shadows a glob import — so a generated `Address`
         // would make every `address` parameter decode as this struct while the
         // project still compiles. Reject at scaffold time.
-        for reserved in ["Address", "U256", "Contract", "Vec"] {
+        for reserved in ["Address", "U256", "Contract", "Vec", "Result"] {
             let comps = vec![input("x", "uint64")];
             let mut reg = StructRegistry::default();
             let err = abi_param_rust_type(
@@ -1780,6 +1847,106 @@ mod tests {
             functions.iter().map(|f| &f.name_snake).collect::<Vec<_>>(),
             ["new_owner", "host_name"]
         );
+    }
+
+    #[test]
+    fn names_that_snake_case_to_a_non_identifier_rejected() {
+        // `to_case(Snake)` drops leading underscores, so these legal Solidity
+        // names come out unusable: `_` -> "" and `_9` -> "9". solc accepts both
+        // and emits them in the ABI, and the templates interpolate the result
+        // straight into `pub fn {}(`.
+        for sol_name in ["_", "__", "_9"] {
+            let metadata = ContractMetadata {
+                output: MetadataOutput {
+                    abi: vec![function_item(sol_name, vec![])],
+                },
+            };
+            let err = extract_function_info(&metadata)
+                .err()
+                .unwrap_or_else(|| panic!("function `{sol_name}` must be rejected"))
+                .to_string();
+            assert!(
+                err.contains("not a valid Rust identifier"),
+                "expected an identifier rejection for `{sol_name}`, got: {err}"
+            );
+        }
+
+        // Same for a parameter and for a struct field.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("f", vec![input("_9", "uint256")])],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("parameter `_9` must be rejected")
+            .to_string();
+        assert!(err.contains("not a valid Rust identifier"), "{err}");
+
+        let comps = vec![input("_9", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", Some("struct IFoo.S"), Some(&comps), &mut reg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a valid Rust identifier"), "{err}");
+    }
+
+    #[test]
+    fn dsl_names_that_snake_case_to_a_non_identifier_rejected() {
+        // The DSL emits `{name}_handler` and `{NAME}_SELECTOR`, so `_` is fine
+        // here (`_handler` is a valid identifier) but `_9` is not (`9_handler`).
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("_9", vec![])],
+            },
+        };
+        let err = extract_dsl_function_info(&metadata)
+            .err()
+            .expect("function `_9` must be rejected")
+            .to_string();
+        assert!(err.contains("not a valid Rust identifier"), "{err}");
+
+        // `_` stays accepted: it emits `_handler` / `_SELECTOR`, both valid, and
+        // the selector still hashes the plain Solidity name.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("_", vec![])],
+            },
+        };
+        let functions = extract_dsl_function_info(&metadata).expect("`_` scaffolds under the DSL");
+        assert_eq!(functions[0].solidity_signature, "_()");
+    }
+
+    #[test]
+    fn acronym_names_get_an_explicit_selector_attribute() {
+        // `convert_case` groups acronyms (`tokenURI` -> `token_uri`) and the
+        // macro's `to_camel_case` cannot restore the capitalisation
+        // (`token_uri` -> `tokenUri`), so recovering the Solidity name by
+        // round-trip fails and the scaffolded project could not find its own
+        // interface function. Naming it explicitly removes the round-trip.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("tokenURI", vec![]),
+                    function_item("balanceOf", vec![]),
+                    function_item("flip", vec![]),
+                ],
+            },
+        };
+        let (functions, _) = extract_function_info(&metadata).unwrap();
+
+        assert!(
+            functions[0].selector_attr.contains(r#"name = "tokenURI""#),
+            "{}",
+            functions[0].selector_attr
+        );
+        assert!(
+            functions[1].selector_attr.contains(r#"name = "balanceOf""#),
+            "{}",
+            functions[1].selector_attr
+        );
+        // An already-snake_case name round-trips, so it needs no annotation.
+        assert_eq!(functions[2].selector_attr, "");
     }
 
     #[test]

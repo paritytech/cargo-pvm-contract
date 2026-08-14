@@ -1017,6 +1017,43 @@ fn scaffold_rejects_dsl_params_colliding_after_snake_case() {
     );
 }
 
+#[test]
+fn scaffold_from_sol_macro_acronym_names() {
+    // `convert_case` groups acronyms (`tokenURI` -> `token_uri`) and the macro's
+    // `to_camel_case` cannot restore the capitalisation, so recovering the
+    // Solidity name by round-trip fails: before the scaffolder emitted an
+    // explicit `#[selector(name = ...)]`, this project failed its own build with
+    // "No matching Solidity function found for `token_uri`". `tokenURI` is
+    // ERC-721, so this is a mainstream interface shape, not a corner case.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "AcroIface",
+        "    function tokenURI(uint256 tokenId) external view returns (uint64);\n\
+         \x20   function getURL() external view returns (uint64);\n\
+         \x20   function flip() external;",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "acro-names", "macro", Some("bump"), &sol);
+}
+
+#[test]
+fn scaffold_rejects_struct_shadowing_rust_prelude() {
+    // `Result` comes from the Rust prelude, not the SDK's, but the template's
+    // constructor returns `Result<(), EmptyError>` — so a generated
+    // `pub struct Result` shadows it and the constructor fails with E0107.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "ResultIface",
+        "    struct Result { uint64 a; }\n\
+         \x20   function f(Result calldata r) external pure returns (uint64);",
+    );
+    let output = scaffold_init_expect_failure(&temp_dir, "result-iface", "macro", &sol);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Result") && stderr.contains("shadow"),
+        "expected a shadowing rejection, got stderr: {stderr}"
+    );
+}
+
 /// Run `init` from a `.sol` expecting it to fail, returning the raw output so
 /// the caller can assert on the diagnostic.
 fn scaffold_init_expect_failure(

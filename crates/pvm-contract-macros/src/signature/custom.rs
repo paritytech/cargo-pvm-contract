@@ -54,6 +54,24 @@ impl CustomTypes {
                         }
                     }
                 }
+                // Errors and events generate code on the `abi_import!` path
+                // (`expand_error` / `expand_event`), which never goes through the
+                // builder — so the builder's own walker cannot cover them here.
+                // An unchecked `uint256[N]` would resolve to the *dynamic*
+                // `uint256[]`, making the derived error selector
+                // `Slots(uint256[])` where the reverting contract sends
+                // `Slots(uint256[3])`, and the decode silently fails.
+                Item::Error(e) => {
+                    for ty in e.parameters.types() {
+                        self.check_declared(ty)?;
+                    }
+                }
+                Item::Event(e) => {
+                    for param in e.parameters.iter() {
+                        self.check_declared(&param.ty)?;
+                    }
+                }
+                Item::Udt(u) => self.check_declared(&u.ty)?,
                 Item::Contract(c) => self.check_resolvable(&c.body)?,
                 _ => (),
             }
@@ -311,6 +329,25 @@ mod tests {
             .err()
             .expect("non-literal array size must be rejected");
         assert!(err.contains("number literal"), "{err}");
+    }
+
+    #[test]
+    fn non_literal_array_size_rejected_in_error_and_event_params() {
+        // `abi_import!` generates code from `error` and `event` items without
+        // ever going through the builder, so the builder's own walker cannot
+        // cover them. An unchecked `uint256[N]` resolves to the dynamic
+        // `uint256[]`, making the derived error selector `Slots(uint256[])`
+        // where the reverting contract sends `Slots(uint256[3])`.
+        for src in [
+            "interface I { error Slots(uint256[N] xs); }",
+            "interface I { event Ev(uint256[N] xs); }",
+        ] {
+            let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+            let err = CustomTypes::from_file(&file)
+                .err()
+                .unwrap_or_else(|| panic!("must be rejected: {src}"));
+            assert!(err.contains("number literal"), "{err}");
+        }
     }
 
     #[test]
