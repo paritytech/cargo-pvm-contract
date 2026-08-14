@@ -35,7 +35,7 @@ pub enum Resolution {
     /// Qualified `Interface.Type`. `from_interface` distinguishes a reference
     /// from inside a sibling interface module (`super::#ns::Name`) from one in
     /// a file-level item spliced directly at the invocation site
-    /// (`self::#ns::Name`).
+    /// (`#ns::Name`).
     Qualified { ns: SolIdent, from_interface: bool },
 }
 

@@ -243,14 +243,16 @@ fn to_rust_type(
                 Resolution::TopLevel => quote! { super::#name },
                 // Interface modules are siblings at the invocation site: from
                 // inside one, another is reached via `super::`; from a
-                // file-level item (spliced directly at the invocation site)
-                // it is `self::`.
+                // file-level item (spliced directly at the invocation site) a
+                // bare path suffices — the sibling module shadows any glob
+                // import by language rule, and unlike `self::` it also
+                // resolves for function-local items.
                 Resolution::Qualified { ns, from_interface } => {
                     let ns = format_ident!("{}", to_snake_case(&ns.to_string()));
                     if from_interface {
                         quote! { super::#ns::#name }
                     } else {
-                        quote! { self::#ns::#name }
+                        quote! { #ns::#name }
                     }
                 }
             }
