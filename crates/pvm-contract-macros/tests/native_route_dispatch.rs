@@ -216,7 +216,9 @@ fn payable_fallback_not_pre_reverted_by_hoisted_guard() {
     // `Outcome::Unhandled` (letting `call()` reach the payable fallback), NOT
     // revert in its prelude. With the pre-fix hoisted `__pvm_assert_non_payable`
     // this diverged instead, and the assert below would never be reached.
-    let mock = MockHostBuilder::new().value_transferred([0x11; 32]).build();
+    let mock = MockHostBuilder::new()
+        .value_transferred(U256::from(1u8))
+        .build();
     let mut contract = payable_fallback_c::C::with_host(mock.clone());
 
     let mut buf = [0u8; payable_fallback_c::MAX_RETURN_LEN];

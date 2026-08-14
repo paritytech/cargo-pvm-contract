@@ -63,7 +63,7 @@ pub fn generate_abi_gen(
 /// Auto-numbered slots reference a chain of `__pvm_storage_slot_*` const items
 /// declared inside the helper fn (mirroring the chain produced for the
 /// `this` construction in `deploy()`/`call()`). This way the slot value is
-/// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
+/// const-evaluated at compile time even when `<Ty as StorageType>::SLOTS`
 /// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
 /// fields run through [`generate_layout_emit`] with an empty prefix —
 /// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
@@ -543,7 +543,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::View,
-            precomputed_selector: None,
             is_non_reentrant: false,
             trait_path: None,
         };
@@ -566,7 +565,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::Pure,
-            precomputed_selector: None,
             is_non_reentrant: false,
             trait_path: None,
         };

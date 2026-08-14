@@ -4,9 +4,9 @@
 //! layout computation goes through one algorithm: the tuple `StorageEncode`
 //! impls in this crate, the `#[derive(SolStorage)]` field walker, and the
 //! `#[contract]` / `#[storage]` macro chains all consume the same
-//! [`layout_step`]. Previously `layout_step` lived in `pvm-storage`, which
-//! forced the lower-crate tuple impls to hand-roll a shadow copy of the packing
-//! rule that could silently drift.
+//! [`layout_step`]. Keeping it in this (lower) crate lets the tuple
+//! `StorageEncode` impls here share it rather than hand-rolling a shadow copy
+//! of the packing rule that could silently drift.
 //!
 //! `pvm-storage` re-exports these so existing `pvm_storage::layout_step` /
 //! `pvm_storage::MAX_STATIC_SLOTS` paths keep resolving.

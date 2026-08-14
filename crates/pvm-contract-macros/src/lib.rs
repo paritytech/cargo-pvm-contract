@@ -123,7 +123,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 /// - `pub const MAX_RETURN_LEN: usize` — the size of the caller-owned output
 ///   buffer (`max` return size; floored at 256 in no-alloc mode for the error
 ///   path).
-/// - `pub fn route<B: OutSink>(this: &mut Contract, selector: [u8; 4],
+/// - `pub fn route<B: OutSink>(this: &mut MyToken, selector: [u8; 4],
 ///   input: &[u8], out: &mut B) -> Outcome` — selector dispatch. A matched arm
 ///   that succeeds encodes its result into `out` and returns
 ///   `Outcome::Return(len)`; an unmatched selector returns `Outcome::Unhandled`.
@@ -141,7 +141,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 /// Outside the module, a `Router` trait impl is generated:
 ///
 /// ```ignore
-/// impl ::pvm_contract_sdk::Router for my_token::Contract {
+/// impl ::pvm_contract_sdk::Router for my_token::MyToken {
 ///     fn route<B: ::pvm_contract_sdk::OutSink>(
 ///         &mut self,
 ///         selector: [u8; 4],
@@ -152,6 +152,51 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///     }
 /// }
 /// ```
+///
+/// ## Host and environment accessors
+///
+/// The macro injects a `pub host: Host` field on the contract struct (the field
+/// name `host` is reserved) plus two accessors:
+///
+/// ```ignore
+/// #[cfg(not(feature = "abi-gen"))]
+/// impl MyToken {
+///     #[inline(always)]
+///     pub fn host(&self) -> &::pvm_contract_sdk::Host { &self.host }
+///     #[inline(always)]
+///     pub fn env(&self) -> ::pvm_contract_sdk::Env { self.host.env() }
+/// }
+/// ```
+///
+/// `env()` is the read-only view of transaction and block context — the typed
+/// equivalent of Solidity's `msg.*` / `block.*` globals and of the `<address>`
+/// members that read chain state:
+///
+/// | Accessor | Solidity | Returns |
+/// |---|---|---|
+/// | `self.env().caller()` | `msg.sender` | `Address` |
+/// | `self.env().origin()` | `tx.origin` | `Address` |
+/// | `self.env().address()` | `address(this)` | `Address` |
+/// | `self.env().value()` | `msg.value` | `U256` |
+/// | `self.env().balance()` | `address(this).balance` | `U256` |
+/// | `self.env().base_fee()` | `block.basefee` | `U256` |
+/// | `self.env().block_number()` | `block.number` | `u64` |
+/// | `self.env().timestamp()` | `block.timestamp` | `u64` |
+/// | `self.env().chain_id()` | `block.chainid` | `u64` |
+/// | `self.env().balance_of(addr)` | `addr.balance` | `U256` |
+/// | `self.env().has_code(addr)` | `addr.code.length != 0` | `bool` |
+///
+/// Both accessors take `&self`, so they are available to `view` methods. A
+/// `pure` method has no receiver and therefore has neither — matching solc,
+/// which rejects the same operations in a `pure` function.
+///
+/// Reach for `self.host()` only for raw `HostApi` calls that `env()` doesn't
+/// cover; note the host returns numeric 32-byte values little-endian, which
+/// `env()` decodes for you.
+///
+/// Alongside these, the same `#[cfg(not(feature = "abi-gen"))]` block emits the
+/// `ContractContext` impl that gates cross-contract calls on `&self` vs
+/// `&mut self`, and (off riscv64) a `with_host(backend)` test constructor.
 ///
 /// The contract holds a concrete `Host` whose internals are cfg-gated:
 /// on riscv64 it's a zero-sized type wrapping `PolkaVmHost` (zero overhead), on the
@@ -205,12 +250,12 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///
 /// ```ignore
 /// let mock = MockHostBuilder::new().build();
-/// let mut contract = my_token::Contract::with_host(mock.clone());
+/// let mut contract = my_token::MyToken::with_host(mock.clone());
 /// let bal = contract.balance_of(account);
 /// assert_eq!(bal, U256::from(42));
 /// ```
 ///
-/// The macro generates `Contract::with_host(backend)` — wraps any
+/// The macro generates `MyToken::with_host(backend)` — wraps any
 /// `HostApi` implementor in `Rc<dyn HostApi>` and initialises `#[slot(N)]`
 /// fields. Mirrors the std-lib `Vec::with_capacity` idiom for
 /// "constructor with a non-default dependency." The user's
@@ -290,14 +335,16 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///
 ///         #[pvm_contract_sdk::method]
 ///         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> { Ok(()) }
+///
+///         // `#[payable]` requires `&mut self`; read the attached value with
+///         // `self.env().value()`.
+///         #[pvm_contract_sdk::method]
+///         #[pvm_contract_sdk::payable]
+///         pub fn deposit(&mut self, to: Address) { let _ = self.env().value(); }
+///
+///         #[pvm_contract_sdk::constructor]
+///         pub fn new(&mut self) -> Result<(), TokenError> { Ok(()) }
 ///     }
-///
-///     #[pvm_contract::method]
-///     #[pvm_contract::payable]
-///     pub fn deposit(to: Address) { /* read value via api::value_transferred */ }
-///
-///     #[pvm_contract::constructor]
-///     pub fn new() -> Result<(), Error> { Ok(()) }
 ///
 ///     // --- Generated inside the module: ---
 ///
@@ -305,7 +352,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///     pub const MAX_RETURN_LEN: usize = /* max(256, <U256>::ENCODED_SIZE, …) */;
 ///
 ///     pub fn route<B: ::pvm_contract_sdk::OutSink>(
-///         this: &mut Contract,
+///         this: &mut MyToken,
 ///         selector: [u8; 4],
 ///         input: &[u8],
 ///         out: &mut B,
@@ -372,7 +419,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn deploy() {
 ///         let host = ::pvm_contract_sdk::Host::new();
-///         let mut this = Contract { /* #[slot(N)] fields, */ host };
+///         let mut this = MyToken { /* #[slot(N)] fields, */ host };
 ///         // Non-payable constructor: reject value (reverts via this.host().revert)
 ///         __pvm_assert_non_payable(this.host());
 ///         // ... read constructor calldata, decode, call new() ...
@@ -381,9 +428,10 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 ///     #[polkavm_derive::polkavm_export]
 ///     pub extern "C" fn call() {
 ///         let host = ::pvm_contract_sdk::Host::new();
-///         let mut this = Contract {
-///             // #[slot(N)] fields would be initialised here with
-///             // field: <Type>::new(StorageKey::from_slot(N), host.clone()),
+///         let mut this = MyToken {
+///             // storage fields would be initialised here via the safe door
+///             // field: <Type as ::pvm_contract_sdk::StorageComponent>::new_at(
+///             //     StorageKey::from_slot(N), offset, alone, host.clone()),
 ///             host,
 ///         };
 ///         let call_data_len = HostFnImpl::call_data_size() as usize;
@@ -427,7 +475,7 @@ use syn::{DeriveInput, ItemFn, ItemMod, ItemTrait, parse_macro_input};
 /// }
 ///
 /// // Generated outside the module:
-/// impl ::pvm_contract_sdk::Router for my_token::Contract {
+/// impl ::pvm_contract_sdk::Router for my_token::MyToken {
 ///     fn route<B: ::pvm_contract_sdk::OutSink>(
 ///         &mut self,
 ///         selector: [u8; 4],
@@ -544,12 +592,17 @@ pub fn contract(attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Derives [`StorageComponent`] for a struct so it can be embedded as a field
 /// inside another `#[storage]` struct or directly inside the `#[contract]`
-/// storage struct.
+/// storage struct. Also derives a container [`StorageType`] (`get`/`entry`
+/// hand out a `Ref`/`RefMut<Self>` guard) so the struct can be a value of
+/// `Mapping<K, Self>` or an element of `StorageVec<Self>`.
 ///
-/// Field slots are auto-numbered in declaration order; the embedded struct's
-/// `SLOTS` is the sum of its fields' `SLOTS`. The contract struct's
-/// auto-numbering uses these `SLOTS` constants to assign contiguous ranges,
-/// so embedding nests cleanly without manual slot math.
+/// Field slots are auto-numbered in declaration order; the struct's `SLOTS` is
+/// the layout walker's **packed** slot count (`step.next_slot + 1`), so
+/// adjacent sub-word fields (e.g. two `Lazy<u128>`) share a slot solc-style
+/// rather than each claiming a fresh one. The contract struct's auto-numbering
+/// uses this `SLOTS` constant to assign contiguous ranges, so embedding — and
+/// using the struct as a `StorageVec` element (where `SLOTS` is the stride) —
+/// nests cleanly without manual slot math.
 ///
 /// # Example
 ///
@@ -841,12 +894,16 @@ pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Examples
 ///
+/// A constructor must take `&mut self` — it exists to initialise storage, so
+/// `pure` and `view` receivers are rejected. Read the deployer with
+/// `self.env().caller()`.
+///
 /// Constructor that can revert:
 ///
 /// ```ignore
-/// #[pvm_contract::constructor]
-/// pub fn new() -> Result<(), Error> {
-///     set_owner(pvm_contract::caller());
+/// #[pvm_contract_sdk::constructor]
+/// pub fn new(&mut self) -> Result<(), Error> {
+///     self.owner.set(&self.env().caller());
 ///     Ok(())
 /// }
 /// ```
@@ -854,9 +911,9 @@ pub fn method(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Constructor that never reverts:
 ///
 /// ```ignore
-/// #[pvm_contract::constructor]
-/// pub fn new() {
-///     set_owner(pvm_contract::caller());
+/// #[pvm_contract_sdk::constructor]
+/// pub fn new(&mut self) {
+///     self.owner.set(&self.env().caller());
 /// }
 /// ```
 ///
@@ -1188,7 +1245,10 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// Derive the storage-layout traits ([`StorageEncode`], [`StorageDecode`],
 /// and the `StaticStorageEncode`/`StaticStorageDecode` refinement for static
 /// structs) for a struct that can be used as a `Lazy<S>` / `Mapping<_, S>`
-/// value.
+/// value. Also derives the leaf `StorageType` + `SimpleStorageType`
+/// (`Get<'a> = Self`, `GetMut<'a> = Lazy<Self>`), so the struct composes as a
+/// by-value element of `Mapping<K, S>` / `StorageVec<S>` — `get` returns the
+/// value, `insert`/`push` take it by value.
 ///
 /// This derive is **separate from `#[derive(SolType)]`** — `SolType` covers
 /// ABI encoding (calldata, return values, event fields) and is meaningful
@@ -1205,7 +1265,8 @@ pub fn sol_type(input: TokenStream) -> TokenStream {
 /// ```
 ///
 /// If any field is not yet storage-compatible (nested SolType structs,
-/// `Vec<T>` for `T != u8`, fixed arrays of non-`u8`, tuples), the derive
+/// `Vec<T>` — use `Bytes` for `bytes`-shaped values, fixed arrays of
+/// non-`u8`, tuples), the derive
 /// emits a `compile_error!` at expansion time — visible to `cargo check`
 /// and `trybuild`, unlike the prior `const STORAGE_SLOTS = panic!(...)`
 /// stub that only fired during MIR const-eval at `cargo build` time.
@@ -1339,16 +1400,20 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 ///
 /// ...
 ///
-/// fn example() {
+/// // The call builders take the contract itself (`&impl ContractContext` for a
+/// // `view`/`pure` callee, `&mut impl ContractContext` otherwise) — pass `self`,
+/// // not `self.host()`. That borrow is what stops a `&self` method from
+/// // initiating a state-mutating call.
+/// fn example(&mut self) {
 ///     use flipper::*;
 ///     // call a contract
-///     let bool: bool = Flipper::from_address(<addr>).get().call(self.host())?;
+///     let bool: bool = Flipper::from_address(<addr>).get().call(self)?;
 ///     // set a `value` this method is only present if the method is `payable`.
 ///     // also its possible to set a limit for the call.
-///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call(self.host())?;
+///     let _ = Flipper::from_address(<addr>).set_value(5).set_call_limits(CallLimits::GasLimit(u64::MAX)).flip().call(self)?;
 ///
 ///     // instantiate a contract
-///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(self.host(), <code_hash>, <value>, <limits>, <optional salt>)?;
+///     let (address, <return_value>): (Address, ()) = Flipper::new().instantiate(self, <code_hash>, <value>, <limits>, <optional salt>)?;
 /// }
 /// ```
 ///

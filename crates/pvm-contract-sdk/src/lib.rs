@@ -75,6 +75,7 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    Env,
     EventTopics,
     Host,
     HostApi,
@@ -127,9 +128,6 @@ pub use pvm_contract_types::{
     value_transferred_is_nonzero,
 };
 
-#[cfg(any(target_arch = "riscv64", feature = "alloc"))]
-pub use pvm_contract_types::Env;
-
 /// Reentrancy guard helpers emitted by the `#[non_reentrant]` codegen.
 /// Not part of the public API surface.
 #[doc(hidden)]
@@ -160,8 +158,8 @@ pub use pvm_contract_core::precompiles;
 // different on-chain layout). `StorageComponent` is the trait typed
 // storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
-    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, StorageComponent,
-    StorageKey, StorageVec, layout_step, layout_step_component,
+    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, SimpleStorageType,
+    StorageComponent, StorageKey, StorageType, StorageVec, layout_step, layout_step_component,
 };
 
 #[cfg(feature = "abi-gen")]

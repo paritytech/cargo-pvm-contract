@@ -1,6 +1,8 @@
 use pvm_contract_e2e_tests::anvil::AnvilPolkadot;
 use pvm_contract_e2e_tests::build::contract;
-use pvm_contract_e2e_tests::cast::{CastClient, DEFAULT_ADDRESS, DEFAULT_PRIVATE_KEY};
+use pvm_contract_e2e_tests::cast::{
+    CastClient, DEFAULT_ADDRESS, DEFAULT_PRIVATE_KEY, SECOND_ADDRESS,
+};
 
 fn deploy(binary_name: &str) -> (AnvilPolkadot, CastClient, String) {
     let c = contract("test-contracts");
@@ -279,6 +281,184 @@ fn caller_record_and_read() {
         val.to_lowercase(),
         DEFAULT_ADDRESS.to_lowercase(),
         "getLastCaller should return the recorded sender"
+    );
+}
+
+#[test]
+fn env_context_for_a_direct_call() {
+    let (_anvil, cast, addr) = deploy("caller-check");
+
+    // Called straight from an EOA, so `msg.sender == tx.origin`. That equality
+    // is why the nested-call test below exists: it is the only shape where the
+    // two accessors can be told apart.
+    assert_eq!(
+        cast.call(&addr, "getCaller()(address)", &[]).to_lowercase(),
+        DEFAULT_ADDRESS.to_lowercase(),
+        "caller() should be the sender"
+    );
+    assert_eq!(
+        cast.call(&addr, "getOrigin()(address)", &[]).to_lowercase(),
+        DEFAULT_ADDRESS.to_lowercase(),
+        "origin() should be the transaction signer"
+    );
+    assert_eq!(
+        cast.call(&addr, "getSelfAddress()(address)", &[])
+            .to_lowercase(),
+        addr.to_lowercase(),
+        "address() should be the contract's own deployed address"
+    );
+}
+
+/// Pin the numeric `env()` accessors against the node's own view.
+///
+/// These three are the ones a mock cannot vouch for: `MockHost` hands back
+/// whatever bytes the test seeded, so a unit test asserting them only proves the
+/// decoder agrees with itself. The host writes them little-endian, and the
+/// accessors narrow 32 bytes to `u64` by taking the low limb and ignoring the
+/// high 24 bytes — so a byte-order mismatch never reverts, it just reads back
+/// as 0 (in either direction: a big-endian decode of little-endian bytes reads
+/// the zero high end, and a little-endian decode of big-endian bytes reads the
+/// zero low end). The `assert_ne!(…, 0)` guards below are what keep that
+/// silent 0 from passing as agreement — do not drop them. Only a real node
+/// settles the values themselves.
+#[test]
+fn env_block_context_matches_node() {
+    let (_anvil, cast, addr) = deploy("caller-check");
+
+    fn read_u64(cast: &CastClient, addr: &str, sig: &str) -> u64 {
+        let raw = cast.call(addr, sig, &[]);
+        raw.parse()
+            .unwrap_or_else(|e| panic!("{sig} returned unparseable {raw:?}: {e}"))
+    }
+
+    // Fixed for the node's lifetime, so this one can be compared exactly.
+    let node_chain_id = cast.chain_id();
+    assert_ne!(
+        node_chain_id, 0,
+        "a zero chain id would make the comparison below vacuous"
+    );
+    assert_eq!(
+        read_u64(&cast, &addr, "getChainId()(uint64)"),
+        node_chain_id,
+        "chainId() should match the node's EIP-155 chain id"
+    );
+
+    // The head can advance between reads, so bracket the contract's value by the
+    // node's view either side rather than demanding equality.
+    let before = cast.block_number();
+    assert_ne!(
+        before, 0,
+        "the deploy above should have advanced the head past genesis"
+    );
+    let seen = read_u64(&cast, &addr, "getBlockNumber()(uint64)");
+    let after = cast.block_number();
+    assert!(
+        (before..=after).contains(&seen),
+        "blockNumber() {seen} should fall within the node's [{before}, {after}]"
+    );
+
+    let ts_before = cast.block_timestamp();
+    assert_ne!(ts_before, 0, "the head block should carry a real timestamp");
+    let ts_seen = read_u64(&cast, &addr, "getTimestamp()(uint64)");
+    let ts_after = cast.block_timestamp();
+    assert!(
+        (ts_before..=ts_after).contains(&ts_seen),
+        "timestamp() {ts_seen} should fall within the node's [{ts_before}, {ts_after}]"
+    );
+}
+
+/// Pin the two balance reads against the node.
+///
+/// These are the 256-bit members of `env()`, so unlike the `u64` trio they are
+/// the ones whose little-endian decode has to hold across all four limbs. The
+/// instance is deployed with 100 ether precisely so the value clears
+/// `u64::MAX` (~18.4 ether): a decoder that read only the low limb, or read the
+/// buffer big-endian, would disagree with `eth_getBalance` here rather than
+/// coincidentally matching on a small number.
+#[test]
+fn env_balance_reads_match_node() {
+    let c = contract("test-contracts");
+    c.build();
+    let anvil = AnvilPolkadot::start();
+    let cast = CastClient::new(&anvil.rpc_url);
+    let hex = c.bytecode_hex("caller-check", "release");
+    let addr = cast
+        .deploy_with_value(&hex, "", &[], DEFAULT_PRIVATE_KEY, "100ether")
+        .expect("funded deploy should succeed — the constructor is payable");
+
+    let contract_balance = cast.balance(&addr);
+    assert!(
+        contract_balance.parse::<u128>().unwrap() > u64::MAX as u128,
+        "the deploy should have funded past u64::MAX, else this test cannot \
+         distinguish a low-limb-only decode; node reports {contract_balance}"
+    );
+    assert_eq!(
+        cast.call(&addr, "getBalance()(uint256)", &[]),
+        contract_balance,
+        "balance() should match the node's view of the contract's balance"
+    );
+
+    // A pre-funded EOA: a second, independently sized value. Deliberately not
+    // the deploying account — that one pays gas, so its balance moves between
+    // the node's view and the contract's.
+    let eoa_balance = cast.balance(SECOND_ADDRESS);
+    assert_ne!(
+        eoa_balance, "0",
+        "the node's second dev account should be pre-funded"
+    );
+    assert_eq!(
+        cast.call(&addr, "getBalanceOf(address)(uint256)", &[SECOND_ADDRESS]),
+        eoa_balance,
+        "balanceOf(eoa) should match the node's view"
+    );
+
+    // On chain both reads are one query (pallet-revive routes them through
+    // `account_balance`), which is what `MockHost` models by aliasing them.
+    assert_eq!(
+        cast.call(&addr, "getBalanceOf(address)(uint256)", &[&addr]),
+        contract_balance,
+        "balanceOf(address(this)) should equal balance()"
+    );
+}
+
+#[test]
+fn env_context_separates_caller_from_origin_across_a_nested_call() {
+    // Two instances of the same fixture: EOA -> `middle` -> `callee`.
+    let (_anvil, cast, callee) = deploy("caller-check");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("caller-check", "release");
+    let middle = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+    assert_ne!(
+        middle.to_lowercase(),
+        callee.to_lowercase(),
+        "the two instances must be distinct for this test to mean anything"
+    );
+
+    // `callee` records what it sees while the nested frame is live.
+    cast.send(
+        &middle,
+        "recordContextOn(address)",
+        &[&callee],
+        DEFAULT_PRIVATE_KEY,
+    );
+
+    assert_eq!(
+        cast.call(&callee, "getLastCaller()(address)", &[])
+            .to_lowercase(),
+        middle.to_lowercase(),
+        "caller() inside the nested call is the intermediate contract, not the EOA"
+    );
+    assert_eq!(
+        cast.call(&callee, "getLastOrigin()(address)", &[])
+            .to_lowercase(),
+        DEFAULT_ADDRESS.to_lowercase(),
+        "origin() is the transaction signer, unchanged by the intermediate call"
+    );
+    assert_eq!(
+        cast.call(&callee, "getLastSelf()(address)", &[])
+            .to_lowercase(),
+        callee.to_lowercase(),
+        "address() is the callee's own address, not the caller's"
     );
 }
 

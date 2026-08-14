@@ -73,7 +73,7 @@ mod my_token {
 }
 ```
 
-The macro injects a `pub host: Host` field on the storage struct and a `fn host(&self) -> &Host` accessor. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`. On host targets the macro also emits a `Foo::with_host(backend: impl HostApi)` test constructor that wires up the storage fields against the backend without running the `#[constructor]` (seed state on the backend directly).
+The macro injects a `pub host: Host` field on the storage struct, a `fn host(&self) -> &Host` accessor, and a `fn env(&self) -> Env` read-only environment accessor (`caller`, `origin`, `address`, `value`, `balance`, `base_fee`, `block_number`, `timestamp`, `chain_id`, plus the address queries `balance_of` and `has_code` — the typed equivalents of Solidity's `msg.*` / `tx.origin` / `address(this)` / `block.*` and the `<address>` members; see [Environment Access](specs/proc-macros.md#environment-access)). Both take `&self`, so `view` methods can use them; a `pure` method has no receiver and therefore has neither. `Host` is a cfg-gated wrapper: zero-sized type over `PolkaVmHost` on riscv64; `Rc<dyn HostApi>` on host-target builds so it can be cheaply cloned into helpers like `Lazy`/`Mapping`, and tests can construct the contract with a `MockHost`. On host targets the macro also emits a `Foo::with_host(backend: impl HostApi)` test constructor that wires up the storage fields against the backend without running the `#[constructor]` (seed state on the backend directly).
 
 **DSL API** (explicit, manual dispatch):
 ```rust
@@ -84,7 +84,7 @@ ContractBuilder::new()
     .dispatch_impl::<256>(&host)
 ```
 
-DSL handlers take a concrete `&Host` (same type the macro path injects on the storage struct). For typed cross-contract calls, handlers wrap a cloned host in `Context::new(host.clone())` — `Context` impls `ContractContext` so it can be passed to `.call(&mut cx)` / `.delegate_call(&mut cx)`. `Host::clone()` is `Copy` on riscv64 (ZST) and a single `Rc::clone` on host targets. Because the wrapper carries only the host handle (no storage state), the borrow checker cannot enforce view-vs-mutating in DSL; use the `#[contract]` macro path if you need that static guarantee. The same `Context` type is used in unit tests, where it owns a `Host` backed by a `MockHost`.
+DSL handlers take a concrete `&Host` (same type the macro path injects on the storage struct). For typed cross-contract calls, handlers wrap a cloned host in `Context::new(host.clone())` — `Context` impls `ContractContext` so it can be passed to `.call(&mut cx)` / `.delegate_call(&mut cx)`. `Host::clone()` is `Copy` on riscv64 (ZST) and a single `Rc::clone` on host targets. `ContractContext::env()` is a provided method, so `cx.env().caller()` works on a `Context` and on any `&impl ContractContext` helper (the macro's inherent `env()` on the storage struct shadows it, so contract bodies need no import). Because the wrapper carries only the host handle (no storage state), the borrow checker cannot enforce view-vs-mutating in DSL; use the `#[contract]` macro path if you need that static guarantee. The same `Context` type is used in unit tests, where it owns a `Host` backed by a `MockHost`.
 
 ### Macro-Generated Code
 
@@ -144,7 +144,7 @@ Three layers, in increasing strength:
 
 3. **Runtime (host-side)** — `pallet-revive` enforces the STATICCALL boundary: state-mutating host calls revert when invoked inside a static frame. This is what backstops `view`/`pure` for cross-contract callers.
 
-**For belt-and-braces enforcement:** add `#![forbid(unsafe_code)]` at your contract crate root. That closes the `unsafe { Lazy::new(...) }` / `unsafe { Mapping::new(...) }` reconstruction bypass at compile time — the macro's own `unsafe` blocks live inside `pvm-storage`'s `StorageComponent::new_at` impls (a separate crate), so the gate doesn't break macro expansion.
+**For belt-and-braces enforcement:** add `#![forbid(unsafe_code)]` at your contract crate root. That closes the `unsafe { Lazy::new(...) }` / `unsafe { Mapping::new(...) }` reconstruction bypass in *your own* code at compile time. The `#[storage]` / `#[contract]` / `#[derive(SolStorage)]` macros *do* expand to code containing `unsafe` (the `StorageType`/`StorageComponent` impls they emit have `unsafe fn` methods and `unsafe { Lazy::new(...) }` bodies), but that emitted `unsafe` carries the macros' own expansion span, and rustc's `unsafe_code` lint sets `report_in_external_macro = false` (the same exemption `pin-project` relies on) — so `#![forbid(unsafe_code)]` does **not** fire on proc-macro-generated `unsafe`, and macro expansion keeps working. (Consequence: `forbid(unsafe_code)` guards *hand-written* `unsafe` only, not macro output; a `forbid(unsafe_code)` compile-pass fixture in `pvm-contract-macros/tests` pins this.)
 
 **Honest caveat:** the typed-API gate covers cross-contract calls made through `abi_import!`-generated wrappers and storage operations through `pvm-storage`. Raw `pallet_revive_uapi` calls (e.g., `api::set_storage`, `host.set_storage(...)`, `Host::new()`) bypass the type-level check — only the host's STATICCALL enforcement and the runtime payable guard apply there. Use the typed APIs as the primary surface; reach for raw uAPI (or the DSL) only when the typed surface lacks coverage. `forbid(unsafe_code)` does not gate raw uAPI because those calls are themselves safe.
 
@@ -341,7 +341,7 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 
 | Type | Description |
 |------|-------------|
-| `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)` |
+| `Lazy<T>` | Single value at a fixed slot. `get(&self) -> T`, `set(&mut self, &T)`, `try_get(&self) -> Option<T>`, `clear(&mut self)`, `take(&mut self) -> T` (read+clear in one pass; fuses to a single SLOAD for packed sub-word `T`) |
 | `Mapping<K, V>` | Key-value mapping. `get(&self, &K) -> V`, `insert(&mut self, &K, &V)`, `entry(&mut self, &K) -> Lazy<V>`, `remove(&mut self, &K)` |
 | `StorageVec<T>` | Dynamic array (Solidity `T[]`). Read: `len`, `is_empty`, `get(i) -> T` (panics OOB) / `try_get(i) -> Option<T>`, `first`/`last`, `iter`. Write: `push(&T)`, `pop() -> Option<T>`, `set(i, &T)`, `clear`. OOB `get`/`set` revert with solc's ABI-encoded `Panic(0x32)` (array out-of-bounds); use `try_get` to avoid it |
 
@@ -356,8 +356,8 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 - **Nested / composite collections.** Because an inner collection is a handle (not a `StorageEncode` value), the nested accessors hand out borrow guards rather than values, gating mutation through the parent borrow:
   - `Mapping<K, StorageVec<T>>` (Solidity `mapping(K => T[])`): `get(&K) -> Ref<StorageVec<T>>` (read) / `entry(&K) -> RefMut<StorageVec<T>>` (write), then operate on the inner vec — `self.posts.entry(&author).push(&post)`
   - `StorageVec<StorageVec<T>>` (Solidity `T[][]`): `len`/`get(i) -> Ref<…>`/`try_get`/`first`/`last`/`iter` for reads; `grow() -> RefMut<…>` appends an empty inner row, `entry(i) -> RefMut<…>` mutates an existing one, and `erase_last() -> bool` drops the last row (the inner vec can't be returned by value, so it's destroyed rather than popped)
-  - These shapes are supported via dedicated impls today; arbitrary nesting (3+ levels, `StorageVec<Mapping<…>>`) awaits the planned `StorageType` unification
-- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). Layout emission is **uniform with no syntactic type-name special-casing**: every storage field — `Lazy<T>`, `Mapping<K, V>`, `StorageVec<T>`, and embedded `#[storage]` sub-structs — dispatches through `<#ty as StorageLayoutEmit>::emit_entries(base, offset, name_prefix, entries)`, the single source of truth for both a leaf's layout and its `type` string. The built-in leaves implement **both** `StorageComponent` and `StorageLayoutEmit`, plus `StorageTypeName` for the `type` name (`Lazy<T>` → `T`'s name, `Mapping<K, V>` → `mapping(K => V)`, `StorageVec<T>` → `T[]`, `[T; N]` → `T[N]`); there is no `is_layout_leaf`/`sol_storage_type_name` resolver. A hand-rolled composite component just implements the same two traits to flatten its leaves. `StorageComponent::PACKED_BYTES = 32` declares "always start a fresh slot" — mappings, multi-slot composites, and embedded `#[storage]` sub-structs all set this; sub-32-byte primitives propagate `T::PACKED_BYTES`
+  - **These compose to arbitrary depth with no per-shape code**, via the `StorageType` / `SimpleStorageType` trait pair (issue #108): `StorageVec<S: StorageType>` and `Mapping<K, V: StorageType>` return `S::Get`/`V::Get` (a value for a leaf, a `Ref`/`RefMut` guard for a container), and by-value ops (`push`/`pop`/`insert`/`set`) are gated on `SimpleStorageType` (leaves only). So `StorageVec<Mapping<…>>` (`mapping(…)[]`), `Mapping<K, StorageVec<…>>`, and 3+-level nesting all work through the generic impls. `Lazy`, `Mapping`, `StorageVec`, and `#[storage]` structs implement the container `StorageType`; primitives / tuples / `[T;N]` / `#[derive(SolStorage)]` structs implement the leaf `StorageType` + `SimpleStorageType`. `StorageType` is the base of the storage-handle hierarchy, with two refinements: `SimpleStorageType: StorageType` (leaves, by-value ops) and `StorageComponent: StorageType` (the construction door — `new_at`/`clear` — for declarable fields). `StorageComponent`'s `SLOTS`/`PACKED_BYTES` default to the `StorageType` values (single source of truth, compiler-enforced instead of kept in sync by hand).
+- **Composability:** `#[storage]` structs auto-implement `StorageComponent` (slot reservation) and, under `--features abi-gen`, `StorageLayoutEmit` (so the outer contract flattens their leaves into the `storageLayout` JSON with dotted labels like `erc20.total_supply`). Layout emission is **uniform with no syntactic type-name special-casing**: every storage field — `Lazy<T>`, `Mapping<K, V>`, `StorageVec<T>`, and embedded `#[storage]` sub-structs — dispatches through `<#ty as StorageLayoutEmit>::emit_entries(base, offset, name_prefix, entries)`, the single source of truth for both a leaf's layout and its `type` string. The built-in leaves implement **both** `StorageComponent` and `StorageLayoutEmit`, plus `StorageTypeName` for the `type` name (`Lazy<T>` → `T`'s name, `Mapping<K, V>` → `mapping(K => V)`, `StorageVec<T>` → `T[]`, `[T; N]` → `T[N]`); there is no `is_layout_leaf`/`sol_storage_type_name` resolver. A hand-rolled composite component just implements the same two traits to flatten its leaves. `StorageType::PACKED_BYTES = 32` declares "always start a fresh slot" — mappings, multi-slot composites, and embedded `#[storage]` sub-structs all set this; sub-32-byte primitives propagate `T::PACKED_BYTES`
 - **Field-level packing:** adjacent sub-32-byte contract fields share a slot byte-for-byte with solc's layout. For `Lazy<u128> a; Lazy<u128> b;`, `a` occupies the low-order 16 bytes and `b` the high-order 16 bytes (solc's lower-order-first packing). The macro walker `layout_step` (defined in `pvm-contract-types`, re-exported by `pvm-storage`) is the const-fn computing each placement; it tracks an internal big-endian offset (`a` → 16, `b` → 0) used as the read-modify-write window in `Lazy::set/get`. The `storageLayout` JSON converts this to solc's convention — `offset` counted from the least-significant byte — so the emitted layout matches solc exactly (`a` → offset 0, `b` → offset 16). Packed writes are read-modify-write (one SLOAD + one SSTORE), matching solc's gas profile
 - **`try_get` is full-slot only:** `Lazy::<T>::try_get` is rejected at compile time for sub-32-byte `T` (e.g. `Lazy<u128>`) with a const-assert message — a neighbour's write to the same slot would make `try_get` indistinguishable from `get`. For packed fields, use `.get()` and compare to the zero value of `T`
 - **Test-harness contract modules:** `#[contract(no_main)]` suppresses the abi-gen `fn main()` emission so a `#[contract]` can sit inside a `tests/` integration test or library crate without colliding with the test harness's own `main`. `__abi_json()` / `__storage_layout_json()` accessors are still emitted on the module
@@ -367,7 +367,7 @@ The `pvm-storage` crate provides typed storage helpers with Solidity-compatible 
 Declare storage fields directly on the contract struct. Three modes:
 
 - **Auto-numbering (default).** Drop the `#[slot]` attribute and let the macro assign slots in declaration order via `layout_step`. Sub-word siblings pack into the same slot solc-style (`Lazy<u32>` at byte 28; adjacent `Lazy<bool>` at byte 27, sharing slot 0). Accepts every storage type.
-- **Explicit pinning (`#[slot(N)]`).** Restricted to full-slot types — `Mapping`, `Lazy<U256>`, `Lazy<String>`, `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and `#[storage]` sub-structs (anything with `StorageComponent::PACKED_BYTES == 32`). Sub-word types are rejected at compile time (explicit mode would place them at byte 0 of the slot while solc places them right-aligned). Use auto-numbering for sub-word packing or wrap the field in a `#[storage]` sub-struct if you need to pin the group at a specific slot. The primary reason to reach for `#[slot(N)]` over auto-numbering is `#[cfg(...)]`-gated storage variants — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
+- **Explicit pinning (`#[slot(N)]`).** Restricted to full-slot types — `Mapping`, `Lazy<U256>`, `Lazy<String>`, `Lazy<Bytes>`, multi-slot composites like `Lazy<(U256, U256)>`, and `#[storage]` sub-structs (anything with `StorageType::PACKED_BYTES == 32`). Sub-word types are rejected at compile time (explicit mode would place them at byte 0 of the slot while solc places them right-aligned). Use auto-numbering for sub-word packing or wrap the field in a `#[storage]` sub-struct if you need to pin the group at a specific slot. The primary reason to reach for `#[slot(N)]` over auto-numbering is `#[cfg(...)]`-gated storage variants — auto-numbered fields can't carry `#[cfg]` because that would shift later slot indices based on the active feature set.
 - **Raw external slots (`#[slot(raw = KEY)]`).** Bind a typed field to a fixed, externally-known 32-byte slot (`KEY: [u8; 32]`) that lives *outside* the compiler-assigned sequential range — e.g. an [EIP-1967](https://eips.ethereum.org/EIPS/eip-1967) proxy slot (`keccak256("eip1967.proxy.implementation") - 1`). Because it's a real typed field, `get`/`set` stay gated by the borrow checker's `&self`/`&mut self` (view-vs-mutating) rule — no raw `host.get_storage` call and no `unsafe`. Sub-word types are **accepted** here (unlike `#[slot(N)]`) and placed right-aligned at `offset = 32 - PACKED_BYTES`, matching solc, so a slot written by a real Solidity proxy decodes identically. The field binds via `StorageComponent::new_at(StorageKey::from_raw(KEY), …)` with `alone = true` (an external pseudo-random slot has no packing neighbours). Raw slots are omitted from the abi-gen `storageLayout` (solc doesn't emit them either). Define the `KEY` constant in the contract/example, not the SDK. Example:
   ```rust
   const IMPLEMENTATION_SLOT: [u8; 32] = /* keccak256("eip1967.proxy.implementation") - 1 */;
@@ -402,7 +402,7 @@ mod my_token {
 
         #[method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.caller();
+            let caller = self.env().caller();
             let mut cell = self.balances.entry(&caller);
             let bal = cell.get();
             if bal < amount {
@@ -501,6 +501,16 @@ Contracts interact with the runtime through `pallet_revive_uapi::HostFnImpl`:
 - `api::deposit_event(&topics, &data)` — emit events
 - `api::hash_keccak_256(&input, &mut output)` — Keccak-256 hashing
 
+### Where a new host operation belongs
+
+Three layers. The rule exists because layer 1 is also the mock seam, so anything added there must be implemented — or correctly re-forwarded — by every implementor (`PolkaVmHost`, the `Host` wrapper, `MockHost`, the uninhabited no-alloc arm).
+
+1. **`HostApi` — one method per pallet-revive syscall.** Byte-level signatures, `&self` receiver. It currently covers all 38 `pallet_revive_uapi::HostFn` syscalls with no gaps. The only permitted departures are the ones the seam forces: the `return_value` / `revert` split (one syscall projected by its flag value, so success can be non-diverging on host targets while revert diverges on both) and the `-> !` cfg-gating. **No defaulted methods, no derived queries** — a default body is a silent correctness trap, since a wrapper like `Host` re-derives it from the primitives and ignores whatever the backing `HostApi` said, and nothing in the language forces the wrapper to re-forward it.
+2. **Free functions generic over `H: HostApi`** for cheap predicates the framework needs internally — e.g. `value_transferred_is_nonzero`, used by the payable guard. Dispatch plumbing, not user surface.
+3. **`Env` for user-facing typed reads** — typed returns instead of raw buffers, little-endian decoding handled. `Env::has_code` (built on `HostApi::code_size`; pallet-revive has no such syscall) is the model for a derived read.
+
+`Env` covers Solidity's `msg.*` / `block.*` globals plus the `<address>` members that read chain state — including every little-endian numeric output `HostApi` has (`balance`, `balance_of`, `base_fee`, `chain_id`, `value_transferred`, `now`, `block_number`), so no contract needs to hand-decode one. It is named `has_code`, not `is_contract`, deliberately: code length is `false` for a contract running its own constructor and can be `true` for an EOA carrying an EIP-7702 delegation designator — the reasons OpenZeppelin removed `Address.isContract()` in v5.
+
 ## Prerequisites
 
 - **Rust 1.92+** (stable) — workspace MSRV
@@ -587,7 +597,7 @@ Seven MyToken variants as separate binaries:
 
 ### test-contracts
 
-Multi-binary project (19 contracts) for E2E integration tests:
+Multi-binary project (23 contracts) for E2E integration tests:
 
 - `flipper` — boolean toggle
 - `storage-types` — all primitive type storage roundtrips
@@ -597,9 +607,12 @@ Multi-binary project (19 contracts) for E2E integration tests:
 - `dynamic-types` — String, Vec<u8>, Vec<U256>
 - `composite-types` — fixed arrays, tuples
 - `constructor-args` — constructor with parameters
-- `caller-check` — `api::caller()` access
+- `caller-check` — `env()` context reads (`caller`, `origin`, `address`, `block_number`, `timestamp`, `chain_id`); two instances are chained (EOA → middle → callee) to pin `caller` vs `origin`, and the three numeric reads are compared against the node's own view to pin their little-endian decoding
 - `error-handling` — `#[derive(SolError)]` (struct + enum) ABI-encoded revert flow
 - `payable` / `receive` / `receive_dsl` — `#[payable]`, `#[receive]`, and DSL receive handlers
+- `proxy` — EIP-1967 upgradeable proxy; exercises `#[slot(raw = KEY)]` on the polkavm target
+- `reentrancy_guard` + `reentrancy_attacker` — `#[non_reentrant]` guard fixture and its attacking caller
+- `precompiles` — typed precompile wrappers (`ecrecover`, P-256 verify) against the real runtime
 - Cross-contract: `flipper_call`, `flipper_delegate`, `flipper_instantiate` (`call`/`delegate_call`/`instantiate` via `abi_import!`), `point_adder` + `point_adder_call` (struct args across a call), `error_caller` (decoding a callee's `SolError` revert)
 
 ### Building examples
@@ -652,7 +665,7 @@ crates/
   pvm-contract-e2e-tests/       E2E + integration test harness
 examples/
   example-mytoken/              7 MyToken variants
-  test-contracts/               19 test contracts with .sol interfaces
+  test-contracts/               23 test contracts (19 with .sol interfaces)
 specs/
   abi.md                        ABI encoding specification (includes error encoding)
   architecture.md               Architecture overview

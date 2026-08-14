@@ -59,6 +59,10 @@ path = "src/proxy_raw_slot.rs"
 name = "folded-error-binding"
 path = "src/folded_error_binding.rs"
 
+[[bin]]
+name = "enum-abi"
+path = "src/enum_abi.rs"
+
 [dependencies]
 pvm-contract-macros = { path = "../../../pvm-contract-macros" }
 pvm-contract-sdk = { path = "../../../pvm-contract-sdk", features = ["alloc"] }
