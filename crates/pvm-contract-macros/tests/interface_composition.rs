@@ -455,7 +455,9 @@ mod attributes {
     #[test]
     fn folded_payable_accepts_value_and_non_payable_sibling_rejects_it() {
         // A non-zero value transfer against a contract with mixed folded payability.
-        let mock = MockHostBuilder::new().value_transferred([0x11; 32]).build();
+        let mock = MockHostBuilder::new()
+            .value_transferred_raw([0x11; 32])
+            .build();
         let mut contract = vault::V::with_host(mock.clone());
         let mut buf = [0u8; vault::MAX_RETURN_LEN];
 

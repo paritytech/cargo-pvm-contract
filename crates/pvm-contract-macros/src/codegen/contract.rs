@@ -1021,7 +1021,9 @@ fn resolve_single_interface<'a>(
 }
 
 /// Match a Rust method against a `.sol` interface function, validate parameter
-/// compatibility and mutability, and return `(sol_name, selector, sol_func)`.
+/// compatibility and mutability, emit the conformance assertions, and return
+/// `(sol_name, sol_func)`. The selector itself is derived later from `sol_name`
+/// + the Rust param types by `build_selector_const`.
 ///
 /// This is the single source of truth for Rust-to-`.sol` method resolution,
 /// shared by inherent `#[method]`s and `implements(...)`-folded methods
@@ -1036,7 +1038,7 @@ fn resolve_sol_method<'a>(
     inferred_mutability: StateMutability,
     sol_custom_types: &CustomTypes,
     sig_asserts: &mut Vec<TokenStream>,
-) -> syn::Result<(String, [u8; 4], &'a syn_solidity::ItemFunction)> {
+) -> syn::Result<(String, &'a syn_solidity::ItemFunction)> {
     let rust_fn_name = func.sig.ident.to_string();
     let rename = explicit_rename
         .clone()
@@ -1125,8 +1127,7 @@ fn resolve_sol_method<'a>(
         ));
     }
 
-    let selector = compute_selector(&compute_function_signature(sol_func, sol_custom_types));
-    Ok((sol_func.name().to_string(), selector, sol_func))
+    Ok((sol_func.name().to_string(), sol_func))
 }
 
 /// Does an `impl <impl_path> for ...` block satisfy the `implements(<iface_path>)`
@@ -1339,12 +1340,14 @@ fn fold_interface_methods(
                 // When a `.sol` interface is provided, a folded method is
                 // resolved against it through the same matcher as inherent
                 // methods — coverage, parameter-compatibility, and mutability
-                // (incl. payability) cross-checks all apply, and the selector is
-                // taken from the `.sol` declaration. Without a `.sol`, the
-                // selector derives from the Rust signature (camelCase or rename).
-                let (sol_name, precomputed_selector) = match sol_contract {
+                // (incl. payability) cross-checks all apply, and `sol_name` is
+                // the interface function's name. Without a `.sol`, `sol_name`
+                // comes from the Rust signature (camelCase or rename). Either
+                // way the selector is built from `sol_name` + the Rust param
+                // types by `build_selector_const`.
+                let sol_name = match sol_contract {
                     Some(sc) => {
-                        let (name, selector, sol_func) = resolve_sol_method(
+                        let (name, sol_func) = resolve_sol_method(
                             sc,
                             func,
                             &explicit_rename,
@@ -1354,13 +1357,10 @@ fn fold_interface_methods(
                             sig_asserts,
                         )?;
                         implemented_sol_methods.push(sol_func.name.clone());
-                        (name, Some(selector))
+                        name
                     }
-                    None => (
-                        explicit_rename
-                            .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string())),
-                        None,
-                    ),
+                    None => explicit_rename
+                        .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string())),
                 };
 
                 binding_used |= collect_folded_error_type(
@@ -1378,7 +1378,6 @@ fn fold_interface_methods(
                     return_types,
                     returns_result,
                     mutability,
-                    precomputed_selector,
                     is_non_reentrant: has_pvm_attr(&func.attrs, "non_reentrant"),
                     trait_path: Some(trait_path.clone()),
                 });
@@ -1772,10 +1771,10 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
 
-                let (sol_name, precomputed_selector, mutability) =
+                let (sol_name, mutability) =
                     if let Some(sc) = resolve_single_interface(sol_interface, input)? {
                         let explicit_rename = extract_method_rename(&func.attrs)?;
-                        let (name, selector, sol_func) = resolve_sol_method(
+                        let (name, sol_func) = resolve_sol_method(
                             sc,
                             func,
                             &explicit_rename,
@@ -1785,11 +1784,11 @@ fn parse_contract(
                             &mut sig_asserts,
                         )?;
                         implemented_sol_methods.push(sol_func.name.clone());
-                        (name, Some(selector), inferred_mutability)
+                        (name, inferred_mutability)
                     } else {
                         let sol_name = extract_method_rename(&func.attrs)?
                             .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                        (sol_name, None, inferred_mutability)
+                        (sol_name, inferred_mutability)
                     };
 
                 // Recording the impl's trait path (if any) makes a `#[method]` on
