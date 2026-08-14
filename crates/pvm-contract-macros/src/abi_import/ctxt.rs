@@ -105,6 +105,13 @@ impl Ctxt {
         compute_function_signature(item, &self.custom_types)
     }
 
+    /// Whether `ty`'s canonical ABI form is dynamic, with user-defined types
+    /// resolved through this invocation's declarations (enum → `uint8`,
+    /// UDT → underlying, struct → its expanded fields).
+    pub fn is_abi_dynamic(&self, ty: &syn_solidity::Type) -> bool {
+        self.custom_types.is_abi_dynamic(ty)
+    }
+
     pub fn function_name(&self, item: &ItemFunction) -> String {
         if self
             .overloaded_functions

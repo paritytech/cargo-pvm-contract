@@ -174,7 +174,10 @@ fn to_rust_type(
     alloc: bool,
     ctxt: &mut Ctxt,
 ) -> syn::Result<TokenStream> {
-    if !alloc && typ.is_abi_dynamic() {
+    // `ctxt.is_abi_dynamic` resolves user-defined types (enum → `uint8`,
+    // UDT → underlying, struct → its fields); syn-solidity's own
+    // `Type::is_abi_dynamic` would reject every custom type as dynamic.
+    if !alloc && ctxt.is_abi_dynamic(typ) {
         return Err(syn::Error::new(
             typ.span(),
             "Enable alloc to support dynamic types",
