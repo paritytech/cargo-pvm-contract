@@ -127,6 +127,14 @@ impl CustomTypes {
     /// that name, so a duplicate would otherwise silently resolve to whichever
     /// expanded last, corrupting the selector of every function that used the
     /// other.
+    ///
+    /// This uniqueness is also the invariant that keeps the two scoping models
+    /// agreeing: `Ctxt::resolve` (abi_import) validates paths against a
+    /// *namespaced* table, while this flat table answers `canonical_name` and
+    /// `is_abi_dynamic` by `path.last()` alone. Lifting the restriction (e.g.
+    /// to allow solc-style shadowing) requires namespacing this table first,
+    /// or the gate and the selector may consult a different declaration than
+    /// the one a qualified path resolves to.
     fn declare(&mut self, name: String, def: CustomDef) -> Result<(), String> {
         if self.defs.contains_key(&name) {
             return Err(format!(
@@ -196,6 +204,49 @@ impl CustomTypes {
         let inner: Vec<String> = types.map(|t| self.resolve(t, active)).collect();
         format!("({})", inner.join(","))
     }
+
+    /// Whether `ty`'s canonical ABI form is dynamic, resolving user-defined
+    /// types: an enum is `uint8` (static), a UDT is its underlying type, and a
+    /// struct is dynamic iff any expanded field is. syn-solidity's own
+    /// `Type::is_abi_dynamic` hardcodes `Custom(_) => true` — it has no
+    /// declaration table to consult.
+    pub fn is_abi_dynamic(&self, ty: &Type) -> bool {
+        self.is_dynamic(ty, &mut Vec::new())
+    }
+
+    /// `active` mirrors `resolve`'s cycle guard. For solc-legal input a struct
+    /// may reference itself only through a dynamic array, so the enclosing
+    /// `Array` arm decides before the stack is consulted; for an illegal
+    /// direct cycle (`A { B b; } B { A a; }`) the on-stack hit terminates the
+    /// walk and `true` is the conservative answer.
+    fn is_dynamic(&self, ty: &Type, active: &mut Vec<String>) -> bool {
+        match ty {
+            Type::String(_) | Type::Bytes(_) => true,
+            Type::Array(arr) => arr.size().is_none() || self.is_dynamic(&arr.ty, active),
+            Type::Tuple(tuple) => tuple.types.iter().any(|t| self.is_dynamic(t, active)),
+            Type::Custom(path) => {
+                let name = path.last().as_string();
+                if active.contains(&name) {
+                    return true;
+                }
+                match self.defs.get(&name) {
+                    Some(CustomDef::Enum) => false,
+                    Some(CustomDef::Udt(underlying)) => self.is_dynamic(underlying, active),
+                    Some(CustomDef::Struct(fields)) => {
+                        active.push(name);
+                        let out = fields.iter().any(|f| self.is_dynamic(f, active));
+                        active.pop();
+                        out
+                    }
+                    // Undeclared: `check_resolvable` reports struct fields and
+                    // function params/returns (not `error` params); stay
+                    // conservative here either way.
+                    None => true,
+                }
+            }
+            _ => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +259,31 @@ mod tests {
 
     fn name_of(types: &CustomTypes, ty: &str) -> String {
         types.canonical_name(&syn::parse_str::<Type>(ty).unwrap())
+    }
+
+    #[test]
+    fn dynamism_resolves_user_defined_types() {
+        let t = types(
+            "enum Status { Open, Closed }
+             type Count is uint64;
+             struct Point { uint64 x; uint64 y; }
+             struct Line { Point a; Point b; }
+             struct Named { string name; }
+             struct Card { Named n; }
+             struct Tree { Tree[] children; }",
+        );
+        let dynamic = |ty: &str| t.is_abi_dynamic(&syn::parse_str::<Type>(ty).unwrap());
+        assert!(!dynamic("Status"));
+        assert!(!dynamic("Count"));
+        assert!(!dynamic("Point"));
+        assert!(!dynamic("Point[2]"));
+        assert!(dynamic("Point[]"));
+        assert!(dynamic("Named"));
+        // Nesting alone doesn't make a struct dynamic — its expanded leaves do.
+        assert!(!dynamic("Line"));
+        assert!(dynamic("Card"));
+        // A self-referential struct terminates and is dynamic.
+        assert!(dynamic("Tree"));
     }
 
     #[test]

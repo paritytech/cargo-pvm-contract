@@ -1,0 +1,12 @@
+error: `.sol` `import` is not supported; inline the imported types into this file.
+  --> tests/ui/abi_import_sol_import_rejected.rs:5:1
+   |
+ 5 | / pvm_contract_macros::abi_import! {
+ 6 | |     import "./other.sol";
+ 7 | |     interface Uses {
+ 8 | |         function id(uint256 x) external returns (uint256);
+ 9 | |     }
+10 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `pvm_contract_macros::abi_import` (in Nightly builds, run with -Z macro-backtrace for more info)

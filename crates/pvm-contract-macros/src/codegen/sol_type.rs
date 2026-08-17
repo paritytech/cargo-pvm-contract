@@ -139,15 +139,15 @@ fn generate_enum_sol_type(name: &syn::Ident, variant: &DataEnum) -> syn::Result<
             const ENCODED_SIZE: usize = u8::ENCODED_SIZE;
         }
 
-        impl ::pvm_contract_sdk::StaticDecode for #name {
-            unsafe fn decode_unchecked(input: &[u8], offset: usize) -> Self  {
-                u8::decode_unchecked(input, offset).try_into().unwrap()
-            }
-        }
-
         impl ::pvm_contract_sdk::SolDecode for #name {
             fn decode_at(input: &[u8], offset: usize) -> Result<Self, ::pvm_contract_sdk::DecodeError>  {
-                u8::decode_at(input, offset).and_then(|x| #name::try_from(x).map_err(|_| ::pvm_contract_sdk::DecodeError))
+                let word = input
+                    .get(offset..offset + 32)
+                    .ok_or(::pvm_contract_sdk::DecodeError)?;
+                if word[..31] != [0u8; 31] {
+                    return Err(::pvm_contract_sdk::DecodeError);
+                }
+                #name::try_from(word[31]).map_err(|_| ::pvm_contract_sdk::DecodeError)
             }
         }
 
