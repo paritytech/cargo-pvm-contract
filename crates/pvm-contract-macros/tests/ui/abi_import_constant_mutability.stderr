@@ -1,4 +1,4 @@
-error: constant mutability no supported
+error: constant mutability not supported
   --> tests/ui/abi_import_constant_mutability.rs:10:40
    |
 10 |         function f(uint256 x) external constant returns (uint256);

@@ -7,12 +7,12 @@ use crate::utils::{build_method_signature_expr, capitalize, to_pascal_case, to_s
 mod ctxt;
 
 pub fn expand_function(
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
     contract_name: syn::Ident,
     func: &ItemFunction,
     is_constructor: bool,
     alloc: bool,
-) -> syn::Result<(bool, TokenStream)> {
+) -> syn::Result<TokenStream> {
     let func_name = if is_constructor {
         format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
@@ -82,7 +82,7 @@ pub fn expand_function(
             }
         }
     };
-    Ok((is_constructor, res))
+    Ok(res)
 }
 
 /// Resolve every type in `func`'s signature to its Rust spelling, exactly
@@ -94,7 +94,7 @@ pub fn expand_function(
 fn resolve_signature_types(
     func: &ItemFunction,
     alloc: bool,
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
 ) -> syn::Result<(Vec<syn::Type>, TokenStream)> {
     let param_types = try_collect_combined(func.parameters.types().map(|x| {
         to_rust_type(x, alloc, ctxt).map(|typ| {
@@ -123,7 +123,7 @@ fn state_mutability_type(func: &ItemFunction, is_constructor: bool) -> syn::Resu
         Some(mutability @ syn_solidity::Mutability::Constant(_)) => {
             return Err(syn::Error::new(
                 mutability.span(),
-                "constant mutability no supported",
+                "constant mutability not supported",
             ));
         }
         None => quote! { NonPayable },
@@ -169,11 +169,12 @@ fn combine_results<A, B>(a: syn::Result<A>, b: syn::Result<B>) -> syn::Result<(A
 /// Failure is returned rather than expanded to a `compile_error!` in place:
 /// callers splice the result into several positions, and an inline error would
 /// be reported once per splice.
-fn to_rust_type(
-    typ: &syn_solidity::Type,
-    alloc: bool,
-    ctxt: &mut Ctxt,
-) -> syn::Result<TokenStream> {
+fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &Ctxt) -> syn::Result<TokenStream> {
+    // Path-shape and visibility errors take precedence over the alloc hint:
+    // `A.X.Point` should report its real problem, not "Enable alloc".
+    if let syn_solidity::Type::Custom(custom) = typ {
+        ctxt.resolve(custom)?;
+    }
     // `ctxt.is_abi_dynamic` resolves user-defined types (enum → `uint8`,
     // UDT → underlying, struct → its fields); syn-solidity's own
     // `Type::is_abi_dynamic` would reject every custom type as dynamic.
@@ -246,10 +247,9 @@ fn to_rust_type(
                 Resolution::TopLevel => quote! { super::#name },
                 // Interface modules are siblings at the invocation site: from
                 // inside one, another is reached via `super::`; from a
-                // file-level item (spliced directly at the invocation site) a
-                // bare path suffices — the sibling module shadows any glob
-                // import by language rule, and unlike `self::` it also
-                // resolves for function-local items.
+                // file-level item (spliced directly at the invocation site)
+                // the bare path resolves — the sibling module shadows any
+                // glob import by language rule.
                 Resolution::Qualified { ns, from_interface } => {
                     let ns = format_ident!("{}", to_snake_case(&ns.to_string()));
                     if from_interface {
@@ -275,7 +275,7 @@ fn to_rust_type(
 /// diagnostic per unresolvable field type.
 fn expand_fields<'a>(
     fields: impl Iterator<Item = &'a syn_solidity::VariableDeclaration>,
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
     alloc: bool,
 ) -> syn::Result<Vec<TokenStream>> {
     try_collect_combined(fields.enumerate().map(|(idx, x)| {
@@ -298,7 +298,7 @@ fn expand_fields<'a>(
 
 fn expand_struct(
     x: &syn_solidity::ItemStruct,
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
     alloc: bool,
 ) -> syn::Result<TokenStream> {
     let fields = expand_fields(x.fields.iter(), ctxt, alloc)?;
@@ -311,11 +311,7 @@ fn expand_struct(
     })
 }
 
-fn expand_error(
-    x: &syn_solidity::ItemError,
-    ctxt: &mut Ctxt,
-    alloc: bool,
-) -> syn::Result<TokenStream> {
+fn expand_error(x: &syn_solidity::ItemError, ctxt: &Ctxt, alloc: bool) -> syn::Result<TokenStream> {
     let fields = expand_fields(x.parameters.iter(), ctxt, alloc)?;
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
     Ok(quote! {
@@ -326,7 +322,7 @@ fn expand_error(
     })
 }
 
-fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> syn::Result<TokenStream> {
+fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &Ctxt, alloc: bool) -> syn::Result<TokenStream> {
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
     let typ = to_rust_type(&x.ty, alloc, ctxt)?;
     let sol_typ = x.ty.abi_name();
@@ -383,19 +379,18 @@ fn expand_enum(x: &syn_solidity::ItemEnum) -> TokenStream {
         .variants
         .iter()
         .map(|x| format_ident!("{}", x.ident.to_string()));
-    let res = quote! {
+    quote! {
         #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
         #[repr(u8)]
         pub enum #name {
             #(#variants),*
         }
-    };
-    res
+    }
 }
 fn expand_items<'a>(
     items: impl Iterator<Item = &'a syn_solidity::Item>,
     alloc: bool,
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
 ) -> impl Iterator<Item = TokenStream> {
     items.filter_map(move |x| {
         let expanded = match x {
@@ -449,8 +444,9 @@ pub fn expand_to_module(file: &File, alloc: bool) -> syn::Result<TokenStream> {
                     // just this function, so sibling items keep expanding.
                     // The other two sites are `expand_items` (per type item)
                     // and `abi_import` in lib.rs (whole-output failures).
-                    expand_function(ctxt, contract_name.clone(), x, is_constructor, alloc)
-                        .unwrap_or_else(|e| (is_constructor, e.to_compile_error()))
+                    let tokens = expand_function(ctxt, contract_name.clone(), x, is_constructor, alloc)
+                        .unwrap_or_else(|e| e.to_compile_error());
+                    (is_constructor, tokens)
                 });
             type Funcs = Vec<(bool, TokenStream)>;
             let (constructor, funcs): (Funcs, Funcs) = funcs.partition(|(is_constructor, _)| *is_constructor);
@@ -680,7 +676,7 @@ pub fn expand_to_module(file: &File, alloc: bool) -> syn::Result<TokenStream> {
         | syn_solidity::Item::Variable(_) => None,
     }).collect::<Vec<TokenStream>>();
 
-    let user_types = expand_items(file.items.iter(), alloc, &mut ctxt);
+    let user_types = expand_items(file.items.iter(), alloc, &ctxt);
 
     Ok(quote! {
         use pvm_contract_sdk::*;

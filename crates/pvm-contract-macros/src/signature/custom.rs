@@ -44,6 +44,11 @@ impl CustomTypes {
                         self.check_declared(&field.ty)?;
                     }
                 }
+                Item::Error(e) => {
+                    for param in e.parameters.iter() {
+                        self.check_declared(&param.ty)?;
+                    }
+                }
                 Item::Function(f) => {
                     for ty in f.parameters.types() {
                         self.check_declared(ty)?;
@@ -102,6 +107,14 @@ impl CustomTypes {
     /// that name, so a duplicate would otherwise silently resolve to whichever
     /// expanded last, corrupting the selector of every function that used the
     /// other.
+    ///
+    /// This uniqueness is also the invariant that keeps the two scoping models
+    /// agreeing: `Ctxt::resolve` (abi_import) validates paths against a
+    /// *namespaced* table, while this flat table answers `canonical_name` and
+    /// `is_abi_dynamic` by `path.last()` alone. Lifting the restriction (e.g.
+    /// to allow solc-style shadowing) requires namespacing this table first,
+    /// or the gate and the selector may consult a different declaration than
+    /// the one a qualified path resolves to.
     fn declare(&mut self, name: String, def: CustomDef) -> Result<(), String> {
         if self.defs.contains_key(&name) {
             return Err(format!(
