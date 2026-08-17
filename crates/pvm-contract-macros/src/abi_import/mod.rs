@@ -2873,7 +2873,7 @@ mod test {
     }
 
     #[test]
-    fn enum_expand() {
+    fn enum_file_level_referenced_from_interface() {
         let file = quote! {
                 enum B {First, Second}
 
@@ -3177,7 +3177,7 @@ mod test {
     }
 
     #[test]
-    fn enum_expand_2() {
+    fn enum_nested_as_param_and_return() {
         let file = quote! {
             #![abi_import(alloc = true)]
             pragma solidity ^0.8.0;
