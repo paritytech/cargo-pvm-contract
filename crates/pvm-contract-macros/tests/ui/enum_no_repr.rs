@@ -2,4 +2,5 @@
 enum T {
     F,
 }
+
 fn main() {}
