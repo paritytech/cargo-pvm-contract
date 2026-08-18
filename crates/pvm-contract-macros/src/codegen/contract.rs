@@ -1102,15 +1102,31 @@ fn parse_contract(
                                 if explicit_rename.is_some() {
                                     name.as_string() == rename
                                 } else {
-                                    // `to_camel_case` is how the ABI and selector paths derive a
-                                    // method's Solidity name, so it has to be accepted here too:
-                                    // the snake_case comparisons alone miss any name with a digit
-                                    // boundary (`fixed3` snake-cases to `fixed_3` in the
-                                    // scaffolder, but back to `fixed3` here), leaving a scaffolded
-                                    // project that cannot find its own interface function.
+                                    // Compare with underscores dropped and case folded, rather
+                                    // than trying to *recover* one spelling from the other.
+                                    // Recovery cannot be made total: the scaffolder snake_cases
+                                    // with `convert_case`, which is acronym-aware (`tokenURI` ->
+                                    // `token_uri`), while `to_snake_case` here breaks before every
+                                    // uppercase (`token_u_r_i`) and `to_camel_case` cannot restore
+                                    // the original capitalisation (`tokenUri`) — so `tokenURI`,
+                                    // i.e. any ERC-721 interface, matched nothing. Normalising
+                                    // both sides also subsumes the digit-boundary case (`fixed3`
+                                    // vs `fixed_3`), so one rule replaces three accreted clauses.
+                                    //
+                                    // This is a matching predicate only — the Solidity name used
+                                    // for the selector and the ABI still comes from `sol_func`, so
+                                    // a looser match cannot change what is emitted, only which
+                                    // interface function is found.
+                                    fn fold(s: &str) -> String {
+                                        s.strip_prefix("r#")
+                                            .unwrap_or(s)
+                                            .chars()
+                                            .filter(|c| *c != '_')
+                                            .flat_map(char::to_lowercase)
+                                            .collect()
+                                    }
                                     name.as_string() == rename
-                                        || to_snake_case(name.to_string().as_str()) == rust_fn_name
-                                        || name.as_string() == to_camel_case(&rust_fn_name)
+                                        || fold(&name.as_string()) == fold(&rust_fn_name)
                                 }
                             }) => Some(item_function),
                            _ => None
@@ -3118,6 +3134,53 @@ mod tests {
             !output.contains("\"r#move(\""),
             "raw prefix leaked into the hashed signature:\n{output}"
         );
+    }
+
+    /// Acronym-containing interface names must be found from the natural Rust
+    /// name, with no `#[selector(name = ...)]` needed. `tokenURI` is ERC-721, and
+    /// before the lookup folded case/underscores it matched nothing: the
+    /// scaffolder snake_cases with `convert_case` (`token_uri`) while the macro's
+    /// own `to_snake_case` breaks before every uppercase (`token_u_r_i`) and
+    /// `to_camel_case` cannot restore the capitalisation (`tokenUri`). Hand-written
+    /// contracts hit this too, which is why the fix belongs here and not in the
+    /// scaffolder's generated output. `fixed3` covers the digit boundary the same
+    /// rule subsumes.
+    #[test]
+    fn sol_lookup_matches_acronym_and_digit_boundary_names() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn token_uri(&self, token_id: U256) -> u64 { let _ = token_id; 0 }
+
+                    #[pvm_contract_macros::method]
+                    pub fn get_url(&self) -> u64 { 0 }
+
+                    #[pvm_contract_macros::method]
+                    pub fn fixed_3(&self, a: u64) -> u64 { a }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let args = ContractArgs {
+            sol_path: Some("tests/ui/fixtures/AcroLookup.sol".to_string()),
+            ..ContractArgs::default()
+        };
+        let output = expand_contract(args, item)
+            .expect("acronym and digit-boundary names must resolve against the interface")
+            .to_string();
+
+        // Selectors must hash the interface's own spelling, not the Rust name.
+        for sig in ["\"tokenURI(\"", "\"getURL(\"", "\"fixed3(\""] {
+            assert!(output.contains(sig), "missing {sig} in:\n{output}");
+        }
     }
 
     #[test]

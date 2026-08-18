@@ -67,19 +67,6 @@ struct MacroFunctionInfo {
     /// `#[pvm_contract_sdk::payable]` attribute line if the function is
     /// payable; empty otherwise. Emitted on a line above `#[method]`.
     payable_attr: String,
-    /// `#[pvm_contract_sdk::selector(name = "...")]` line, emitted whenever the
-    /// Solidity name is not literally the generated Rust name.
-    ///
-    /// Without it the macro has to *recover* the Solidity name from the Rust
-    /// one by camelCasing, and that round-trip is not total: the scaffolder
-    /// snake_cases with `convert_case`, which groups acronyms (`tokenURI` ->
-    /// `token_uri`), while the macro's `to_camel_case` cannot restore the
-    /// original capitalisation (`token_uri` -> `tokenUri`). The scaffolded
-    /// project then fails its own build with "No matching Solidity function
-    /// found" — for `tokenURI`, i.e. any ERC-721 interface. Naming the function
-    /// explicitly removes the dependency on the round-trip entirely and routes
-    /// the macro through its exact-match rename path.
-    selector_attr: String,
 }
 
 struct DslFunctionInfo {
@@ -676,22 +663,12 @@ fn extract_function_info(
             )
         };
         let (receiver, payable_attr) = receiver_from_mutability(state_mutability)?;
-        // Only when the names actually differ — a `.sol` `flip` scaffolds as
-        // `flip` and needs no annotation. Over-emitting would be harmless (the
-        // macro's rename path is an exact match on the same string), so err
-        // toward emitting.
-        let selector_attr = if *name == name_snake {
-            String::new()
-        } else {
-            format!("#[pvm_contract_sdk::selector(name = \"{name}\")]\n         ")
-        };
         functions.push(MacroFunctionInfo {
             name_snake,
             params,
             return_type,
             receiver,
             payable_attr,
-            selector_attr,
         });
     }
 
@@ -1915,38 +1892,6 @@ mod tests {
         };
         let functions = extract_dsl_function_info(&metadata).expect("`_` scaffolds under the DSL");
         assert_eq!(functions[0].solidity_signature, "_()");
-    }
-
-    #[test]
-    fn acronym_names_get_an_explicit_selector_attribute() {
-        // `convert_case` groups acronyms (`tokenURI` -> `token_uri`) and the
-        // macro's `to_camel_case` cannot restore the capitalisation
-        // (`token_uri` -> `tokenUri`), so recovering the Solidity name by
-        // round-trip fails and the scaffolded project could not find its own
-        // interface function. Naming it explicitly removes the round-trip.
-        let metadata = ContractMetadata {
-            output: MetadataOutput {
-                abi: vec![
-                    function_item("tokenURI", vec![]),
-                    function_item("balanceOf", vec![]),
-                    function_item("flip", vec![]),
-                ],
-            },
-        };
-        let (functions, _) = extract_function_info(&metadata).unwrap();
-
-        assert!(
-            functions[0].selector_attr.contains(r#"name = "tokenURI""#),
-            "{}",
-            functions[0].selector_attr
-        );
-        assert!(
-            functions[1].selector_attr.contains(r#"name = "balanceOf""#),
-            "{}",
-            functions[1].selector_attr
-        );
-        // An already-snake_case name round-trips, so it needs no annotation.
-        assert_eq!(functions[2].selector_attr, "");
     }
 
     #[test]
