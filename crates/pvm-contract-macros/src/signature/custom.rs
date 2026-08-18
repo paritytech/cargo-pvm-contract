@@ -324,6 +324,16 @@ mod tests {
     }
 
     #[test]
+    fn enum_declared_inside_an_interface_is_visible() {
+        // `visit_items` recurses into an interface body and declares `Item::Enum`
+        // from the same arm list as `Item::Struct`, so the nested enum resolves
+        // by bare name and by qualified path just as a nested struct does.
+        let t = types("interface IVote { enum Choice { Yes, No } }");
+        assert_eq!(name_of(&t, "Choice"), "uint8");
+        assert_eq!(name_of(&t, "IVote.Choice"), "uint8");
+    }
+
+    #[test]
     fn enum_is_uint8_and_udt_is_its_underlying_type() {
         let t = types(
             "enum Status { Open, Closed }

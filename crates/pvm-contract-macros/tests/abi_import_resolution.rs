@@ -36,8 +36,10 @@ pvm_contract_sdk::abi_import! {          // invocation 2: nests its own Ballot
     #![abi_import(alloc = true)]
     pragma solidity ^0.8.0;
     interface VoteG {
+        enum Choice { Yes, No }
         struct Ballot { address voter; bool support; }
         function cast(Ballot memory b) external;
+        function choose(Choice c) external;
     }
 }
 
@@ -74,6 +76,28 @@ fn calldata_for_cast() {
         })
         .call_raw(&mut Context::new(host), &mut input, &mut out);
     assert_eq!(&input[..4], &const_hex::decode("7003a557").unwrap()[..]);
+}
+
+/// An `enum` nested inside an interface, alongside the nested `Ballot`.
+/// Interface-nested *structs* are covered four ways above, but an enum reaches
+/// the resolver through `Resolution::Local` on a different `CustomDef` branch
+/// and is emitted as a different Rust item — the nested-type path is exactly
+/// where the original E0412 lived, and nothing else in the suite declares a
+/// Solidity enum anywhere but at file level.
+/// Selector: `keccak("choose(uint8)")[..4]` = `0xf94e349d`.
+#[test]
+fn calldata_for_choose() {
+    let (mut input, mut out) = (vec![0u8; 256], vec![0u8; 256]);
+    let mock = MockHostBuilder::new().build();
+    let host = Host::from_dyn(alloc::rc::Rc::new(mock.clone()));
+    let _ = vote_g::VoteG::from_address(Address([0u8; 20]))
+        .choose(vote_g::Choice::No)
+        .call_raw(&mut Context::new(host), &mut input, &mut out);
+    assert_eq!(&input[..4], &const_hex::decode("f94e349d").unwrap()[..]);
+    // The enum encodes as a full `uint8` word.
+    let mut word = [0u8; 32];
+    word[31] = 1;
+    assert_eq!(&input[4..36], &word);
 }
 
 #[test]
