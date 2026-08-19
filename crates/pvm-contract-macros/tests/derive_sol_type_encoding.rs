@@ -12,8 +12,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use alloy_core::primitives::Address as AlloyAddress;
+use alloy_core::sol;
 use alloy_core::sol_types::SolValue;
 use proptest::prelude::*;
+use proptest_derive::Arbitrary;
 use pvm_contract_sdk::SolType;
 use pvm_contract_sdk::{Address, Bytes, SolDecode, SolEncode, U256};
 
@@ -905,4 +907,89 @@ fn return_encoding_roundtrip_advanced() {
         <((u64, u64), alloc::string::String)>::decode(&buf).unwrap(),
         nested
     );
+}
+
+// ========================================================================
+// Static custom enum — proptest roundtrip
+// ========================================================================
+
+#[test]
+fn encode_decode_enum_type_static_proptest() {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, SolType, Arbitrary)]
+    #[repr(u8)]
+    enum R {
+        First,
+        Second,
+        Third,
+    }
+
+    sol!(
+        #[derive(Debug)]
+        enum B {
+            First,
+            Second,
+            Third,
+        }
+    );
+
+    impl From<R> for B {
+        fn from(value: R) -> Self {
+            match value {
+                R::First => B::First,
+                R::Second => B::Second,
+                R::Third => B::Third,
+            }
+        }
+    }
+
+    proptest!(|(a: R)| {
+        let val = a;
+        let alloy = B::from(val).abi_encode();
+        let mut buf = vec![0u8; val.encode_len()];
+        val.encode_to(&mut buf);
+        prop_assert_eq!(&buf, &alloy);
+        prop_assert_eq!(R::decode(&buf).unwrap(), val);
+    });
+}
+
+// ========================================================================
+// Static custom enum — negative decode (word validation)
+// ========================================================================
+
+// The enum wire format is a full `uint8` word: a short word, dirty padding
+// above the discriminant byte, and an out-of-range discriminant must all be
+// rejected. Pins the derive's own `decode_at` — delegating to
+// `u8::decode_at` would accept an out-of-range discriminant.
+#[test]
+fn enum_decode_rejects_invalid_words() {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, SolType)]
+    #[repr(u8)]
+    enum R {
+        First,
+        Second,
+        Third,
+    }
+
+    // Baseline: the highest valid discriminant decodes.
+    let mut word = [0u8; 32];
+    word[31] = 2;
+    assert_eq!(R::decode_at(&word, 0).unwrap(), R::Third);
+
+    // Discriminant >= variant count.
+    word[31] = 3;
+    assert!(R::decode_at(&word, 0).is_err());
+
+    // Dirty high padding byte (a uint256 that doesn't fit in uint8).
+    word[31] = 1;
+    word[0] = 1;
+    assert!(R::decode_at(&word, 0).is_err());
+
+    // Dirty padding byte directly above the discriminant.
+    word[0] = 0;
+    word[30] = 1;
+    assert!(R::decode_at(&word, 0).is_err());
+
+    // Short input: fewer than 32 bytes available at the offset.
+    assert!(R::decode_at(&[0u8; 31], 0).is_err());
+    assert!(R::decode_at(&word, 1).is_err());
 }

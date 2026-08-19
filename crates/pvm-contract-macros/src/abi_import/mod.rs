@@ -1,37 +1,50 @@
-use ctxt::Ctxt;
+use ctxt::{Ctxt, Resolution};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn_solidity::{File, ItemFunction, SolIdent};
+use syn_solidity::{File, ItemFunction, SolIdent, Spanned};
 pub mod parse;
-use crate::signature::compute_selector;
-use crate::utils::{capitalize, compute_function_signature, to_pascal_case, to_snake_case};
+use crate::utils::{build_method_signature_expr, capitalize, to_pascal_case, to_snake_case};
 mod ctxt;
 
 pub fn expand_function(
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
     contract_name: syn::Ident,
     func: &ItemFunction,
     is_constructor: bool,
     alloc: bool,
-) -> (bool, TokenStream) {
+) -> syn::Result<TokenStream> {
     let func_name = if is_constructor {
         format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
         format_ident!("{}", ctxt.function_name(func))
     };
-    let selector: Vec<TokenStream> = if is_constructor {
-        [0u8; 4].into_iter().map(|x| quote! { #x }).collect()
+    let (param_types, return_type) = resolve_signature_types(func, alloc, ctxt)?;
+    let state_mutability = state_mutability_type(func, is_constructor)?;
+
+    let names = func.parameters.names().enumerate().map(|(index, name)| {
+        let name = name
+            .as_ref()
+            .map_or_else(|| format!("s{index}"), |v| v.to_string());
+        format_ident!("{}", to_snake_case(&name))
+    });
+
+    let selector: TokenStream = if is_constructor {
+        let sel: Vec<TokenStream> = [0u8; 4].into_iter().map(|x| quote! { #x }).collect();
+        quote! {[#(#sel),*]}
     } else {
-        compute_selector(&compute_function_signature(func))
-            .into_iter()
-            .map(|x| quote! { #x })
-            .collect()
+        let sig_expr = build_method_signature_expr(&func.name().to_string(), &param_types);
+
+        quote! {
+            const {
+                ::pvm_contract_sdk::const_selector(#sig_expr)
+            }
+        }
     };
     let args = if func.parameters.is_empty() {
         quote! {}
     } else {
-        let args = func.parameters.iter().enumerate().map(|(index, param)| {
-            let typ = to_rust_type(&param.ty, alloc, ctxt);
+        let params = func.parameters.iter().enumerate().zip(&param_types);
+        let args = params.map(|((index, param), typ)| {
             let name = &param
                 .name
                 .as_ref()
@@ -43,76 +56,24 @@ pub fn expand_function(
         quote! { #(#args),* }
     };
 
-    let return_type = if let Some(ret) = func.return_type() {
-        let typ = to_rust_type(&ret, alloc, ctxt);
-        quote! { #typ}
-    } else {
-        quote! { () }
-    };
-
     let self_ = if is_constructor {
         quote! {}
     } else {
         quote! {mut self, }
     };
 
-    let types = func
-        .parameters
-        .types()
-        .map(|x| to_rust_type(x, alloc, ctxt));
-    let names = func.parameters.names().enumerate().map(|(index, name)| {
-        let name = name
-            .as_ref()
-            .map_or_else(|| format!("s{index}"), |v| v.to_string());
-        format_ident!("{}", to_snake_case(&name))
-    });
-
-    let state_mutability = if is_constructor {
-        quote! {
-            Payable
-        }
-    } else {
-        func.attributes
-            .mutability()
-            .map(|mutability| match mutability {
-                syn_solidity::Mutability::Pure(_) => quote! {
-                    Pure
-                },
-                syn_solidity::Mutability::View(_) => {
-                    quote! {
-                        View
-                    }
-                }
-                syn_solidity::Mutability::Payable(_) => {
-                    quote! {
-                        Payable
-                    }
-                }
-                syn_solidity::Mutability::Constant(_) => {
-                    quote! {
-                        compile_error!("constant mutability no supported")
-                    }
-                }
-            })
-            .unwrap_or_else(|| {
-                quote! {
-                    NonPayable
-                }
-            })
-    };
-    let types: Vec<TokenStream> = types.collect();
     let address = if is_constructor {
         quote! {[0u8;20].into()}
     } else {
         quote! { self.address }
     };
     let res = quote! {
-        pub fn #func_name(#self_ #args) -> #contract_name<#state_mutability, ( #(#types),* ), #return_type, true> {
-            #contract_name::<#state_mutability, ( #(#types),* ), #return_type, true> {
+        pub fn #func_name(#self_ #args) -> #contract_name<#state_mutability, ( #(#param_types),* ), #return_type, true> {
+            #contract_name::<#state_mutability, ( #(#param_types),* ), #return_type, true> {
                 address: #address,
-                call_builder: CallBuilder::<#state_mutability, ( #(#types),* ), #return_type> {
+                call_builder: CallBuilder::<#state_mutability, ( #(#param_types),* ), #return_type> {
                     payload: (#(#names),*),
-                    selector: [#(#selector),*],
+                    selector: #selector,
                     witness: #state_mutability::default(),
                     call_limits: Default::default(),
                     allow_reentry: false,
@@ -121,16 +82,109 @@ pub fn expand_function(
             }
         }
     };
-    (is_constructor, res)
+    Ok(res)
 }
 
-fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> TokenStream {
-    if !alloc && typ.is_abi_dynamic() {
-        return quote! {
-            compile_error!("Enable alloc to support dynamic types")
-        };
+/// Resolve every type in `func`'s signature to its Rust spelling, exactly
+/// once — the results are spliced into several positions of the expansion.
+/// Failures are combined so each offending type gets its own spanned
+/// diagnostic, and any failure aborts the whole item: a partially resolved
+/// parameter list would silently shorten the canonical signature the selector
+/// hashes and misalign the argument names against their types.
+fn resolve_signature_types(
+    func: &ItemFunction,
+    alloc: bool,
+    ctxt: &Ctxt,
+) -> syn::Result<(Vec<syn::Type>, TokenStream)> {
+    let param_types = try_collect_combined(func.parameters.types().map(|x| {
+        to_rust_type(x, alloc, ctxt).map(|typ| {
+            // An `Ok` type is always parseable; the error arms return `Err`.
+            syn::parse2::<syn::Type>(typ.clone())
+                .unwrap_or_else(|e| panic!("invalid rust type generated;\nerror: {e}\ntype:{typ}"))
+        })
+    }));
+    let return_type = match func.return_type() {
+        Some(ret) => to_rust_type(&ret, alloc, ctxt).map(|typ| quote! { #typ}),
+        None => Ok(quote! { () }),
+    };
+    combine_results(param_types, return_type)
+}
+
+/// The `StateMutability` marker type for `func`. Solidity's pre-0.5
+/// `constant` mutability is unsupported.
+fn state_mutability_type(func: &ItemFunction, is_constructor: bool) -> syn::Result<TokenStream> {
+    if is_constructor {
+        return Ok(quote! { Payable });
     }
-    match typ {
+    Ok(match func.attributes.mutability() {
+        Some(syn_solidity::Mutability::Pure(_)) => quote! { Pure },
+        Some(syn_solidity::Mutability::View(_)) => quote! { View },
+        Some(syn_solidity::Mutability::Payable(_)) => quote! { Payable },
+        Some(mutability @ syn_solidity::Mutability::Constant(_)) => {
+            return Err(syn::Error::new(
+                mutability.span(),
+                "constant mutability not supported",
+            ));
+        }
+        None => quote! { NonPayable },
+    })
+}
+
+/// Collect results, combining all errors so each offending element gets its
+/// own spanned diagnostic; any failure fails the whole collection
+/// (all-or-nothing — a partially resolved list would misalign siblings).
+fn try_collect_combined<T>(iter: impl Iterator<Item = syn::Result<T>>) -> syn::Result<Vec<T>> {
+    let mut err: Option<syn::Error> = None;
+    let mut ok = Vec::new();
+    for item in iter {
+        match item {
+            Ok(v) => ok.push(v),
+            Err(e) => match &mut err {
+                Some(acc) => acc.combine(e),
+                None => err = Some(e),
+            },
+        }
+    }
+    match err {
+        Some(err) => Err(err),
+        None => Ok(ok),
+    }
+}
+
+/// Combine two independent results, merging both errors so the first failure
+/// doesn't mask diagnostics from the second.
+fn combine_results<A, B>(a: syn::Result<A>, b: syn::Result<B>) -> syn::Result<(A, B)> {
+    match (a, b) {
+        (Ok(a), Ok(b)) => Ok((a, b)),
+        (Err(mut e), Err(e2)) => {
+            e.combine(e2);
+            Err(e)
+        }
+        (Err(e), Ok(_)) | (Ok(_), Err(e)) => Err(e),
+    }
+}
+
+/// Resolve a Solidity type to its Rust spelling.
+///
+/// Failure is returned rather than expanded to a `compile_error!` in place:
+/// callers splice the result into several positions, and an inline error would
+/// be reported once per splice.
+fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &Ctxt) -> syn::Result<TokenStream> {
+    // Path-shape and visibility errors take precedence over the alloc hint:
+    // `A.X.Point` should report its real problem, not "Enable alloc".
+    if let syn_solidity::Type::Custom(custom) = typ {
+        ctxt.resolve(custom)?;
+    }
+    // `ctxt.is_abi_dynamic` resolves user-defined types (enum → `uint8`,
+    // UDT → underlying, struct → its fields); syn-solidity's own
+    // `Type::is_abi_dynamic` would reject every custom type as dynamic.
+    if !alloc && ctxt.is_abi_dynamic(typ) {
+        return Err(syn::Error::new(
+            typ.span(),
+            "Enable alloc to support dynamic types",
+        ));
+    }
+    Ok(match typ {
         syn_solidity::Type::Address(_span, _payable) => quote! { Address },
         syn_solidity::Type::Bool(_) => quote! { bool },
         syn_solidity::Type::String(_) => quote! {
@@ -168,13 +222,14 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
             let args = type_tuple
                 .types
                 .iter()
-                .map(|x| to_rust_type(x, alloc, ctxt));
+                .map(|x| to_rust_type(x, alloc, ctxt))
+                .collect::<syn::Result<Vec<TokenStream>>>()?;
             quote! {
                 (#(#args),*)
             }
         }
         syn_solidity::Type::Array(type_array) => {
-            let typ = to_rust_type(&type_array.ty, alloc, ctxt);
+            let typ = to_rust_type(&type_array.ty, alloc, ctxt)?;
             if let Some(size_lit) = type_array.size() {
                 quote! {
                   [#typ; #size_lit]
@@ -186,59 +241,44 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &mut Ctxt) -> Token
             }
         }
         syn_solidity::Type::Custom(custom) => {
-            if ctxt.resolve_type(custom.clone()) {
-                let (ns, path) = if custom.len() == 1 {
-                    (None, to_pascal_case(&custom.first().to_string()))
-                } else {
-                    (
-                        Some(to_snake_case(&custom.first().to_string())),
-                        to_pascal_case(&custom.last().to_string()),
-                    )
-                };
-                let ns = ns
-                    .map(|x| {
-                        let ident = format_ident!("{}", x);
-                        quote! { super::#ident }
-                    })
-                    .or_else(|| Some(quote! {super}));
-                let path = format_ident!("{}", path);
-                let path = Some(quote! {::#path});
-                let path = [ns, path];
-                let path = path.into_iter();
-                quote! {
-                    #(#path)*
-                }
-            } else if ctxt.is_enum(custom.clone()) {
-                let lit = format!(
-                    "Solidity `enum` types {} are not yet supported by abi_import!",
-                    &custom
-                );
-                quote! { compile_error!(#lit); }
-            } else {
-                let lit = format!("unknown type: {}", typ);
-
-                quote! {
-                    compile_error!(#lit);
+            let name = format_ident!("{}", to_pascal_case(&custom.last().to_string()));
+            match ctxt.resolve(custom)? {
+                Resolution::Local => quote! { #name },
+                Resolution::TopLevel => quote! { super::#name },
+                // Interface modules are siblings at the invocation site: from
+                // inside one, another is reached via `super::`; from a
+                // file-level item (spliced directly at the invocation site)
+                // the bare path resolves — the sibling module shadows any
+                // glob import by language rule.
+                Resolution::Qualified { ns, from_interface } => {
+                    let ns = format_ident!("{}", to_snake_case(&ns.to_string()));
+                    if from_interface {
+                        quote! { super::#ns::#name }
+                    } else {
+                        quote! { #ns::#name }
+                    }
                 }
             }
         }
         typ @ syn_solidity::Type::Function(_) => {
             let lit = format!("abi import for function types is not supported: {}", typ);
-            quote! {
-                compile_error!(#lit);
-            }
+            return Err(syn::Error::new(typ.span(), lit));
         }
         typ @ syn_solidity::Type::Mapping(_) => {
             let lit = format!("abi import is not supported for type mapping: {}", typ);
-            quote! {
-                compile_error!(#lit);
-            }
+            return Err(syn::Error::new(typ.span(), lit));
         }
-    }
+    })
 }
 
-fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
-    let fields = x.fields.iter().enumerate().map(|(idx, x)| {
+/// Expand struct/error fields to `pub name: Type` declarations, one combined
+/// diagnostic per unresolvable field type.
+fn expand_fields<'a>(
+    fields: impl Iterator<Item = &'a syn_solidity::VariableDeclaration>,
+    ctxt: &Ctxt,
+    alloc: bool,
+) -> syn::Result<Vec<TokenStream>> {
+    try_collect_combined(fields.enumerate().map(|(idx, x)| {
         let name = format_ident!(
             "{}",
             to_snake_case(
@@ -248,50 +288,45 @@ fn expand_struct(x: &syn_solidity::ItemStruct, ctxt: &mut Ctxt, alloc: bool) -> 
                     .unwrap_or(format!("param_{}", idx))
             )
         );
-        let typ = to_rust_type(&x.ty, alloc, ctxt);
-        quote! {
-            pub #name: #typ
-        }
-    });
+        to_rust_type(&x.ty, alloc, ctxt).map(|typ| {
+            quote! {
+                pub #name: #typ
+            }
+        })
+    }))
+}
+
+fn expand_struct(
+    x: &syn_solidity::ItemStruct,
+    ctxt: &Ctxt,
+    alloc: bool,
+) -> syn::Result<TokenStream> {
+    let fields = expand_fields(x.fields.iter(), ctxt, alloc)?;
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
-    quote! {
+    Ok(quote! {
         #[derive(SolType, PartialEq, Eq,  Debug)]
         pub struct #name {
             #(#fields),*
         }
-    }
+    })
 }
 
-fn expand_error(x: &syn_solidity::ItemError, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
-    let fields = x.parameters.iter().enumerate().map(|(idx, x)| {
-        let name = format_ident!(
-            "{}",
-            to_snake_case(
-                &x.name
-                    .clone()
-                    .map(|x| x.as_string())
-                    .unwrap_or(format!("param_{}", idx))
-            )
-        );
-        let typ = to_rust_type(&x.ty, alloc, ctxt);
-        quote! {
-            pub #name: #typ
-        }
-    });
+fn expand_error(x: &syn_solidity::ItemError, ctxt: &Ctxt, alloc: bool) -> syn::Result<TokenStream> {
+    let fields = expand_fields(x.parameters.iter(), ctxt, alloc)?;
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
-    quote! {
+    Ok(quote! {
         #[derive(SolError, PartialEq, Eq, Debug)]
         pub struct #name {
             #(#fields),*
         }
-    }
+    })
 }
 
-fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenStream {
+fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &Ctxt, alloc: bool) -> syn::Result<TokenStream> {
     let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
-    let typ = to_rust_type(&x.ty, alloc, ctxt);
+    let typ = to_rust_type(&x.ty, alloc, ctxt)?;
     let sol_typ = x.ty.abi_name();
-    quote! {
+    Ok(quote! {
         #[derive(PartialEq, Eq, Debug)]
         pub struct #name(pub #typ);
 
@@ -336,25 +371,53 @@ fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &mut Ctxt, alloc: bool) -> TokenS
                 unsafe { #typ::decode_unchecked(input, offset).into() }
             }
         }
+    })
+}
+fn expand_enum(x: &syn_solidity::ItemEnum) -> TokenStream {
+    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let variants = x
+        .variants
+        .iter()
+        .map(|x| format_ident!("{}", x.ident.to_string()));
+    quote! {
+        #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
+        #[repr(u8)]
+        pub enum #name {
+            #(#variants),*
+        }
     }
 }
-
 fn expand_items<'a>(
     items: impl Iterator<Item = &'a syn_solidity::Item>,
     alloc: bool,
-    ctxt: &mut Ctxt,
+    ctxt: &Ctxt,
 ) -> impl Iterator<Item = TokenStream> {
-    items.filter_map(move |x| match x {
-        syn_solidity::Item::Struct(x) => Some(expand_struct(x, ctxt, alloc)),
-        syn_solidity::Item::Error(x) => Some(expand_error(x, ctxt, alloc)),
-        syn_solidity::Item::Udt(x) => Some(expand_udt(x, ctxt, alloc)),
-        _ => None,
+    items.filter_map(move |x| {
+        let expanded = match x {
+            syn_solidity::Item::Struct(x) => expand_struct(x, ctxt, alloc),
+            syn_solidity::Item::Error(x) => expand_error(x, ctxt, alloc),
+            syn_solidity::Item::Udt(x) => expand_udt(x, ctxt, alloc),
+            syn_solidity::Item::Enum(x) => Ok(expand_enum(x)),
+            _ => return None,
+        };
+        // Conversion boundary (per type item): the error replaces just this
+        // item's slot, so sibling items keep expanding. The other two sites
+        // are the funcs closure in `expand_to_module` (per function) and
+        // `abi_import` in lib.rs (whole-output failures).
+        Some(expanded.unwrap_or_else(|e| e.to_compile_error()))
     })
 }
 
-pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
+pub fn expand_to_module(file: &File, alloc: bool) -> syn::Result<TokenStream> {
+    // Whole-invocation failures carry no better span than the invocation
+    // itself: on stable, `file.span()` degrades to the first item's span
+    // (`Span::join` is unavailable), which would misattribute a whole-file
+    // error (e.g. a duplicate name between items 3 and 7) to item 1.
+    crate::utils::reject_sol_imports(file)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
     let mut ctxt = Ctxt::default();
-    ctxt.visit_file(file);
+    ctxt.visit_file(file)
+        .map_err(|e| syn::Error::new(proc_macro2::Span::call_site(), e))?;
     let modules = file.items.iter().filter_map(|item| match item {
         syn_solidity::Item::Contract(item_contract) if item_contract.is_interface() => {
             let contract_name = format_ident!("{}", to_pascal_case(&item_contract.name.to_string()));
@@ -376,7 +439,15 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
                     },
                     _ => None,
                 })
-                .map(|(x, is_constructor)| expand_function(ctxt, contract_name.clone(), x, is_constructor, alloc));
+                .map(|(x, is_constructor)| {
+                    // Conversion boundary (per function): the error replaces
+                    // just this function, so sibling items keep expanding.
+                    // The other two sites are `expand_items` (per type item)
+                    // and `abi_import` in lib.rs (whole-output failures).
+                    let tokens = expand_function(ctxt, contract_name.clone(), x, is_constructor, alloc)
+                        .unwrap_or_else(|e| e.to_compile_error());
+                    (is_constructor, tokens)
+                });
             type Funcs = Vec<(bool, TokenStream)>;
             let (constructor, funcs): (Funcs, Funcs) = funcs.partition(|(is_constructor, _)| *is_constructor);
             let funcs = funcs.into_iter().map(|x| x.1);
@@ -605,14 +676,14 @@ pub fn expand_to_module(file: &File, alloc: bool) -> TokenStream {
         | syn_solidity::Item::Variable(_) => None,
     }).collect::<Vec<TokenStream>>();
 
-    let user_types = expand_items(file.items.iter(), alloc, &mut ctxt);
+    let user_types = expand_items(file.items.iter(), alloc, &ctxt);
 
-    quote! {
+    Ok(quote! {
         use pvm_contract_sdk::*;
 
         #(#modules)*
         #(#user_types)*
-    }
+    })
 }
 
 #[cfg(test)]
@@ -649,7 +720,7 @@ mod test {
             #tts
         })
         .unwrap();
-        let tokens = expand_to_module(&file, true).to_token_stream();
+        let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
     }
 
@@ -701,7 +772,15 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<Pure, (u64, u64), (u64)> {
                                 payload: (a, b),
-                                selector: [110u8, 44u8, 115u8, 45u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "add(", < u64 as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
+                                            ",", < u64 as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
+                                            ")"
+                                        ),
+                                    )
+                                },
                                 witness: Pure::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -714,7 +793,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<Payable, (), ()> {
                                 payload: (),
-                                selector: [208u8, 227u8, 13u8, 176u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("deposit(", ")"),
+                                    )
+                                },
                                 witness: Payable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -727,7 +810,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (), (u64)> {
                                 payload: (),
-                                selector: [168u8, 125u8, 148u8, 44u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("getCount(", ")"),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -743,7 +830,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (bool), ()> {
                                 payload: (flag),
-                                selector: [57u8, 39u8, 246u8, 175u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "setFlag(", < bool as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -761,7 +855,16 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<NonPayable, (Address, U256, u32), (bool)> {
                                 payload: (to, amount, nonce),
-                                selector: [103u8, 215u8, 9u8, 208u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "transfer(", < Address as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ",", < U256 as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ",", < u32 as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1070,7 +1173,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (), ((u64, u64))> {
                                 payload: (),
-                                selector: [147u8, 139u8, 95u8, 50u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("origin(", ")"),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1100,7 +1207,14 @@ mod test {
                                 (((u64, u64), (u64, u64))),
                             > {
                                 payload: (line),
-                                selector: [5u8, 150u8, 191u8, 142u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "reflect(", < ((u64, u64), (u64, u64)) as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1411,7 +1525,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, ((U256, U256)), ((U256, U256))> {
                                 payload: (value),
-                                selector: [184u8, 219u8, 195u8, 2u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "touch(", < (U256, U256) as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1722,7 +1843,11 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (), ((u64, alloc::string::String))> {
                                 payload: (),
-                                selector: [233u8, 148u8, 217u8, 223u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!("getNamed(", ")"),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -1753,7 +1878,15 @@ mod test {
                                 (u64),
                             > {
                                 payload: (data, flag),
-                                selector: [57u8, 253u8, 73u8, 204u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "process(", < (u64, alloc::string::String) as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ",", < bool as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2066,7 +2199,14 @@ mod test {
                             address: self.address,
                             call_builder: CallBuilder::<View, (Address), (U256)> {
                                 payload: (account),
-                                selector: [112u8, 160u8, 130u8, 49u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "balanceOf(", < Address as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: View::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2365,7 +2505,7 @@ mod test {
         };
         let file = {
             let file = syn_solidity::parse2(file).unwrap();
-            let tokens = expand_to_module(&file, true).to_token_stream();
+            let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
         expect_test::expect![[r#"
@@ -2398,13 +2538,20 @@ mod test {
                 > Ballot<Mutability, Inputs, Outputs, false> {
                     pub fn send_voter_info(
                         mut self,
-                        voter: super::Voter,
-                    ) -> Ballot<NonPayable, (super::Voter), (), true> {
-                        Ballot::<NonPayable, (super::Voter), (), true> {
+                        voter: Voter,
+                    ) -> Ballot<NonPayable, (Voter), (), true> {
+                        Ballot::<NonPayable, (Voter), (), true> {
                             address: self.address,
-                            call_builder: CallBuilder::<NonPayable, (super::Voter), ()> {
+                            call_builder: CallBuilder::<NonPayable, (Voter), ()> {
                                 payload: (voter),
-                                selector: [217u8, 117u8, 149u8, 186u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "sendVoterInfo(", < Voter as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2425,7 +2572,15 @@ mod test {
                                 (),
                             > {
                                 payload: (a, b),
-                                selector: [178u8, 1u8, 18u8, 196u8],
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "add(", < super::Point as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ",", < super::Point as
+                                            ::pvm_contract_sdk::SolEncode > ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
                                 witness: NonPayable::default(),
                                 call_limits: Default::default(),
                                 allow_reentry: false,
@@ -2708,6 +2863,608 @@ mod test {
             pub struct Point {
                 pub a: U256,
                 pub b: U256,
+            }
+        "#]]
+        .assert_eq(&file);
+    }
+
+    #[test]
+    fn enum_file_level_referenced_from_interface() {
+        let file = quote! {
+                enum B {First, Second}
+
+                interface Ballot {
+                    struct A { // Struct
+                        B b;
+                    }
+
+                    function add(A memory b) external;
+                }
+        };
+        let file = {
+            let file = syn_solidity::parse2(file).unwrap();
+            let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
+            prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+        };
+
+        expect_test::expect![[r#"
+            use pvm_contract_sdk::*;
+            pub mod ballot {
+                use super::*;
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
+            interface Ballot {
+                struct A { B b; }
+                function add(A memory b) external;
+            }
+            ```*/
+                ///
+                pub struct Ballot<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Ballot<Mutability, Inputs, Outputs, false> {
+                    pub fn add(mut self, b: A) -> Ballot<NonPayable, (A), (), true> {
+                        Ballot::<NonPayable, (A), (), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<NonPayable, (A), ()> {
+                                payload: (b),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "add(", < A as ::pvm_contract_sdk::SolEncode > ::SOL_NAME,
+                                            ")"
+                                        ),
+                                    )
+                                },
+                                witness: NonPayable::default(),
+                                call_limits: Default::default(),
+                                allow_reentry: false,
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                }
+                impl Ballot<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> Ballot<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
+                    }
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Ballot<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call.
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a delegated call to another contract.
+                    ///
+                    /// Always requires `&mut impl ContractContext` regardless of the
+                    /// callee's declared mutability: the callee runs in caller's
+                    /// storage context, so even a "view" callee can mutate state.
+                    pub fn delegate_call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract.
+                    pub fn delegate_call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .delegate_call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> Ballot<View, Inputs, Outputs, true> {
+                    /// Perform a call to a `view` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> Ballot<Pure, Inputs, Outputs, true> {
+                    /// Perform a call to a `pure` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > Ballot<NonPayable, Inputs, Outputs, true> {
+                    /// Perform a call to a `nonpayable` callee. Caller must take
+                    /// `&mut self` — `&self` (view) caller methods cannot construct
+                    /// the `&mut impl ContractContext` argument.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> Ballot<Payable, Inputs, Outputs, true> {
+                    /// Perform a call to a `payable` callee. Caller must take
+                    /// `&mut self`.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                    /// Instantiate another contract by it's code_hash. Always
+                    /// requires `&mut impl ContractContext`: instantiation transfers
+                    /// value, emits a deploy event, and bumps the caller's nonce.
+                    pub fn instantiate_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .instantiate_raw(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf.as_mut_slice(),
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        let output = self
+                            .call_builder
+                            .extract_output(&host, output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call.
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
+                }
+                #[derive(SolType, PartialEq, Eq, Debug)]
+                pub struct A {
+                    pub b: super::B,
+                }
+            }
+            #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
+            #[repr(u8)]
+            pub enum B {
+                First,
+                Second,
+            }
+        "#]]
+        .assert_eq(&file);
+    }
+
+    #[test]
+    fn enum_nested_as_param_and_return() {
+        let file = quote! {
+            #![abi_import(alloc = true)]
+            pragma solidity ^0.8.0;
+            interface VoteB {
+                enum Color { Red, Green, Blue }
+                function pick(Color c) external view returns (Color);
+            }
+        };
+        let file = {
+            let file = syn_solidity::parse2(file).unwrap();
+            let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
+            prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
+        };
+
+        expect_test::expect![[r#"
+            use pvm_contract_sdk::*;
+            pub mod vote_b {
+                use super::*;
+                #[derive(Clone, Copy)]
+                /// the code is derived from this interface
+                /**```solidity
+            interface VoteB {
+                enum Color { Red, Green, Blue }
+                function pick(Color c) external view returns (Color);
+            }
+            ```*/
+                ///
+                pub struct VoteB<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                    const INITIALIZED: bool,
+                > {
+                    address: Address,
+                    call_builder: CallBuilder<Mutability, Inputs, Outputs>,
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > VoteB<Mutability, Inputs, Outputs, false> {
+                    pub fn pick(mut self, c: Color) -> VoteB<View, (Color), (Color), true> {
+                        VoteB::<View, (Color), (Color), true> {
+                            address: self.address,
+                            call_builder: CallBuilder::<View, (Color), (Color)> {
+                                payload: (c),
+                                selector: const {
+                                    ::pvm_contract_sdk::const_selector(
+                                        ::pvm_contract_sdk::const_format::concatcp!(
+                                            "pick(", < Color as ::pvm_contract_sdk::SolEncode >
+                                            ::SOL_NAME, ")"
+                                        ),
+                                    )
+                                },
+                                witness: View::default(),
+                                call_limits: Default::default(),
+                                allow_reentry: false,
+                                _ret: core::marker::PhantomData,
+                            },
+                        }
+                    }
+                }
+                impl VoteB<Pure, (), (), false> {
+                    /// Create api for the contract from an address
+                    pub fn from_address(address: Address) -> VoteB<Pure, (), (), false> {
+                        Self {
+                            address,
+                            call_builder: CallBuilder::<Pure, (), ()>::default(),
+                        }
+                    }
+                }
+                impl<
+                    Mutability: StateMutability,
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > VoteB<Mutability, Inputs, Outputs, true> {
+                    /// Set call limits for the given call.
+                    pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
+                        self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Perform a delegated call to another contract.
+                    ///
+                    /// Always requires `&mut impl ContractContext` regardless of the
+                    /// callee's declared mutability: the callee runs in caller's
+                    /// storage context, so even a "view" callee can mutate state.
+                    pub fn delegate_call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.delegate_call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a delegated call to another contract.
+                    pub fn delegate_call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .delegate_call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> VoteB<View, Inputs, Outputs, true> {
+                    /// Perform a call to a `view` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> VoteB<Pure, Inputs, Outputs, true> {
+                    /// Perform a call to a `pure` callee.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(root.host()).max(512)
+                        ];
+                        self.call_builder.extract_output(root.host(), output_buf.as_mut_slice())
+                    }
+                }
+                impl<
+                    Inputs: SolEncode,
+                    Outputs: SolDecode,
+                > VoteB<NonPayable, Inputs, Outputs, true> {
+                    /// Perform a call to a `nonpayable` callee. Caller must take
+                    /// `&mut self` — `&self` (view) caller methods cannot construct
+                    /// the `&mut impl ContractContext` argument.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                }
+                impl<Inputs: SolEncode, Outputs: SolDecode> VoteB<Payable, Inputs, Outputs, true> {
+                    /// Perform a call to a `payable` callee. Caller must take
+                    /// `&mut self`.
+                    pub fn call_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<Outputs, CallError> {
+                        self.call_builder.call(root, self.address, input_buf, output_buf)
+                    }
+                    /// Perform a call to another contract.
+                    pub fn call<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                    ) -> Result<Outputs, CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 4 + self.call_builder.payload.encode_len()
+                        ];
+                        let host = root.host().clone();
+                        self.call_builder.call_raw(root, self.address, input_buf.as_mut_slice())?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        self.call_builder.extract_output(&host, output_buf.as_mut_slice())
+                    }
+                    /// Instantiate another contract by it's code_hash. Always
+                    /// requires `&mut impl ContractContext`: instantiation transfers
+                    /// value, emits a deploy event, and bumps the caller's nonce.
+                    pub fn instantiate_raw<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                        input_buf: &mut [u8],
+                        output_buf: &mut [u8],
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut address_buf = [0u8; 20];
+                        let result = self
+                            .call_builder
+                            .instantiate(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf,
+                                output_buf,
+                            )?;
+                        Ok((address_buf.into(), result))
+                    }
+                    /// Instantiate another contract by it's code_hash
+                    pub fn instantiate<R0: ContractContext>(
+                        &self,
+                        root: &mut R0,
+                        code_hash: &[u8; 32],
+                        value: u128,
+                        limits: RefTimeAndProofSizeLimits,
+                        salt: Option<&[u8; 32]>,
+                    ) -> Result<(Address, Outputs), CallError> {
+                        let mut input_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; 32 + self.call_builder.payload.encode_len()
+                        ];
+                        let mut address_buf = [0u8; 20];
+                        let host = root.host().clone();
+                        self.call_builder
+                            .instantiate_raw(
+                                root,
+                                limits,
+                                value,
+                                code_hash,
+                                salt,
+                                &mut address_buf,
+                                input_buf.as_mut_slice(),
+                            )?;
+                        let mut output_buf: alloc::vec::Vec<u8> = alloc::vec![
+                            0; self.call_builder.output_size(& host).max(512)
+                        ];
+                        let output = self
+                            .call_builder
+                            .extract_output(&host, output_buf.as_mut_slice())?;
+                        Ok((address_buf.into(), output))
+                    }
+                    /// Set the transfer `.value` of the call.
+                    pub fn set_value(mut self, value: u128) -> Self {
+                        self.call_builder = self.call_builder.set_value(value);
+                        self
+                    }
+                }
+                #[derive(PartialEq, Eq, Debug, ::pvm_contract_sdk::SolType)]
+                #[repr(u8)]
+                pub enum Color {
+                    Red,
+                    Green,
+                    Blue,
+                }
             }
         "#]]
         .assert_eq(&file);

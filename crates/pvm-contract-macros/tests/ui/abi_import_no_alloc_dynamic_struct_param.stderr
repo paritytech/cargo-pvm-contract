@@ -1,0 +1,11 @@
+error: Enable alloc to support dynamic types
+  --> tests/ui/abi_import_no_alloc_dynamic_struct_param.rs:10:20
+   |
+10 |         function f(S s) external;
+   |                    ^
+
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_no_alloc_dynamic_struct_param.rs:7:9
+  |
+7 |         string a;
+  |         ^^^^^^

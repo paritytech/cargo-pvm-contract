@@ -11,6 +11,7 @@ help: the trait `StorageDecode` is not implemented for `MissingSolStorage`
    | ^^^^^^^^^^^^^^^^^^^^^^^^
    = note: add `#[derive(SolStorage)]` to `MissingSolStorage` — only types deriving `SolStorage` can be `Lazy<T>` / `Mapping<_, T>` values
    = note: if `MissingSolStorage` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage
+   = note: for `Vec<u8>` use `Bytes` instead (`Vec<u8>` is Solidity `uint8[]`, a different on-chain layout from `bytes`); other `Vec<T>` values need `T: StorageArrayElement` (static elements only)
    = help: the following other types implement trait `StorageDecode`:
              (A, B)
              (A, B, C)

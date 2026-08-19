@@ -1,0 +1,5 @@
+error: qualified type paths must have the form `Interface.Type`: A.X.Point
+  --> tests/ui/abi_import_path_too_deep.rs:14:20
+   |
+14 |         function f(A.X.Point p) external;
+   |                    ^

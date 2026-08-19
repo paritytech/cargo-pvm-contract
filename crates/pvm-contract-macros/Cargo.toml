@@ -25,8 +25,8 @@ syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
 syn-solidity = { workspace = true }
 alloy-json-abi = { version = "1.5" }
 keccak-const.workspace = true
-pvm-contract-types = { path = "../pvm-contract-types" }
-pvm-contract-core = { path = "../pvm-contract-core" }
+pvm-contract-types = { path = "../pvm-contract-types", version = "0.4.0" }
+pvm-contract-core = { path = "../pvm-contract-core", version = "0.4.0" }
 serde_json = { workspace = true }
 const-hex = { version = "^1" }
 macro-string = { version = "0.2" }
@@ -38,6 +38,7 @@ alloy-core = { version = "1.5", features = ["sol-types"] }
 pvm-contract-types = { path = "../pvm-contract-types", features = ["alloc", "std", "abi-gen"] }
 pvm-contract-sdk = { path = "../pvm-contract-sdk", features = ["alloc", "std", "abi-gen"] }
 proptest = "1"
+proptest-derive = "0.8.0"
 expect-test = { version = "1.5.1" }
 prettyplease = { version = "0.2" }
 trybuild = "1.0"

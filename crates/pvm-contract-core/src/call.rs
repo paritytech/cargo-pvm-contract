@@ -208,8 +208,31 @@ pub struct RefTimeAndProofSizeLimits {
     /// How much proof_size to devote for the execution. u64::MAX = use all.
     pub proof_size_limit: u64,
     /// The storage deposit limit for instantiation.
-    /// Passing u8::MAX means setting no specific limit for the call, which implies storage usage up to the limit of the parent call.
+    ///
+    /// Passing `[0xFF; 32]` means setting no specific limit for the call, which
+    /// implies storage usage up to the limit of the parent call.
+    ///
+    /// **Little-endian.** pallet-revive reads this buffer with
+    /// `U256::from_little_endian`, same as the `value` argument, so a
+    /// big-endian-encoded number here silently becomes a different limit. The
+    /// all-`0xFF` sentinel above is the one value that reads identically either
+    /// way. Prefer [`RefTimeAndProofSizeLimits::new`], which encodes for you.
     pub deposit_limit: [u8; 32],
+}
+
+impl RefTimeAndProofSizeLimits {
+    /// Build limits from a numeric storage-deposit cap, encoding it in the
+    /// little-endian form pallet-revive expects.
+    ///
+    /// Use this in preference to filling [`Self::deposit_limit`] by hand; see
+    /// that field for why the byte order matters.
+    pub fn new(ref_time_limit: u64, proof_size_limit: u64, deposit_limit: U256) -> Self {
+        Self {
+            ref_time_limit,
+            proof_size_limit,
+            deposit_limit: deposit_limit.to_le_bytes(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -342,7 +365,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 call_flags,
                 &address.0,
                 limit,
-                &U256::from(value).to_be_bytes(),
+                &U256::from(value).to_le_bytes(),
                 input_buf,
                 None,
             ),
@@ -356,7 +379,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
                 ref_time_limit,
                 proof_size_limit,
                 &deposit_limit,
-                &U256::from(value).to_be_bytes(),
+                &U256::from(value).to_le_bytes(),
                 input_buf,
                 None,
             ),
@@ -423,7 +446,7 @@ impl<Mutability: StateMutability, I: SolEncode, R: SolDecode> CallBuilder<Mutabi
             limits.ref_time_limit,
             limits.proof_size_limit,
             &limits.deposit_limit,
-            &U256::from(value).to_be_bytes(),
+            &U256::from(value).to_le_bytes(),
             input_buf,
             Some(address_buf),
             None,
@@ -604,5 +627,92 @@ mod test {
         };
 
         let _ = builder.set_value(0);
+    }
+
+    #[test]
+    fn call_value_is_encoded_little_endian() {
+        extern crate alloc;
+        use alloc::{rc::Rc, vec::Vec};
+
+        use pvm_contract_types::{Address, Host, MockHostBuilder};
+
+        use super::{CallLimits, RefTimeAndProofSizeLimits};
+
+        let mut expected = [0u8; 32];
+        expected[0] = 0x02;
+        expected[1] = 0x01;
+
+        let builder = |limits| CallBuilder {
+            selector: [0; 4],
+            payload: (),
+            witness: super::Payable {
+                value: Some(0x0102),
+            },
+            call_limits: limits,
+            allow_reentry: false,
+            _ret: PhantomData::<()>,
+        };
+
+        let mock = MockHostBuilder::new()
+            .mock_instantiate([0xDD; 20], Vec::new())
+            .build();
+        let host = Host::from_dyn(Rc::new(mock.clone()));
+        let mut input = [0u8; 64];
+
+        // `GasLimit` routes through `call_evm`, `RefTimeAndProofSize` through
+        // `call` — both carry the value argument, so both are pinned.
+        builder(CallLimits::GasLimit(u64::MAX))
+            .call_raw_inner(&host, Address([0xCC; 20]), &mut input)
+            .unwrap();
+        builder(CallLimits::RefTimeAndProofSize(RefTimeAndProofSizeLimits {
+            ref_time_limit: u64::MAX,
+            proof_size_limit: u64::MAX,
+            deposit_limit: [0xFF; 32],
+        }))
+        .call_raw_inner(&host, Address([0xCC; 20]), &mut input)
+        .unwrap();
+
+        let mut addr = [0u8; 20];
+        builder(CallLimits::default())
+            .instantiate_raw_inner(
+                &host,
+                RefTimeAndProofSizeLimits {
+                    ref_time_limit: u64::MAX,
+                    proof_size_limit: u64::MAX,
+                    deposit_limit: [0xFF; 32],
+                },
+                0x0102,
+                &[0u8; 32],
+                None,
+                &mut addr,
+                &mut input,
+            )
+            .unwrap();
+
+        assert_eq!(mock.recorded_call_values(), [expected; 3]);
+    }
+
+    /// `deposit_limit` is read by pallet-revive with `U256::from_little_endian`,
+    /// exactly like `value`, so the constructor that fills it must encode
+    /// little-endian too. Pinned separately because the field is `pub` and can
+    /// still be written by hand.
+    #[test]
+    fn deposit_limit_constructor_encodes_little_endian() {
+        use super::{RefTimeAndProofSizeLimits, U256};
+
+        let limits = RefTimeAndProofSizeLimits::new(7, 9, U256::from(0x0102u64));
+
+        let mut expected = [0u8; 32];
+        expected[0] = 0x02;
+        expected[1] = 0x01;
+
+        assert_eq!(
+            limits,
+            RefTimeAndProofSizeLimits {
+                ref_time_limit: 7,
+                proof_size_limit: 9,
+                deposit_limit: expected,
+            }
+        );
     }
 }

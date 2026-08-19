@@ -1,0 +1,5 @@
+error: conflicting renames: set the Solidity name with either `#[selector(name = "...")]` or `#[method(rename = "...")]`, not both
+ --> tests/ui/method_conflicting_renames.rs:8:9
+  |
+8 |         #[pvm_contract_macros::method(rename = "a")]
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

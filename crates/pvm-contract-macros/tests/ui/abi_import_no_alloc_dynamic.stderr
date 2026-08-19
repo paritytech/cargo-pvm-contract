@@ -1,0 +1,5 @@
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_no_alloc_dynamic.rs:8:24
+  |
+8 |         function greet(string memory who) external;
+  |                        ^^^^^^

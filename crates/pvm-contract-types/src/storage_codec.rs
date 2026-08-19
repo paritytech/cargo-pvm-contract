@@ -188,7 +188,8 @@ pub fn try_load_static_slots(
     message = "`{Self}` cannot be stored in `Lazy<{Self}>` or `Mapping<_, {Self}>`",
     label = "`{Self}` does not implement `StorageEncode`",
     note = "add `#[derive(SolStorage)]` to `{Self}` — only types deriving `SolStorage` can be `Lazy<T>` / `Mapping<_, T>` values",
-    note = "if `{Self}` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage"
+    note = "if `{Self}` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage",
+    note = "for `Vec<u8>` use `Bytes` instead (`Vec<u8>` is Solidity `uint8[]`, a different on-chain layout from `bytes`); other `Vec<T>` values need `T: StorageArrayElement` (static elements only)"
 )]
 pub trait StorageEncode {
     /// Total number of slots this type occupies when stored at the top of a
@@ -217,12 +218,14 @@ pub trait StorageEncode {
     /// `keccak256(slot) + i`) rather than the fixed slot-buffer codec.
     ///
     /// Static types (primitives, fixed arrays, tuples, fully-static structs)
-    /// leave this `false`. It gates two compile-time guards:
+    /// leave this `false`. Two consumers:
     /// - `StorageEncode for [T; N]` const-asserts `!T::HAS_DYNAMIC_BODY`,
-    ///   rejecting `[String; N]` (use [`StorageVec<T>`] instead).
-    /// - `StorageVec<T>::clear_at` uses it to choose between a plain
-    ///   slot-zeroing clear and `T::clear_storage` (which also tears down
-    ///   spilled body chunks).
+    ///   rejecting `[String; N]` (use [`StorageVec<T>`] instead) — a
+    ///   compile-time guard.
+    /// - the leaf `StorageType` impls derive `NEEDS_RECURSIVE_CLEAR` from it,
+    ///   which routes `StorageVec<T>::clear` between a bulk slot-zeroing clear
+    ///   and per-element recursion (`clear_at` → `T::clear_storage`, which also
+    ///   tears down spilled body chunks) — a runtime dispatch.
     ///
     /// [`StorageVec<T>`]: https://docs.rs/pvm-storage
     const HAS_DYNAMIC_BODY: bool = false;
@@ -280,7 +283,8 @@ pub trait StorageEncode {
     message = "`{Self}` cannot be read from `Lazy<{Self}>` or `Mapping<_, {Self}>`",
     label = "`{Self}` does not implement `StorageDecode`",
     note = "add `#[derive(SolStorage)]` to `{Self}` — only types deriving `SolStorage` can be `Lazy<T>` / `Mapping<_, T>` values",
-    note = "if `{Self}` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage"
+    note = "if `{Self}` only appears in calldata, returns, or events, keep `#[derive(SolType)]` and don't put it in storage",
+    note = "for `Vec<u8>` use `Bytes` instead (`Vec<u8>` is Solidity `uint8[]`, a different on-chain layout from `bytes`); other `Vec<T>` values need `T: StorageArrayElement` (static elements only)"
 )]
 pub trait StorageDecode: StorageEncode + Sized {
     /// Read self from storage at `base_key`. Required.
@@ -396,20 +400,6 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
     /// Decode from `slots`, which must have length `STORAGE_SLOTS`.
     fn from_slots(slots: &[[u8; 32]]) -> Self;
 
-    /// All-zero slots → `None`; otherwise decode via [`from_slots`]. This is
-    /// the canonical Solidity-compat presence check for static types: if
-    /// every slot reads as zero, the type was never written (or was
-    /// explicitly cleared to zero — solc/EVM cannot distinguish those).
-    ///
-    /// [`from_slots`]: Self::from_slots
-    fn try_from_slots(slots: &[[u8; 32]]) -> Option<Self> {
-        if slots.iter().all(|s| s == &[0u8; 32]) {
-            None
-        } else {
-            Some(Self::from_slots(slots))
-        }
-    }
-
     /// Default host-aware read. Per-type [`StorageDecode::read_from_storage`]
     /// impls for static types delegate here.
     #[inline]
@@ -469,7 +459,13 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
             host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
             inc_be_32(&mut k);
         }
-        Self::try_from_slots(&slots[..used])
+        // All-zero → `None` (Solidity-compat presence: an all-zero static value
+        // is indistinguishable from never-written); otherwise decode.
+        if slots[..used].iter().all(|s| s == &[0u8; 32]) {
+            None
+        } else {
+            Some(Self::from_slots(&slots[..used]))
+        }
     }
 }
 
@@ -957,11 +953,15 @@ impl<T: crate::SolArrayElement, const N: usize> crate::StorageTypeName for [T; N
 }
 
 /// `Vec<T>` as a storage value (issue #93) is Solidity `T[]`; its layout-JSON
-/// type name is the ABI `SOL_NAME` (`"uint256[]"`, `"(…)[]"`, …).
+/// type name recurses through the element's [`StorageTypeName`] — the same
+/// derivation `StorageVec<T>` uses — so `Lazy<Vec<T>>` and `StorageVec<T>`
+/// emit the identical `type` string for the identical on-chain layout.
+///
+/// [`StorageTypeName`]: crate::StorageTypeName
 #[cfg(all(feature = "abi-gen", feature = "alloc"))]
-impl<T: crate::SolEncode> crate::StorageTypeName for alloc::vec::Vec<T> {
+impl<T: crate::StorageTypeName> crate::StorageTypeName for alloc::vec::Vec<T> {
     fn name() -> alloc::string::String {
-        alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
+        alloc::format!("{}[]", T::name())
     }
 }
 
@@ -1146,31 +1146,56 @@ impl<T: StorageArrayElement, const N: usize> StaticStorageDecode for [T; N] {
 // ---------------------------------------------------------------------------
 
 /// Body slots occupied by a `T[]` of `len` elements (0 when empty).
+///
+/// The multi-slot multiply is checked: a foreign/corrupt length header
+/// (reachable via delegatecall layout mismatch or raw uAPI writes) must not
+/// wrap in release and shrink the clear/read range. Mirrors
+/// `StorageVec::clear`'s checked_mul + `Panic::Overflow` policy.
 #[cfg(feature = "alloc")]
-const fn array_body_slots<T: StorageArrayElement>(len: u64) -> u64 {
+fn array_body_slots<T: StorageArrayElement>(host: &Host, len: u64) -> u64 {
     if len == 0 {
         0
     } else if T::PACKED_BYTES < 32 {
         let density = (32 / T::PACKED_BYTES) as u64;
         len.div_ceil(density)
     } else {
-        len * T::STORAGE_SLOTS as u64
+        match len.checked_mul(T::STORAGE_SLOTS as u64) {
+            Some(slots) => slots,
+            None => crate::panic_revert(host, crate::Panic::Overflow),
+        }
     }
 }
 
-/// Read a `T[]` length header (low 8 bytes, big-endian). Panics if the value
-/// exceeds `u64::MAX` — unreachable through this API. Mirrors `StorageVec`.
+/// Read a `T[]` length header (low 8 bytes, big-endian). Reverts with solc's
+/// `Panic(0x22)` (incorrectly encoded storage byte array) if the upper 24
+/// bytes are non-zero — unreachable through this API when the slot was
+/// written by this codec, but reachable with foreign data (delegatecall
+/// layout mismatch, raw uAPI writes). Mirrors `StorageVec::read_len`.
 #[cfg(feature = "alloc")]
 fn read_array_len(host: &Host, slot: &[u8; 32]) -> u64 {
     let mut buf = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), slot, &mut buf);
-    assert!(
-        buf[..24].iter().all(|&b| b == 0),
-        "Vec<T> length exceeds u64::MAX"
-    );
+    if !buf[..24].iter().all(|&b| b == 0) {
+        crate::panic_revert(host, crate::Panic::StorageByteArrayEncoding);
+    }
     u64::from_be_bytes([
         buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
     ])
+}
+
+/// Non-reverting counterpart of [`read_array_len`]: a malformed length header
+/// reads as `None` instead of reverting. Used by `try_read_from_storage`,
+/// matching `StorageVec`'s `try_read_len` philosophy (`try_*` never reverts).
+#[cfg(feature = "alloc")]
+fn try_read_array_len(host: &Host, slot: &[u8; 32]) -> Option<u64> {
+    let mut buf = [0u8; 32];
+    host.get_storage_or_zero(StorageFlags::empty(), slot, &mut buf);
+    if !buf[..24].iter().all(|&b| b == 0) {
+        return None;
+    }
+    Some(u64::from_be_bytes([
+        buf[24], buf[25], buf[26], buf[27], buf[28], buf[29], buf[30], buf[31],
+    ]))
 }
 
 /// Encode body slot `slot_idx` of a `T[]` from the element slice — same packing
@@ -1235,8 +1260,8 @@ impl<T: StorageArrayElement> StorageEncode for alloc::vec::Vec<T> {
     fn write_to_storage(&self, host: &Host, base_key: &[u8; 32]) {
         let old_len = read_array_len(host, base_key);
         let new_len = self.len() as u64;
-        let old_slots = array_body_slots::<T>(old_len);
-        let new_slots = array_body_slots::<T>(new_len);
+        let old_slots = array_body_slots::<T>(host, old_len);
+        let new_slots = array_body_slots::<T>(host, new_len);
 
         let mut body = dyn_body_root(host, base_key);
         // Write the new body slots.
@@ -1259,7 +1284,7 @@ impl<T: StorageArrayElement> StorageEncode for alloc::vec::Vec<T> {
 
     fn clear_storage(host: &Host, base_key: &[u8; 32]) {
         let len = read_array_len(host, base_key);
-        let slots = array_body_slots::<T>(len);
+        let slots = array_body_slots::<T>(host, len);
         let mut body = dyn_body_root(host, base_key);
         for _ in 0..slots {
             host.set_storage_or_clear(StorageFlags::empty(), &body, &[0u8; 32]);
@@ -1276,8 +1301,11 @@ impl<T: StorageArrayElement> StorageDecode for alloc::vec::Vec<T> {
         if len == 0 {
             return alloc::vec::Vec::new();
         }
-        let slots_count = array_body_slots::<T>(len);
-        let mut slots = alloc::vec::Vec::with_capacity(slots_count as usize);
+        let slots_count = array_body_slots::<T>(host, len);
+        // Capacity tracks slots actually read from storage, never the
+        // self-reported header length — a corrupt/foreign header must not
+        // drive a huge up-front allocation (same policy as `read_dyn_body`).
+        let mut slots = alloc::vec::Vec::new();
         let mut body = dyn_body_root(host, base_key);
         for _ in 0..slots_count {
             let mut c = [0u8; 32];
@@ -1292,11 +1320,12 @@ impl<T: StorageArrayElement> StorageDecode for alloc::vec::Vec<T> {
 
     fn try_read_from_storage(host: &Host, base_key: &[u8; 32]) -> Option<Self> {
         // Solidity conflates empty and never-written arrays (length slot 0);
-        // an empty `Vec` therefore reads back as `None`.
-        if read_array_len(host, base_key) == 0 {
-            None
-        } else {
-            Some(Self::read_from_storage(host, base_key))
+        // an empty `Vec` therefore reads back as `None`. A malformed length
+        // header also reads as `None` — `try_*` never reverts (matching
+        // `StorageVec`'s `try_read_len`).
+        match try_read_array_len(host, base_key) {
+            None | Some(0) => None,
+            Some(_) => Some(Self::read_from_storage(host, base_key)),
         }
     }
 }
@@ -1438,7 +1467,7 @@ fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
         }
     } else {
         // Spilled: whole slot encodes `len * 2 + 1` as big-endian u256.
-        // A dynamic value has no fixed upper bound — like solc (and Stylus) it
+        // A dynamic value has no fixed upper bound — like solc it
         // stripes across as many 32-byte slots as `len` needs, so the header
         // length is authoritative. Storage is per-contract isolated (the header
         // is always self-written) and the read loop is gas-bounded on-chain, so
@@ -1564,8 +1593,20 @@ pub(crate) fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
 pub(crate) fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
     let mut slot_bytes = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
-    match decode_dyn_header(&slot_bytes) {
-        DynHeader::Inline { len } => alloc::vec::Vec::from(&slot_bytes[..len]),
+    read_dynamic_bytes_from_header(host, slot, &slot_bytes)
+}
+
+/// Decode a dynamic value from an already-fetched header slot, materialising
+/// any spilled body. Lets a caller that has already SLOAD'd the header (e.g.
+/// the presence peek in `try_read_from_storage`) avoid re-reading it.
+#[cfg(feature = "alloc")]
+pub(crate) fn read_dynamic_bytes_from_header(
+    host: &Host,
+    slot: &[u8; 32],
+    header: &[u8; 32],
+) -> alloc::vec::Vec<u8> {
+    match decode_dyn_header(header) {
+        DynHeader::Inline { len } => alloc::vec::Vec::from(&header[..len]),
         DynHeader::Spilled { len } => read_dyn_body(host, slot, len),
     }
 }
@@ -1620,8 +1661,7 @@ impl StorageEncode for alloc::string::String {
 impl StorageDecode for alloc::string::String {
     fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self {
         let bytes = read_dynamic_bytes(host, base_key);
-        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Matches
-        // Stylus's `StorageString::get_string`. Trapping on invalid bytes
+        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Trapping on invalid bytes
         // would be a DoS vector when storage is shared with a Solidity
         // contract that doesn't validate. For byte-exact roundtrips use
         // `Lazy<Bytes>` / `Mapping<K, Bytes>` instead.
@@ -1638,8 +1678,10 @@ impl StorageDecode for alloc::string::String {
         if header == [0u8; 32] {
             return None;
         }
-        // Header is non-zero → some value was written; load body.
-        Some(Self::read_from_storage(host, base_key))
+        // Header is non-zero → some value was written; decode from the header
+        // we already read (no second SLOAD of the header slot).
+        let bytes = read_dynamic_bytes_from_header(host, base_key, &header);
+        Some(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 
@@ -1847,7 +1889,7 @@ mod tests {
     #[test]
     fn dynamic_bytes_above_old_cap_roundtrips() {
         // Regression guard: a value well past the old 416-byte clamp must
-        // roundtrip. Dynamic values have no fixed cap — like solc/Stylus they
+        // roundtrip. Dynamic values have no fixed cap — like solc they
         // stripe across as many 32-byte slots as the length needs.
         let host = mock_host();
         let slot = [11u8; 32];

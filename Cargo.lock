@@ -1416,7 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-pvm-contract"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-core",
  "anyhow",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-pvm-contract-builder"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "expect-test",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-pvm-contract-extrinsics"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "hex",
@@ -4800,6 +4800,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest-derive"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c57924a81864dddafba92e1bf92f9bf82f97096c44489548a60e888e1547549b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "ptr_meta"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4821,11 +4832,11 @@ dependencies = [
 
 [[package]]
 name = "pvm-bump-allocator"
-version = "0.3.0"
+version = "0.4.0"
 
 [[package]]
 name = "pvm-contract-benchmarks"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "cargo-pvm-contract-builder",
@@ -4837,7 +4848,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-builder-dsl"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "pallet-revive-uapi",
  "polkavm-derive 0.35.0",
@@ -4847,7 +4858,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "pvm-contract-types",
  "ruint",
@@ -4855,7 +4866,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-e2e-tests"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -4870,7 +4881,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-macros"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-core",
  "alloy-json-abi",
@@ -4881,6 +4892,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "proptest",
+ "proptest-derive",
  "pvm-contract-core",
  "pvm-contract-sdk",
  "pvm-contract-types",
@@ -4894,7 +4906,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-sdk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "polkavm-derive 0.35.0",
  "pvm-contract-core",
@@ -4906,7 +4918,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-contract-types"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-core",
  "const_format",
@@ -4922,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-solc-differential"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-core",
  "proptest",
@@ -4935,7 +4947,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-storage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "pvm-contract-types",
  "ruint",

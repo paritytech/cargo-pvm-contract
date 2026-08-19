@@ -10,13 +10,23 @@ use alloc::vec::Vec;
 use pvm_contract_types::Address;
 #[cfg(feature = "alloc")]
 use pvm_contract_types::Bytes;
-use pvm_contract_types::MockHostBuilder;
+use pvm_contract_types::{MockHost, MockHostBuilder, assert_panics};
 use ruint::aliases::U256;
 
 /// Fresh isolated `Host` backed by a new `MockHost` in an `Rc`.
 /// Clone the returned handle to share storage state between cells.
 fn h() -> Host {
     Host::from_dyn(Rc::new(MockHostBuilder::new().build()))
+}
+
+/// Like [`h`], but also returns the concrete [`MockHost`] handle so the test
+/// can assert on reverts (`expect_panic`/`expect_revert`) or seed/read raw
+/// storage. The `MockHost` shares state with the `Host` (both wrap the same
+/// `Rc<RefCell<_>>`), so writes through the contract are visible on the handle.
+fn host_and_mock() -> (Host, MockHost) {
+    let mock = MockHostBuilder::new().build();
+    let host = Host::from_dyn(Rc::new(mock.clone()));
+    (host, mock)
 }
 
 // --- Lazy roundtrips ---
@@ -184,9 +194,9 @@ fn lazy_multi_slot_overwrite_zero_clears_stale_slot() {
 fn lazy_multi_slot_slots_const_matches_word_count() {
     // SLOTS = ENCODED_SIZE / 32. For (U256, U256) that's 2, so an
     // auto-numbered field after this Lazy would be 2 slots later.
-    assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Lazy<(U256, U256)> as StorageComponent>::SLOTS, 2);
-    assert_eq!(<Lazy<(U256, U256, U256)> as StorageComponent>::SLOTS, 3);
+    assert_eq!(<Lazy<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<Lazy<(U256, U256)> as StorageType>::SLOTS, 2);
+    assert_eq!(<Lazy<(U256, U256, U256)> as StorageType>::SLOTS, 3);
 }
 
 // --- Mapping operations ---
@@ -417,7 +427,7 @@ fn lazy_string_overwrite_smaller() {
     // Stale body chunks from the previous long value must have been
     // deleted, otherwise we'd be leaking storage on every long → short
     // transition.
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     for _ in 0..long_chunks {
         assert_eq!(
             storage_try_get_32(&host, &body_slot),
@@ -606,7 +616,7 @@ fn lazy_string_long_spill_layout() {
     // 40 * 2 + 1 = 81.
     assert_eq!(slot_bytes[31], 81);
 
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     let chunk0 = storage_get_32(&host, &body_slot);
     assert_eq!(&chunk0[..32], &s.as_bytes()[..32]);
 
@@ -645,7 +655,7 @@ fn lazy_string_shrink_long_to_short_clears_chunks() {
     lazy.set(&String::from("ok"));
     assert_eq!(lazy.get(), "ok");
 
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     for chunk_idx in 0..4 {
         assert_eq!(
             storage_try_get_32(&host, &body_slot),
@@ -670,7 +680,7 @@ fn lazy_string_clear_after_long_deletes_chunks() {
     // Header slot gone.
     assert_eq!(storage_try_get_32(&host, key.as_bytes()), None);
     // All body chunks gone.
-    let mut body_slot = dynamic_data_root(&host, key.as_bytes());
+    let mut body_slot = storage_derive_body_base(&host, key.as_bytes());
     for chunk_idx in 0..3 {
         assert_eq!(
             storage_try_get_32(&host, &body_slot),
@@ -754,7 +764,7 @@ fn mapping_address_to_string() {
 
 #[cfg(feature = "alloc")]
 #[test]
-fn dynamic_data_root_independent_per_slot() {
+fn body_base_independent_per_slot() {
     // Distinct header slots must hash to distinct data roots so two
     // dynamic values on adjacent slots can't trample each other.
     let mut a = unsafe { Lazy::<String>::new(StorageKey::from_slot(0), 0, h()) };
@@ -801,17 +811,17 @@ fn derive_key_matches_solidity() {
 
 #[test]
 fn storage_component_slot_count() {
-    assert_eq!(<Lazy<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, U256> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<Lazy<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, U256> as StorageType>::SLOTS, 1);
 }
 
 #[cfg(feature = "alloc")]
 #[test]
 fn storage_component_slot_count_dynamic() {
-    assert_eq!(<Lazy<String> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Lazy<Bytes> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, String> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Mapping<Address, Bytes> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<Lazy<String> as StorageType>::SLOTS, 1);
+    assert_eq!(<Lazy<Bytes> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, String> as StorageType>::SLOTS, 1);
+    assert_eq!(<Mapping<Address, Bytes> as StorageType>::SLOTS, 1);
 }
 
 // --- Packing semantics (matches solc storageLayout) ---
@@ -821,14 +831,14 @@ fn storage_component_slot_count_dynamic() {
 /// solc's layout for `contract C { uint128 a; uint128 b; }` (a at
 /// offset 16, b at offset 0).
 ///
-/// Verifies the `StorageComponent::PACKED_BYTES` propagation and the
+/// Verifies the `StorageType::PACKED_BYTES` propagation and the
 /// const-folded walker's placement directly.
 #[test]
 fn adjacent_lazy_u128_packs_at_contract_field_level() {
     assert_eq!(<u128 as StorageEncode>::PACKED_BYTES, 16);
     assert_eq!(<u128 as StorageEncode>::STORAGE_SLOTS, 1);
-    assert_eq!(<Lazy<u128> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<Lazy<u128> as StorageComponent>::PACKED_BYTES, 16);
+    assert_eq!(<Lazy<u128> as StorageType>::SLOTS, 1);
+    assert_eq!(<Lazy<u128> as StorageType>::PACKED_BYTES, 16);
 
     // Two-step walker walk: first u128 at (slot=0, offset=16);
     // second u128 at (slot=0, offset=0).
@@ -957,6 +967,39 @@ fn packed_u128_clear_preserves_neighbour() {
     // Slot stays non-zero overall (a's bytes are still there).
     let slot = storage_get_32(&host, &StorageKey::from_slot(0).as_bytes().clone());
     assert_ne!(slot, [0u8; 32], "slot retained — a kept it alive");
+}
+
+/// `Lazy::take` (fused read+clear) returns the value and zeroes only its own
+/// window, preserving a packed neighbour — the 1-SLOAD equivalent of `get()`
+/// followed by `clear()`. This is the primitive `StorageVec::pop` uses.
+#[test]
+fn packed_u128_take_returns_value_and_preserves_neighbour() {
+    let host = h();
+    let mut a = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 16, host.clone()) };
+    let mut b = unsafe { Lazy::<u128>::new(StorageKey::from_slot(0), 0, host.clone()) };
+
+    a.set(&0xAAAA_AAAA_AAAA_AAAAu128);
+    b.set(&0xBBBB_BBBB_BBBB_BBBBu128);
+
+    // Non-alone packed `take` → fused RMW path.
+    assert_eq!(
+        b.take(),
+        0xBBBB_BBBB_BBBB_BBBBu128,
+        "take returns b's value"
+    );
+    assert_eq!(b.get(), 0, "b's window zeroed after take");
+    assert_eq!(a.get(), 0xAAAA_AAAA_AAAA_AAAAu128, "a preserved");
+}
+
+/// `Lazy::take` on a full-slot value returns it and clears the slot (delegates
+/// to the canonical read-then-clear path — the `PACKED_BYTES == 32` branch).
+#[test]
+fn full_slot_take_returns_value_and_clears() {
+    let host = h();
+    let mut cell = unsafe { Lazy::<U256>::new(StorageKey::from_slot(3), 0, host.clone()) };
+    cell.set(&U256::from(0x1234u64));
+    assert_eq!(cell.take(), U256::from(0x1234u64), "take returns the value");
+    assert_eq!(cell.get(), U256::ZERO, "slot cleared after take");
 }
 
 /// Fast path: when `Lazy::new_alone` declares the slot has no neighbours,
@@ -1115,10 +1158,7 @@ fn multi_slot_composite_forces_fresh_slot_for_next_field() {
 /// always advances to a fresh slot and never packs with neighbours.
 #[test]
 fn mapping_packed_bytes_is_full_slot() {
-    assert_eq!(
-        <Mapping<Address, U256> as StorageComponent>::PACKED_BYTES,
-        32
-    );
+    assert_eq!(<Mapping<Address, U256> as StorageType>::PACKED_BYTES, 32);
     // bool + mapping + bool: mapping forces fresh slot; second bool can
     // pack at offset 31 of its own fresh slot (post-mapping).
     let step_a = crate::layout_step(crate::LayoutStep::FIRST, 1, 1);
@@ -1371,17 +1411,13 @@ fn nested_mapping_entry_set_matches_insert_for_subword_v() {
     m1.entry(&k1).entry(&k2).set(&v);
     m2.entry(&k1).insert(&k2, &v);
 
-    // Outer view → Ref<inner>, inner .get(k2) → V.
+    // Outer get → Ref<inner>, inner .get(k2) → V.
     assert_eq!(
         m1.get(&k1).get(&k2),
         v,
-        "nested: view_mut/entry/set then view/get"
+        "nested: entry/entry/set then get/get"
     );
-    assert_eq!(
-        m2.get(&k1).get(&k2),
-        v,
-        "nested: view_mut/insert then view/get"
-    );
+    assert_eq!(m2.get(&k1).get(&k2), v, "nested: entry/insert then get/get");
 
     // Inspect the deepest derived slot via the inner mapping's slot_of
     // (which is reachable through Ref<Mapping<K2, V>>::slot_of since
@@ -1424,7 +1460,7 @@ fn check_packing_parity<V>(name: &str, sample: V, tail: &[u8])
 where
     V: StorageEncode
         + StorageDecode
-        + SimpleStorageType<Value = V>
+        + SimpleStorageType
         + Copy
         + PartialEq
         + core::fmt::Debug
@@ -1801,7 +1837,7 @@ fn nested_mapping_slot_matches_solidity() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    // Derive via chaining: view(&owner) returns Ref<inner>, then slot_of(&spender)
+    // Derive via chaining: get(&owner) returns Ref<inner>, then slot_of(&spender)
     let inner = allowances.get(&owner);
     let slot = inner.slot_of(&spender);
 
@@ -2008,7 +2044,7 @@ fn lazy_string_native_clear_removes_header_and_body() {
         None,
         "header not cleared"
     );
-    let mut body = dynamic_data_root(&host, key.as_bytes());
+    let mut body = storage_derive_body_base(&host, key.as_bytes());
     for _ in 0..3 {
         assert_eq!(storage_try_get_32(&host, &body), None);
         inc_be_32(&mut body);
@@ -2171,17 +2207,73 @@ fn storage_vec_iter_reverse() {
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn storage_vec_get_oob_panics() {
-    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
-    let _ = v.get(0);
+fn storage_vec_get_oob_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    assert_panics!(mock, Panic::OutOfBoundsAccess, v.get(0));
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn storage_vec_set_oob_panics() {
-    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), h()) };
-    v.set(0, &U256::from(1u64));
+fn storage_vec_set_oob_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    assert_panics!(mock, Panic::OutOfBoundsAccess, v.set(0, &U256::from(1u64)));
+}
+
+#[test]
+fn storage_vec_len_corrupt_high_byte_reverts_panic_0x22() {
+    // Seed the length slot with a value whose upper 24 bytes are non-zero —
+    // i.e. a length > u64::MAX, only reachable via foreign/raw writes or a
+    // layout collision. `len()` must revert with Panic(0x22) (incorrectly
+    // encoded storage array) rather than silently truncating or bricking.
+    let (host, mock) = host_and_mock();
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    let mut corrupt = [0u8; 32];
+    corrupt[0] = 1; // non-zero in the high 24 bytes
+    mock.set_raw_storage(v.root.as_bytes().to_vec(), corrupt.to_vec());
+    assert_panics!(mock, Panic::StorageByteArrayEncoding, v.len());
+}
+
+#[test]
+fn storage_vec_corrupt_length_reads_as_empty_for_non_reverting_accessors() {
+    // The non-reverting read family must NOT revert on a malformed length —
+    // they read it as empty. (`len`/`get` still revert `Panic(0x22)`, covered
+    // above.) A revert here would unwind and fail the test.
+    let (host, mock) = host_and_mock();
+    let v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    let mut corrupt = [0u8; 32];
+    corrupt[0] = 1; // non-zero in the high 24 bytes
+    mock.set_raw_storage(v.root.as_bytes().to_vec(), corrupt.to_vec());
+    assert_eq!(v.try_get(0), None);
+    assert!(v.is_empty());
+    assert_eq!(v.first(), None);
+    assert_eq!(v.last(), None);
+    assert_eq!(v.iter().next(), None);
+}
+
+#[test]
+fn nested_storage_vec_corrupt_length_reads_as_empty_for_non_reverting_accessors() {
+    let (host, mock) = host_and_mock();
+    let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
+    let mut corrupt = [0u8; 32];
+    corrupt[0] = 1;
+    mock.set_raw_storage(outer.root.as_bytes().to_vec(), corrupt.to_vec());
+    assert!(outer.try_get(0).is_none());
+    assert!(outer.is_empty());
+    assert!(outer.first().is_none());
+    assert!(outer.last().is_none());
+    assert!(outer.iter().next().is_none());
+}
+
+#[test]
+fn storage_vec_push_at_max_len_reverts_panic_0x41() {
+    // Seed the length slot to u64::MAX so the next push's `len + 1` overflows.
+    let (host, mock) = host_and_mock();
+    let mut v = unsafe { StorageVec::<U256>::new(StorageKey::from_slot(0), host) };
+    let mut max_len = [0u8; 32];
+    max_len[24..32].copy_from_slice(&u64::MAX.to_be_bytes());
+    mock.set_raw_storage(v.root.as_bytes().to_vec(), max_len.to_vec());
+    assert_panics!(mock, Panic::OOM, v.push(&U256::from(1u64)));
 }
 
 #[test]
@@ -2295,10 +2387,10 @@ fn storage_vec_get_after_set_reuses_body_base_cache() {
 
 #[test]
 fn storage_vec_storage_component_metadata() {
-    assert_eq!(<StorageVec<U256> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<U256> as StorageComponent>::PACKED_BYTES, 32);
-    assert_eq!(<StorageVec<Address> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<Address> as StorageComponent>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<U256> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<U256> as StorageType>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<Address> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<Address> as StorageType>::PACKED_BYTES, 32);
 }
 
 #[test]
@@ -2457,10 +2549,10 @@ fn storage_vec_subword_clear_resets_all_body_slots() {
 fn storage_vec_subword_storage_component_metadata() {
     // Sub-word StorageVecs report the same metadata as full-word ones:
     // one root slot, never packs with neighbours.
-    assert_eq!(<StorageVec<u32> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<u32> as StorageComponent>::PACKED_BYTES, 32);
-    assert_eq!(<StorageVec<u64> as StorageComponent>::SLOTS, 1);
-    assert_eq!(<StorageVec<bool> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<u32> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<u32> as StorageType>::PACKED_BYTES, 32);
+    assert_eq!(<StorageVec<u64> as StorageType>::SLOTS, 1);
+    assert_eq!(<StorageVec<bool> as StorageType>::SLOTS, 1);
 }
 
 // --- StorageVec<T> for multi-slot static T ((U256, U256)[], etc.) ---
@@ -3110,9 +3202,9 @@ fn nested_storage_vec_storage_component_metadata() {
     // `StorageVec<StorageVec<T>>` plugs into the `#[storage]` /
     // `#[contract]` macro path as a full-slot, non-packing component —
     // matches the flat `StorageVec<T>` shape exactly.
-    assert_eq!(<StorageVec<StorageVec<U256>> as StorageComponent>::SLOTS, 1);
+    assert_eq!(<StorageVec<StorageVec<U256>> as StorageType>::SLOTS, 1);
     assert_eq!(
-        <StorageVec<StorageVec<U256>> as StorageComponent>::PACKED_BYTES,
+        <StorageVec<StorageVec<U256>> as StorageType>::PACKED_BYTES,
         32
     );
 }
@@ -3263,20 +3355,20 @@ fn nested_storage_vec_clear_recursively_clears_all_inners() {
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn nested_storage_vec_get_panics_on_oob() {
-    let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), h()) };
+fn nested_storage_vec_get_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
     // len == 0: any index is OOB.
-    let _ = outer.get(0);
+    assert_panics!(mock, Panic::OutOfBoundsAccess, outer.get(0));
 }
 
 #[test]
-#[should_panic(expected = "out of bounds")]
-fn nested_storage_vec_entry_panics_on_oob() {
-    let mut outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), h()) };
+fn nested_storage_vec_entry_reverts_panic_0x32() {
+    let (host, mock) = host_and_mock();
+    let mut outer = unsafe { StorageVec::<StorageVec<U256>>::new(StorageKey::from_slot(0), host) };
     outer.grow();
     // len == 1: index 1 is OOB.
-    let _ = outer.entry(1);
+    assert_panics!(mock, Panic::OutOfBoundsAccess, outer.entry(1));
 }
 
 #[test]
@@ -3424,18 +3516,39 @@ fn probe_nested_entry_grows_inner_independently() {
 #[test]
 fn lazy_vec_value_roundtrip() {
     let host = h();
-    let mut cell = unsafe { Lazy::<Vec<U256>>::new(StorageKey::from_slot(0), 0, host.clone()) };
+    let root = StorageKey::from_slot(0);
+    let mut cell = unsafe { Lazy::<Vec<U256>>::new(root, 0, host.clone()) };
     assert!(cell.try_get().is_none(), "empty/unset reads as None");
     let v = alloc::vec![U256::from(10u64), U256::from(20u64), U256::from(30u64)];
     cell.set(&v);
     assert_eq!(cell.get(), v);
-    // Overwrite with a shorter vec — stale tail element must be cleared.
+
+    // Body base: keccak256(pad32(slot)), same derivation as the codec.
+    let mut body = [0u8; 32];
+    host.hash_keccak_256(root.as_bytes(), &mut body);
+
+    // Overwrite with a shorter vec — reads are length-gated, so assert the
+    // stale tail slots directly: elements 1 and 2 must be zeroed on disk.
     let short = alloc::vec![U256::from(99u64)];
     cell.set(&short);
     assert_eq!(cell.get(), short);
+    let mut k = body;
+    inc_be_32(&mut k); // element 1
+    for _ in 1..3 {
+        assert_eq!(
+            storage_get_32(&host, &k),
+            [0u8; 32],
+            "shorter overwrite must zero the stale tail slot",
+        );
+        inc_be_32(&mut k);
+    }
+
     cell.clear();
     assert_eq!(cell.get(), Vec::<U256>::new());
     assert!(cell.try_get().is_none());
+    // Length header and the remaining element slot are zeroed too.
+    assert_eq!(storage_get_32(&host, root.as_bytes()), [0u8; 32]);
+    assert_eq!(storage_get_32(&host, &body), [0u8; 32]);
 }
 
 #[test]

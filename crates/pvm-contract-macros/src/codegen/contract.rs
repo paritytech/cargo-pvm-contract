@@ -5,12 +5,14 @@ use syn_solidity::Item;
 
 use super::abi_gen::generate_abi_gen;
 use super::dispatch::{
-    MethodInfo, RouteItems, StateMutability, boundary_size_check, generate_param_decoding,
-    generate_revert_encoding_boundary, generate_router,
+    MethodInfo, RevertBuf, RouteItems, StateMutability, generate_param_decoding, generate_revert,
+    generate_router, size_check,
 };
-use super::storage_layout::extract_optional_slot_attr;
-use crate::signature::{SolType, compute_selector};
-use crate::utils::{compute_function_signature, to_snake_case};
+use super::storage_layout::{SlotAttr, extract_optional_slot_attr};
+use crate::signature::{CustomTypes, SolType};
+use crate::utils::{
+    extract_selector_rename, to_camel_case, to_snake_case, validate_sol_identifier,
+};
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ContractArgs {
@@ -132,9 +134,11 @@ fn load_sol_interface(path: &str) -> Result<syn_solidity::File, String> {
     let full_path = std::path::Path::new(&manifest_dir).join(path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
-    syn::parse_str(&source)
+    let file: syn_solidity::File = syn::parse_str(&source)
         .and_then(syn_solidity::parse2)
-        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))
+        .map_err(|e| format!("Failed to read {}: {}", full_path.display(), e))?;
+    crate::utils::reject_sol_imports(&file)?;
+    Ok(file)
 }
 
 pub(super) struct ParsedContract {
@@ -163,6 +167,9 @@ pub(super) struct ParsedContract {
     /// Idents of structs in the module body carrying `#[derive(SolEvent)]`.
     /// Used by the abi-gen codepath to emit event entries for no-sol contracts.
     pub(super) event_idents: Vec<Ident>,
+    /// Compile-time assertions that a Rust param (when custom-typed) or return
+    /// ABI-encodes exactly as the matching `.sol` type. Emitted at module scope.
+    pub(super) sig_asserts: Vec<TokenStream>,
 }
 
 /// A storage field on the contract struct.
@@ -208,6 +215,13 @@ pub(super) enum Slot {
     /// (`PACKED_BYTES == 32`); sub-word types must use auto-numbering.
     /// See [`SlotField`] for the rationale.
     Explicit(u64),
+    /// Explicit `#[slot(raw = EXPR)]`: bind the field to a fixed,
+    /// externally-known 32-byte slot (e.g. an EIP-1967 proxy slot), outside the
+    /// compiler-assigned sequential range. Unlike numeric `#[slot(N)]` this
+    /// accepts sub-word types and places them right-aligned (`offset =
+    /// 32 - PACKED_BYTES`) to match solc, since a pseudo-random external slot
+    /// has no sibling fields to pack with.
+    ExplicitRaw(syn::Expr),
     /// Auto-numbered: position among auto-numbered fields is taken from
     /// declaration order during the slot-chain build. Packs sub-word
     /// siblings via `layout_step`.
@@ -262,11 +276,14 @@ fn auto_chain_fields(slot_fields: &[SlotField]) -> Vec<super::storage_layout::Ch
 }
 
 impl SlotField {
-    /// Explicit slot value, or `None` if auto-numbered.
+    /// Explicit *numeric* slot value, or `None` if auto-numbered or bound to a
+    /// raw external slot. Raw slots return `None` because they live outside the
+    /// compiler-assigned sequential range and don't participate in the
+    /// numeric overlap / full-slot-only checks.
     pub(super) fn explicit_slot(&self) -> Option<u64> {
         match self.slot {
             Slot::Explicit(n) => Some(n),
-            Slot::Auto => None,
+            Slot::ExplicitRaw(_) | Slot::Auto => None,
         }
     }
 }
@@ -318,6 +335,11 @@ fn check_signature_compatibility(
 }
 
 fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
+    // Canonical spelling: `#[selector(name = "...")]` (shared with #[interface_id]).
+    let selector_rename = extract_selector_rename(attrs)?;
+
+    // Alias: `#[method(rename = "...")]`.
+    let mut method_rename: Option<(String, &Attribute)> = None;
     for attr in attrs {
         let segments: Vec<_> = attr.path().segments.iter().collect();
         if segments.len() == 2
@@ -328,28 +350,22 @@ fn extract_method_rename(attrs: &[Attribute]) -> syn::Result<Option<String>> {
             && let Some(name) = args.rename
             && !name.is_empty()
         {
-            if !is_valid_solidity_identifier(&name) {
-                return Err(syn::Error::new_spanned(
-                    attr,
-                    format!(
-                        "Invalid Solidity identifier `{name}`. \
-                         Must match [a-zA-Z_$][a-zA-Z0-9_$]*"
-                    ),
-                ));
-            }
-            return Ok(Some(name));
+            validate_sol_identifier(&name, attr)?;
+            method_rename = Some((name, attr));
         }
     }
-    Ok(None)
-}
 
-fn is_valid_solidity_identifier(s: &str) -> bool {
-    let mut chars = s.chars();
-    match chars.next() {
-        Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
-        _ => return false,
+    // Both spellings set the Solidity name; picking one silently would drop the
+    // other. Reject the conflict instead.
+    match (selector_rename, method_rename) {
+        (Some(_), Some((_, attr))) => Err(syn::Error::new_spanned(
+            attr,
+            "conflicting renames: set the Solidity name with either \
+             `#[selector(name = \"...\")]` or `#[method(rename = \"...\")]`, not both",
+        )),
+        (Some(name), None) | (None, Some((name, _))) => Ok(Some(name)),
+        (None, None) => Ok(None),
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn has_pvm_attr(attrs: &[Attribute], name: &str) -> bool {
@@ -426,24 +442,6 @@ fn collect_error_type(
     }
 }
 
-fn to_camel_case(snake: &str) -> String {
-    let mut result = String::new();
-    let mut next_upper = false;
-    for (i, c) in snake.chars().enumerate() {
-        if c == '_' {
-            next_upper = true;
-        } else if i == 0 {
-            result.push(c);
-        } else if next_upper {
-            result.push(c.to_ascii_uppercase());
-            next_upper = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
     match output {
         syn::ReturnType::Default => vec![],
@@ -452,6 +450,66 @@ fn extract_return_types(output: &syn::ReturnType) -> Vec<syn::Type> {
                 extract_result_ok_type(ty).into_iter().collect()
             } else {
                 extract_output_types(ty)
+            }
+        }
+    }
+}
+
+/// Builds a `const _: () = assert!(...)` that checks `rust_ty` ABI-encodes as
+/// `sol_canonical` (the `.sol` type's canonical name), by comparing
+/// `<rust_ty as SolEncode>::SOL_NAME` against it. Both spell a struct as its
+/// flattened field tuple, so a Rust struct whose fields drift from the `.sol`
+/// fails the build. `location` labels the offending param or return in the
+/// assertion message.
+fn sol_name_assert(rust_ty: &syn::Type, sol_canonical: &str, location: &str) -> TokenStream {
+    let msg = format!(
+        "{location}: the Rust type does not ABI-encode as the `.sol` type `{sol_canonical}` \
+         (a struct must declare the same field types, in order)"
+    );
+    quote! {
+        const _: () = assert!(
+            ::pvm_contract_sdk::str_eq(
+                <#rust_ty as ::pvm_contract_sdk::SolEncode>::SOL_NAME,
+                #sol_canonical
+            ),
+            #msg
+        );
+    }
+}
+
+/// The `.sol` return list folded into one canonical ABI name, matching how a
+/// Rust success type encodes: a single return keeps its own name, multiple
+/// returns become a tuple, and no returns yield `None`.
+fn sol_return_canonical(
+    sol_func: &syn_solidity::ItemFunction,
+    types: &CustomTypes,
+) -> Option<String> {
+    let names: Vec<String> = sol_func
+        .returns
+        .as_ref()?
+        .returns
+        .types()
+        .map(|t| types.canonical_name(t))
+        .collect();
+    match names.len() {
+        0 => None,
+        1 => names.into_iter().next(),
+        _ => Some(format!("({})", names.join(","))),
+    }
+}
+
+/// The Rust "success" return type the dispatch encodes: the `Ok` type of a
+/// `Result<T, E>`, or the bare return type, with `()` treated as no return.
+fn rust_success_type(output: &syn::ReturnType) -> Option<syn::Type> {
+    match output {
+        syn::ReturnType::Default => None,
+        syn::ReturnType::Type(_, ty) => {
+            if is_result_return_type(output) {
+                extract_result_ok_type(ty)
+            } else if is_unit_return_type(output) {
+                None
+            } else {
+                Some((**ty).clone())
             }
         }
     }
@@ -698,9 +756,8 @@ fn build_payable_helpers_fn() -> TokenStream {
         #[inline(never)]
         fn __pvm_assert_value_zero(host: &::pvm_contract_sdk::Host, has_value: bool) {
             if has_value {
-                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                     host,
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
                     &::pvm_contract_sdk::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
             }
         }
@@ -730,6 +787,12 @@ fn parse_contract(
     sol_interface: Option<&syn_solidity::File>,
 ) -> syn::Result<ParsedContract> {
     let mod_name = input.ident.clone();
+    let sol_custom_types = match sol_interface {
+        Some(file) => {
+            CustomTypes::from_file(file).map_err(|e| syn::Error::new_spanned(input, e))?
+        }
+        None => CustomTypes::default(),
+    };
     let content = input
         .content
         .as_ref()
@@ -880,6 +943,7 @@ fn parse_contract(
     let mut error_types: Vec<syn::Type> = Vec::new();
     let mut seen_error_names: Vec<String> = Vec::new();
     let mut event_idents: Vec<Ident> = Vec::new();
+    let mut sig_asserts: Vec<TokenStream> = Vec::new();
 
     for item in &content.1 {
         // Collect event structs with #[derive(SolEvent)]
@@ -998,8 +1062,7 @@ fn parse_contract(
                 let returns_result = is_result_return_type(&func.sig.output);
                 let return_types = extract_return_types(&func.sig.output);
 
-                let (sol_name, precomputed_selector, mutability) = if let Some(sol_iface) =
-                    sol_interface
+                let (sol_name, mutability) = if let Some(sol_iface) = sol_interface
                     && let Some(sol_iface) = {
                         let mut items = sol_iface.items.iter().filter_map(|x| match x {
                             Item::Contract(item_contract) if item_contract.is_interface() => {
@@ -1019,11 +1082,24 @@ fn parse_contract(
                         }
                     } {
                     let rust_fn_name = func.sig.ident.to_string();
-                    let rename = extract_method_rename(&func.attrs)?
+                    let explicit_rename = extract_method_rename(&func.attrs)?;
+                    let rename = explicit_rename
+                        .clone()
                         .unwrap_or_else(|| to_snake_case(&rust_fn_name));
                     let sol_func = sol_iface
                         .body.iter().find_map(|f| match f {
-                            syn_solidity::Item::Function(item_function)  if item_function.name.as_ref().is_some_and(|name| name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name) => Some(item_function),
+                            // With an explicit `#[selector(name = "...")]` (or its
+                            // `#[method(rename)]` alias), match the interface function of
+                            // exactly that name. Falling back to the Rust-name heuristic
+                            // here would silently ignore the rename and dispatch under the
+                            // interface's own name instead.
+                            syn_solidity::Item::Function(item_function) if item_function.name.as_ref().is_some_and(|name| {
+                                if explicit_rename.is_some() {
+                                    name.as_string() == rename
+                                } else {
+                                    name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                                }
+                            }) => Some(item_function),
                            _ => None
                         })
                         .ok_or_else(|| {
@@ -1038,22 +1114,53 @@ fn parse_contract(
                         .parameters
                         .types()
                         .map(|x| x.clone().try_into())
-                        .collect::<Result<Vec<SolType>, String>>();
-                    check_signature_compatibility(
-                        func,
-                        &sol_func.name().to_string(),
-                        &sig.map_err(|x| {
+                        .collect::<Result<Vec<SolType>, String>>()
+                        .map_err(|x| {
                             syn::Error::new_spanned(
                                 func,
                                 format!(
                                     "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
                                 ),
                             )
-                        })?,
+                        })?;
+                    check_signature_compatibility(
+                        func,
+                        &sol_func.name().to_string(),
+                        &sig,
                         &param_types,
                     )?;
+                    // `check_signature_compatibility` can only compare types it
+                    // resolves from syntax: it skips params with custom types and
+                    // never inspects returns. Emit compile-time assertions for
+                    // exactly those gaps, comparing each Rust type's `SOL_NAME`
+                    // against the `.sol` canonical name.
+                    let sol_fn_label = sol_func.name().to_string();
+                    let sol_param_tys: Vec<_> = sol_func.parameters.types().collect();
+                    for (i, rust_ty) in param_types.iter().enumerate() {
+                        let sol_custom = sig.get(i).is_some_and(|s| s.has_custom_types());
+                        let rust_custom =
+                            SolType::from_rust_type(rust_ty).is_some_and(|r| r.has_custom_types());
+                        if (sol_custom || rust_custom)
+                            && let Some(sol_ty) = sol_param_tys.get(i)
+                        {
+                            let canonical = sol_custom_types.canonical_name(sol_ty);
+                            sig_asserts.push(sol_name_assert(
+                                rust_ty,
+                                &canonical,
+                                &format!("`{sol_fn_label}` parameter {i}"),
+                            ));
+                        }
+                    }
+                    if let Some(rust_ret) = rust_success_type(&func.sig.output)
+                        && let Some(canonical) = sol_return_canonical(sol_func, &sol_custom_types)
+                    {
+                        sig_asserts.push(sol_name_assert(
+                            &rust_ret,
+                            &canonical,
+                            &format!("`{sol_fn_label}` return"),
+                        ));
+                    }
                     implemented_sol_methods.push(sol_func.name.clone());
-                    let selector = compute_selector(&compute_function_signature(sol_func));
                     let sol_mutability = match sol_func.attributes.mutability() {
                         Some(syn_solidity::Mutability::Pure(_)) => StateMutability::Pure,
                         Some(syn_solidity::Mutability::View(_)) => StateMutability::View,
@@ -1068,15 +1175,11 @@ fn parse_contract(
                             inferred_mutability,
                         ));
                     }
-                    (
-                        sol_func.name().to_string(),
-                        Some(selector),
-                        inferred_mutability,
-                    )
+                    (sol_func.name().to_string(), inferred_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
-                    (sol_name, None, inferred_mutability)
+                    (sol_name, inferred_mutability)
                 };
 
                 methods.push(MethodInfo {
@@ -1087,7 +1190,6 @@ fn parse_contract(
                     return_types,
                     returns_result,
                     mutability,
-                    precomputed_selector,
                     is_non_reentrant,
                 });
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
@@ -1187,6 +1289,7 @@ fn parse_contract(
         receive_returns_result,
         error_types,
         event_idents,
+        sig_asserts,
     })
 }
 
@@ -1220,12 +1323,30 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         None
     };
 
+    // The macro reads the `.sol` with `fs::read_to_string` and hashes selectors
+    // from it (including struct field layouts), but cargo has no idea the file
+    // was read, so editing the `.sol` won't rebuild the crate and its selectors
+    // go stale. Emit an `include_bytes!` of the file: rustc records included
+    // files in the crate's dep-info, which cargo uses to trigger a rebuild.
+    let sol_dep_tracking = match &args.sol_path {
+        Some(path) => {
+            let full =
+                std::path::Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned();
+            quote! { const _: &[u8] = include_bytes!(#full); }
+        }
+        None => quote! {},
+    };
+
     let parsed = parse_contract(&input, sol_interface.as_ref())?;
     let use_alloc = args.allocator.is_some();
 
     let mod_name = &parsed.mod_name;
     let mod_vis = &input.vis;
     let mod_attrs = &input.attrs;
+    let sig_asserts = &parsed.sig_asserts;
 
     let struct_name = parsed.struct_name.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(
@@ -1289,10 +1410,20 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         ))]
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
-            unsafe {
-                core::arch::asm!("unimp");
-                core::hint::unreachable_unchecked()
-            }
+            // Revert with a generic Solidity `Panic(0x00)` so off-chain callers
+            // get decodable revert data instead of a bare trap. This is the
+            // catch-all for Rust panics not already routed through an explicit
+            // `panic_revert` (e.g. storage bounds checks emit specific codes).
+            // `panic_revert` issues the `return_value` syscall and diverges.
+            //
+            // NOTE: with `-Cpanic=immediate-abort` the toolchain may lower
+            // panics directly to a trap without invoking this handler; in that
+            // case this path is inert. The explicit `panic_revert` call sites
+            // (storage) do not depend on the handler and always emit ABI data.
+            ::pvm_contract_sdk::panic_revert(
+                &::pvm_contract_sdk::Host::new(),
+                ::pvm_contract_sdk::Panic::Generic,
+            )
         }
     };
 
@@ -1315,19 +1446,35 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             let name = &sf.name;
             let ty = &sf.ty;
             let cfgs = &sf.cfg_attrs;
-            let (slot_expr, offset_expr, alone_expr): (TokenStream, TokenStream, TokenStream) =
-                match sf.slot {
+            let (key_expr, offset_expr, alone_expr): (TokenStream, TokenStream, TokenStream) =
+                match &sf.slot {
                     // Explicit `#[slot(N)]` is restricted to full-slot types
                     // elsewhere in this file (`explicit_slot_full_slot_only_checks`).
                     // Full-slot components ignore `alone`, so the literal `true`
                     // is purely cosmetic — it would behave identically as `false`
                     // for `Mapping`/`Lazy<U256>`/etc.
-                    Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }, quote! { true }),
+                    Slot::Explicit(n) => (
+                        quote! { ::pvm_contract_sdk::StorageKey::from_slot(#n) },
+                        quote! { 0u8 },
+                        quote! { true },
+                    ),
+                    // `#[slot(raw = EXPR)]` binds the field to a fixed external
+                    // 32-byte slot. Sub-word types are placed right-aligned at
+                    // `32 - PACKED_BYTES` (matching solc), and `alone = true`
+                    // because a pseudo-random external slot has no sibling
+                    // sub-word fields to preserve on write.
+                    Slot::ExplicitRaw(expr) => (
+                        quote! { ::pvm_contract_sdk::StorageKey::from_raw(#expr) },
+                        quote! {
+                            (32 - <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES) as u8
+                        },
+                        quote! { true },
+                    ),
                     Slot::Auto => {
                         let const_ident = quote::format_ident!("{}{}", AUTO_SLOT_PREFIX, name);
                         let alone_ident = quote::format_ident!("{}{}", AUTO_ALONE_PREFIX, name);
                         (
-                            quote! { #const_ident.slot },
+                            quote! { ::pvm_contract_sdk::StorageKey::from_slot(#const_ident.slot) },
                             quote! { #const_ident.offset },
                             quote! { #alone_ident },
                         )
@@ -1336,7 +1483,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             quote! {
                 #(#cfgs)*
                 #name: <#ty as ::pvm_contract_sdk::StorageComponent>::new_at(
-                    ::pvm_contract_sdk::StorageKey::from_slot(#slot_expr),
+                    #key_expr,
                     #offset_expr,
                     #alone_expr,
                     host.clone(),
@@ -1406,14 +1553,14 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             .map(|(name, _)| name.clone())
             .collect();
 
-        let decoding = generate_param_decoding(&param_names, &param_types, true);
+        let decoding = generate_param_decoding(&param_names, &param_types);
         let super::dispatch::ParamDecoding {
             min_size_expr,
             decode_statements,
             call_args,
             has_params,
         } = decoding;
-        let size_check = boundary_size_check(has_params, &min_size_expr);
+        let size_check = size_check(has_params, &min_size_expr);
 
         let read_calldata = if param_names.is_empty() {
             quote! {}
@@ -1430,8 +1577,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -1443,7 +1590,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let deploy_assert = build_assert_non_payable_call(!parsed.constructor_is_payable);
 
         let call_expr = quote! { this.#constructor_name(#(#call_args),*) };
-        let revert_err = generate_revert_encoding_boundary(use_alloc);
+        let revert_err = generate_revert(RevertBuf::Local, use_alloc);
         let decode_and_call = if parsed.constructor_returns_result {
             quote! {
                 #(#decode_statements)*
@@ -1486,9 +1633,17 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         }
     };
 
-    let (route_items, router_impl) =
-        generate_router(&parsed.methods, mod_name, struct_name, use_alloc);
-    let RouteItems { route_fn } = route_items;
+    let (route_items, router_impl) = generate_router(
+        &parsed.methods,
+        mod_name,
+        struct_name,
+        use_alloc,
+        parsed.fallback_is_payable,
+    );
+    let RouteItems {
+        max_return_const,
+        route_fn,
+    } = route_items;
     let router_impl = router_impl.tokens;
 
     // When `#[receive]` is present, the empty-calldata case dispatches to it
@@ -1497,7 +1652,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     let receive_dispatch = if parsed.has_receive {
         let receive_name = parsed.receive_name.as_ref().unwrap();
         if parsed.receive_returns_result {
-            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            let revert_err = generate_revert(RevertBuf::Local, use_alloc);
             quote! {
                 if call_data_len == 0 {
                     match this.#receive_name() {
@@ -1524,7 +1679,7 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
         let fallback_assert = build_assert_non_payable_call(!parsed.fallback_is_payable);
 
         let handler = if parsed.fallback_returns_result {
-            let revert_err = generate_revert_encoding_boundary(use_alloc);
+            let revert_err = generate_revert(RevertBuf::Local, use_alloc);
             quote! {
                 #fallback_assert
                 match this.#fallback_name() {
@@ -1545,23 +1700,25 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
     } else {
         (
             quote! {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                    this.host(),
                     &::pvm_contract_sdk::framework_errors::NO_SELECTOR);
             },
             quote! {
-                ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                    ::pvm_contract_sdk::ReturnFlags::REVERT,
+                <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                    this.host(),
                     &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR);
             },
         )
     };
 
     // `call()` is the riscv64 boundary: read calldata, dispatch via `route()`.
-    // Each matched dispatch arm calls `host.return_value(...)` directly
-    // (diverges via syscall) — no buffer round-trip, no result enum to
-    // translate. If `route()` returns `None`, no selector matched and we
-    // fall through to the fallback or unknown-selector handler.
+    // On success `route()` encodes the result into the caller-owned `out` buffer
+    // and returns `Outcome::Return`; the single `finalize_outcome` call lowers it
+    // to the `return_value` success door. `Outcome::Unhandled` means no selector
+    // matched — fall through to the fallback or unknown-selector handler. Every
+    // revert (a method's own `Err`, size check, decode, payable guard, storage
+    // `Panic`) diverges directly inside `route` and never reaches here.
     let call_fn = if use_alloc {
         quote! {
             #[cfg(target_arch = "riscv64")]
@@ -1581,8 +1738,43 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..];
 
-                if route(&mut this, selector, input).is_none() {
-                    #unknown_selector_handler
+                // Inline stack buffer (sized to the max static return via
+                // `MAX_RETURN_LEN`) with heap spill: static returns stay on the
+                // stack — matching the pre-unification per-arm fast path — while
+                // only returns whose runtime length exceeds it (large dynamic
+                // returns, oversized errors) allocate.
+                struct __OutBuf {
+                    stack: [u8; MAX_RETURN_LEN],
+                    spill: alloc::vec::Vec<u8>,
+                }
+                impl ::pvm_contract_sdk::OutSink for __OutBuf {
+                    #[inline(always)]
+                    fn reserve(&mut self, len: usize) -> &mut [u8] {
+                        if len <= self.stack.len() {
+                            &mut self.stack[..len]
+                        } else {
+                            self.spill.resize(len, 0);
+                            &mut self.spill[..len]
+                        }
+                    }
+                    #[inline(always)]
+                    fn view(&self, len: usize) -> &[u8] {
+                        if len <= self.stack.len() {
+                            &self.stack[..len]
+                        } else {
+                            &self.spill[..len]
+                        }
+                    }
+                }
+                let mut __out = __OutBuf {
+                    stack: [0u8; MAX_RETURN_LEN],
+                    spill: alloc::vec::Vec::new(),
+                };
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        #unknown_selector_handler
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         }
@@ -1596,8 +1788,8 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let call_data_len = ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_size() as usize;
                 let mut call_data = [0u8; #buffer_size];
                 if call_data_len > #buffer_size {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE);
                 }
                 ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::call_data_copy(&mut call_data[..call_data_len], 0);
@@ -1610,8 +1802,13 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
 
-                if route(&mut this, selector, input).is_none() {
-                    #unknown_selector_handler
+                let mut __out_storage = [0u8; MAX_RETURN_LEN];
+                let mut __out: &mut [u8] = &mut __out_storage;
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        #unknown_selector_handler
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         }
@@ -1626,6 +1823,15 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
 
         #(#mod_attrs)*
         #mod_vis mod #mod_name {
+            #sol_dep_tracking
+
+            // Signature assertions (`const _: () = assert!(...)` items) for what
+            // the syntactic check misses: params with custom types, and every
+            // return. Each compares a Rust type's `SOL_NAME` to the `.sol`
+            // canonical name; cargo check evaluates them, so a struct whose
+            // fields drift from the interface fails before build/link.
+            #(#sig_asserts)*
+
             // Module-level overlap checks: each emits a `const _: () = ...;`
             // item that const-evaluates a span-overlap assertion for a pair
             // of explicit-slot fields. cargo check evaluates module-level
@@ -1641,6 +1847,9 @@ pub fn expand_contract(args: ContractArgs, input: ItemMod) -> syn::Result<TokenS
             #mod_content
 
             #payable_helpers_fn
+
+            #[cfg(not(feature = "abi-gen"))]
+            #max_return_const
 
             #[cfg(not(feature = "abi-gen"))]
             #route_fn
@@ -1712,13 +1921,23 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
                     if let syn::ImplItem::Fn(func) = impl_item {
                         func.attrs.retain(|attr| {
                             let segments: Vec<_> = attr.path().segments.iter().collect();
-                            !(segments.len() == 2
+                            // `#[selector(name = "...")]` — the rename override,
+                            // consumed here (bare or prefixed).
+                            let is_selector = segments
+                                .last()
+                                .is_some_and(|s| s.ident == "selector")
+                                && (segments.len() == 1
+                                    || (segments.len() == 2
+                                        && VALID_PREFIXES
+                                            .contains(&segments[0].ident.to_string().as_str())));
+                            let is_pvm_method = segments.len() == 2
                                 && VALID_PREFIXES.contains(&segments[0].ident.to_string().as_str())
                                 && (segments[1].ident == "method"
                                     || segments[1].ident == "constructor"
                                     || segments[1].ident == "fallback"
                                     || segments[1].ident == "receive"
-                                    || segments[1].ident == "non_reentrant"))
+                                    || segments[1].ident == "non_reentrant");
+                            !(is_selector || is_pvm_method)
                         });
                     }
                 }
@@ -1751,7 +1970,7 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
         ));
     }
 
-    // Inject the `host()` accessor. The generated struct has a private `host`
+    // Inject the `host()` accessor. The generated struct has a `pub host`
     // field; contract method bodies reach the host via `self.host()`.
     //
     // Also auto-implement `ContractContext` (and its sealing trait) on the
@@ -1765,6 +1984,11 @@ fn strip_pvm_attrs(input: &ItemMod, struct_name: &Ident) -> syn::Result<TokenStr
             #[inline(always)]
             pub fn host(&self) -> &::pvm_contract_sdk::Host {
                 &self.host
+            }
+
+            #[inline(always)]
+            pub fn env(&self) -> ::pvm_contract_sdk::Env {
+                self.host.env()
             }
         }
 
@@ -1870,7 +2094,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     struct Raw {
         name: Ident,
         ty: syn::Type,
-        explicit: Option<u64>,
+        explicit: Option<SlotAttr>,
         cfg_attrs: Vec<syn::Attribute>,
         original_field: syn::Field,
     }
@@ -1911,26 +2135,32 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
         return Ok(vec![]);
     }
 
-    // Mode decision: either ALL fields have `#[slot(N)]` (explicit mode, the
-    // original behavior) or NONE do (auto-numbered, the new behavior). Mixing
-    // is rejected so users don't end up with surprising slot assignments where
-    // an explicit slot collides with an auto-assigned one.
-    let any_explicit = raws.iter().any(|r| r.explicit.is_some());
-    let all_explicit = raws.iter().all(|r| r.explicit.is_some());
+    // Mode decision: numeric `#[slot(N)]` and auto-numbering are mutually
+    // exclusive — either ALL non-raw fields pin a numeric slot or NONE do —
+    // so users can't end up with a numeric slot colliding with an auto-assigned
+    // one. Raw external slots (`#[slot(raw = KEY)]`) are exempt: their keys are
+    // pseudo-random and live outside the sequential range, so they can't collide
+    // with numeric or auto slots and freely coexist with either mode (including
+    // auto-numbered sub-word fields that pack solc-style).
+    let has_numeric = raws
+        .iter()
+        .any(|r| matches!(r.explicit, Some(SlotAttr::Numeric(_))));
+    let has_auto = raws.iter().any(|r| r.explicit.is_none());
 
-    if any_explicit && !all_explicit {
+    if has_numeric && has_auto {
         // Find the first un-annotated field to attach the error span.
         let offender = raws
             .iter()
             .find(|r| r.explicit.is_none())
-            .expect("checked any_explicit && !all_explicit");
+            .expect("checked has_numeric && has_auto");
         return Err(syn::Error::new_spanned(
             &offender.original_field,
             format!(
                 "field `{}` is missing `#[slot(N)]`. \
-                 Storage fields must all be annotated with `#[slot(N)]`, or all \
-                 left un-annotated for auto-numbering by declaration order. \
-                 Mixing the two modes is not supported.",
+                 Fields must either all pin a numeric slot with `#[slot(N)]`, or all \
+                 be left un-annotated for auto-numbering by declaration order. \
+                 Mixing the two modes is not supported. (`#[slot(raw = KEY)]` fields \
+                 are exempt and may coexist with either mode.)",
                 offender.name,
             ),
         ));
@@ -1938,8 +2168,14 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
 
     let mut fields = Vec::new();
     for raw in raws {
-        let slot = if let Some(n) = raw.explicit {
-            Slot::Explicit(n)
+        let slot = if let Some(attr) = raw.explicit {
+            match attr {
+                SlotAttr::Numeric(n) => Slot::Explicit(n),
+                // Raw external slots carry an unevaluated `[u8; 32]` expression;
+                // like numeric explicit slots they may carry `#[cfg]` (they don't
+                // shift any later field's slot), so no cfg gate here.
+                SlotAttr::Raw(expr) => Slot::ExplicitRaw(expr),
+            }
         } else {
             // Auto-numbered fields share a const chain across slot consts;
             // a #[cfg]-disabled field in the middle of the chain would break
@@ -1972,7 +2208,7 @@ fn extract_slot_fields_from_struct(item_struct: &syn::ItemStruct) -> syn::Result
     //
     // The harder case — overlap of multi-slot composites, e.g.
     // `#[slot(0)] foo: Lazy<(U256, U256)>; #[slot(1)] bar: Lazy<U256>;` —
-    // requires reading `<Ty as StorageComponent>::SLOTS` at const-eval time
+    // requires reading `<Ty as StorageType>::SLOTS` at const-eval time
     // and is handled by [`explicit_slot_overlap_checks`] emitting
     // `const _: () = ...;` items alongside the other slot-chain consts.
     //
@@ -2059,7 +2295,7 @@ pub(super) fn explicit_slot_full_slot_only_checks(slot_fields: &[SlotField]) -> 
                 #[allow(non_upper_case_globals)]
                 const #check_ident: () = {
                     ::core::assert!(
-                        <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES == 32,
+                        <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES == 32,
                         #msg,
                     );
                 };
@@ -2104,9 +2340,9 @@ pub(super) fn explicit_slot_overlap_checks(slot_fields: &[SlotField]) -> Vec<Tok
                 #[allow(non_upper_case_globals)]
                 const #check_ident: () = {
                     let a_end: u64 =
-                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                        (#a_slot) + <#a_ty as ::pvm_contract_sdk::StorageType>::SLOTS;
                     let b_end: u64 =
-                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+                        (#b_slot) + <#b_ty as ::pvm_contract_sdk::StorageType>::SLOTS;
                     ::core::assert!(
                         !((#a_slot) < b_end && (#b_slot) < a_end),
                         #msg,
@@ -2760,20 +2996,23 @@ mod tests {
             .unwrap()
             .to_string();
 
-        // Generated route() takes a `&mut Contract` and returns Option<()>
+        // Generated route() encodes into the caller-owned buffer and returns an
+        // `Outcome`.
         assert!(
             output.contains("fn route"),
             "route() function should be generated"
         );
-        // The Router trait impl is emitted (no generic parameter).
+        // The Router trait impl is emitted.
         assert!(
             output.contains(":: pvm_contract_sdk :: Router"),
             "Router impl should be generated"
         );
-        // call() delegates to route() with the constructed `this` and falls
-        // through to the unknown-selector handler when the Option is None.
-        assert!(output.contains("route (& mut this , selector , input)"));
-        assert!(output.contains("is_none ()"));
+        // call() drives route() with the constructed `this` + output buffer and
+        // lowers the returned `Outcome` via `finalize_outcome`, falling through
+        // to the unknown-selector handler on `Outcome::Unhandled`.
+        assert!(output.contains("route (& mut this , selector , input , & mut __out)"));
+        assert!(output.contains(":: pvm_contract_sdk :: finalize_outcome"));
+        assert!(output.contains(":: pvm_contract_sdk :: Outcome :: Unhandled"));
     }
 
     #[test]
@@ -2799,7 +3038,7 @@ mod tests {
 
         assert!(output.contains("\"owner\""));
         assert!(output.contains("Err (e)"));
-        assert!(output.contains("REVERT"));
+        assert!(output.contains(":: revert ("));
     }
 
     #[test]
@@ -3276,6 +3515,216 @@ mod tests {
             !output.contains("# [slot"),
             "Slot attributes should be stripped from the struct output.\n\
              Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_field_constructs_from_raw_key_right_aligned() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod my_proxy {
+                const IMPL_SLOT: [u8; 32] = [0u8; 32];
+                pub struct MyProxy {
+                    #[slot(raw = IMPL_SLOT)]
+                    impl_addr: Lazy<Address>,
+                }
+                impl MyProxy {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn implementation(&self) -> Address {
+                        self.impl_addr.get()
+                    }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+
+        // Raw-slot fields bind to StorageKey::from_raw(EXPR), not from_slot.
+        assert!(
+            output.contains(":: StorageKey :: from_raw (IMPL_SLOT)"),
+            "raw slot field should pass StorageKey::from_raw(IMPL_SLOT).\n\
+             Expanded output:\n{output}"
+        );
+        assert!(
+            !output.contains("from_slot"),
+            "a raw-only contract should emit no from_slot calls.\n\
+             Expanded output:\n{output}"
+        );
+        // Sub-word types are placed right-aligned at 32 - PACKED_BYTES.
+        assert!(
+            output.contains("(32 - < Lazy < Address > as :: pvm_contract_sdk :: StorageType > :: PACKED_BYTES) as u8"),
+            "raw sub-word field should be right-aligned at 32 - PACKED_BYTES.\n\
+             Expanded output:\n{output}"
+        );
+        // The #[slot(raw = ...)] attribute must be stripped from the struct.
+        assert!(
+            !output.contains("# [slot"),
+            "Slot attributes should be stripped from the struct output.\n\
+             Expanded output:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_full_slot_type_offset_is_zero_expr() {
+        // A full-slot raw type (`Lazy<U256>`, PACKED_BYTES == 32) still emits the
+        // `32 - PACKED_BYTES` offset expr (which evaluates to 0) and from_raw.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    #[slot(raw = K)]
+                    admin: Lazy<U256>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn admin(&self) -> U256 { self.admin.get() }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        assert!(
+            output.contains(":: StorageKey :: from_raw (K)"),
+            "full-slot raw field should bind via from_raw.\nExpanded:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_mixes_with_numeric_explicit() {
+        // Raw and numeric `#[slot(...)]` are both "explicit", so mixing them is
+        // allowed (all fields explicit) — no auto-numbering collision risk.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    #[slot(0)]
+                    total: Lazy<U256>,
+                    #[slot(raw = K)]
+                    impl_addr: Lazy<Address>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn total(&self) -> U256 { self.total.get() }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        assert!(
+            output.contains(":: StorageKey :: from_slot (0u64)")
+                && output.contains(":: StorageKey :: from_raw (K)"),
+            "mixed numeric + raw slots should each bind correctly.\nExpanded:\n{output}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_missing_value_is_error() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                pub struct C {
+                    #[slot(raw)]
+                    a: Lazy<U256>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let err = expand_contract(ContractArgs::default(), item).unwrap_err();
+        assert!(
+            err.to_string().contains("expected"),
+            "bare `#[slot(raw)]` should be a parse error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn slot_unknown_keyword_is_error() {
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    #[slot(rawww = K)]
+                    a: Lazy<U256>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let err = expand_contract(ContractArgs::default(), item).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("expected an integer slot literal or `raw ="),
+            "unknown `#[slot(<ident> = ...)]` keyword should error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn raw_slot_coexists_with_auto_numbered_fields() {
+        // A raw external slot must NOT force siblings to be explicit: it's
+        // exempt from the numeric-vs-auto rule, so auto-numbered fields keep
+        // auto-numbering (and solc-style sub-word packing). Two sub-word auto
+        // fields here pack into slot 0 while the raw field binds its own key.
+        let item: ItemMod = syn::parse_str(
+            r#"
+            mod m {
+                const K: [u8; 32] = [0u8; 32];
+                pub struct C {
+                    flag: Lazy<bool>,
+                    count: Lazy<u32>,
+                    #[slot(raw = K)]
+                    impl_addr: Lazy<Address>,
+                }
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                    #[pvm_contract_macros::method]
+                    pub fn count(&self) -> u32 { self.count.get() }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+        let output = expand_contract(ContractArgs::default(), item)
+            .unwrap()
+            .to_string();
+        // Auto fields keep their auto slot-const chain (packing) …
+        assert!(
+            output.contains("__pvm_storage_slot_flag")
+                && output.contains("__pvm_storage_slot_count"),
+            "auto fields must still auto-number when a raw field is present.\nExpanded:\n{output}"
+        );
+        // … and the raw field binds its external key.
+        assert!(
+            output.contains(":: StorageKey :: from_raw (K)"),
+            "raw field must bind via from_raw alongside auto fields.\nExpanded:\n{output}"
         );
     }
 
@@ -3998,8 +4447,8 @@ mod tests {
                     as usize;
                 let mut call_data = [0u8; 256usize];
                 if call_data_len > 256usize {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::CALLDATA_TOO_LARGE,
                     );
                 }
@@ -4012,18 +4461,23 @@ mod tests {
                         this.receive();
                         return;
                     }
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
+                    <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                        this.host(),
                         &::pvm_contract_sdk::framework_errors::NO_SELECTOR,
                     );
                 }
                 let selector: [u8; 4] = call_data[0..4].try_into().unwrap();
                 let input = &call_data[4..call_data_len];
-                if route(&mut this, selector, input).is_none() {
-                    ::pvm_contract_sdk::pallet_revive_uapi::HostFnImpl::return_value(
-                        ::pvm_contract_sdk::ReturnFlags::REVERT,
-                        &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
-                    );
+                let mut __out_storage = [0u8; MAX_RETURN_LEN];
+                let mut __out: &mut [u8] = &mut __out_storage;
+                match route(&mut this, selector, input, &mut __out) {
+                    ::pvm_contract_sdk::Outcome::Unhandled => {
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
+                            this.host(),
+                            &::pvm_contract_sdk::framework_errors::UNKNOWN_SELECTOR,
+                        );
+                    }
+                    __outcome => ::pvm_contract_sdk::finalize_outcome(this.host(), __outcome, &__out),
                 }
             }
         "##]];
@@ -4120,6 +4574,30 @@ mod tests {
         assert!(
             !s.contains("__pvm_assert_non_payable"),
             "receive is implicitly payable: call() must not invoke the non-payable guard; got:\n{s}"
+        );
+    }
+
+    #[test]
+    fn generates_env_accessor() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod my_contract {
+                pub struct MyContract;
+                impl MyContract {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let tokens = expand_contract(ContractArgs::default(), item).unwrap();
+        let output = tokens.to_string();
+
+        assert!(
+            output.contains("pub fn env"),
+            "env() accessor should be generated on the struct"
         );
     }
 }

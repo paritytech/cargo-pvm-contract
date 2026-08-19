@@ -63,7 +63,7 @@ pub fn generate_abi_gen(
 /// Auto-numbered slots reference a chain of `__pvm_storage_slot_*` const items
 /// declared inside the helper fn (mirroring the chain produced for the
 /// `this` construction in `deploy()`/`call()`). This way the slot value is
-/// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
+/// const-evaluated at compile time even when `<Ty as StorageType>::SLOTS`
 /// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
 /// fields run through [`generate_layout_emit`] with an empty prefix —
 /// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
@@ -78,9 +78,13 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
 
     let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
-        .map(|sf| {
-            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+        .filter_map(|sf| {
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match &sf.slot {
                 Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
+                // Raw external slots (e.g. EIP-1967) live outside solc's
+                // sequential storage layout — solc doesn't emit them in
+                // `storageLayout` either, so omit them here.
+                Slot::ExplicitRaw(_) => return None,
                 Slot::Auto => {
                     let const_ident =
                         quote::format_ident!("{}{}", super::contract::AUTO_SLOT_PREFIX, &sf.name);
@@ -95,12 +99,12 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
                 quote! { "" },
             );
             let cfgs = &sf.cfg_attrs;
-            quote! {
+            Some(quote! {
                 #(#cfgs)*
                 {
                     #emit
                 }
-            }
+            })
         })
         .collect();
 
@@ -412,6 +416,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
@@ -522,6 +527,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         }
     }
 
@@ -535,7 +541,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::View,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -557,7 +562,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::Pure,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -617,6 +621,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -667,6 +672,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -710,6 +716,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {

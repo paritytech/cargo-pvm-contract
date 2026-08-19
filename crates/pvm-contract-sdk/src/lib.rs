@@ -43,8 +43,8 @@ extern crate self as pvm_contract_sdk;
 // ---------------------------------------------------------------------------
 
 pub use pvm_contract_macros::{
-    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback, method,
-    non_reentrant, payable, receive, storage,
+    SolError, SolEvent, SolStorage, SolType, abi_import, constructor, contract, fallback,
+    interface_id, method, non_reentrant, payable, receive, selector, storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,11 +75,14 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    Env,
     EventTopics,
     Host,
     HostApi,
     HostResult,
     I256,
+    OutSink,
+    Outcome,
     Panic,
     ParseI256Error,
     PolkaVmHost,
@@ -110,12 +113,18 @@ pub use pvm_contract_types::{
     checked_sum,
     const_keccak256,
     const_selector,
+    // Dispatch outcome lowering (single exit for the selector-dispatch path)
+    finalize_outcome,
     // Framework errors
     framework_errors,
     keccak256,
     // Storage-layout walker wrapper (StorageEncode family) used by codegen
     layout_step_encode,
+    // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
+    panic_revert,
     read_word_offset,
+    // Compile-time `&str` equality for `#[contract]` signature assertions
+    str_eq,
     value_transferred_is_nonzero,
 };
 
@@ -134,6 +143,11 @@ pub use pvm_contract_core::call::{
     CallBuilder, CallError, CallLimits, NonPayable, Payable, Pure, RefTimeAndProofSizeLimits,
     StateMutability, View,
 };
+
+// Typed wrappers for the builtin Ethereum precompiles (ecrecover, P256Verify)
+// plus fixed-address constants for the full builtin set. Callable from `&self`
+// (view) methods via `precompiles::ecrecover(self.host(), …)`.
+pub use pvm_contract_core::precompiles;
 
 // Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
 // 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones
@@ -161,7 +175,7 @@ pub use pvm_contract_types::{
 };
 
 #[cfg(feature = "std")]
-pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder};
+pub use pvm_contract_types::{Halt, MockHost, MockHostBuilder, assert_panics, assert_reverts};
 
 /// Full access to the types crate for advanced use cases.
 pub use pvm_contract_types as types;

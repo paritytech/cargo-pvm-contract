@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../specs/build.md")]
+#![doc = include_str!("../build.md")]
 
 mod abi;
 
@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-pub use abi::AbiJson;
+pub use abi::{AbiJson, reject_sol_imports};
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";

@@ -23,12 +23,15 @@
 //!     allowances: Mapping<Address, Mapping<Address, U256>>,
 //! }
 //!
-//! impl ::pvm_contract_sdk::StorageComponent for Erc20 {
-//!     const SLOTS: u64 =
-//!           <Lazy<U256> as StorageComponent>::SLOTS
-//!         + <Mapping<Address, U256> as StorageComponent>::SLOTS
-//!         + <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::SLOTS;
+//! impl ::pvm_contract_sdk::StorageType for Erc20 {
+//!     // `StorageType` owns the layout facts. SLOTS is the layout-walker
+//!     // chain (same `layout_step_component` steps as `new_at` below).
+//!     const SLOTS: u64 = { /* layout_step_component walker over the fields */ };
+//!     const PACKED_BYTES: usize = 32;
+//!     // ... NEEDS_RECURSIVE_CLEAR / Get / GetMut / get_at ...
+//! }
 //!
+//! impl ::pvm_contract_sdk::StorageComponent for Erc20 {
 //!     fn new_at(base: StorageKey, offset: u8, alone: bool, host: ::pvm_contract_sdk::Host) -> Self {
 //!         // Per-field placement chain: each `LayoutStep` is computed by the
 //!         // shared walker from the previous step plus this field's
@@ -44,7 +47,7 @@
 //!         const __pvm_storage_offset_allowances: ::pvm_contract_sdk::LayoutStep =
 //!             ::pvm_contract_sdk::layout_step_component::<Mapping<Address, Mapping<Address, U256>>>(
 //!                 __pvm_storage_offset_balances);
-//!         // Per-field `alone` flag: true iff no neighbour shares the slot.
+//!         // Per-field `alone` flag: true if no neighbour shares the slot.
 //!         const __pvm_storage_alone_total_supply: bool =
 //!             true && __pvm_storage_offset_total_supply.slot != __pvm_storage_offset_balances.slot;
 //!         const __pvm_storage_alone_balances: bool =
@@ -57,11 +60,11 @@
 //!                 base.add(__pvm_storage_offset_total_supply.slot),
 //!                 __pvm_storage_offset_total_supply.offset,
 //!                 __pvm_storage_alone_total_supply, host.clone()),
-//!             balances: <_ as StorageComponent>::new_at(
+//!             balances: <Mapping<Address, U256> as StorageComponent>::new_at(
 //!                 base.add(__pvm_storage_offset_balances.slot),
 //!                 __pvm_storage_offset_balances.offset,
 //!                 __pvm_storage_alone_balances, host.clone()),
-//!             allowances: <_ as StorageComponent>::new_at(
+//!             allowances: <Mapping<Address, Mapping<Address, U256>> as StorageComponent>::new_at(
 //!                 base.add(__pvm_storage_offset_allowances.slot),
 //!                 __pvm_storage_offset_allowances.offset,
 //!                 __pvm_storage_alone_allowances, host.clone()),
@@ -275,14 +278,6 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             for #struct_name #ty_generics
         #where_clause
         {
-            const SLOTS: u64 = #slots_expr;
-
-            // Embedded `#[storage]` sub-structs always start a fresh slot and
-            // never pack with neighbouring contract fields. Matches solc —
-            // packing applies inside the sub-struct, never across its outer
-            // boundary.
-            const PACKED_BYTES: usize = 32;
-
             fn new_at(
                 base: ::pvm_contract_sdk::StorageKey,
                 offset: u8,
@@ -322,9 +317,9 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
             for #struct_name #ty_generics
         #where_clause
         {
-            const SLOTS: u64 = <Self as ::pvm_contract_sdk::StorageComponent>::SLOTS;
+            // Source of truth for the slot count (the layout-walker result).
+            const SLOTS: u64 = #slots_expr;
             const PACKED_BYTES: usize = 32;
-            const HAS_DYNAMIC_BODY: bool = false;
             // Fields may own storage at derived keys / dynamic bodies, so
             // clearing recurses through `StorageComponent::clear`.
             const NEEDS_RECURSIVE_CLEAR: bool = true;
@@ -407,7 +402,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         // Name resolver for the layout-emit code path: when this struct is
         // used as the value type of a `Mapping<K, Self>`, the parent layout
         // emit asks `<Self as StorageTypeName>::name()` for the `"type"`
-        // string of the `"mapping(K, …)"` entry. `pvm-contract-types` has no
+        // string of the `"mapping(K => …)"` entry. `pvm-contract-types` has no
         // blanket `StorageTypeName` impl — each type provides its own — so
         // `#[storage]` sub-structs need this explicit impl returning the
         // Rust ident.
@@ -488,10 +483,21 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         // fields: they occupy one in-struct slot (the length/header) and spill
         // their body to `keccak256(slot)`. The `Dynamic` arm routes through the
         // field type's `StorageEncode`/`StorageDecode`, so a `Vec<T>` field
-        // works via the `Vec<T>` storage codec (`T: StorageArrayElement`;
-        // `Vec<u8>` and `Vec<String>` therefore still error, with the codec's
-        // `on_unimplemented` hint).
-        SolType::String | SolType::DynBytes | SolType::Array(_) => StorageFieldKind::Dynamic,
+        // works via the `Vec<T>` storage codec (`T: StorageArrayElement`).
+        SolType::String | SolType::DynBytes => StorageFieldKind::Dynamic,
+        // `Vec<u8>` (Solidity `uint8[]` — a different layout from `bytes`; use
+        // `Bytes`) and dynamic-element arrays (`Vec<String>`, `Vec<Bytes>`,
+        // `Vec<Vec<_>>`) are rejected here at expansion time with a tailored
+        // hint, instead of surfacing later as an opaque `StorageEncode`
+        // trait-bound error inside generated code. Static-element arrays
+        // (including `Vec<CustomStruct>`, which can't be classified
+        // syntactically) fall through to `Dynamic`; a non-`StorageArrayElement`
+        // element type is still caught by the codec's trait bounds.
+        SolType::Array(inner) => match inner.as_ref() {
+            SolType::Uint(8) => StorageFieldKind::Unsupported,
+            ty if ty.is_dynamic() == Some(true) => StorageFieldKind::Unsupported,
+            _ => StorageFieldKind::Dynamic,
+        },
         // Nested `#[derive(SolType)]` structs (`Custom`), `FixedArray`, and
         // tuples as *packed value* fields still need atomic multi-field packed
         // codegen that isn't implemented. This is an optimization gap, not a
@@ -532,10 +538,11 @@ fn field_access_tokens(
 
 /// Emit the `StorageEncode` + `StorageDecode` impls for a SolStorage-derived
 /// struct. Supports both static layouts (all fields `Packable`) and
-/// dynamic-bodied layouts (fields include `String` / `Bytes` — solc-style
-/// header-in-slot + body at `keccak256(slot) + i`). Fields classified as
-/// `Unsupported` (nested SolType structs, tuples, fixed arrays of non-`u8`,
-/// `Vec<T>` for `T != u8`) produce a `compile_error!`.
+/// dynamic-bodied layouts (fields include `String` / `Bytes` / static-element
+/// `Vec<T>` — solc-style header-in-slot + body at `keccak256(slot) + i`).
+/// Fields classified as `Unsupported` (nested SolType structs, tuples, fixed
+/// arrays of non-`u8`, `Vec<u8>` — use `Bytes` for `bytes`-shaped values —
+/// and dynamic-element arrays) produce a `compile_error!`.
 fn generate_sol_storage_impls(
     name: &syn::Ident,
     fields: &Fields,
@@ -544,15 +551,10 @@ fn generate_sol_storage_impls(
     // Real compile error at derive expansion — visible to `cargo check` and
     // `trybuild`. Replaces the prior const-panic stub used when this code
     // lived inside `#[derive(SolType)]`.
-    if let Some((field_idx, field_ty, unsupported_ty, is_nested_struct)) =
+    if let Some((field_idx, field_ty, unsupported_ty, sol_ty)) =
         field_info.iter().enumerate().find_map(|(idx, (_, ty))| {
             matches!(classify_storage_field(ty), StorageFieldKind::Unsupported).then(|| {
-                (
-                    idx,
-                    get_field_types(fields)[idx],
-                    ty.canonical_name(),
-                    matches!(ty, SolType::Custom(_)),
-                )
+                (idx, get_field_types(fields)[idx], ty.canonical_name(), ty)
             })
         })
     {
@@ -560,27 +562,42 @@ fn generate_sol_storage_impls(
             Some(ident) => format!("field `{ident}`"),
             None => format!("field {field_idx}"),
         };
-        // A nested struct *can* live in storage today — just not as a packed
-        // value field. Point the user at the `#[storage]` + `.view()` path,
-        // which yields the identical solc layout. Other unsupported kinds
-        // (`Vec<T>`, tuples, fixed arrays) have no such workaround.
-        let hint = if is_nested_struct {
-            "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
-             struct. To store a nested struct, make BOTH structs \
-             `#[pvm_contract_sdk::storage]` and access them through a field handle \
-             or `Mapping<_, T>` with `.view()` / `.view_mut()` — this produces the \
-             identical solc storage layout. (`#[derive(SolType)]` alone remains \
-             correct if you only need ABI for calldata / events.)"
-        } else {
-            "Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \
-             you only need ABI (calldata / events)."
+        // A nested struct lives in storage via the `#[storage]` + `get`/`entry`
+        // path (identical solc layout); point the user there. `Vec<u8>` has a
+        // `bytes`-shaped home (`Bytes`); dynamic-element arrays have none yet.
+        // The other composites have their own handle-based homes —
+        // `Lazy<(A, B)>` for a tuple, `Lazy<[T; N]>` for a fixed array — just
+        // not as a packed value field of this struct.
+        let hint = match sol_ty {
+            SolType::Custom(_) => {
+                "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
+                 struct. To store a nested struct, make BOTH structs \
+                 `#[pvm_contract_sdk::storage]` and access them through a field handle \
+                 or `Mapping<_, T>` with `get` (read) / `entry` (write) — this produces \
+                 the identical solc storage layout. (`#[derive(SolType)]` alone remains \
+                 correct if you only need ABI for calldata / events.)"
+            }
+            SolType::Array(inner) if matches!(inner.as_ref(), SolType::Uint(8)) => {
+                "Hint: `Vec<u8>` is Solidity `uint8[]`, a different on-chain layout \
+                 from `bytes`. Use `Bytes` for `bytes`-shaped storage."
+            }
+            SolType::Array(_) => {
+                "Hint: dynamic-element arrays (`Vec<String>`, `Vec<Bytes>`, nested \
+                 `Vec<Vec<_>>`) are not yet supported as storage values. Only \
+                 static-element `Vec<T>` (`T: StorageArrayElement`) works."
+            }
+            _ => {
+                "Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \
+                 you only need ABI (calldata / events)."
+            }
         };
         let msg = format!(
             "`{name}` cannot derive `SolStorage`: {field_label} has type \
              `{unsupported_ty}` (Rust: `{field_ty_str}`), which is not yet \
              supported as a `StorageEncode` field. Only fixed-size primitives \
-             (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, and `bytes` \
-             (Rust `Bytes`) are supported today. {hint}",
+             (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, `bytes` \
+             (Rust `Bytes`), and static-element `T[]` (Rust `Vec<T>`, \
+             `T: StorageArrayElement`) are supported today. {hint}",
             name = name,
             field_label = field_label,
             unsupported_ty = unsupported_ty,
@@ -718,8 +735,7 @@ fn generate_sol_storage_impls(
     // Module-scope `const _: () = ...` assertion. Evaluated at type-check
     // time (cargo check), so trybuild UI fixtures can pin the rejection
     // without needing a use site to force monomorphization. Each dynamic
-    // struct emits exactly one of these; the inline trait-method bodies
-    // no longer carry their own per-method copy.
+    // struct emits exactly one of these (not a per-method copy).
     // Embed the concrete limit in the message (read from the source of truth
     // so it can't drift) alongside the symbolic `MAX_STATIC_SLOTS` name.
     let max_static_slots =
@@ -743,7 +759,10 @@ fn generate_sol_storage_impls(
 
     // Leaf `StorageType` + `SimpleStorageType` so a value struct can be a
     // `Mapping<K, Self>` value / `StorageVec<Self>` element (and `Lazy<Self>`).
-    // Delegates to `Lazy` exactly like the built-in scalar/tuple/array leaves.
+    // A derived storage struct is always full-slot (`PACKED_BYTES == 32`), so
+    // the read/write/clear accessors go straight through the codec — no `Lazy`
+    // wrapper — matching the built-in full-slot leaf path. `get_mut_at` still
+    // returns a `Lazy<Self>` because that IS the user-facing `entry` cursor.
     // Emitted identically for the static and dynamic branches (a value struct
     // is a by-value leaf either way).
     let value_storage_type = quote! {
@@ -751,8 +770,6 @@ fn generate_sol_storage_impls(
             const SLOTS: u64 = <#name as ::pvm_contract_sdk::StorageEncode>::STORAGE_SLOTS as u64;
             const PACKED_BYTES: usize =
                 <#name as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES;
-            const HAS_DYNAMIC_BODY: bool =
-                <#name as ::pvm_contract_sdk::StorageEncode>::HAS_DYNAMIC_BODY;
             const NEEDS_RECURSIVE_CLEAR: bool =
                 <#name as ::pvm_contract_sdk::StorageEncode>::HAS_DYNAMIC_BODY;
 
@@ -764,7 +781,9 @@ fn generate_sol_storage_impls(
                 offset: u8,
                 host: &::pvm_contract_sdk::Host,
             ) -> #name {
-                unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }.get()
+                // Full-slot: read straight through the codec (no `Lazy` wrapper).
+                let _ = offset;
+                <#name as ::pvm_contract_sdk::StorageDecode>::read_from_storage(host, key.as_bytes())
             }
 
             unsafe fn get_mut_at(
@@ -773,11 +792,9 @@ fn generate_sol_storage_impls(
                 alone: bool,
                 host: &::pvm_contract_sdk::Host,
             ) -> ::pvm_contract_sdk::Lazy<#name> {
-                if alone {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new_alone(key, offset, host.clone()) }
-                } else {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }
-                }
+                <::pvm_contract_sdk::Lazy<#name> as ::pvm_contract_sdk::StorageComponent>::new_at(
+                    key, offset, alone, host.clone(),
+                )
             }
 
             unsafe fn clear_at(
@@ -786,20 +803,13 @@ fn generate_sol_storage_impls(
                 alone: bool,
                 host: &::pvm_contract_sdk::Host,
             ) {
-                let mut cell = if alone {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new_alone(key, offset, host.clone()) }
-                } else {
-                    unsafe { ::pvm_contract_sdk::Lazy::<#name>::new(key, offset, host.clone()) }
-                };
-                <::pvm_contract_sdk::Lazy<#name> as ::pvm_contract_sdk::StorageComponent>::clear(
-                    &mut cell,
-                );
+                // Full-slot: clear straight through the codec.
+                let _ = (offset, alone);
+                <#name as ::pvm_contract_sdk::StorageEncode>::clear_storage(host, key.as_bytes());
             }
         }
 
         impl ::pvm_contract_sdk::SimpleStorageType for #name {
-            type Value = #name;
-
             fn read_value(
                 key: ::pvm_contract_sdk::StorageKey,
                 offset: u8,
@@ -827,10 +837,14 @@ fn generate_sol_storage_impls(
                 alone: bool,
                 host: &::pvm_contract_sdk::Host,
             ) {
-                let mut cell = unsafe {
-                    <#name as ::pvm_contract_sdk::StorageType>::get_mut_at(key, offset, alone, host)
-                };
-                cell.set(value);
+                // Full-slot: write straight through the codec (no `Lazy` wrapper).
+                // Fully-qualified so the user crate needn't import `StorageEncode`.
+                let _ = (offset, alone);
+                <#name as ::pvm_contract_sdk::StorageEncode>::write_to_storage(
+                    value,
+                    host,
+                    key.as_bytes(),
+                );
             }
         }
     };

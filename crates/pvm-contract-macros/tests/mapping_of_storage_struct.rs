@@ -1,15 +1,15 @@
 //! `Mapping<K, V>` where `V` is itself a storage component (`#[storage]`
 //! sub-struct, `Lazy<T>`, nested `Mapping<K2, V'>`, …).
 //!
-//! Covers the new storage-typed `view` / `view_mut` API introduced by the
-//! `StorageComponent::new_at(StorageKey, …)` generalization. The on-chain
+//! Covers the storage-typed `get` (read) / `entry` (write) API for container
+//! values, backed by the `StorageType` composition traits. The on-chain
 //! layout matches solc's `mapping(K => struct)` pattern: the value lives at
 //! the derived key, sub-fields at `derived + N`, and inner mappings derive
 //! sub-keys from the per-key derived slot.
 //!
 //! Three angles per pattern:
-//!   - **Round-trip** — write through `view_mut(k).field.set(v)`, read
-//!     through `view(k).field.get()`.
+//!   - **Round-trip** — write through `entry(k).field.set(v)`, read
+//!     through `get(k).field.get()`.
 //!   - **Independent keys** — different outer K values don't interfere.
 //!   - **Layout** — the inner field's slot matches the
 //!     `keccak256(pad32(k)+slot).add(N)` derivation solc would emit.
@@ -53,7 +53,7 @@ fn mapping_of_storage_struct_round_trip() {
     let alice = Address([0xAA; 20]);
     let bob = Address([0xBB; 20]);
 
-    // Write through the storage-typed mutable view.
+    // Write through the storage-typed mutable guard (`entry` -> RefMut).
     {
         let mut v = vaults.entry(&vault);
         v.total_shares.set(&U256::from(1_000_000));
@@ -62,7 +62,7 @@ fn mapping_of_storage_struct_round_trip() {
         v.last_deposit.insert(&alice, &U256::from(42));
     }
 
-    // Read through the storage-typed immutable view.
+    // Read through the storage-typed immutable guard (`get` -> Ref).
     {
         let v = vaults.get(&vault);
         assert_eq!(v.total_shares.get(), U256::from(1_000_000));
@@ -121,7 +121,7 @@ fn mapping_of_lazy_round_trip() {
     let host = fresh_host();
     let mut m = unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
 
-    // Storage-typed map: write/read via view_mut/view returning Ref<Lazy<U256>>
+    // Storage-typed map: write via `entry` (RefMut/Lazy cursor), read via `get`.
     m.entry(&1u64).set(&U256::from(42));
     m.entry(&2u64).set(&U256::from(7));
     assert_eq!(m.get(&1u64).get(), U256::from(42));
@@ -169,10 +169,10 @@ fn nested_mapping_via_generalized_storage_typed_impl() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    // `view_mut(owner)` → RefMut<Mapping<Address, U256>>, then .insert via DerefMut.
+    // `entry(owner)` → RefMut<Mapping<Address, U256>>, then .insert via DerefMut.
     allowances.entry(&owner).insert(&spender, &U256::from(500));
 
-    // Read via `view(owner)` → Ref<Mapping<Address, U256>>, then .get via Deref.
+    // Read via `get(owner)` → Ref<Mapping<Address, U256>>, then .get via Deref.
     assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
 }
 

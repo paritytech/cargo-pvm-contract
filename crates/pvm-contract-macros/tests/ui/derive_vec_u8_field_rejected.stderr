@@ -1,0 +1,5 @@
+error: `Blob` cannot derive `SolStorage`: field `data` has type `uint8[]` (Rust: `Vec < u8 >`), which is not yet supported as a `StorageEncode` field. Only fixed-size primitives (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, `bytes` (Rust `Bytes`), and static-element `T[]` (Rust `Vec<T>`, `T: StorageArrayElement`) are supported today. Hint: `Vec<u8>` is Solidity `uint8[]`, a different on-chain layout from `bytes`. Use `Bytes` for `bytes`-shaped storage.
+  --> tests/ui/derive_vec_u8_field_rejected.rs:11:15
+   |
+11 |     pub data: Vec<u8>,
+   |               ^^^^^^^
