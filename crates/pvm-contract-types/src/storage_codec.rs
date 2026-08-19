@@ -1201,7 +1201,11 @@ fn try_read_array_len(host: &Host, slot: &[u8; 32]) -> Option<u64> {
 /// Encode body slot `slot_idx` of a `T[]` from the element slice — same packing
 /// as `[T; N]::encode_slot`, generalized to a runtime-length slice.
 #[cfg(feature = "alloc")]
-fn encode_array_body_slot<T: StorageArrayElement>(elems: &[T], slot_idx: usize, buf: &mut [u8; 32]) {
+fn encode_array_body_slot<T: StorageArrayElement>(
+    elems: &[T],
+    slot_idx: usize,
+    buf: &mut [u8; 32],
+) {
     *buf = [0u8; 32];
     let n = elems.len();
     if T::PACKED_BYTES < 32 {

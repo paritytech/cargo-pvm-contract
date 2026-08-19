@@ -553,9 +553,8 @@ fn generate_sol_storage_impls(
     // lived inside `#[derive(SolType)]`.
     if let Some((field_idx, field_ty, unsupported_ty, sol_ty)) =
         field_info.iter().enumerate().find_map(|(idx, (_, ty))| {
-            matches!(classify_storage_field(ty), StorageFieldKind::Unsupported).then(|| {
-                (idx, get_field_types(fields)[idx], ty.canonical_name(), ty)
-            })
+            matches!(classify_storage_field(ty), StorageFieldKind::Unsupported)
+                .then(|| (idx, get_field_types(fields)[idx], ty.canonical_name(), ty))
         })
     {
         let field_label = match &field_info[field_idx].0 {

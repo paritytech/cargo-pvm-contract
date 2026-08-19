@@ -3555,7 +3555,8 @@ fn lazy_vec_value_roundtrip() {
 fn mapping_vec_value_roundtrip_and_subword() {
     let host = h();
     // Full-slot element type.
-    let mut m = unsafe { Mapping::<Address, Vec<U256>>::new(StorageKey::from_slot(1), host.clone()) };
+    let mut m =
+        unsafe { Mapping::<Address, Vec<U256>>::new(StorageKey::from_slot(1), host.clone()) };
     let a = Address([0xAA; 20]);
     m.insert(&a, &alloc::vec![U256::from(1u64), U256::from(2u64)]);
     assert_eq!(m.get(&a), alloc::vec![U256::from(1u64), U256::from(2u64)]);

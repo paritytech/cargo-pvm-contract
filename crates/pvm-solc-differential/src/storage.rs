@@ -688,8 +688,11 @@ mod lazy_vec {
         pub fn new(&mut self) {}
         #[pvm_contract_sdk::method]
         pub fn populate(&mut self) {
-            self.arr
-                .set(&vec![U256::from(11u64), U256::from(22u64), U256::from(33u64)]);
+            self.arr.set(&vec![
+                U256::from(11u64),
+                U256::from(22u64),
+                U256::from(33u64),
+            ]);
         }
     }
 }
