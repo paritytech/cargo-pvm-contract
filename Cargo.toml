@@ -29,8 +29,8 @@ clap = { version = "4.5", features = ["derive"] }
 env_logger = "0.11"
 include_dir = "0.7"
 log = "0.4"
-polkavm-linker = "0.35.0"
-polkavm-derive = "0.35.0"
+polkavm-linker = { git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }
+polkavm-derive = { git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }
 ruint = { version = "1.17", default-features = false }
 alloy-core = { version = "1.5", default-features = false, features = [
     "sol-types",

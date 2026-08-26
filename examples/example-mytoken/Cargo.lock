@@ -703,7 +703,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-core",
  "picoalloc",
- "polkavm-derive 0.35.0",
+ "polkavm-derive 0.37.0",
  "pvm-bump-allocator",
  "pvm-contract-builder-dsl",
  "pvm-contract-macros",
@@ -1210,9 +1210,8 @@ dependencies = [
 
 [[package]]
 name = "polkavm-common"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b20e5a47dd9ad7bb43013676a18074fca2573dd8270774a7d2ad286b57bc710f"
+version = "0.37.0"
+source = "git+https://github.com/paritytech/polkavm?branch=lj%2Fmore-instr-128#1f8c7889e262e4db72e7298f477510cd021aac7b"
 dependencies = [
  "picosimd",
 ]
@@ -1228,11 +1227,10 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80796823e852d4ff90857dd184162ce3b5de739b34495aadef69d381005dcc5d"
+version = "0.37.0"
+source = "git+https://github.com/paritytech/polkavm?branch=lj%2Fmore-instr-128#1f8c7889e262e4db72e7298f477510cd021aac7b"
 dependencies = [
- "polkavm-derive-impl-macro 0.35.0",
+ "polkavm-derive-impl-macro 0.37.0",
 ]
 
 [[package]]
@@ -1249,11 +1247,10 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive-impl"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8eede5680fbaac211c5e5f78cd2fa55456eba819a0c02dc5ca08b3327268ff5"
+version = "0.37.0"
+source = "git+https://github.com/paritytech/polkavm?branch=lj%2Fmore-instr-128#1f8c7889e262e4db72e7298f477510cd021aac7b"
 dependencies = [
- "polkavm-common 0.35.0",
+ "polkavm-common 0.37.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -1271,11 +1268,10 @@ dependencies = [
 
 [[package]]
 name = "polkavm-derive-impl-macro"
-version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d345f00a91917abae726812c5a8683da571412f22ce6a523cfcdfea66f8459a9"
+version = "0.37.0"
+source = "git+https://github.com/paritytech/polkavm?branch=lj%2Fmore-instr-128#1f8c7889e262e4db72e7298f477510cd021aac7b"
 dependencies = [
- "polkavm-derive-impl 0.35.0",
+ "polkavm-derive-impl 0.37.0",
  "syn 2.0.117",
 ]
 
@@ -1377,7 +1373,7 @@ name = "pvm-contract-builder-dsl"
 version = "0.4.0"
 dependencies = [
  "pallet-revive-uapi",
- "polkavm-derive 0.35.0",
+ "polkavm-derive 0.37.0",
  "pvm-contract-types",
  "ruint",
 ]
@@ -1411,7 +1407,7 @@ dependencies = [
 name = "pvm-contract-sdk"
 version = "0.4.0"
 dependencies = [
- "polkavm-derive 0.35.0",
+ "polkavm-derive 0.37.0",
  "pvm-contract-core",
  "pvm-contract-macros",
  "pvm-contract-types",

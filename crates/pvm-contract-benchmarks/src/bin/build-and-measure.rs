@@ -44,7 +44,7 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
-polkavm-derive = {{ version = "0.35.0" }}
+polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}
 
 [profile.dev]
 panic = "abort"
@@ -81,7 +81,7 @@ path = "src/{}.rs"
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
-polkavm-derive = {{ version = "0.35.0" }}
+polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}
 
 [profile.dev]
 panic = "abort"
@@ -117,7 +117,7 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-builder-dsl = {{ path = "{}" }}
-polkavm-derive = {{ version = "0.35.0" }}
+polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}
 
 [profile.dev]
 panic = "abort"
