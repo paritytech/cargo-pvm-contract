@@ -13,6 +13,12 @@ pub use abi::{AbiJson, reject_sol_imports};
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
+/// Environment variable holding the path to a wide-integer-aware `ld.lld`.
+/// See [`contract_rustflags`].
+const WIDE_LLD_ENV: &str = "CARGO_PVM_CONTRACT_WIDE_LLD";
+/// Environment variable that adds the 128-bit width of the wide integer
+/// extension. See [`contract_rustflags`].
+const WIDE_I128_ENV: &str = "CARGO_PVM_CONTRACT_WIDE_I128";
 const BUILD_PLAN_REASON: &str = "cargo-pvm-contract-build-plan";
 
 struct CargoBuildCommand<'a> {
@@ -407,7 +413,7 @@ fn build_elf(
 }
 
 fn cargo_build_command(config: &CargoBuildCommand<'_>) -> Command {
-    let rustflags = "-Zunstable-options -Cpanic=immediate-abort";
+    let rustflags = contract_rustflags();
     let mut cmd = Command::new("cargo");
     cmd.current_dir(config.work_dir)
         // Avoid leaking parent-cargo state into the polkavm child build:
@@ -425,7 +431,7 @@ fn cargo_build_command(config: &CargoBuildCommand<'_>) -> Command {
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         // Disable strip during ELF build - it conflicts with --emit-relocs required by PolkaVM.
         // Stripping is done later by polkavm_linker after processing relocations.
-        .env("RUSTFLAGS", rustflags)
+        .env("RUSTFLAGS", &rustflags)
         .env("CARGO_TARGET_DIR", config.target_dir)
         .env("CARGO_PROFILE_RELEASE_STRIP", "false")
         .env("RUSTC_BOOTSTRAP", "1")
@@ -460,6 +466,48 @@ fn cargo_build_command(config: &CargoBuildCommand<'_>) -> Command {
     }
 
     cmd
+}
+
+/// The `RUSTFLAGS` the contract build runs with.
+///
+/// Two environment variables opt a build into the wide integer extension
+/// (`XReviveVec`); with neither of them set the flags are the base set alone:
+///
+/// - `CARGO_PVM_CONTRACT_WIDE_LLD` holds the path to an `ld.lld` that knows the
+///   extension. Setting it links through that `ld.lld` under plugin LTO and
+///   enables the extension's 256-bit instructions.
+/// - `CARGO_PVM_CONTRACT_WIDE_I128` (`1` or `true`) adds the extension's
+///   128-bit width. It is only read when the linker path is set.
+///
+/// The linker path is a local override for a locally built revive LLVM fork. A
+/// pinned download of a revive LLVM release ships `ld.lld` too and slots into
+/// the same seam once a release carries the extension.
+///
+/// Three constraints come with the extension:
+///
+/// - Plugin LTO requires rustc's bundled LLVM and that `ld.lld` to agree on
+///   their major and minor version.
+/// - `xrevivevec` is not a target feature rustc recognizes: it warns, and still
+///   records the feature in the bitcode it emits, where the fork's `ld.lld`
+///   honors it during LTO codegen.
+/// - `i128` passes in vector registers with the extension and in register pairs
+///   without it, so every object in a program has to share one setting. The
+///   `-Zbuild-std` build compiles the whole program, `core` and `alloc`
+///   included, from these flags, so one process-wide setting covers all of it.
+fn contract_rustflags() -> String {
+    let base = "-Zunstable-options -Cpanic=immediate-abort";
+
+    let Some(lld) = env::var(WIDE_LLD_ENV).ok().filter(|path| !path.is_empty()) else {
+        return base.to_string();
+    };
+
+    let mut flags =
+        format!("{base} -Clinker-plugin-lto -Clinker={lld} -Ctarget-feature=+xrevivevec");
+    if matches!(env::var(WIDE_I128_ENV).as_deref(), Ok("1" | "true")) {
+        flags.push_str(" -Clink-arg=-mllvm -Clink-arg=-riscv-revive-i128");
+    }
+
+    flags
 }
 
 fn emit_build_plan_if_available(config: &CargoBuildCommand<'_>) {
