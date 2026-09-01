@@ -1,3 +1,4 @@
+use alloy_core::primitives::map::HashMap;
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -429,7 +430,9 @@ fn abi_json_has_correct_structure() {
         .join("debug")
         .join("abi-test.abi.json");
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
-    let abi: Vec<serde_json::Value> = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    let abi = serde_json::from_str::<HashMap<String, Vec<serde_json::Value>>>(&abi_content)
+        .expect("parse ABI JSON")["abi"]
+        .clone();
 
     let function_names: Vec<&str> = abi
         .iter()
