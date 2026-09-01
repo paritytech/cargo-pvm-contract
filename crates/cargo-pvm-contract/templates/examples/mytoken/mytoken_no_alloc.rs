@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_sdk::U256;
 
@@ -25,7 +24,10 @@ mod my_token {
             let mut supply_bytes = [0u8; 32];
             let mut supply_slice = &mut supply_bytes[..];
 
-            match self.host().get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &key, &mut supply_slice)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
                 Err(_) => U256::ZERO,
             }
@@ -38,7 +40,10 @@ mod my_token {
             let mut balance_bytes = [0u8; 32];
             let mut balance_slice = &mut balance_bytes[..];
 
-            match self.host().get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &key, &mut balance_slice)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(balance_bytes),
                 Err(_) => U256::ZERO,
             }
@@ -96,7 +101,6 @@ mod my_token {
             self.host()
                 .set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
         }
-
     }
 
     fn total_supply_key() -> [u8; 32] {

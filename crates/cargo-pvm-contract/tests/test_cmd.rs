@@ -430,9 +430,13 @@ fn abi_json_has_correct_structure() {
         .join("debug")
         .join("abi-test.abi.json");
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
-    let abi = serde_json::from_str::<HashMap<String, Vec<serde_json::Value>>>(&abi_content)
-        .expect("parse ABI JSON")["abi"]
-        .clone();
+    let abi = if abi_content.contains("storageLayout") {
+        serde_json::from_str::<HashMap<String, Vec<serde_json::Value>>>(&abi_content)
+            .unwrap()["abi"]
+            .clone()
+    } else {
+        serde_json::from_str::<Vec<serde_json::Value>>(&abi_content).unwrap()
+    };
 
     let function_names: Vec<&str> = abi
         .iter()

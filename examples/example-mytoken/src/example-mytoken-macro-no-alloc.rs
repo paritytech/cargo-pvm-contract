@@ -137,7 +137,12 @@ mod my_token {
         }
 
         fn emit_transfer(&self, from: &[u8; 20], to: &[u8; 20], value: U256) {
-            Transfer { from: Address(*from), to: Address(*to), value }.emit(self.host());
+            Transfer {
+                from: Address(*from),
+                to: Address(*to),
+                value,
+            }
+            .emit(self.host());
         }
     }
 
