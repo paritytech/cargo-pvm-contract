@@ -1,4 +1,7 @@
-use alloy_core::dyn_abi::{DynSolType, DynSolValue};
+use alloy_core::{
+    dyn_abi::{DynSolType, DynSolValue},
+    primitives::map::HashMap,
+};
 use anyhow::{Context, Result, anyhow};
 use serde_json::Value;
 use std::path::Path;
@@ -16,9 +19,15 @@ pub struct DecodedParam {
 fn load_abi(abi_path: &Path) -> Result<Vec<Value>> {
     let content = std::fs::read_to_string(abi_path)
         .with_context(|| format!("Failed to read ABI file: {}", abi_path.display()))?;
-    let abi: Vec<Value> = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?;
-    Ok(abi)
+    let abi = if content.contains("storageLayout") {
+        serde_json::from_str::<HashMap<String, Vec<Value>>>(&content)
+            .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?["abi"]
+            .clone()
+    } else {
+        serde_json::from_str::<Vec<Value>>(&content)
+            .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?
+    };
+    Ok(abi.clone())
 }
 
 /// Compute the 4-byte Keccak-256 selector for a Solidity function signature.
