@@ -1,8 +1,6 @@
-use alloy_core::{
-    dyn_abi::{DynSolType, DynSolValue},
-    primitives::map::HashMap,
-};
+use alloy_core::dyn_abi::{DynSolType, DynSolValue};
 use anyhow::{Context, Result, anyhow};
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
 use tiny_keccak::{Hasher, Keccak};
@@ -14,19 +12,32 @@ pub struct DecodedParam {
     pub sol_type: String,
     pub value: String,
 }
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Abi {
+    Map {
+        #[serde(rename(deserialize = "storageLayout"))]
+        #[allow(unused)]
+        storage_layout: Vec<serde_json::Value>,
+        abi: Vec<serde_json::Value>,
+    },
+    Array(Vec<serde_json::Value>),
+}
 
 /// Load an ABI JSON file and return the parsed ABI array.
 fn load_abi(abi_path: &Path) -> Result<Vec<Value>> {
     let content = std::fs::read_to_string(abi_path)
         .with_context(|| format!("Failed to read ABI file: {}", abi_path.display()))?;
-    let abi = if content.contains("storageLayout") {
-        serde_json::from_str::<HashMap<String, Vec<Value>>>(&content)
-            .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?["abi"]
-            .clone()
-    } else {
-        serde_json::from_str::<Vec<Value>>(&content)
-            .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?
+    let abi = match serde_json::from_str::<Abi>(&content)
+        .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?
+    {
+        Abi::Map {
+            storage_layout: _,
+            abi,
+        } => abi,
+        Abi::Array(values) => values,
     };
+
     Ok(abi.clone())
 }
 
