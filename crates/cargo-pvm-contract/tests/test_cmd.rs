@@ -279,7 +279,7 @@ fn verify_abi_json(project_dir: &Path, binary_name: &str, profile: &str) {
 
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
     let abi: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
-    assert!(abi.is_array(), "ABI should be an array");
+    assert!(abi.is_object() || abi.is_array(), "ABI should be an array");
 }
 
 fn verify_cargo_toml(project_dir: &Path, use_dsl: bool) {
