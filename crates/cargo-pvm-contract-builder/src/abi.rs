@@ -31,12 +31,7 @@ pub fn generate_storage_layout_for_bin(
     features: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
-    if !source_path.exists()
-        || !has_slot_fields(
-            &fs::read_to_string(&source_path)
-                .with_context(|| format!("Failed to read {}", source_path.display()))?,
-        )
-    {
+    if !source_path.exists() {
         return Ok(None);
     }
 
