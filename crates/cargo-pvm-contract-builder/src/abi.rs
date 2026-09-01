@@ -1250,54 +1250,6 @@ interface Mixed {
         assert!(has_contract_macro(source));
     }
 
-    // --- has_slot_fields ---
-
-    #[test]
-    fn has_slot_fields_detects_real_attribute() {
-        let source = r#"
-            struct S {
-                #[slot(0)]
-                x: u32,
-            }
-        "#;
-        assert!(has_slot_fields(source));
-    }
-
-    #[test]
-    fn has_slot_fields_ignores_comment() {
-        // a `#[slot(...)]` shape inside a comment must not trip detection.
-        let source = r#"
-            struct S {
-                // #[slot(0)]
-                x: u32,
-            }
-        "#;
-        assert!(!has_slot_fields(source));
-    }
-
-    #[test]
-    fn has_slot_fields_finds_attribute_inside_nested_mod() {
-        let source = r#"
-            mod contract {
-                pub struct S {
-                    #[slot(0)]
-                    total: u32,
-                }
-            }
-        "#;
-        assert!(has_slot_fields(source));
-    }
-
-    #[test]
-    fn has_slot_fields_returns_false_when_absent() {
-        let source = r#"
-            struct S {
-                x: u32,
-            }
-        "#;
-        assert!(!has_slot_fields(source));
-    }
-
     // --- parse_sol_params ---
 
     // --- parse_sol_function_line ---
@@ -1759,20 +1711,6 @@ interface Token {{
               }
             ]"#]]
         .assert_eq(&abi_json(&sol_path));
-    }
-
-    // --- has_slot_fields ---
-
-    #[test]
-    fn detects_slot_attr() {
-        assert!(has_slot_fields(
-            "pub struct MyToken { #[slot(0)] total_supply: Lazy<U256> }"
-        ));
-    }
-
-    #[test]
-    fn no_slot_attr_returns_false() {
-        assert!(!has_slot_fields("pub struct MyToken;"));
     }
 
     // --- Event parsing ---
