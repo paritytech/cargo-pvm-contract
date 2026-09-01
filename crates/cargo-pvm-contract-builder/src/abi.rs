@@ -259,46 +259,6 @@ pub(crate) fn has_contract_macro(source: &str) -> bool {
     find_contract_attr(&file.items).is_some()
 }
 
-/// Walk for any struct field carrying a `#[slot(...)]` attribute, recursing
-/// into `mod` contents.
-fn any_struct_field_has_slot_attr(items: &[syn::Item]) -> bool {
-    for item in items {
-        match item {
-            syn::Item::Struct(s) => {
-                if let syn::Fields::Named(named) = &s.fields
-                    && named
-                        .named
-                        .iter()
-                        .any(|f| f.attrs.iter().any(|a| a.path().is_ident("slot")))
-                {
-                    return true;
-                }
-            }
-            syn::Item::Mod(m) => {
-                if let Some((_, nested)) = &m.content
-                    && any_struct_field_has_slot_attr(nested)
-                {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Detect whether the source contains a `#[slot(...)]` attribute on a struct
-/// field, which indicates storage fields on the contract struct.
-///
-/// Parses the source via `syn` so that `#[slot(...)]`-shaped text in comments
-/// or string literals doesn't trip detection.
-fn has_slot_fields(source: &str) -> bool {
-    let Ok(file) = syn::parse_file(source) else {
-        return false;
-    };
-    any_struct_field_has_slot_attr(&file.items)
-}
-
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
     let file = syn::parse_file(source).ok()?;
     let attr = find_contract_attr(&file.items)?;
