@@ -2,23 +2,26 @@
 
 pragma solidity ^0.8.0;
 
-// ERC20 shaped around 128-bit balances: the same storage and ABI traffic as
-// the SDK's 256-bit `mytoken`, with every amount a `uint128`. This is the
-// honest counterpart for measuring what the wide-integer extension does to a
-// real token contract.
+// ERC20-conformant external ABI over a 128-bit interior: every amount crosses
+// the boundary as `uint256`, while storage keeps the total supply, balances and
+// allowances as `uint128`. Incoming amounts are checked on the way in, so a
+// value above `type(uint128).max` reverts with `AmountTooLarge` — including the
+// `type(uint256).max` idiom for unlimited approvals. This is the shape a
+// `Balance = uint128` ledger takes when it has to speak ERC20.
 interface U128Erc20 {
-    event Transfer(address indexed from, address indexed to, uint128 value);
-    event Approval(address indexed owner, address indexed spender, uint128 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
 
     error InsufficientBalance();
     error InsufficientAllowance();
+    error AmountTooLarge();
 
-    function totalSupply() external view returns (uint128);
-    function balanceOf(address account) external view returns (uint128);
-    function allowance(address owner, address spender) external view returns (uint128);
+    function totalSupply() external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+    function allowance(address owner, address spender) external view returns (uint256);
 
-    function mint(address to, uint128 amount) external;
-    function transfer(address to, uint128 amount) external;
-    function approve(address spender, uint128 amount) external;
-    function transferFrom(address from, address to, uint128 amount) external;
+    function mint(address to, uint256 amount) external;
+    function transfer(address to, uint256 amount) external;
+    function approve(address spender, uint256 amount) external;
+    function transferFrom(address from, address to, uint256 amount) external;
 }

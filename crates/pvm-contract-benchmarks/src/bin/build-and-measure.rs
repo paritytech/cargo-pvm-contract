@@ -264,16 +264,14 @@ fn variants_for_contract(contract: &str) -> Vec<Variant> {
     // variants: the arithmetic under measurement lives in the contract body,
     // so the allocator is the only thing that differs between the two.
     //   - `u128_amm`: Uniswap V2-style constant-product quoting over `u128`
-    //     reserves (multiply, add, divide).
-    //   - `u128_lending`: fixed-point interest accrual — `mulDivDown` /
-    //     `mulDivUp` rounding and a Q64.64 compounding loop.
-    //   - `u128_erc20`: ERC20-shaped transfers over `u128` balances with a
-    //     nested allowance `Mapping`.
+    //     reserves behind a `uint256` ABI, with every product and quotient
+    //     taken at 256 bits.
+    //   - `u128_erc20`: ERC20-conformant `uint256` ABI over `u128` balances,
+    //     with a nested allowance `Mapping`.
     if contract == "mytoken_storage"
         || contract == "amm_reserves"
         || contract == "allowlist"
         || contract == "u128_amm"
-        || contract == "u128_lending"
         || contract == "u128_erc20"
     {
         return vec![Variant::NoAlloc, Variant::WithAlloc];
@@ -301,7 +299,6 @@ fn main() -> Result<()> {
         "amm_reserves",
         "allowlist",
         "u128_amm",
-        "u128_lending",
         "u128_erc20",
     ];
     let profiles = vec!["debug", "release"];

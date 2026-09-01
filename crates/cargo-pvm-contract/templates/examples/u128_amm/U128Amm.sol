@@ -2,17 +2,20 @@
 
 pragma solidity ^0.8.0;
 
-// Uniswap V2-style constant-product quoting over 128-bit reserves. Both
-// reserves share a single storage slot, and the quote math (multiply, add,
-// divide) stays inside 128-bit words — the shape a wide-integer instruction
-// set is meant to serve.
+// Uniswap V2-style constant-product pool with a `uint256` external ABI over
+// 128-bit reserves, which still share a single storage slot. Every product and
+// quotient in the quote math is evaluated at 256 bits, and each result is
+// checked on the way back down into the pool's `uint128` interior, so no
+// intermediate wraps: `amountIn * 997 * reserveOut` needs 266 bits at the top of
+// the `uint128` range and reverts with `AmountTooLarge` rather than truncating.
 interface U128Amm {
     error InsufficientLiquidity();
+    error AmountTooLarge();
 
-    function getReserves() external view returns (uint128, uint128);
-    function sync(uint128 reserve0, uint128 reserve1) external;
-    function getAmountOut(uint128 amountIn, uint128 reserveIn, uint128 reserveOut) external pure returns (uint128);
-    function getAmountIn(uint128 amountOut, uint128 reserveIn, uint128 reserveOut) external pure returns (uint128);
-    function swapExactIn(uint128 amountIn, bool zeroForOne) external returns (uint128);
-    function quoteCumulative(uint128 amountIn, uint32 hops) external view returns (uint128);
+    function getReserves() external view returns (uint256, uint256);
+    function sync(uint256 reserve0, uint256 reserve1) external;
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) external pure returns (uint256);
+    function getAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut) external pure returns (uint256);
+    function swapExactIn(uint256 amountIn, bool zeroForOne) external returns (uint256);
+    function quoteCumulative(uint256 amountIn, uint32 hops) external view returns (uint256);
 }
