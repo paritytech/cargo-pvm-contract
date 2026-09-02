@@ -1,4 +1,3 @@
-use alloy_core::primitives::map::HashMap;
 use assert_cmd::Command;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -278,8 +277,10 @@ fn verify_abi_json(project_dir: &Path, binary_name: &str, profile: &str) {
     );
 
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
-    let abi: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
-    assert!(abi.is_object() || abi.is_array(), "ABI should be an array");
+    let value: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    // Contracts with storage wrap the ABI as {"abi": [...], "storageLayout": {...}}.
+    let abi = value.get("abi").unwrap_or(&value);
+    assert!(abi.is_array(), "ABI should be an array");
 }
 
 fn verify_cargo_toml(project_dir: &Path, use_dsl: bool) {
@@ -430,13 +431,14 @@ fn abi_json_has_correct_structure() {
         .join("debug")
         .join("abi-test.abi.json");
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
-    let abi = if abi_content.contains("storageLayout") {
-        serde_json::from_str::<HashMap<String, Vec<serde_json::Value>>>(&abi_content)
-            .unwrap()["abi"]
-            .clone()
-    } else {
-        serde_json::from_str::<Vec<serde_json::Value>>(&abi_content).unwrap()
-    };
+    let value: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    // Contracts with storage wrap the ABI as {"abi": [...], "storageLayout": {...}}.
+    let abi = value
+        .get("abi")
+        .unwrap_or(&value)
+        .as_array()
+        .expect("ABI should be an array")
+        .clone();
 
     let function_names: Vec<&str> = abi
         .iter()
