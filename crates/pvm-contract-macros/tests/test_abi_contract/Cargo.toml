@@ -64,6 +64,10 @@ name = "proxy-raw-slot"
 path = "src/proxy_raw_slot.rs"
 
 [[bin]]
+name = "folded-error-binding"
+path = "src/folded_error_binding.rs"
+
+[[bin]]
 name = "enum-abi"
 path = "src/enum_abi.rs"
 

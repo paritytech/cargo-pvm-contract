@@ -21,7 +21,7 @@
 
 use pvm_contract_types::{
     Address, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router, SolDecode,
-    SolEncode, StaticEncodedLen,
+    SolEncode, StaticEncodedLen, const_selector,
 };
 use ruint::aliases::U256;
 
@@ -192,10 +192,6 @@ fn seed_balance(host: &MockHost, addr: [u8; 20], amount: U256) {
     host.set_raw_storage(key.to_vec(), amount.to_be_bytes::<32>().to_vec());
 }
 
-fn selector(sig: &str) -> [u8; 4] {
-    pvm_contract_types::const_selector(sig)
-}
-
 fn encode_transfer_calldata(to: Address, amount: U256) -> Vec<u8> {
     // (address, uint256) encodes as two 32-byte words (ABI head).
     const LEN: usize =
@@ -270,7 +266,7 @@ fn owner_returns_stored_address() {
     seed_owner(&mock, OWNER);
     let mut contract = make_contract(&mock);
 
-    let data = route_ok(&mut contract, &mock, selector("owner()"), &[]);
+    let data = route_ok(&mut contract, &mock, const_selector("owner()"), &[]);
 
     let returned = Address::decode_at(&data, 0).unwrap();
     assert_eq!(returned, Address::from(OWNER));
@@ -282,7 +278,12 @@ fn balance_of_returns_zero_for_untouched_address() {
     let mut contract = make_contract(&mock);
 
     let input = encode_balance_of_calldata(Address::from(ALICE));
-    let data = route_ok(&mut contract, &mock, selector("balanceOf(address)"), &input);
+    let data = route_ok(
+        &mut contract,
+        &mock,
+        const_selector("balanceOf(address)"),
+        &input,
+    );
 
     assert_eq!(U256::decode_at(&data, 0).unwrap(), U256::ZERO);
 }
@@ -298,7 +299,7 @@ fn mint_by_owner_credits_balance_and_emits_transfer_event() {
     let data = route_ok(
         &mut contract,
         &mock,
-        selector("mint(address,uint256)"),
+        const_selector("mint(address,uint256)"),
         &input,
     );
     assert_eq!(data, &[] as &[u8], "void success returns empty data");
@@ -332,12 +333,12 @@ fn mint_by_non_owner_reverts_with_unauthorized() {
     let data = route_revert(
         &mut contract,
         &mock,
-        selector("mint(address,uint256)"),
+        const_selector("mint(address,uint256)"),
         &input,
     );
 
     // Revert payload is exactly the 4-byte `Unauthorized()` selector — no fields.
-    assert_eq!(data, selector("Unauthorized()"));
+    assert_eq!(data, const_selector("Unauthorized()"));
 
     // State untouched: no balance change, no events.
     assert_eq!(read_balance(&mock, BOB), U256::ZERO);
@@ -355,7 +356,7 @@ fn transfer_happy_path_moves_balance_and_emits_event() {
     let data = route_ok(
         &mut contract,
         &mock,
-        selector("transfer(address,uint256)"),
+        const_selector("transfer(address,uint256)"),
         &input,
     );
     assert_eq!(data, &[] as &[u8]);
@@ -380,12 +381,12 @@ fn transfer_insufficient_balance_reverts_with_encoded_fields() {
     let data = route_revert(
         &mut contract,
         &mock,
-        selector("transfer(address,uint256)"),
+        const_selector("transfer(address,uint256)"),
         &input,
     );
 
     // Expected revert: selector + ABI-encoded (available: U256, required: U256)
-    let expected_selector = selector("InsufficientBalance(uint256,uint256)");
+    let expected_selector = const_selector("InsufficientBalance(uint256,uint256)");
     assert_eq!(&data[..4], &expected_selector, "revert selector");
     let available = U256::decode_at(&data[4..], 0).unwrap();
     let required = U256::decode_at(&data[4..], 32).unwrap();
@@ -413,7 +414,7 @@ fn short_input_reverts_with_framework_invalid_calldata() {
     let rv = mock.expect_revert(|| {
         mini_token::route(
             &mut contract,
-            selector("transfer(address,uint256)"),
+            const_selector("transfer(address,uint256)"),
             &short,
             &mut out,
         );
@@ -444,7 +445,7 @@ fn full_lifecycle_mint_transfer_transfer() {
     route_ok(
         &mut contract,
         &mock,
-        selector("mint(address,uint256)"),
+        const_selector("mint(address,uint256)"),
         &encode_mint_calldata(Address::from(ALICE), U256::from(1000u64)),
     );
     assert_eq!(read_balance(&mock, ALICE), U256::from(1000u64));
@@ -458,7 +459,7 @@ fn full_lifecycle_mint_transfer_transfer() {
     route_ok(
         &mut contract,
         &mock,
-        selector("transfer(address,uint256)"),
+        const_selector("transfer(address,uint256)"),
         &encode_transfer_calldata(Address::from(BOB), U256::from(300u64)),
     );
 
@@ -473,7 +474,7 @@ fn full_lifecycle_mint_transfer_transfer() {
     route_ok(
         &mut contract,
         &mock,
-        selector("transfer(address,uint256)"),
+        const_selector("transfer(address,uint256)"),
         &encode_transfer_calldata(Address::from(CHARLIE), U256::from(100u64)),
     );
 
@@ -496,7 +497,7 @@ fn router_trait_path_produces_identical_result_to_free_fn() {
     let mut contract = make_contract(&mock);
 
     let input = encode_balance_of_calldata(Address::from(ALICE));
-    let sel = selector("balanceOf(address)");
+    let sel = const_selector("balanceOf(address)");
 
     // Drive via the free function.
     let mut buf = [0u8; mini_token::MAX_RETURN_LEN];

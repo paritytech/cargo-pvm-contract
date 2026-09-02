@@ -253,3 +253,52 @@ fn emit_incremented(new_value: U256) {
     api::deposit_event(&topics, &data);
 }
 ```
+
+## Composition (router chaining)
+
+A contract composes reusable extensions by **chaining routers**. An extension
+exposes its handlers as its own `ContractBuilder`; the composing contract tries
+its own methods first, then falls through to each extension. This is the
+builder-DSL analog of the `#[contract(implements(...))]` fold on the macro path.
+
+The primitive is `try_route`, which is *non-terminating*: it returns
+`Some(HandlerResult)` on a match and `None` on a miss, and touches neither host
+exit door. `dispatch_composed` wires the chain and owns the terminating exit —
+`return_value` on a handled success, `host.revert(...)` on an unmatched selector
+(or a handler-signalled `HandlerResult::Revert`):
+
+```rust,ignore
+// An extension is just a ContractBuilder of its handlers.
+fn erc20_extension() -> ContractBuilder {
+    ContractBuilder::new()
+        .method(TOTAL_SUPPLY, total_supply)
+        .method(TRANSFER, transfer)
+}
+
+#[cfg(target_arch = "riscv64")]
+pub extern "C" fn call() {
+    let host = Host::new();
+    let ext = erc20_extension();
+    ContractBuilder::new()
+        .method(OWNER, owner)                 // the contract's own methods
+        .dispatch_composed::<256>(&host, &[&ext]);   // then the extension, first-match-wins
+}
+```
+
+- **First match wins** across the chain: the contract's own methods take
+  precedence over an extension's, and earlier extensions over later ones. Order
+  the slice with precedence in mind.
+- **Duplicate-selector guard.** Within a single builder, registering the same
+  selector twice **panics** at `method` / `payable_method` — the runtime analog
+  of the macro path's compile-time selector-collision check (the DSL table is
+  built at runtime, so there is no compile-time version). Across chained
+  builders a clash is resolved silently by first-match-wins, so keep extension
+  selector sets disjoint from the contract's own.
+- **With a fallback / receive.** `dispatch_composed` is available on both
+  `ContractBuilder` and `ContractBuilderWithHandlers`, so a composed contract can
+  keep a `fallback`/`receive` — extensions are tried after the contract's own
+  methods but *before* the fallback (which still fires only on an unmatched
+  selector), matching the macro path's `implements(...)` + `#[fallback]`/`#[receive]`.
+- **ERC-165 is API-agnostic.** A DSL contract defines the same `#[interface_id]`
+  trait for the `INTERFACE_ID` const and registers a `supportsInterface` handler
+  that ORs `0x01ffc9a7` with each `<T as IErc20>::INTERFACE_ID`.

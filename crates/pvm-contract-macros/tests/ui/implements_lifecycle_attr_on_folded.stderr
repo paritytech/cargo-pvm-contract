@@ -1,0 +1,8 @@
+error: #[receive] is not valid on a folded interface method (it dispatches as an ordinary method); put it in the contract's own `impl` block, not in a trait impl
+  --> tests/ui/implements_lifecycle_attr_on_folded.rs:22:9
+   |
+22 | /         #[pvm_contract_macros::receive]
+23 | |         fn ping(&self) -> u64 {
+24 | |             42
+25 | |         }
+   | |_________^

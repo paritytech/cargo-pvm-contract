@@ -1,0 +1,5 @@
+error: folded interface methods must not be generic (their selector is undefined)
+  --> tests/ui/implements_generic_folded_method.rs:18:18
+   |
+18 |         fn thing<T>(&self, _x: T) -> u64 {
+   |                  ^

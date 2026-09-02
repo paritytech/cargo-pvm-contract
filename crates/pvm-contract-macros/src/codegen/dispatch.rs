@@ -125,6 +125,12 @@ pub struct MethodInfo {
     pub mutability: StateMutability,
     /// `#[non_reentrant]`: emit a reentrancy guard.
     pub is_non_reentrant: bool,
+    /// `None` for an inherent `#[method]`; `Some(path)` for a method folded from
+    /// an `impl Path for Contract` block via `implements(...)`. When set,
+    /// the dispatch arm invokes the method through a fully-qualified trait call
+    /// `<Struct as Path>::method(this, ...)` so it runs the contract's own
+    /// trait-impl body (overrides) and can't be shadowed by an inherent method.
+    pub trait_path: Option<syn::Path>,
 }
 
 pub(super) struct ParamDecoding {
@@ -180,8 +186,25 @@ pub(super) fn generate_param_decoding(
     }
 }
 
+/// The selector-const identifier for a method. Folded methods are namespaced by
+/// their trait's last segment (`__SEL_<Trait>_<fn>`) so two inherited traits with
+/// a same-named method don't collide at the const-ident level.
+fn selector_const_ident(method: &MethodInfo) -> syn::Ident {
+    match &method.trait_path {
+        Some(path) => {
+            let trait_last = path
+                .segments
+                .last()
+                .map(|s| s.ident.to_string())
+                .unwrap_or_default();
+            quote::format_ident!("__SEL_{}_{}", trait_last, method.fn_name)
+        }
+        None => quote::format_ident!("__SEL_{}", method.fn_name),
+    }
+}
+
 fn build_selector_const(method: &MethodInfo) -> TokenStream {
-    let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
+    let sel_ident = selector_const_ident(method);
 
     let sig_expr = build_method_signature_expr(&method.sol_name, &method.param_types);
     quote! {
@@ -215,7 +238,7 @@ pub fn generate_dispatch_arm(
     use_alloc: bool,
     guard_hoisted: bool,
 ) -> (TokenStream, TokenStream) {
-    let sel_ident = quote::format_ident!("__SEL_{}", method.fn_name);
+    let sel_ident = selector_const_ident(method);
     let const_def = build_selector_const(method);
 
     let fn_name = &method.fn_name;
@@ -223,9 +246,17 @@ pub fn generate_dispatch_arm(
     let ParamDecoding {
         min_size_expr,
         decode_statements,
-        call_args,
+        mut call_args,
         has_params,
     } = decoding;
+    // A folded trait method is invoked through a fully-qualified trait call
+    // `<Struct as Trait>::method`, where the receiver is passed as the first
+    // positional argument, so prepend `this` to the decoded args. (`&mut this`
+    // coerces to `&self` for view methods.) Inherent methods keep method-call
+    // syntax and need no self arg.
+    if method.trait_path.is_some() {
+        call_args.insert(0, quote! { this });
+    }
     let size_check = size_check(has_params, &min_size_expr);
     let has_return = !method.return_types.is_empty();
     let encode_and_return = generate_encode_and_return(&method.return_types, use_alloc);
@@ -240,10 +271,15 @@ pub fn generate_dispatch_arm(
         }
     };
 
+    // Folded trait methods dispatch through a fully-qualified trait call
+    // `<Struct as Trait>::fn_name(this, ...)` — runs the contract's own trait-impl
+    // body (so overrides work) and can't be shadowed by an inherent method.
     // Pure methods are associated functions — no `self` receiver — so dispatch
-    // them via UFCS (`Self::fn_name`) rather than method-call syntax
-    // (`this.fn_name`), which would only work for `&self` / `&mut self`.
-    let invoke = if method.mutability == StateMutability::Pure {
+    // them via a fully-qualified call (`Self::fn_name`) rather than method-call
+    // syntax (`this.fn_name`), which would only work for `&self` / `&mut self`.
+    let invoke = if let Some(trait_path) = &method.trait_path {
+        quote! { <#struct_name as #trait_path>::#fn_name }
+    } else if method.mutability == StateMutability::Pure {
         quote! { #struct_name::#fn_name }
     } else {
         quote! { this.#fn_name }
@@ -436,6 +472,41 @@ pub fn generate_router(
         .map(|m| generate_dispatch_arm(m, struct_name, use_alloc, all_non_payable))
         .unzip();
 
+    // Selector-collision guard. Two dispatched methods sharing a 4-byte
+    // selector — an inherent `#[method]` vs a folded interface method, two folded
+    // methods, or a genuine keccak clash — would leave the second `match` arm
+    // dead (`unreachable_patterns`, only a warning). Turn it into a hard compile
+    // error. Done at const-eval, not macro-time, so custom parameter types (whose
+    // `SOL_NAME` is unknown until const-eval) are covered. The `__SEL_*` consts
+    // are emitted below; compare them pairwise as big-endian u32s (both
+    // `from_be_bytes` and `!=` are const).
+    let collision_guard = {
+        let sel_idents: Vec<_> = methods.iter().map(selector_const_ident).collect();
+        let mut pairs = Vec::new();
+        for i in 0..sel_idents.len() {
+            for j in (i + 1)..sel_idents.len() {
+                let a = &sel_idents[i];
+                let b = &sel_idents[j];
+                pairs.push(quote! {
+                    ::core::primitive::u32::from_be_bytes(#a)
+                        != ::core::primitive::u32::from_be_bytes(#b)
+                });
+            }
+        }
+        if pairs.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                const _: () = ::core::assert!(
+                    #(#pairs)&&*,
+                    "selector collision: two dispatched methods share the same 4-byte selector \
+                     (an inherent method and a folded interface method, or two folded methods). \
+                     Rename one with #[selector(name = \"...\")]"
+                );
+            }
+        }
+    };
+
     let prelude = if all_non_payable {
         quote! { __pvm_assert_non_payable(this.host()); }
     } else if any_non_payable {
@@ -501,6 +572,7 @@ pub fn generate_router(
             ) -> ::pvm_contract_sdk::Outcome {
                 use ::pvm_contract_sdk::pallet_revive_uapi::HostFn as _;
                 #(#selector_consts)*
+                #collision_guard
 
                 #prelude
 
@@ -609,6 +681,7 @@ mod tests {
             returns_result: false,
             mutability,
             is_non_reentrant: false,
+            trait_path: None,
         }
     }
 

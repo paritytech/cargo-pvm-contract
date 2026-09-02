@@ -1,0 +1,5 @@
+error: `implements(a::IThing)` has no matching `impl a::IThing for C` block in the contract module
+  --> tests/ui/implements_qualified_path_mismatch.rs:17:44
+   |
+17 | #[pvm_contract_macros::contract(implements(a::IThing))]
+   |                                            ^^^^^^^^^

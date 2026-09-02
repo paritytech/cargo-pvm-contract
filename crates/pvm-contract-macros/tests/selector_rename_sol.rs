@@ -6,7 +6,7 @@
 //! (see `tests/ui/sol_selector_rename_no_match.rs`) rather than a silent fallback.
 
 use pvm_contract_sdk::U256;
-use pvm_contract_types::Outcome;
+use pvm_contract_types::{Outcome, const_selector};
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
 #[pvm_contract_macros::contract("tests/fixtures/SelectorRenameOk.sol")]
@@ -33,10 +33,6 @@ mod c {
     }
 }
 
-fn selector(sig: &str) -> [u8; 4] {
-    pvm_contract_types::const_selector(sig)
-}
-
 #[test]
 fn explicit_rename_binds_to_named_sol_function() {
     let mock = pvm_contract_types::MockHostBuilder::new().build();
@@ -47,12 +43,17 @@ fn explicit_rename_binds_to_named_sol_function() {
     // method (`Return(0)`); the Rust-name selector must not match.
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        c::route(&mut contract, selector("transferTokens()"), &[], &mut out),
+        c::route(
+            &mut contract,
+            const_selector("transferTokens()"),
+            &[],
+            &mut out
+        ),
         Outcome::Return(0)
     );
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        c::route(&mut contract, selector("xfer()"), &[], &mut out),
+        c::route(&mut contract, const_selector("xfer()"), &[], &mut out),
         Outcome::Unhandled
     );
 }
@@ -66,7 +67,7 @@ fn auto_snake_case_match_still_works() {
     // `balanceOf` returns a U256 (32 bytes).
     let mut out: &mut [u8] = &mut buf;
     assert_eq!(
-        c::route(&mut contract, selector("balanceOf()"), &[], &mut out),
+        c::route(&mut contract, const_selector("balanceOf()"), &[], &mut out),
         Outcome::Return(32)
     );
 }

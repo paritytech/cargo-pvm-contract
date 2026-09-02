@@ -1,0 +1,5 @@
+error: `implements(IThing)` is ambiguous: more than one `impl` for `C` in this module ends in `IThing`. Two interface traits sharing a last segment can't both be folded — rename one so their last segments differ.
+  --> tests/ui/implements_ambiguous_last_segment.rs:32:10
+   |
+32 |     impl b::IThing for C {
+   |          ^^^^^^^^^

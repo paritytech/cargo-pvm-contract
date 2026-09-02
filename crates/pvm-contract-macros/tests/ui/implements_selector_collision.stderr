@@ -1,0 +1,16 @@
+error[E0080]: evaluation panicked: selector collision: two dispatched methods share the same 4-byte selector (an inherent method and a folded interface method, or two folded methods). Rename one with #[selector(name = "...")]
+  --> tests/ui/implements_selector_collision.rs:11:1
+   |
+11 | #[pvm_contract_macros::contract(implements(IErc20))]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `token::route::_` failed here
+
+warning: unreachable pattern
+  --> tests/ui/implements_selector_collision.rs:29:12
+   |
+22 |         pub fn transfer(&mut self, to: Address, amount: U256) -> bool {
+   |                -------- matches all the relevant values
+...
+29 |         fn transfer(&mut self, to: Address, amount: U256) -> bool {
+   |            ^^^^^^^^ no value can reach this
+   |
+   = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default

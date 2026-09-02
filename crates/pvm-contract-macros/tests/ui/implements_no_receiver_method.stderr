@@ -1,0 +1,7 @@
+error: folded interface methods must take `&self` or `&mut self`
+  --> tests/ui/implements_no_receiver_method.rs:19:9
+   |
+19 | /         fn stateless() -> u64 {
+20 | |             0
+21 | |         }
+   | |_________^

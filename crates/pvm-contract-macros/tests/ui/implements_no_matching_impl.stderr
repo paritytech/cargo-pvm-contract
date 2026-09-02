@@ -1,0 +1,5 @@
+error: `implements(IErc20)` has no matching `impl IErc20 for Token` block in the contract module
+ --> tests/ui/implements_no_matching_impl.rs:7:44
+  |
+7 | #[pvm_contract_macros::contract(implements(IErc20))]
+  |                                            ^^^^^^

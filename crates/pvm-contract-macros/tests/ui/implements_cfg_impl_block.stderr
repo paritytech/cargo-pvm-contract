@@ -1,0 +1,5 @@
+error: #[cfg] / #[cfg_attr] on a folded interface `impl` block is not supported; gate the interface behind an inherent `#[method]` instead
+  --> tests/ui/implements_cfg_impl_block.rs:19:5
+   |
+19 |     #[cfg(feature = "extra")]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^
