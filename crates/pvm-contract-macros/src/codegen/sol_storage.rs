@@ -479,13 +479,32 @@ fn classify_storage_field(ty: &SolType) -> StorageFieldKind {
         | SolType::Uint(_)
         | SolType::Int(_)
         | SolType::Bytes(_) => StorageFieldKind::Packable,
+        // `string` / `bytes` and now `T[]` (`Vec<T>`, issue #93) are dynamic
+        // fields: they occupy one in-struct slot (the length/header) and spill
+        // their body to `keccak256(slot)`. The `Dynamic` arm routes through the
+        // field type's `StorageEncode`/`StorageDecode`, so a `Vec<T>` field
+        // works via the `Vec<T>` storage codec (`T: StorageArrayElement`).
         SolType::String | SolType::DynBytes => StorageFieldKind::Dynamic,
-        // No codegen arm for composite / multi-slot fields — the derive emits
-        // only `Packable` (single-slot byte-packing) and `Dynamic` (sub-key
-        // delegation to the field's own codec). Use handles instead, same solc
-        // layout: `#[storage]` for a nested struct, `Lazy<(A, B)>` for a tuple,
-        // `Lazy<[T; N]>` for a fixed array.
-        SolType::Custom(_) | SolType::Array(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
+        // `Vec<u8>` (Solidity `uint8[]` — a different layout from `bytes`; use
+        // `Bytes`) and dynamic-element arrays (`Vec<String>`, `Vec<Bytes>`,
+        // `Vec<Vec<_>>`) are rejected here at expansion time with a tailored
+        // hint, instead of surfacing later as an opaque `StorageEncode`
+        // trait-bound error inside generated code. Static-element arrays
+        // (including `Vec<CustomStruct>`, which can't be classified
+        // syntactically) fall through to `Dynamic`; a non-`StorageArrayElement`
+        // element type is still caught by the codec's trait bounds.
+        SolType::Array(inner) => match inner.as_ref() {
+            SolType::Uint(8) => StorageFieldKind::Unsupported,
+            ty if ty.is_dynamic() == Some(true) => StorageFieldKind::Unsupported,
+            _ => StorageFieldKind::Dynamic,
+        },
+        // Nested `#[derive(SolType)]` structs (`Custom`), `FixedArray`, and
+        // tuples as *packed value* fields still need atomic multi-field packed
+        // codegen that isn't implemented. This is an optimization gap, not a
+        // solc-parity gap: nest via the `#[storage]` attribute + `get`/`entry`
+        // composition path instead (byte-identical solc layout). The rejection
+        // hint in `generate_sol_storage_impls` points users there.
+        SolType::Custom(_) | SolType::FixedArray(_, _) | SolType::Tuple(_) => {
             StorageFieldKind::Unsupported
         }
     }
@@ -519,10 +538,11 @@ fn field_access_tokens(
 
 /// Emit the `StorageEncode` + `StorageDecode` impls for a SolStorage-derived
 /// struct. Supports both static layouts (all fields `Packable`) and
-/// dynamic-bodied layouts (fields include `String` / `Bytes` — solc-style
-/// header-in-slot + body at `keccak256(slot) + i`). Fields classified as
-/// `Unsupported` (nested SolType structs, tuples, fixed arrays of non-`u8`,
-/// `Vec<T>` — use `Bytes` for `bytes`-shaped values) produce a `compile_error!`.
+/// dynamic-bodied layouts (fields include `String` / `Bytes` / static-element
+/// `Vec<T>` — solc-style header-in-slot + body at `keccak256(slot) + i`).
+/// Fields classified as `Unsupported` (nested SolType structs, tuples, fixed
+/// arrays of non-`u8`, `Vec<u8>` — use `Bytes` for `bytes`-shaped values —
+/// and dynamic-element arrays) produce a `compile_error!`.
 fn generate_sol_storage_impls(
     name: &syn::Ident,
     fields: &Fields,
@@ -531,16 +551,10 @@ fn generate_sol_storage_impls(
     // Real compile error at derive expansion — visible to `cargo check` and
     // `trybuild`. Replaces the prior const-panic stub used when this code
     // lived inside `#[derive(SolType)]`.
-    if let Some((field_idx, field_ty, unsupported_ty, is_nested_struct)) =
+    if let Some((field_idx, field_ty, unsupported_ty, sol_ty)) =
         field_info.iter().enumerate().find_map(|(idx, (_, ty))| {
-            matches!(classify_storage_field(ty), StorageFieldKind::Unsupported).then(|| {
-                (
-                    idx,
-                    get_field_types(fields)[idx],
-                    ty.canonical_name(),
-                    matches!(ty, SolType::Custom(_)),
-                )
-            })
+            matches!(classify_storage_field(ty), StorageFieldKind::Unsupported)
+                .then(|| (idx, get_field_types(fields)[idx], ty.canonical_name(), ty))
         })
     {
         let field_label = match &field_info[field_idx].0 {
@@ -548,27 +562,41 @@ fn generate_sol_storage_impls(
             None => format!("field {field_idx}"),
         };
         // A nested struct lives in storage via the `#[storage]` + `get`/`entry`
-        // path (identical solc layout); point the user there. The other
-        // composites have their own handle-based homes — `Lazy<(A, B)>` for a
-        // tuple, `Lazy<[T; N]>` for a fixed array, `StorageVec<T>` for a
-        // dynamic array — just not as a packed value field of this struct.
-        let hint = if is_nested_struct {
-            "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
-             struct. To store a nested struct, make BOTH structs \
-             `#[pvm_contract_sdk::storage]` and access them through a field handle \
-             or `Mapping<_, T>` with `get` (read) / `entry` (write) — this produces \
-             the identical solc storage layout. (`#[derive(SolType)]` alone remains \
-             correct if you only need ABI for calldata / events.)"
-        } else {
-            "Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \
-             you only need ABI (calldata / events)."
+        // path (identical solc layout); point the user there. `Vec<u8>` has a
+        // `bytes`-shaped home (`Bytes`); dynamic-element arrays have none yet.
+        // The other composites have their own handle-based homes —
+        // `Lazy<(A, B)>` for a tuple, `Lazy<[T; N]>` for a fixed array — just
+        // not as a packed value field of this struct.
+        let hint = match sol_ty {
+            SolType::Custom(_) => {
+                "Hint: a struct cannot yet be a packed value field of a `SolStorage` \
+                 struct. To store a nested struct, make BOTH structs \
+                 `#[pvm_contract_sdk::storage]` and access them through a field handle \
+                 or `Mapping<_, T>` with `get` (read) / `entry` (write) — this produces \
+                 the identical solc storage layout. (`#[derive(SolType)]` alone remains \
+                 correct if you only need ABI for calldata / events.)"
+            }
+            SolType::Array(inner) if matches!(inner.as_ref(), SolType::Uint(8)) => {
+                "Hint: `Vec<u8>` is Solidity `uint8[]`, a different on-chain layout \
+                 from `bytes`. Use `Bytes` for `bytes`-shaped storage."
+            }
+            SolType::Array(_) => {
+                "Hint: dynamic-element arrays (`Vec<String>`, `Vec<Bytes>`, nested \
+                 `Vec<Vec<_>>`) are not yet supported as storage values. Only \
+                 static-element `Vec<T>` (`T: StorageArrayElement`) works."
+            }
+            _ => {
+                "Hint: `#[derive(SolType)]` alone still works — drop `SolStorage` if \
+                 you only need ABI (calldata / events)."
+            }
         };
         let msg = format!(
             "`{name}` cannot derive `SolStorage`: {field_label} has type \
              `{unsupported_ty}` (Rust: `{field_ty_str}`), which is not yet \
              supported as a `StorageEncode` field. Only fixed-size primitives \
-             (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, and `bytes` \
-             (Rust `Bytes`) are supported today. {hint}",
+             (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, `bytes` \
+             (Rust `Bytes`), and static-element `T[]` (Rust `Vec<T>`, \
+             `T: StorageArrayElement`) are supported today. {hint}",
             name = name,
             field_label = field_label,
             unsupported_ty = unsupported_ty,

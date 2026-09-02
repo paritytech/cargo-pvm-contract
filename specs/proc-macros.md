@@ -268,6 +268,8 @@ Under `--features abi-gen`, embedded `#[storage]` sub-structs flatten into the `
 
 `Lazy<String>`, `Lazy<Bytes>`, and `Mapping<K, V>` with `V = String` / `Bytes` / a `#[derive(SolType)]` struct containing dynamic fields all use solc's inline/spilled `bytes`/`string` storage layout. `Vec<u8>` is rejected as a storage value (its ABI name is `"uint8[]"`, a different on-chain layout) — use `Bytes` for `bytes`-shaped storage; `Vec<u8>` remains valid as an ABI parameter type and as a mapping key.
 
+`Vec<T>` for `T: StorageArrayElement` (issue #93) is also a storage value: solc's `T[]` layout — length at the value's slot, elements at `keccak256(slot)` with the same packing/stride as `[T; N]`. It works as `Lazy<Vec<T>>`, `Mapping<K, Vec<T>>`, and as a `#[derive(SolStorage)]` struct field (e.g. `posts: Vec<U256>`). Dynamic-element arrays (`Vec<String>`, `Vec<Bytes>`, `Vec<Vec<_>>`) are not yet supported and are rejected at derive expansion time. The by-value codec reads/writes the whole array per access — prefer `StorageVec<T>` (identical on-chain layout) for per-element access and O(1) `push`/`pop`; `try_get` on an empty array returns `None`, since solc conflates empty and never-written arrays.
+
 ### Dynamic Arrays (`StorageVec`)
 
 `StorageVec<T>` is a dynamic array with Solidity's `T[]` slot layout (length at the field's slot; elements at `keccak256(slot) + i`). Reads take `&self`, writes `&mut self`:

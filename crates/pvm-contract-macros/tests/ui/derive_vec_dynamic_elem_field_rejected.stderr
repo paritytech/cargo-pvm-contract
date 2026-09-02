@@ -1,0 +1,5 @@
+error: `Posts` cannot derive `SolStorage`: field `bodies` has type `string[]` (Rust: `Vec < String >`), which is not yet supported as a `StorageEncode` field. Only fixed-size primitives (`uint*`/`int*`/`address`/`bool`/`bytesN`), `string`, `bytes` (Rust `Bytes`), and static-element `T[]` (Rust `Vec<T>`, `T: StorageArrayElement`) are supported today. Hint: dynamic-element arrays (`Vec<String>`, `Vec<Bytes>`, nested `Vec<Vec<_>>`) are not yet supported as storage values. Only static-element `Vec<T>` (`T: StorageArrayElement`) works.
+  --> tests/ui/derive_vec_dynamic_elem_field_rejected.rs:10:17
+   |
+10 |     pub bodies: Vec<String>,
+   |                 ^^^^^^^^^^^

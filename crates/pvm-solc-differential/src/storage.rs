@@ -200,6 +200,17 @@ pub struct DynS {
     pub tail: String,
 }
 
+/// The issue #93 shape: a value struct with a dynamic `Vec<T>` field alongside
+/// packed scalars. `posts` is a `uint256[]` (dynamic array member → 1 slot for
+/// the length, body at `keccak256(slot)`); `next_offset` + `done` pack into the
+/// following slot.
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
+pub struct PostPage {
+    pub posts: Vec<U256>,
+    pub next_offset: u32,
+    pub done: bool,
+}
+
 // --- single full slot ------------------------------------------------------
 
 #[pvm_contract_sdk::contract]
@@ -662,6 +673,120 @@ contract DynStruct {
     let mut c = dyn_struct::DynStruct::with_host(mock.clone());
     c.populate();
     assert_eq!(normalize_mock(&mock), solc_storage(SOL, "DynStruct"));
+}
+
+// --- Vec<T> as a stored value (issue #93) ---------------------------------
+
+#[pvm_contract_sdk::contract]
+mod lazy_vec {
+    use super::*;
+    pub struct LazyVec {
+        pub arr: Lazy<Vec<U256>>,
+    }
+    impl LazyVec {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.arr.set(&vec![
+                U256::from(11u64),
+                U256::from(22u64),
+                U256::from(33u64),
+            ]);
+        }
+    }
+}
+
+#[test]
+fn lazy_vec_value_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract LazyVec {
+    uint256[] arr;   // slot 0
+    function populate() external { arr.push(11); arr.push(22); arr.push(33); }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = lazy_vec::LazyVec::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "LazyVec"));
+}
+
+#[pvm_contract_sdk::contract]
+mod mapping_vecval {
+    use super::*;
+    pub struct MappingVecVal {
+        pub by_owner: Mapping<Address, Vec<U256>>,
+    }
+    impl MappingVecVal {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.by_owner.insert(
+                &Address::from(ADDR_A),
+                &vec![U256::from(5u64), U256::from(6u64)],
+            );
+        }
+    }
+}
+
+#[test]
+fn mapping_of_vec_value_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract MappingVecVal {
+    mapping(address => uint256[]) by_owner;   // slot 0
+    function populate() external {
+        by_owner[address(uint160(0x00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA))].push(5);
+        by_owner[address(uint160(0x00AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA))].push(6);
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = mapping_vecval::MappingVecVal::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "MappingVecVal"));
+}
+
+#[pvm_contract_sdk::contract]
+mod struct_vec {
+    use super::*;
+    pub struct StructVec {
+        pub page: Lazy<PostPage>,
+    }
+    impl StructVec {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+        #[pvm_contract_sdk::method]
+        pub fn populate(&mut self) {
+            self.page.set(&PostPage {
+                posts: vec![U256::from(7u64), U256::from(8u64), U256::from(9u64)],
+                next_offset: 5,
+                done: true,
+            });
+        }
+    }
+}
+
+#[test]
+fn struct_with_vec_field_matches_solc() {
+    const SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract StructVec {
+    struct PostPage { uint256[] posts; uint32 next_offset; bool done; }
+    PostPage page;   // posts.len -> slot 0 (+ keccak spill); next_offset+done packed -> slot 1
+    function populate() external {
+        page.posts.push(7); page.posts.push(8); page.posts.push(9);
+        page.next_offset = 5;
+        page.done = true;
+    }
+}
+"#;
+    let mock = MockHostBuilder::new().build();
+    let mut c = struct_vec::StructVec::with_host(mock.clone());
+    c.populate();
+    assert_eq!(normalize_mock(&mock), solc_storage(SOL, "StructVec"));
 }
 
 // --- packed `#[storage]` sub-struct footprint (SLOTS = walker packed count) -
