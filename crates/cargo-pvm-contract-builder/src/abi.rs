@@ -16,14 +16,15 @@ pub fn generate_abi_for_bin(
 }
 
 /// Generate the storage layout JSON for a binary, if the contract declares
-/// `#[slot(N)]` fields. Returns the raw `serde_json::Value` of the
-/// `storageLayout` object, or `None` when no storage is declared.
+/// storage fields. Returns the raw `serde_json::Value` of the `storageLayout`
+/// object, or `None` when no storage is declared.
 ///
-/// Detection is a simple source-level check for `#[slot(`. When slot fields
-/// are present, the `#[contract]` macro generates an abi-gen `main()` that
-/// outputs the layout. If the abi-gen binary fails with "main function not
-/// found", we treat it as "no storage layout" (the slot attr may have been
-/// outside a `#[contract]` module). All other failures propagate normally.
+/// Detection is a source-level check for a `#[contract]` module whose storage
+/// struct has fields. When storage fields are present, the `#[contract]` macro
+/// generates an abi-gen `main()` that outputs the layout. If the abi-gen
+/// binary fails with "main function not found", we treat it as "no storage
+/// layout" (e.g. `#[contract(no_main)]`, or a detection false-positive). All
+/// other failures propagate normally.
 pub fn generate_storage_layout_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
@@ -31,7 +32,12 @@ pub fn generate_storage_layout_for_bin(
     features: Option<&str>,
 ) -> Result<Option<serde_json::Value>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
-    if !source_path.exists() {
+    if !source_path.exists()
+        || !has_storage_fields(
+            &fs::read_to_string(&source_path)
+                .with_context(|| format!("Failed to read {}", source_path.display()))?,
+        )
+    {
         return Ok(None);
     }
 
@@ -257,6 +263,96 @@ pub(crate) fn has_contract_macro(source: &str) -> bool {
         return false;
     };
     find_contract_attr(&file.items).is_some()
+}
+
+/// Walk for a `#[contract]` module whose storage struct declares fields,
+/// recursing into `mod` contents.
+fn any_contract_mod_declares_storage(items: &[syn::Item]) -> bool {
+    for item in items {
+        if let syn::Item::Mod(m) = item
+            && let Some((_, nested)) = &m.content
+        {
+            let is_contract_mod = m.attrs.iter().any(|a| {
+                a.path()
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "contract")
+            });
+            if is_contract_mod && contract_struct_has_fields(nested) {
+                return true;
+            }
+            if any_contract_mod_declares_storage(nested) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether the contract module's storage struct declares any storage fields.
+///
+/// The storage struct is identified the way the `#[contract]` macro does it
+/// (see `codegen/contract.rs` in `pvm-contract-macros`): it is the self-type
+/// of the first `impl` block containing `#[method]` / `#[constructor]` /
+/// `#[fallback]` / `#[receive]` functions. The reserved `host` field doesn't
+/// count — the macro injects (and otherwise rejects) it.
+fn contract_struct_has_fields(items: &[syn::Item]) -> bool {
+    const CONTRACT_FN_ATTRS: [&str; 4] = ["method", "constructor", "fallback", "receive"];
+
+    let Some(struct_ident) = items.iter().find_map(|item| {
+        let syn::Item::Impl(item_impl) = item else {
+            return None;
+        };
+        let has_contract_fns = item_impl.items.iter().any(|ii| {
+            let syn::ImplItem::Fn(f) = ii else {
+                return false;
+            };
+            f.attrs.iter().any(|attr| {
+                attr.path()
+                    .segments
+                    .last()
+                    .is_some_and(|s| CONTRACT_FN_ATTRS.iter().any(|name| s.ident == name))
+            })
+        });
+        if !has_contract_fns {
+            return None;
+        }
+        let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+            return None;
+        };
+        type_path.path.segments.last().map(|s| s.ident.clone())
+    }) else {
+        return false;
+    };
+
+    items.iter().any(|item| {
+        let syn::Item::Struct(s) = item else {
+            return false;
+        };
+        if s.ident != struct_ident {
+            return false;
+        }
+        let syn::Fields::Named(named) = &s.fields else {
+            return false;
+        };
+        named
+            .named
+            .iter()
+            .any(|f| f.ident.as_ref().is_some_and(|i| i != "host"))
+    })
+}
+
+/// Detect whether the source declares a contract storage struct with fields.
+/// Used to gate the storage-layout abi-gen run, which only produces a layout
+/// when the `#[contract]` macro saw storage fields.
+///
+/// Parses the source via `syn` so that contract-shaped text in comments or
+/// string literals doesn't trip detection.
+fn has_storage_fields(source: &str) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    any_contract_mod_declares_storage(&file.items)
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
@@ -1248,6 +1344,156 @@ interface Mixed {
             }
         "#;
         assert!(has_contract_macro(source));
+    }
+
+    // --- has_storage_fields ---
+
+    #[test]
+    fn has_storage_fields_detects_explicit_slot_fields() {
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct S {
+                    #[slot(0)]
+                    total: Lazy<U256>,
+                }
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn total(&self) -> U256 { self.total.get() }
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_detects_auto_numbered_fields() {
+        // No `#[slot]` attribute anywhere — auto-numbered storage has a
+        // compile-time layout and must be detected.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct Counter {
+                    count: Lazy<u32>,
+                    owner: Lazy<Address>,
+                }
+                impl Counter {
+                    #[pvm_contract_sdk::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_unit_struct_contract() {
+        // No storage fields on the contract struct: no layout to emit.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct S;
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn f(&self) -> u32 { 0 }
+                }
+            }
+        "#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_non_storage_helper_structs() {
+        // A `#[derive(SolType)]`-style param struct with fields must not count
+        // as storage when the contract struct itself is a unit struct.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct Point { x: u64, y: u64 }
+                pub struct S;
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn f(&self, p: Point) -> u64 { p.x }
+                }
+            }
+        "#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_struct_outside_contract_mod() {
+        // Fields on a struct outside any `#[contract]` module never produce a
+        // layout `main()`, so they must not trip detection.
+        let source = r#"
+            struct S {
+                #[slot(0)]
+                x: u32,
+            }
+        "#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_finds_contract_inside_nested_mod() {
+        let source = r#"
+            mod outer {
+                #[pvm_contract_sdk::contract]
+                pub mod inner {
+                    pub struct S {
+                        total: Lazy<U256>,
+                    }
+                    impl S {
+                        #[pvm_contract_sdk::method]
+                        pub fn total(&self) -> U256 { self.total.get() }
+                    }
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_host_only_struct() {
+        // `host` is the macro-injected handle, not a storage field.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct S {
+                    host: Host,
+                }
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn f(&self) -> u32 { 0 }
+                }
+            }
+        "#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_returns_false_on_syntax_error() {
+        // Source that doesn't parse: function returns the conservative default.
+        let source = r#"#[contract(unclosed"#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_handles_bare_attr_forms() {
+        // `#[contract]` / `#[method]` without a `::` path prefix must match.
+        let source = r#"
+            use pvm_contract_sdk::{contract, method};
+            #[contract]
+            mod c {
+                pub struct S {
+                    total: Lazy<U256>,
+                }
+                impl S {
+                    #[method]
+                    pub fn total(&self) -> U256 { self.total.get() }
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
     }
 
     // --- parse_sol_params ---
