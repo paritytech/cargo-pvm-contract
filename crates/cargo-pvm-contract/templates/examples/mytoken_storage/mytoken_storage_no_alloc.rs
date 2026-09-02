@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
@@ -72,6 +71,5 @@ mod my_token {
         pub fn fallback(&mut self) -> Result<(), TokenError> {
             Ok(())
         }
-
     }
 }

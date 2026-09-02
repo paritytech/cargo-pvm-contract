@@ -119,6 +119,40 @@ fn storage_layout_vec_produces_valid_abi() {
         .assert_eq(&cargo_run_abi("storage-layout-vec"))
 }
 
+/// Contract with auto-numbered storage only — no `#[slot]` attribute anywhere.
+/// Verifies that the storageLayout JSON is emitted for the default
+/// auto-numbering mode and that sub-word fields pack solc-style: `count`
+/// (`uint32`, offset 0) and `owner` (`address`, offset 4) share slot 0.
+#[test]
+fn storage_layout_auto_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_storage_layout_auto.json")
+        .assert_eq(&cargo_run_abi("storage-layout-auto"))
+}
+
+/// The auto-numbered form and its `#[slot(0)]`-anchored `#[storage]`
+/// sub-struct twin must emit the same layout — same slots, offsets, and
+/// types — differing only in the sub-struct's dotted `state.` label prefix.
+#[test]
+fn auto_and_anchored_layouts_agree() {
+    fn storage_entries(bin_name: &str, label_prefix: &str) -> serde_json::Value {
+        let abi: serde_json::Value =
+            serde_json::from_str(&cargo_run_abi(bin_name)).expect("failed to parse ABI JSON");
+        let mut entries = abi["storageLayout"]["storage"].clone();
+        for entry in entries.as_array_mut().expect("storage must be an array") {
+            let label = entry["label"].as_str().expect("label must be a string");
+            let stripped = label.strip_prefix(label_prefix).unwrap_or(label);
+            entry["label"] = stripped.into();
+        }
+        entries
+    }
+
+    assert_eq!(
+        storage_entries("storage-layout-auto", ""),
+        storage_entries("storage-layout-anchored", "state."),
+        "auto-numbered and #[slot(0)]-anchored sub-struct layouts must agree"
+    );
+}
+
 /// Contract mixing a numeric `#[slot(N)]` field with a raw external
 /// (`#[slot(raw = KEY)]`) field. Verifies the contract compiles under
 /// `--features abi-gen` and that the raw external slot is OMITTED from

@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 #[pvm_contract_sdk::contract("Allowlist.sol", buffer = 256)]
 mod allowlist {

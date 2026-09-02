@@ -2,7 +2,7 @@
 
 #[pvm_contract_sdk::contract]
 mod my_contract {
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     pub struct MyContract;
 
