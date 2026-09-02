@@ -52,6 +52,14 @@ name = "storage-layout-vec"
 path = "src/storage_layout_vec.rs"
 
 [[bin]]
+name = "storage-layout-auto"
+path = "src/storage_layout_auto.rs"
+
+[[bin]]
+name = "storage-layout-anchored"
+path = "src/storage_layout_anchored.rs"
+
+[[bin]]
 name = "proxy-raw-slot"
 path = "src/proxy_raw_slot.rs"
 
