@@ -1,6 +1,8 @@
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 /// A parameter in a Solidity ABI function signature.
@@ -96,10 +98,121 @@ pub struct StorageLayoutEntry {
     pub ty: String,
 }
 
+/// A single entry in the `types` table, describes a struct's shape
+/// (label, encoding, byte size, and member fields), keyed by a synthetic
+/// type key in `LayoutTypesRegistry`. Mirrors solc's `storageLayout.types`
+/// entry shape.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageLayoutTypeEntry {
+    pub label: String, // "struct Outer.Inner"
+    pub encoding: String,
+    #[serde(rename = "numberOfBytes")]
+    pub number_of_bytes: String,
+    pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
+}
+
+pub struct LayoutTypesRegistry {
+    pub types: BTreeMap<String, StorageLayoutTypeEntry>,
+    next_struct_id: u64,
+}
+
+impl LayoutTypesRegistry {
+    pub fn new() -> Self {
+        Self {
+            types: BTreeMap::new(),
+            next_struct_id: 0,
+        }
+    }
+
+    /// Primitives: deterministic key, no counter, idempotent.
+    ///
+    /// Not yet called anywhere in this codebase: primitive types (`uint256`,
+    /// `bool`, etc.) aren't currently routed through the `types` table, only
+    /// structs are (see `register_struct`). Kept as the reference
+    /// implementation for that follow-up work, so it's a sample to start building
+    /// later rather than a fresh design.
+    #[allow(dead_code)]
+    pub fn register_primitive(&mut self, sol_name: &str, number_of_bytes: &str) -> String {
+        let key = alloc::format!("t_{sol_name}");
+        self.types
+            .entry(key.clone())
+            .or_insert_with(|| StorageLayoutTypeEntry {
+                label: sol_name.to_string(),
+                members: Vec::new(),
+                // Hardcoded "inplace": every struct type this SDK currently
+                // supports is fixed-size and packed (nested structs, Vec<T>,
+                // and tuples aren't yet supported as struct fields, see
+                // classify_storage_field). solc also uses "mapping",
+                // "dynamic_array", and "bytes" for other type shapes.
+                // Revisit if struct fields ever support those.
+                encoding: "inplace".to_string(),
+                number_of_bytes: number_of_bytes.to_string(),
+            });
+        key
+    }
+
+    /// Structs: counter-based key, dedup by label (not by key).
+    pub fn register_struct(
+        &mut self,
+        struct_name: &str,
+        label: String,
+        members: Vec<StorageLayoutEntry>,
+        number_of_bytes: String,
+    ) -> String {
+        if let Some((k, existing)) = self.types.iter().find(|(_, v)| v.label == label) {
+            assert_eq!(
+                existing.members, members,
+                "storage layout: two distinct Rust types both resolve to label {label:?} \
+                with different member layouts — this SDK disambiguates struct types \
+                only by their bare Rust identifier plus contract name, so two \
+                same-named structs from different modules used in the same contract \
+                will collide. Rename one of the structs to avoid this.",
+            );
+            assert_eq!(
+                existing.number_of_bytes, number_of_bytes,
+                "storage layout: label {label:?} collision with mismatched size",
+            );
+            return k.clone();
+        }
+        let id = self.next_struct_id;
+        // Unlike solc's astId-derived keys, we assign a simple incrementing
+        // counter per contract, since this SDK has no AST to draw a stable ID
+        // from. This is a deliberate simplification, not a parity gap solc itself
+        // would recognize, see the module-level notes on synthetic vs. solc keys.
+        self.next_struct_id += 1;
+        let key = alloc::format!("t_struct({struct_name}){id}_storage");
+        self.types.insert(
+            key.clone(),
+            StorageLayoutTypeEntry {
+                label,
+                members,
+                // Hardcoded "inplace": every struct type this SDK currently
+                // supports is fixed-size and packed (nested structs, Vec<T>,
+                // and tuples aren't yet supported as struct fields, see
+                // classify_storage_field). solc also uses "mapping",
+                // "dynamic_array", and "bytes" for other type shapes.
+                // revisit if struct fields ever support those.
+                encoding: "inplace".to_string(),
+                number_of_bytes,
+            },
+        );
+        key
+    }
+}
+
+// Default added since clippy will flag a manual new() with no args otherwise
+impl Default for LayoutTypesRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The top-level `storageLayout` object.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayout {
     pub storage: Vec<StorageLayoutEntry>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub types: BTreeMap<String, StorageLayoutTypeEntry>,
 }
 
 /// Type-name resolver used by the storage-layout JSON emitter.
@@ -138,6 +251,15 @@ pub trait StorageTypeName {
     /// structs via `#[derive(SolStorage)]` and `#[storage]`, container
     /// handles via `pvm-storage`.
     fn name() -> String;
+
+    /// Push this type's own member entries into `types`, returning the
+    /// type's `"type"` field value. Default: bare name, no registration —
+    /// correct for primitives. `#[derive(SolStorage)]` and `#[storage]`
+    /// override this to register the struct's shape and return its
+    /// solc-style qualified key.
+    fn emit_members(_registry: &mut LayoutTypesRegistry, _contract_name: &str) -> String {
+        Self::name()
+    }
 }
 
 /// Serialize a [`StorageLayout`] to a JSON string.
@@ -324,6 +446,7 @@ mod tests {
                     ty: "mapping(address => uint256)".into(),
                 },
             ],
+            types: Default::default(),
         };
         let json = storage_layout_to_json(&layout);
 
@@ -390,6 +513,7 @@ mod tests {
                     ty: "uint256".into(),
                 },
             ],
+            types: Default::default(),
         };
         let json = storage_layout_to_json(&layout);
         assert_eq!(
@@ -398,5 +522,43 @@ mod tests {
         );
         let parsed: StorageLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, layout);
+    }
+
+    #[test]
+    #[should_panic(expected = "two distinct Rust types both resolve to label")]
+    fn register_struct_panics_on_label_collision_with_different_shape() {
+        let mut registry = LayoutTypesRegistry::new();
+
+        // Two distinct structs that happen to share the same bare name +
+        // contract name — e.g. `a::Point` and `b::Point` both used inside
+        // contract `C`. Their labels collide even though their shapes differ.
+        let members_a = vec![StorageLayoutEntry {
+            label: "x".to_string(),
+            slot: "0".to_string(),
+            offset: 0,
+            ty: "uint64".to_string(),
+        }];
+        let members_b = vec![StorageLayoutEntry {
+            label: "x".to_string(),
+            slot: "0".to_string(),
+            offset: 0,
+            ty: "uint256".to_string(), // different shape
+        }];
+
+        registry.register_struct(
+            "Point",
+            "struct C.Point".to_string(),
+            members_a,
+            "32".to_string(),
+        );
+
+        // Second call has the same label but a genuinely different layout —
+        // should panic rather than silently return the first registration's key.
+        registry.register_struct(
+            "Point",
+            "struct C.Point".to_string(),
+            members_b,
+            "32".to_string(),
+        );
     }
 }

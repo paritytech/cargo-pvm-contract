@@ -25,8 +25,9 @@ pub use revert_string_alloc::RevertString;
 mod abi_gen;
 #[cfg(feature = "abi-gen")]
 pub use abi_gen::{
-    AbiEventParam, AbiItem, AbiJson, AbiParam, StorageLayout, StorageLayoutEntry, StorageTypeName,
-    abi_to_json, parse_type_str, storage_layout_to_json,
+    AbiEventParam, AbiItem, AbiJson, AbiParam, LayoutTypesRegistry, StorageLayout,
+    StorageLayoutEntry, StorageLayoutTypeEntry, StorageTypeName, abi_to_json, parse_type_str,
+    storage_layout_to_json,
 };
 
 use framework_errors::INVALID_CALLDATA;

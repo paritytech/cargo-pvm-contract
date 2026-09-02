@@ -10,8 +10,12 @@
 //!   1. takes a `#[contract]` module and the *equivalent* Solidity source,
 //!   2. runs `solc --standard-json` with `storageLayout` output selection,
 //!   3. resolves solc's `type` ids through its `types` table to the human label,
-//!   4. normalizes both sides to `{label, slot, offset, type}` (the subset we
-//!      emit — we don't emit solc's `astId` / `encoding` / `numberOfBytes`),
+//!   4. normalizes both sides to `{label, slot, offset, type}` for storage
+//!      entries, and to `{label, encoding, numberOfBytes, members}` for struct
+//!      entries in the `types` table (resolving member `type` ids through
+//!      `types` the same way, so key-format differences don't affect the
+//!      comparison) — we still don't compare solc's `astId`, since it has no
+//!      equivalent in our synthetic keys,
 //!   5. asserts the two normalized layouts are identical.
 //!
 //! Gated behind the `solc-tests` feature (which implies `abi-gen`, since we
@@ -285,6 +289,109 @@ pub struct Point {
     pub y: u64,
 }
 
+/// Normalized `types` table entry — the struct's own shape, independent of
+/// solc's internal `t_struct(...)N_storage` key vs. our
+/// `t_struct(Name)N_storage` key (only the `label` and `members`/`number_of_bytes`
+/// `encoding` are compared, keyed by label since key formats differ by design).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NormType {
+    label: String,
+    encoding: String,
+    number_of_bytes: String,
+    members: Vec<NormEntry>,
+}
+
+/// Extract and normalize every struct entry from a `types` table, keyed by
+/// label (not by the raw key, since our key format and solc's differ by
+/// design — see `ours()`/`solc()`).
+fn norm_types(types: &serde_json::Value) -> Vec<NormType> {
+    let obj = types.as_object().expect("types is an object");
+    let mut out: Vec<NormType> = obj
+        .values()
+        .filter_map(|entry| {
+            // Only struct entries have a `members` array; primitive
+            // entries (e.g. `t_uint64`) don't, so skip those here —
+            // this comparison is scoped to struct shapes only.
+            let members_arr = entry.get("members")?.as_array()?;
+            let mut members: Vec<NormEntry> = members_arr
+                .iter()
+                .map(|m| {
+                    let raw_ty = m["type"].as_str().unwrap().to_owned();
+                    let ty = types
+                        .get(&raw_ty)
+                        .and_then(|t| t["label"].as_str())
+                        .map(String::from)
+                        .unwrap_or(raw_ty);
+                    NormEntry {
+                        slot: m["slot"].as_str().unwrap().parse().unwrap(),
+                        offset: m["offset"].as_u64().unwrap(),
+                        label: m["label"].as_str().unwrap().to_owned(),
+                        ty,
+                    }
+                })
+                .collect();
+            members.sort();
+            Some(NormType {
+                label: entry["label"].as_str().unwrap().to_owned(),
+                encoding: entry["encoding"].as_str().unwrap().to_owned(),
+                number_of_bytes: entry["numberOfBytes"].as_str().unwrap().to_owned(),
+                members,
+            })
+        })
+        .collect();
+    out.sort();
+    out
+}
+/// Run `solc --standard-json` on `source` and return the raw, unresolved
+/// `storageLayout` JSON value for `contract` (unlike `solc()`, which
+/// normalizes into `NormEntry`s — this keeps the full `types` table intact
+/// for `norm_types()` comparison).
+fn solc_raw(source: &str, contract: &str) -> serde_json::Value {
+    let input = serde_json::json!({
+        "language": "Solidity",
+        "sources": { "C.sol": { "content": source } },
+        "settings": { "outputSelection": { "*": { "*": ["storageLayout"] } } }
+    });
+
+    let mut child = Command::new("solc")
+        .arg("--standard-json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn solc — is it installed and on PATH?");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.to_string().as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait for solc");
+    assert!(
+        out.status.success(),
+        "solc exited non-zero:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&out.stdout).expect("solc output parses as json");
+
+    if let Some(errors) = parsed["errors"].as_array() {
+        let fatal: Vec<&str> = errors
+            .iter()
+            .filter(|e| e["severity"].as_str() == Some("error"))
+            .filter_map(|e| e["formattedMessage"].as_str())
+            .collect();
+        assert!(
+            fatal.is_empty(),
+            "solc reported errors:\n{}",
+            fatal.join("\n")
+        );
+    }
+
+    parsed["contracts"]["C.sol"][contract]["storageLayout"].clone()
+}
+
 #[pvm_contract_macros::contract(no_main)]
 mod soltype_value {
     use super::*;
@@ -358,17 +465,26 @@ struct NormEntry {
 fn ours(json: &str) -> Vec<NormEntry> {
     let v: serde_json::Value = serde_json::from_str(json).expect("our layout json parses");
     let storage = v["storage"].as_array().expect("storage is an array");
+    let types = &v["types"];
     let mut out: Vec<NormEntry> = storage
         .iter()
-        .map(|e| NormEntry {
-            slot: e["slot"]
-                .as_str()
-                .expect("slot is a string")
-                .parse()
-                .expect("slot parses as u64"),
-            offset: e["offset"].as_u64().expect("offset is a number"),
-            label: e["label"].as_str().expect("label is a string").to_owned(),
-            ty: e["type"].as_str().expect("type is a string").to_owned(),
+        .map(|e| {
+            let raw_ty = e["type"].as_str().expect("type is a string").to_owned();
+            let ty = types
+                .get(&raw_ty)
+                .and_then(|t| t["label"].as_str())
+                .map(String::from)
+                .unwrap_or(raw_ty);
+            NormEntry {
+                slot: e["slot"]
+                    .as_str()
+                    .expect("slot is a string")
+                    .parse()
+                    .expect("slot parses as u64"),
+                offset: e["offset"].as_u64().expect("offset is a number"),
+                label: e["label"].as_str().expect("label is a string").to_owned(),
+                ty,
+            }
         })
         .collect();
     out.sort();
@@ -511,12 +627,16 @@ fn fixed_array_layout_matches_solc() {
 // its members — instead of the inline tuple SOL_NAME (`(uint64,uint64)`).
 // Currently FAILS only on the `type` field; label/slot/offset already match.
 #[test]
-#[ignore = "known divergence: SolType struct value emits inline tuple type name, \
-            not a solc `struct ...` type — enable after generator fix"]
 fn soltype_struct_value_layout_matches_solc() {
+    let our_json = soltype_value::__storage_layout_json();
+    let our_parsed: serde_json::Value = serde_json::from_str(&our_json).unwrap();
+    let solc_layout = solc_raw(SOLTYPE_VALUE_SOL, "WithStruct");
+
+    assert_eq!(ours(&our_json), solc(SOLTYPE_VALUE_SOL, "WithStruct"),);
     assert_eq!(
-        ours(&soltype_value::__storage_layout_json()),
-        solc(SOLTYPE_VALUE_SOL, "WithStruct")
+        norm_types(&our_parsed["types"]),
+        norm_types(&solc_layout["types"]),
+        "types table contents (members, encoding, numberOfBytes) must match solc",
     );
 }
 
@@ -525,11 +645,15 @@ fn soltype_struct_value_layout_matches_solc() {
 // flattening their leaves into dotted-label entries (`inner.a`, `inner.b`).
 // Currently FAILS on entry count and labels (we emit N entries, solc emits 1).
 #[test]
-#[ignore = "known divergence: #[storage] sub-struct flattens to dotted-label \
-            entries, solc emits one struct-typed entry — enable after generator fix"]
 fn substruct_layout_matches_solc() {
+    let our_json = substruct::__storage_layout_json();
+    let our_parsed: serde_json::Value = serde_json::from_str(&our_json).unwrap();
+    let solc_layout = solc_raw(SUBSTRUCT_SOL, "Outer");
+
+    assert_eq!(ours(&our_json), solc(SUBSTRUCT_SOL, "Outer"));
     assert_eq!(
-        ours(&substruct::__storage_layout_json()),
-        solc(SUBSTRUCT_SOL, "Outer")
+        norm_types(&our_parsed["types"]),
+        norm_types(&solc_layout["types"]),
+        "types table contents (members, encoding, numberOfBytes) must match solc",
     );
 }

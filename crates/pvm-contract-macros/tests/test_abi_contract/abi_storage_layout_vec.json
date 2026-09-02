@@ -58,17 +58,32 @@
         "type": "mapping(address => uint256[])"
       },
       {
-        "label": "pool.owner",
+        "label": "pool",
         "offset": 0,
         "slot": "4",
-        "type": "address"
-      },
-      {
-        "label": "pool.entries",
-        "offset": 0,
-        "slot": "5",
-        "type": "uint256[]"
+        "type": "t_struct(PoolState)0_storage"
       }
-    ]
+    ],
+    "types": {
+      "t_struct(PoolState)0_storage": {
+        "encoding": "inplace",
+        "label": "struct StorageVecContract.PoolState",
+        "members": [
+          {
+            "label": "owner",
+            "offset": 0,
+            "slot": "0",
+            "type": "address"
+          },
+          {
+            "label": "entries",
+            "offset": 0,
+            "slot": "1",
+            "type": "uint256[]"
+          }
+        ],
+        "numberOfBytes": "64"
+      }
+    }
   }
 }
