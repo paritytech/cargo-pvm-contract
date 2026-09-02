@@ -12,7 +12,8 @@ use super::storage_layout::generate_layout_emit;
 ///
 /// When a `.sol` file is provided, the builder derives the ABI from the Solidity
 /// interface at build time. However, `storageLayout` is always Rust-side, so
-/// `main()` is still generated when `#[slot]` fields exist.
+/// `main()` is still generated when the contract struct declares storage fields
+/// (auto-numbered or `#[slot]`-annotated alike).
 ///
 /// `no_main` suppresses the `fn main()` emission entirely — used when the
 /// caller (e.g. an integration test or a library crate) supplies its own
