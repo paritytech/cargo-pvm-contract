@@ -1,6 +1,5 @@
 use alloy_core::dyn_abi::{DynSolType, DynSolValue};
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
 use tiny_keccak::{Hasher, Keccak};
@@ -12,33 +11,19 @@ pub struct DecodedParam {
     pub sol_type: String,
     pub value: String,
 }
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Abi {
-    Map {
-        #[serde(rename(deserialize = "storageLayout"))]
-        #[allow(unused)]
-        storage_layout: Vec<serde_json::Value>,
-        abi: Vec<serde_json::Value>,
-    },
-    Array(Vec<serde_json::Value>),
-}
-
 /// Load an ABI JSON file and return the parsed ABI array.
 fn load_abi(abi_path: &Path) -> Result<Vec<Value>> {
     let content = std::fs::read_to_string(abi_path)
         .with_context(|| format!("Failed to read ABI file: {}", abi_path.display()))?;
-    let abi = match serde_json::from_str::<Abi>(&content)
-        .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?
-    {
-        Abi::Map {
-            storage_layout: _,
-            abi,
-        } => abi,
-        Abi::Array(values) => values,
+    let value: Value = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?;
+    let abi_value = match value.get("abi") {
+        Some(v) => v.clone(),
+        None => value,
     };
-
-    Ok(abi.clone())
+    let abi: Vec<Value> = serde_json::from_value(abi_value)
+        .with_context(|| format!("Failed to parse ABI JSON: {}", abi_path.display()))?;
+    Ok(abi)
 }
 
 /// Compute the 4-byte Keccak-256 selector for a Solidity function signature.
@@ -481,6 +466,23 @@ mod tests {
         let f = write_abi_file(ERC20_ABI);
         let data = format!("0x{}{}", "deadbeef", "00".repeat(32));
         assert!(decode_call(f.path(), &data).is_err());
+    }
+
+    #[test]
+    fn load_abi_accepts_storage_layout_wrapper() {
+        // Contracts with storage produce `{"abi": [...], "storageLayout": {...}}`
+        // instead of a bare array; encode/decode must accept both shapes.
+        let wrapped = format!(r#"{{"abi": {ERC20_ABI}, "storageLayout": {{"storage": []}}}}"#);
+        let bare = write_abi_file(ERC20_ABI);
+        let wrapped = write_abi_file(&wrapped);
+        let args = vec![
+            "0x0000000000000000000000000000000000000001".to_string(),
+            "42".to_string(),
+        ];
+        assert_eq!(
+            encode_call(wrapped.path(), "transfer", &args).unwrap(),
+            encode_call(bare.path(), "transfer", &args).unwrap()
+        );
     }
 
     // -- format_value roundtrip (tests our formatting, not alloy encoding) --
