@@ -1418,13 +1418,13 @@ pub fn sol_error(input: TokenStream) -> TokenStream {
 /// - [`pvm_contract_core::call::CallLimits`] for call limits
 #[proc_macro]
 pub fn abi_import(input: TokenStream) -> TokenStream {
-    let (file, alloc) = parse_macro_input!(input with abi_import::parse::parse_macro);
+    let (file, alloc, sol_path) = parse_macro_input!(input with abi_import::parse::parse_macro);
 
     // Conversion boundary (whole output): failures that invalidate the entire
     // invocation (`import` statements, duplicate type names). Per-function and
     // per-type-item failures are converted inside `expand_to_module` instead,
     // so sibling items keep expanding.
-    abi_import::expand_to_module(&file, alloc)
+    abi_import::expand_to_module(&file, alloc, sol_path.as_deref())
         .unwrap_or_else(|e| e.to_compile_error())
         .into()
 }

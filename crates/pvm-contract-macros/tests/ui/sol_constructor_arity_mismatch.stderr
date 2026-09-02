@@ -1,0 +1,6 @@
+error: Parameter count mismatch for `constructor`: Solidity expects 1, Rust has 0
+  --> tests/ui/sol_constructor_arity_mismatch.rs:11:9
+   |
+11 | /         #[pvm_contract_macros::constructor]
+12 | |         pub fn new(&mut self) {}
+   | |________________________________^

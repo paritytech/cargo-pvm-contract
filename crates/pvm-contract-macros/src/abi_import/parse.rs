@@ -5,7 +5,12 @@ use syn::{
     parse::{Parse, ParseStream},
 };
 
-pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File, bool)> {
+/// Returns the parsed interface, the `alloc` flag, and — when the interface
+/// came from a file rather than inline Solidity — the path it was read from, so
+/// the caller can register it as a rebuild dependency.
+pub(crate) fn parse_macro(
+    input: ParseStream<'_>,
+) -> Result<(syn_solidity::File, bool, Option<PathBuf>)> {
     let attrs = Attribute::parse_inner(input)?;
     let fork = input.fork();
 
@@ -28,13 +33,14 @@ pub(crate) fn parse_macro(input: ParseStream<'_>) -> Result<(syn_solidity::File,
             is_litstr_like(&fork)
         })
     {
-        parse_json(input).map(|x| (x, abi_attrs.alloc.unwrap_or_default()))
+        parse_json(input)
+            .map(|(file, path)| (file, abi_attrs.alloc.unwrap_or_default(), Some(path)))
     } else {
-        syn_solidity::File::parse(input).map(|x| (x, abi_attrs.alloc.unwrap_or_default()))
+        syn_solidity::File::parse(input).map(|x| (x, abi_attrs.alloc.unwrap_or_default(), None))
     }
 }
 
-fn parse_json(input: ParseStream<'_>) -> Result<syn_solidity::File> {
+fn parse_json(input: ParseStream<'_>) -> Result<(syn_solidity::File, PathBuf)> {
     let name = input.parse::<Option<Ident>>()?;
     if name.is_some() {
         input.parse::<Token![,]>()?;
@@ -68,11 +74,12 @@ fn parse_json(input: ParseStream<'_>) -> Result<syn_solidity::File> {
         return Err(Error::new(span, msg));
     }
     let span = input.span();
-    load_json_abi(
+    let file = load_json_abi(
         name.map_or("contract".to_owned(), |x| x.to_string()),
         span,
         &path,
-    )
+    )?;
+    Ok((file, path))
 }
 
 pub(crate) fn load_json_abi(
