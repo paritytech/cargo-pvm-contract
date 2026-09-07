@@ -28,6 +28,15 @@ impl Variant {
     }
 }
 
+/// Dependency lines a contract needs on top of the SDK, spliced into the
+/// generated manifest's `[dependencies]` block. Most contracts need none.
+fn extra_dependencies(contract: &str) -> &'static str {
+    match contract {
+        "ed25519" => "\ned25519-dalek = \"3.0.0\"",
+        _ => "",
+    }
+}
+
 fn cargo_toml_no_alloc(contract: &str, base_path: &Path) -> String {
     let sdk_path = base_path.join("crates/pvm-contract-sdk");
 
@@ -44,7 +53,7 @@ path = "src/{}.rs"
 
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
-polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}
+polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}{}
 
 [profile.dev]
 panic = "abort"
@@ -60,6 +69,7 @@ overflow-checks = false
         contract,
         contract,
         sdk_path.display(),
+        extra_dependencies(contract),
     )
 }
 
@@ -81,7 +91,7 @@ path = "src/{}.rs"
 [dependencies]
 pvm-contract-sdk = {{ path = "{}" }}
 pvm-bump-allocator = {{ path = "{}" }}
-polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}
+polkavm-derive = {{ git = "https://github.com/paritytech/polkavm", branch = "lj/more-instr-128" }}{}
 
 [profile.dev]
 panic = "abort"
@@ -98,6 +108,7 @@ overflow-checks = false
         contract,
         sdk_path.display(),
         bump_alloc_path.display(),
+        extra_dependencies(contract),
     )
 }
 
@@ -268,11 +279,19 @@ fn variants_for_contract(contract: &str) -> Vec<Variant> {
     //     taken at 256 bits.
     //   - `u128_erc20`: ERC20-conformant `uint256` ABI over `u128` balances,
     //     with a nested allowance `Mapping`.
+    //
+    // Signature verification. Macro-only and both allocator variants for the
+    // same reason.
+    //   - `ed25519`: ed25519-dalek verification of a 41-byte message that
+    //     arrives split across a `bytes32` and a `bytes9`. The one example that
+    //     pulls in a third-party crate, and the one whose hashing and field
+    //     arithmetic dwarf everything the macro generates around it.
     if contract == "mytoken_storage"
         || contract == "amm_reserves"
         || contract == "allowlist"
         || contract == "u128_amm"
         || contract == "u128_erc20"
+        || contract == "ed25519"
     {
         return vec![Variant::NoAlloc, Variant::WithAlloc];
     }
@@ -300,6 +319,7 @@ fn main() -> Result<()> {
         "allowlist",
         "u128_amm",
         "u128_erc20",
+        "ed25519",
     ];
     let profiles = vec!["debug", "release"];
 
