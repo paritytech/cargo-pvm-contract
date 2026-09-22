@@ -399,7 +399,7 @@ Two modes are available to contracts:
 let result = foo.bar().call(self.host())?;
 
 // Opt in to reentrancy
-let result = foo.bar().allow_reentry().call(self.host())?;
+let result = foo.bar().allow_reentry().call(self)?;
 ```
 
 ### DSL path (raw host calls)
