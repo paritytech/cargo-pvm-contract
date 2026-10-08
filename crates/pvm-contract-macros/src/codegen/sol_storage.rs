@@ -244,8 +244,11 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // Per-field layout-emit code: leaves push directly, embedded `#[storage]`
-    // sub-structs recurse via `StorageLayoutEmit::emit_entries`.
+    // Per-field layout-emit code, run inside `emit_members` to build this
+    // struct's `members` list: every field pushes one entry via
+    // `StorageLayoutEmit::emit_entries`; a nested `#[storage]` sub-struct
+    // registers itself in the `types` registry and pushes a single
+    // struct-typed entry (no flattening).
     let layout_emits: Vec<TokenStream> = field_names
         .iter()
         .zip(field_types.iter())
@@ -263,7 +266,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // Reuse the offset chain inside the layout helper. Each `emit_entries`
+    // Reuse the offset chain inside the layout helper. Each `emit_members`
     // call rebuilds it locally so the consts stay in fn scope and the helper
     // doesn't have to track an external chain.
     let offset_consts_for_layout = offset_consts.clone();
@@ -432,12 +435,16 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                     ::std::vec::Vec::new();
                 {
-                    // Below declared variables: entries, name_prefix and base are aliases or magic lets which the generated layout-emit, offset_consts_for_layout code expects to exist in scope.
-                    // They are not used for anything else, and are not part of the public API of this function.
+                    // `entries`, `name_prefix` and `base` are the bindings the
+                    // generated `layout_emits` / `offset_consts_for_layout`
+                    // code expects in scope (see `generate_layout_emit`).
+                    // Member slots are relative to the struct (`base = 0`)
+                    // and labels are bare field names (`name_prefix = ""`),
+                    // matching solc's `types[..].members` shape.
+                    // `contract_name` is deliberately not shadowed — members
+                    // still belong to the same top-level contract.
                     let entries = &mut member_entries;
                     let name_prefix = "";
-                    // contract_name is not shadowed — members inside this struct
-                    // still belong to the same top-level contract.
                     let base: u64 = 0;
                     #(#offset_consts_for_layout)*
                     #(#layout_emits)*
@@ -446,7 +453,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                     #struct_name_str,
                     qualified,
                     member_entries,
-                    (<Self as ::pvm_contract_sdk::StorageComponent>::SLOTS * 32).to_string(),
+                    (<Self as ::pvm_contract_sdk::StorageType>::SLOTS * 32).to_string(),
                 )
             }
         }

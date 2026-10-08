@@ -5,10 +5,10 @@ extern crate alloc;
 use pvm_contract_sdk::{Address, Lazy, Mapping, StorageVec, U256};
 
 /// Composable sub-storage struct embedding a `StorageVec`. Verifies that a
-/// `StorageVec` inside a `#[storage]` sub-struct flattens into the top-level
-/// storage-layout JSON via `StorageLayoutEmit::emit_entries` with a dotted
-/// label (`pool.entries`) — the embedded case, distinct from a flat
-/// contract-level `StorageVec` field.
+/// `StorageVec` inside a `#[storage]` sub-struct shows up as a `uint256[]`
+/// member of the sub-struct's `types` table entry (struct-relative slot 1)
+/// via `StorageLayoutEmit::emit_entries` — the embedded case, distinct from
+/// a flat contract-level `StorageVec` field.
 #[pvm_contract_sdk::storage]
 pub struct PoolState {
     pub owner: Lazy<Address>,
@@ -20,8 +20,8 @@ pub struct PoolState {
 /// `StorageVec<T>` to Solidity's `T[]` type name across every shape:
 /// flat (`uint256[]`), nested (`uint256[][]`), mapping-valued
 /// (`mapping(address => uint256[])`), and embedded in a `#[storage]` sub-struct
-/// (`pool.entries: uint256[]`) — via the macro's syntactic leaf path
-/// (mirroring how `Lazy` / `Mapping` resolve).
+/// (`entries: uint256[]` as a member of `pool`'s `types` entry) — via the
+/// `StorageLayoutEmit` trait path (mirroring how `Lazy` / `Mapping` resolve).
 #[pvm_contract_sdk::contract]
 mod storage_vec {
     use super::*;

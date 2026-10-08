@@ -136,11 +136,15 @@ pub(super) fn slot_chain_consts(
 /// `slot_expr` is a `u64` expression (literal or `base + __pvm_storage_offset_*`
 /// const); `offset_expr` is a `u8` expression (the packed byte offset, `0` for
 /// full-slot fields). `prefix_expr` is a `&str` expression: `""` at the top of
-/// a `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
-/// `emit_entries` body.
+/// a `#[contract]`, the local `name_prefix` binding (also `""`) inside a
+/// `#[storage]` `emit_members` body, where the pushed entries are the
+/// struct's `members` and carry bare field names.
 ///
-/// Used by `#[contract]`'s `__storage_layout_json` (top-level) and `#[storage]`'s
-/// `emit_entries` (sub-storage).
+/// Used by `#[contract]`'s `__storage_layout_json` (top-level entries) and
+/// `#[storage]`'s `StorageTypeName::emit_members` (the struct's `members`
+/// list in the `types` table, with `base = 0` so slots are struct-relative).
+/// The caller must also have `contract_name: &str` and
+/// `registry: &mut LayoutTypesRegistry` bindings in scope.
 pub(super) fn generate_layout_emit(
     field_name_str: &str,
     ty: &syn::Type,

@@ -260,7 +260,7 @@ mod my_token {
 }
 ```
 
-Under `--features abi-gen`, embedded `#[storage]` sub-structs flatten into the `storageLayout` JSON with dotted labels (`erc20.total_supply`, `erc20.balances`, …) so `cast storage` and other Solidity tooling can navigate the layout.
+Under `--features abi-gen`, embedded `#[storage]` sub-structs are rendered into the `storageLayout` JSON the way solc renders a struct-typed state variable: a single entry (`{"label":"erc20","slot":"0","type":"t_struct(Erc20State)0_storage"}`) whose `type` is a key into a `types` table describing the struct — `label` (`"struct MyToken.Erc20State"`), `encoding` (`"inplace"`), `numberOfBytes`, and `members` (the sub-struct's fields with struct-relative slots). `#[derive(SolStorage)]` value structs used in `Lazy<S>` / `Mapping<K, S>` / `StorageVec<S>` / `Lazy<[S; N]>` are registered the same way, with the container's `type` embedding the qualified label (`mapping(address => struct MyToken.Point)`, `struct MyToken.Point[]`). The struct key uses a per-contract counter rather than solc's astId, and primitives/containers are not registered in `types` (their `type` is the human label directly). `cast storage` and other Solidity tooling can navigate the layout; `types` is omitted when the contract stores no structs.
 
 `#[storage]` structs may not derive `Clone` (it would let a view method clone the component and obtain a fresh `&mut`), and per-field `#[cfg]` is rejected for the same slot-shifting reason as on the contract struct.
 

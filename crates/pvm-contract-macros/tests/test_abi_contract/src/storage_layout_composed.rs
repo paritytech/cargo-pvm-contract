@@ -7,7 +7,8 @@ use pvm_contract_sdk::{Address, Lazy, Mapping, U256};
 
 /// Composable sub-storage struct. After `#[storage]` expansion, this type
 /// implements `StorageComponent` *and* `StorageLayoutEmit`, so the outer
-/// contract can flatten its leaves into the top-level storage-layout JSON.
+/// contract renders it as a single struct-typed entry in the storage-layout
+/// JSON, with its members described in the `types` table.
 #[pvm_contract_sdk::storage]
 pub struct Erc20State {
     pub total_supply: Lazy<U256>,
@@ -22,8 +23,9 @@ pub struct MetadataState {
 }
 
 /// Contract that embeds two `#[storage]` sub-structs plus a flat field.
-/// Verifies that storageLayout JSON dotted-label flattening works through
-/// `StorageLayoutEmit::emit_entries`.
+/// Verifies that the storageLayout JSON renders each sub-struct solc-style
+/// (one `t_struct(..)N_storage`-typed entry + a `types` table entry) through
+/// `StorageLayoutEmit::emit_entries` / `StorageTypeName::emit_members`.
 #[pvm_contract_sdk::contract]
 mod composed_contract {
     use super::*;

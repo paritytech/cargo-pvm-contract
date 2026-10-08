@@ -823,8 +823,12 @@ pub trait StorageLayoutEmit {
 }
 
 /// Join `prefix` and `name` with a `.` separator, or return `name` alone when
-/// `prefix` is empty. Used by macro-generated layout helpers to build dotted
-/// field paths like `erc20.balances`.
+/// `prefix` is empty. Used by macro-generated layout helpers to build each
+/// entry's `label`. Since sub-structs are described in the `types` table
+/// rather than flattened, the prefix is `""` on every current call site
+/// (top-level contract fields and struct members alike); the join is kept so
+/// a hand-rolled `StorageLayoutEmit` that does flatten can still produce
+/// dotted paths like `erc20.balances`.
 #[cfg(feature = "abi-gen")]
 pub fn join_label(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
@@ -1241,16 +1245,27 @@ impl<T: StorageEncode + StorageDecode> StorageType for Lazy<T> {
 
 /// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by `T`.
 ///
-/// The macro names every field through `<#ty as StorageTypeName>::name()`, so
-/// this explicit impl is what gives `Lazy<T>` its name — and it keeps working
-/// when a contract author aliases the type (`type Counter = Lazy<U256>;`), where
+/// The macro names every field through `<#ty as StorageTypeName>`, so this
+/// explicit impl is what gives `Lazy<T>` its name — and it keeps working when
+/// a contract author aliases the type (`type Counter = Lazy<U256>;`), where
 /// the field's syntactic ident is "Counter", not "Lazy". There is no blanket
 /// `StorageTypeName` impl (`Lazy` doesn't implement `SolEncode`), so without
 /// this impl that path would fail.
+///
+/// `emit_members` forwards to `T` as well, so a `Lazy<S>` holding a
+/// `#[derive(SolStorage)]` struct registers `S` in the `types` table and
+/// reports its `t_struct(S)N_storage` key, exactly as a bare `S` field would.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for Lazy<T> {
     fn name() -> alloc::string::String {
         <T as pvm_contract_types::StorageTypeName>::name()
+    }
+
+    fn emit_members(
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        <T as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name)
     }
 }
 

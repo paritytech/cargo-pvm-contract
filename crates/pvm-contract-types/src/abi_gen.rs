@@ -98,6 +98,21 @@ pub struct StorageLayoutEntry {
     pub ty: String,
 }
 
+/// How a storage type lays out its bytes — solc's `encoding` field on every
+/// `storageLayout.types` entry. Serialized in solc's snake_case spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageEncoding {
+    /// Value types, structs, and fixed arrays: bytes live at the slot itself.
+    Inplace,
+    /// `mapping(K => V)`: the slot is a base for keccak-derived entry slots.
+    Mapping,
+    /// `T[]`: the slot holds the length, data at `keccak256(slot)`.
+    DynamicArray,
+    /// `string` / `bytes`: short values inline, long values at `keccak256(slot)`.
+    Bytes,
+}
+
 /// A single entry in the `types` table, describes a struct's shape
 /// (label, encoding, byte size, and member fields), keyed by a synthetic
 /// type key in `LayoutTypesRegistry`. Mirrors solc's `storageLayout.types`
@@ -105,7 +120,7 @@ pub struct StorageLayoutEntry {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StorageLayoutTypeEntry {
     pub label: String, // "struct Outer.Inner"
-    pub encoding: String,
+    pub encoding: StorageEncoding,
     #[serde(rename = "numberOfBytes")]
     pub number_of_bytes: String,
     pub members: Vec<StorageLayoutEntry>, // reuse the existing entry shape
@@ -139,13 +154,13 @@ impl LayoutTypesRegistry {
             .or_insert_with(|| StorageLayoutTypeEntry {
                 label: sol_name.to_string(),
                 members: Vec::new(),
-                // Hardcoded "inplace": every struct type this SDK currently
-                // supports is fixed-size and packed (nested structs, Vec<T>,
-                // and tuples aren't yet supported as struct fields, see
-                // classify_storage_field). solc also uses "mapping",
-                // "dynamic_array", and "bytes" for other type shapes.
-                // Revisit if struct fields ever support those.
-                encoding: "inplace".to_string(),
+                // Hardcoded "inplace": solc reports every value type (uint*/int*, bool,
+                // address, bytesN, enums) with `inplace` encoding, so this is the correct
+                // answer for any primitive — not a temporary simplification. Note that
+                // `string`/`bytes` are *not* value types (solc encodes them as "bytes");
+                // if this registrar ever accepts them, the encoding must be chosen from
+                // `sol_name` rather than fixed.
+                encoding: StorageEncoding::Inplace,
                 number_of_bytes: number_of_bytes.to_string(),
             });
         key
@@ -186,13 +201,14 @@ impl LayoutTypesRegistry {
             StorageLayoutTypeEntry {
                 label,
                 members,
-                // Hardcoded "inplace": every struct type this SDK currently
-                // supports is fixed-size and packed (nested structs, Vec<T>,
-                // and tuples aren't yet supported as struct fields, see
-                // classify_storage_field). solc also uses "mapping",
-                // "dynamic_array", and "bytes" for other type shapes.
-                // revisit if struct fields ever support those.
-                encoding: "inplace".to_string(),
+                // Hardcoded "inplace": solc encodes *every* struct type as
+                // `inplace`, regardless of what its members are — a struct
+                // holding a `string` or a `mapping` is still `inplace`; the
+                // member's own encoding lives on the member's type entry.
+                // Only `mapping`, `T[]`, `string`/`bytes` types themselves
+                // carry a different encoding, and none of those go through
+                // this registrar.
+                encoding: StorageEncoding::Inplace,
                 number_of_bytes,
             },
         );
