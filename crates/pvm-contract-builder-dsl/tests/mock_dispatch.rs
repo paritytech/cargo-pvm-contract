@@ -12,7 +12,7 @@ use pvm_contract_builder_dsl::{
 };
 use pvm_contract_types::{
     Host, MockHost, MockHostBuilder, ReturnFlags, ReturnValue, SolDecode, SolEncode,
-    StaticEncodedLen,
+    StaticEncodedLen, U256,
 };
 
 const DOUBLE_SELECTOR: [u8; 4] = solidity_selector("double(uint32)");
@@ -186,9 +186,11 @@ fn handler_returning_oversize_len_is_clamped() {
 
 #[test]
 fn deploy_guard_reverts_when_value_attached() {
-    let mut value = [0u8; 32];
-    value[31] = 1;
-    let mock = Rc::new(MockHostBuilder::new().value_transferred(value).build());
+    let mock = Rc::new(
+        MockHostBuilder::new()
+            .value_transferred(U256::from(1u8))
+            .build(),
+    );
 
     let rv = expect_revert_of(&mock, assert_non_payable_deploy);
     assert_eq!(

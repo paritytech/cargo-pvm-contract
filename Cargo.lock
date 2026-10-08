@@ -4800,6 +4800,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest-derive"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c57924a81864dddafba92e1bf92f9bf82f97096c44489548a60e888e1547549b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "ptr_meta"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4881,6 +4892,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "proptest",
+ "proptest-derive",
  "pvm-contract-core",
  "pvm-contract-sdk",
  "pvm-contract-types",
@@ -4922,7 +4934,7 @@ dependencies = [
 
 [[package]]
 name = "pvm-solc-differential"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "alloy-core",
  "proptest",

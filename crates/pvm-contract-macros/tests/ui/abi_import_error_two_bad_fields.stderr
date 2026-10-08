@@ -1,0 +1,11 @@
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_error_two_bad_fields.rs:5:13
+  |
+5 |     error E(string a, bytes b);
+  |             ^^^^^^
+
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_error_two_bad_fields.rs:5:23
+  |
+5 |     error E(string a, bytes b);
+  |                       ^^^^^

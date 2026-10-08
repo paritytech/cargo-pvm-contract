@@ -1,0 +1,5 @@
+error: abi import is not supported for type mapping: mapping(uint256 => uint256 )
+  --> tests/ui/abi_import_mapping_param.rs:10:20
+   |
+10 |         function f(mapping(uint256 => uint256) x) external;
+   |                    ^^^^^^^

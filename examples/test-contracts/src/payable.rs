@@ -18,21 +18,22 @@ mod payable {
         #[pvm_contract_sdk::method]
         #[pvm_contract_sdk::payable]
         pub fn deposit(&mut self) {
-            let caller = self.get_caller();
-            self.credit(&caller, self.msg_value());
+            let caller = self.env().caller();
+            let msg_value = self.env().value();
+            self.credit(&caller.into(), msg_value);
         }
 
         #[pvm_contract_sdk::method]
         #[pvm_contract_sdk::payable]
         pub fn deposit_to(&mut self, to: Address) {
             let to: [u8; 20] = to.into();
-            let amount = self.msg_value();
+            let amount = self.env().value();
             self.credit(&to, amount);
         }
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> bool {
-            let caller = self.get_caller();
+            let caller = self.env().caller().into();
             let from_balance = self.balance(&caller);
             if from_balance < amount {
                 return false;
@@ -52,18 +53,6 @@ mod payable {
         #[pvm_contract_sdk::fallback]
         pub fn fallback(&mut self) -> Result<(), pvm_contract_sdk::EmptyError> {
             Ok(())
-        }
-
-        fn msg_value(&self) -> U256 {
-            let mut buf = [0u8; 32];
-            self.host().value_transferred(&mut buf);
-            U256::from_le_bytes(buf)
-        }
-
-        fn get_caller(&self) -> [u8; 20] {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            caller
         }
 
         fn balance_key(&self, addr: &[u8; 20]) -> [u8; 32] {

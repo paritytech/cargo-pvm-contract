@@ -75,6 +75,7 @@ pub use pvm_contract_types::{
     DecodeError,
     // Error traits and types
     EmptyError,
+    Env,
     EventTopics,
     Host,
     HostApi,
@@ -122,6 +123,8 @@ pub use pvm_contract_types::{
     // Encode a `Panic(uint256)` and revert (shared by storage + panic handler)
     panic_revert,
     read_word_offset,
+    // Compile-time `&str` equality for `#[contract]` signature assertions
+    str_eq,
     value_transferred_is_nonzero,
 };
 
@@ -141,6 +144,11 @@ pub use pvm_contract_core::call::{
     StateMutability, View,
 };
 
+// Typed wrappers for the builtin Ethereum precompiles (ecrecover, P256Verify)
+// plus fixed-address constants for the full builtin set. Callable from `&self`
+// (view) methods via `precompiles::ecrecover(self.host(), …)`.
+pub use pvm_contract_core::precompiles;
+
 // Typed storage helpers. `Lazy<T>` / `Mapping<K, V>` cover both static
 // 32-byte values (`U256`, `Address`, `[u8; 32]`, …) and dynamic ones
 // (`String`, `Bytes`, structs with dynamic fields) through their
@@ -150,8 +158,8 @@ pub use pvm_contract_core::call::{
 // different on-chain layout). `StorageComponent` is the trait typed
 // storage helpers implement to participate in auto-numbered slot layout.
 pub use pvm_storage::{
-    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, StorageComponent,
-    StorageKey, StorageVec, layout_step, layout_step_component,
+    AsStorageKey, LayoutStep, Lazy, MAX_STATIC_SLOTS, Mapping, Ref, RefMut, SimpleStorageType,
+    StorageComponent, StorageKey, StorageType, StorageVec, layout_step, layout_step_component,
 };
 
 #[cfg(feature = "abi-gen")]

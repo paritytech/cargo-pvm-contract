@@ -21,6 +21,16 @@ mod contract {
     use alloc::{string::String, vec::Vec};
     {% endif -%}
 
+{% for s in structs %}
+    // Generated from a Solidity `struct` in the interface.
+    #[derive(pvm_contract_sdk::SolType)]
+    pub struct {{ s.name }} {
+{%- for f in s.fields %}
+        pub {{ f.name }}: {{ f.rust_type }},
+{%- endfor %}
+    }
+
+{% endfor %}
     pub struct Contract;
 
     impl Contract {

@@ -47,17 +47,15 @@ mod flipper_instantiate {
             let mut code_hash = [0; 32];
             let _ = self.host().code_hash(&addr.0, &mut code_hash);
             let f = flipper::new_flipper();
-            let deposit_limit = ruint::aliases::U256::from(u128::MAX);
-            let deposit_limit = deposit_limit.to_be_bytes();
             let (addr, _) = f.instantiate(
                 self,
                 &code_hash,
                 0,
-                RefTimeAndProofSizeLimits {
-                    ref_time_limit: u64::MAX,
-                    proof_size_limit: u64::MAX,
-                    deposit_limit,
-                },
+                RefTimeAndProofSizeLimits::new(
+                    u64::MAX,
+                    u64::MAX,
+                    ruint::aliases::U256::from(u128::MAX),
+                ),
                 None,
             )?;
             let flipper = Flipper::from_address(addr);

@@ -1,0 +1,11 @@
+error: qualified type paths must have the form `Interface.Type`: A.X.Named
+  --> tests/ui/abi_import_no_alloc_deep_path_precedence.rs:14:20
+   |
+14 |         function f(A.X.Named p) external;
+   |                    ^
+
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_no_alloc_deep_path_precedence.rs:8:9
+  |
+8 |         string s;
+  |         ^^^^^^

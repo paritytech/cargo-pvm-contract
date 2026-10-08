@@ -3,6 +3,7 @@ use std::{env, fs, path::Path, process::Command};
 use toml_edit::DocumentMut;
 
 // Re-export ABI types from the canonical definitions in pvm-contract-types.
+use pvm_contract_types::SOL_IMPORT_UNSUPPORTED;
 pub use pvm_contract_types::{AbiEventParam, AbiItem, AbiJson, AbiParam};
 
 pub fn generate_abi_for_bin(
@@ -15,14 +16,15 @@ pub fn generate_abi_for_bin(
 }
 
 /// Generate the storage layout JSON for a binary, if the contract declares
-/// `#[slot(N)]` fields. Returns the raw `serde_json::Value` of the
-/// `storageLayout` object, or `None` when no storage is declared.
+/// storage fields. Returns the raw `serde_json::Value` of the `storageLayout`
+/// object, or `None` when no storage is declared.
 ///
-/// Detection is a simple source-level check for `#[slot(`. When slot fields
-/// are present, the `#[contract]` macro generates an abi-gen `main()` that
-/// outputs the layout. If the abi-gen binary fails with "main function not
-/// found", we treat it as "no storage layout" (the slot attr may have been
-/// outside a `#[contract]` module). All other failures propagate normally.
+/// Detection is a source-level check for a `#[contract]` module whose storage
+/// struct has fields. When storage fields are present, the `#[contract]` macro
+/// generates an abi-gen `main()` that outputs the layout. If the abi-gen
+/// binary fails with "main function not found", we treat it as "no storage
+/// layout" (e.g. `#[contract(no_main)]`, or a detection false-positive). All
+/// other failures propagate normally.
 pub fn generate_storage_layout_for_bin(
     manifest_dir: &Path,
     bin_name: &str,
@@ -31,7 +33,7 @@ pub fn generate_storage_layout_for_bin(
 ) -> Result<Option<serde_json::Value>> {
     let source_path = resolve_bin_source_path(manifest_dir, bin_name)?;
     if !source_path.exists()
-        || !has_slot_fields(
+        || !has_storage_fields(
             &fs::read_to_string(&source_path)
                 .with_context(|| format!("Failed to read {}", source_path.display()))?,
         )
@@ -263,44 +265,94 @@ pub(crate) fn has_contract_macro(source: &str) -> bool {
     find_contract_attr(&file.items).is_some()
 }
 
-/// Walk for any struct field carrying a `#[slot(...)]` attribute, recursing
-/// into `mod` contents.
-fn any_struct_field_has_slot_attr(items: &[syn::Item]) -> bool {
+/// Walk for a `#[contract]` module whose storage struct declares fields,
+/// recursing into `mod` contents.
+fn any_contract_mod_declares_storage(items: &[syn::Item]) -> bool {
     for item in items {
-        match item {
-            syn::Item::Struct(s) => {
-                if let syn::Fields::Named(named) = &s.fields
-                    && named
-                        .named
-                        .iter()
-                        .any(|f| f.attrs.iter().any(|a| a.path().is_ident("slot")))
-                {
-                    return true;
-                }
+        if let syn::Item::Mod(m) = item
+            && let Some((_, nested)) = &m.content
+        {
+            let is_contract_mod = m.attrs.iter().any(|a| {
+                a.path()
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "contract")
+            });
+            if is_contract_mod && contract_struct_has_fields(nested) {
+                return true;
             }
-            syn::Item::Mod(m) => {
-                if let Some((_, nested)) = &m.content
-                    && any_struct_field_has_slot_attr(nested)
-                {
-                    return true;
-                }
+            if any_contract_mod_declares_storage(nested) {
+                return true;
             }
-            _ => {}
         }
     }
     false
 }
 
-/// Detect whether the source contains a `#[slot(...)]` attribute on a struct
-/// field, which indicates storage fields on the contract struct.
+/// Whether the contract module's storage struct declares any storage fields.
 ///
-/// Parses the source via `syn` so that `#[slot(...)]`-shaped text in comments
-/// or string literals doesn't trip detection.
-fn has_slot_fields(source: &str) -> bool {
+/// The storage struct is identified the way the `#[contract]` macro does it
+/// (see `codegen/contract.rs` in `pvm-contract-macros`): it is the self-type
+/// of the first `impl` block containing `#[method]` / `#[constructor]` /
+/// `#[fallback]` / `#[receive]` functions. The reserved `host` field doesn't
+/// count — the macro injects (and otherwise rejects) it.
+fn contract_struct_has_fields(items: &[syn::Item]) -> bool {
+    const CONTRACT_FN_ATTRS: [&str; 4] = ["method", "constructor", "fallback", "receive"];
+
+    let Some(struct_ident) = items.iter().find_map(|item| {
+        let syn::Item::Impl(item_impl) = item else {
+            return None;
+        };
+        let has_contract_fns = item_impl.items.iter().any(|ii| {
+            let syn::ImplItem::Fn(f) = ii else {
+                return false;
+            };
+            f.attrs.iter().any(|attr| {
+                attr.path()
+                    .segments
+                    .last()
+                    .is_some_and(|s| CONTRACT_FN_ATTRS.iter().any(|name| s.ident == name))
+            })
+        });
+        if !has_contract_fns {
+            return None;
+        }
+        let syn::Type::Path(type_path) = item_impl.self_ty.as_ref() else {
+            return None;
+        };
+        type_path.path.segments.last().map(|s| s.ident.clone())
+    }) else {
+        return false;
+    };
+
+    items.iter().any(|item| {
+        let syn::Item::Struct(s) = item else {
+            return false;
+        };
+        if s.ident != struct_ident {
+            return false;
+        }
+        let syn::Fields::Named(named) = &s.fields else {
+            return false;
+        };
+        named
+            .named
+            .iter()
+            .any(|f| f.ident.as_ref().is_some_and(|i| i != "host"))
+    })
+}
+
+/// Detect whether the source declares a contract storage struct with fields.
+/// Used to gate the storage-layout abi-gen run, which only produces a layout
+/// when the `#[contract]` macro saw storage fields.
+///
+/// Parses the source via `syn` so that contract-shaped text in comments or
+/// string literals doesn't trip detection.
+fn has_storage_fields(source: &str) -> bool {
     let Ok(file) = syn::parse_file(source) else {
         return false;
     };
-    any_struct_field_has_slot_attr(&file.items)
+    any_contract_mod_declares_storage(&file.items)
 }
 
 pub(crate) fn extract_sol_path_from_source(source: &str) -> Option<String> {
@@ -363,6 +415,27 @@ pub(crate) fn resolve_bin_source_path(
     Ok(manifest_dir.join("src/bin").join(format!("{bin_name}.rs")))
 }
 
+/// A `.sol` file's top-level `import` directives (imports are always top-level).
+fn contains_import(file: &syn_solidity::File) -> bool {
+    file.items
+        .iter()
+        .any(|item| matches!(item, syn_solidity::Item::Import(_)))
+}
+
+/// Reject `.sol` `import` directives. None of the build-time parsers follow
+/// imports, so an imported type resolves to its bare name and silently yields a
+/// wrong selector; callers must inline the imported declarations. A source that
+/// doesn't parse as Solidity has no import to reject here (real parse errors
+/// surface later in the ABI/codegen path).
+pub fn reject_sol_imports(source: &str) -> Result<()> {
+    if let Ok(file) = syn::parse_str::<syn_solidity::File>(source)
+        && contains_import(&file)
+    {
+        anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
+    }
+    Ok(())
+}
+
 pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> {
     let content = std::fs::read_to_string(sol_path)
         .with_context(|| format!("Failed to read sol file: {}", sol_path.display()))?;
@@ -385,6 +458,10 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
         }
     };
 
+    if contains_import(&file) {
+        anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
+    }
+
     // Flatten items, descending into contract/interface/library bodies.
     let mut flat: Vec<&syn_solidity::Item> = Vec::new();
     collect_items(&file.items, &mut flat);
@@ -393,17 +470,20 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     // value types) for resolution, keyed by the type's name.
     let mut structs: CustomMap = std::collections::HashMap::new();
     for item in &flat {
-        match item {
-            syn_solidity::Item::Struct(s) => {
-                structs.insert(s.name.to_string(), CustomDef::Struct(s));
-            }
-            syn_solidity::Item::Enum(e) => {
-                structs.insert(e.name.to_string(), CustomDef::Enum);
-            }
-            syn_solidity::Item::Udt(u) => {
-                structs.insert(u.name.to_string(), CustomDef::Udt(&u.ty));
-            }
-            _ => {}
+        let (name, def) = match item {
+            syn_solidity::Item::Struct(s) => (s.name.to_string(), CustomDef::Struct(s)),
+            syn_solidity::Item::Enum(e) => (e.name.to_string(), CustomDef::Enum),
+            syn_solidity::Item::Udt(u) => (u.name.to_string(), CustomDef::Udt(&u.ty)),
+            _ => continue,
+        };
+        // Keyed by simple name, so a duplicate would silently overwrite and
+        // corrupt the ABI of everything using the other one. Reject it, matching
+        // the macro's resolver.
+        if structs.insert(name.clone(), def).is_some() {
+            anyhow::bail!(
+                "two Solidity user-defined types are both named `{name}`; \
+                 rename one in the interface to avoid the collision"
+            );
         }
     }
 
@@ -466,12 +546,17 @@ fn collect_items<'a>(items: &'a [syn_solidity::Item], out: &mut Vec<&'a syn_soli
 }
 
 fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &CustomMap) -> AbiParam {
-    let name = decl
-        .name
-        .as_ref()
-        .map(|n| n.to_string())
-        .unwrap_or_default();
+    let name = decl.name.as_ref().map(unraw).unwrap_or_default();
     type_to_abi_param(&name, &decl.ty, structs, &mut Vec::new())
+}
+
+/// Render a syn-solidity identifier as its ABI name. syn-solidity stores an
+/// identifier that collides with a Rust keyword (e.g. a Solidity field named
+/// `ref`) as a raw identifier (`r#ref`); strip the `r#` so the ABI matches the
+/// Solidity source.
+fn unraw<T: std::fmt::Display>(ident: T) -> String {
+    let s = ident.to_string();
+    s.strip_prefix("r#").map(str::to_string).unwrap_or(s)
 }
 
 /// Build an [`AbiParam`] for a `name: ty` declaration, expanding named structs
@@ -542,11 +627,7 @@ fn type_to_abi_param(
                     active.push(custom);
                     let mut components = Vec::with_capacity(def.fields.len());
                     for field in def.fields.iter() {
-                        let field_name = field
-                            .name
-                            .as_ref()
-                            .map(|n| n.to_string())
-                            .unwrap_or_default();
+                        let field_name = field.name.as_ref().map(unraw).unwrap_or_default();
                         components.push(type_to_abi_param(&field_name, &field.ty, structs, active));
                     }
                     active.pop();
@@ -633,7 +714,7 @@ fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> AbiItem {
         .parameters
         .iter()
         .map(|p| {
-            let name = p.name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+            let name = p.name.as_ref().map(unraw).unwrap_or_default();
             let param = type_to_abi_param(&name, &p.ty, structs, &mut Vec::new());
             AbiEventParam {
                 name: param.name,
@@ -656,6 +737,19 @@ mod tests {
     use expect_test::expect;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn reject_sol_imports_flags_import_and_allows_plain() {
+        let with_import = r#"pragma solidity ^0.8.0;
+import "./Types.sol";
+interface I { function f() external; }"#;
+        let err = reject_sol_imports(with_import).unwrap_err().to_string();
+        assert!(err.contains("import"), "{err}");
+
+        let plain = r#"pragma solidity ^0.8.0;
+interface I { function f() external; }"#;
+        reject_sol_imports(plain).expect("plain interface has no import");
+    }
 
     #[test]
     fn generate_abi_from_sol_recursive_struct_does_not_overflow() {
@@ -757,6 +851,74 @@ interface Tokens {
             .unwrap();
         assert_eq!(inputs[0].param_type, "uint8");
         assert_eq!(inputs[1].param_type, "uint256");
+    }
+
+    #[test]
+    fn unraw_strips_raw_identifier_prefix() {
+        assert_eq!(unraw("r#ref"), "ref");
+        assert_eq!(unraw("amount"), "amount");
+    }
+
+    #[test]
+    fn generate_abi_from_sol_struct_field_keyword_name_is_not_raw() {
+        // A struct field whose name is a Rust keyword (`ref`) parses as a raw
+        // identifier; the ABI must report the plain Solidity name, not `r#ref`.
+        let (_d, path) = write_sol(
+            "Kw.sol",
+            r#"pragma solidity ^0.8.0;
+
+struct Order {
+    address from;
+    uint256 ref;
+    uint256 amount;
+}
+
+interface Kw {
+    function place(Order o) external;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function { name, inputs, .. } if name == "place" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let field_names: Vec<&str> = inputs[0]
+            .components
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(field_names, vec!["from", "ref", "amount"]);
+    }
+
+    #[test]
+    fn generate_abi_from_sol_event_param_keyword_name_is_not_raw() {
+        let (_d, path) = write_sol(
+            "KwEvent.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface KwEvent {
+    event Placed(address indexed from, uint256 ref, uint256 amount);
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let inputs = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Event { name, inputs, .. } if name == "Placed" => Some(inputs.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let param_names: Vec<&str> = inputs.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(param_names, vec!["from", "ref", "amount"]);
     }
 
     fn write_sol(name: &str, body: &str) -> (TempDir, std::path::PathBuf) {
@@ -1184,52 +1346,154 @@ interface Mixed {
         assert!(has_contract_macro(source));
     }
 
-    // --- has_slot_fields ---
+    // --- has_storage_fields ---
 
     #[test]
-    fn has_slot_fields_detects_real_attribute() {
+    fn has_storage_fields_detects_explicit_slot_fields() {
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct S {
+                    #[slot(0)]
+                    total: Lazy<U256>,
+                }
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn total(&self) -> U256 { self.total.get() }
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_detects_auto_numbered_fields() {
+        // No `#[slot]` attribute anywhere — auto-numbered storage has a
+        // compile-time layout and must be detected.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct Counter {
+                    count: Lazy<u32>,
+                    owner: Lazy<Address>,
+                }
+                impl Counter {
+                    #[pvm_contract_sdk::constructor]
+                    pub fn new(&mut self) {}
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_unit_struct_contract() {
+        // No storage fields on the contract struct: no layout to emit.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct S;
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn f(&self) -> u32 { 0 }
+                }
+            }
+        "#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_non_storage_helper_structs() {
+        // A `#[derive(SolType)]`-style param struct with fields must not count
+        // as storage when the contract struct itself is a unit struct.
+        let source = r#"
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct Point { x: u64, y: u64 }
+                pub struct S;
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn f(&self, p: Point) -> u64 { p.x }
+                }
+            }
+        "#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_ignores_struct_outside_contract_mod() {
+        // Fields on a struct outside any `#[contract]` module never produce a
+        // layout `main()`, so they must not trip detection.
         let source = r#"
             struct S {
                 #[slot(0)]
                 x: u32,
             }
         "#;
-        assert!(has_slot_fields(source));
+        assert!(!has_storage_fields(source));
     }
 
     #[test]
-    fn has_slot_fields_ignores_comment() {
-        // a `#[slot(...)]` shape inside a comment must not trip detection.
+    fn has_storage_fields_finds_contract_inside_nested_mod() {
         let source = r#"
-            struct S {
-                // #[slot(0)]
-                x: u32,
-            }
-        "#;
-        assert!(!has_slot_fields(source));
-    }
-
-    #[test]
-    fn has_slot_fields_finds_attribute_inside_nested_mod() {
-        let source = r#"
-            mod contract {
-                pub struct S {
-                    #[slot(0)]
-                    total: u32,
+            mod outer {
+                #[pvm_contract_sdk::contract]
+                pub mod inner {
+                    pub struct S {
+                        total: Lazy<U256>,
+                    }
+                    impl S {
+                        #[pvm_contract_sdk::method]
+                        pub fn total(&self) -> U256 { self.total.get() }
+                    }
                 }
             }
         "#;
-        assert!(has_slot_fields(source));
+        assert!(has_storage_fields(source));
     }
 
     #[test]
-    fn has_slot_fields_returns_false_when_absent() {
+    fn has_storage_fields_ignores_host_only_struct() {
+        // `host` is the macro-injected handle, not a storage field.
         let source = r#"
-            struct S {
-                x: u32,
+            #[pvm_contract_sdk::contract]
+            mod c {
+                pub struct S {
+                    host: Host,
+                }
+                impl S {
+                    #[pvm_contract_sdk::method]
+                    pub fn f(&self) -> u32 { 0 }
+                }
             }
         "#;
-        assert!(!has_slot_fields(source));
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_returns_false_on_syntax_error() {
+        // Source that doesn't parse: function returns the conservative default.
+        let source = r#"#[contract(unclosed"#;
+        assert!(!has_storage_fields(source));
+    }
+
+    #[test]
+    fn has_storage_fields_handles_bare_attr_forms() {
+        // `#[contract]` / `#[method]` without a `::` path prefix must match.
+        let source = r#"
+            use pvm_contract_sdk::{contract, method};
+            #[contract]
+            mod c {
+                pub struct S {
+                    total: Lazy<U256>,
+                }
+                impl S {
+                    #[method]
+                    pub fn total(&self) -> U256 { self.total.get() }
+                }
+            }
+        "#;
+        assert!(has_storage_fields(source));
     }
 
     // --- parse_sol_params ---
@@ -1693,20 +1957,6 @@ interface Token {{
               }
             ]"#]]
         .assert_eq(&abi_json(&sol_path));
-    }
-
-    // --- has_slot_fields ---
-
-    #[test]
-    fn detects_slot_attr() {
-        assert!(has_slot_fields(
-            "pub struct MyToken { #[slot(0)] total_supply: Lazy<U256> }"
-        ));
-    }
-
-    #[test]
-    fn no_slot_attr_returns_false() {
-        assert!(!has_slot_fields("pub struct MyToken;"));
     }
 
     // --- Event parsing ---

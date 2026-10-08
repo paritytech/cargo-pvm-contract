@@ -1,0 +1,10 @@
+error: `.sol` `import` is not supported; inline the imported types into this file.
+  --> tests/ui/sol_import_rejected.rs:5:1
+   |
+ 5 | / mod c {
+ 6 | |     pub struct C;
+ 7 | |
+ 8 | |     impl C {
+...  |
+12 | | }
+   | |_^

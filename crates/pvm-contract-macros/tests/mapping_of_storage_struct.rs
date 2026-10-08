@@ -1,15 +1,15 @@
 //! `Mapping<K, V>` where `V` is itself a storage component (`#[storage]`
 //! sub-struct, `Lazy<T>`, nested `Mapping<K2, V'>`, …).
 //!
-//! Covers the new storage-typed `view` / `view_mut` API introduced by the
-//! `StorageComponent::new_at(StorageKey, …)` generalization. The on-chain
+//! Covers the storage-typed `get` (read) / `entry` (write) API for container
+//! values, backed by the `StorageType` composition traits. The on-chain
 //! layout matches solc's `mapping(K => struct)` pattern: the value lives at
 //! the derived key, sub-fields at `derived + N`, and inner mappings derive
 //! sub-keys from the per-key derived slot.
 //!
 //! Three angles per pattern:
-//!   - **Round-trip** — write through `view_mut(k).field.set(v)`, read
-//!     through `view(k).field.get()`.
+//!   - **Round-trip** — write through `entry(k).field.set(v)`, read
+//!     through `get(k).field.get()`.
 //!   - **Independent keys** — different outer K values don't interfere.
 //!   - **Layout** — the inner field's slot matches the
 //!     `keccak256(pad32(k)+slot).add(N)` derivation solc would emit.
@@ -53,18 +53,18 @@ fn mapping_of_storage_struct_round_trip() {
     let alice = Address([0xAA; 20]);
     let bob = Address([0xBB; 20]);
 
-    // Write through the storage-typed mutable view.
+    // Write through the storage-typed mutable guard (`entry` -> RefMut).
     {
-        let mut v = vaults.view_mut(&vault);
+        let mut v = vaults.entry(&vault);
         v.total_shares.set(&U256::from(1_000_000));
         v.shares.insert(&alice, &U256::from(700_000));
         v.shares.insert(&bob, &U256::from(300_000));
         v.last_deposit.insert(&alice, &U256::from(42));
     }
 
-    // Read through the storage-typed immutable view.
+    // Read through the storage-typed immutable guard (`get` -> Ref).
     {
-        let v = vaults.view(&vault);
+        let v = vaults.get(&vault);
         assert_eq!(v.total_shares.get(), U256::from(1_000_000));
         assert_eq!(v.shares.get(&alice), U256::from(700_000));
         assert_eq!(v.shares.get(&bob), U256::from(300_000));
@@ -82,16 +82,16 @@ fn mapping_of_storage_struct_independent_outer_keys() {
     let user = Address([0xCC; 20]);
 
     vaults
-        .view_mut(&vault_a)
+        .entry(&vault_a)
         .shares
         .insert(&user, &U256::from(111));
     vaults
-        .view_mut(&vault_b)
+        .entry(&vault_b)
         .shares
         .insert(&user, &U256::from(222));
 
-    assert_eq!(vaults.view(&vault_a).shares.get(&user), U256::from(111));
-    assert_eq!(vaults.view(&vault_b).shares.get(&user), U256::from(222));
+    assert_eq!(vaults.get(&vault_a).shares.get(&user), U256::from(111));
+    assert_eq!(vaults.get(&vault_b).shares.get(&user), U256::from(222));
 }
 
 #[test]
@@ -101,10 +101,7 @@ fn mapping_of_storage_struct_layout_matches_solc_derivation() {
         unsafe { Mapping::<Address, VaultData>::new(StorageKey::from_slot(0), host.clone()) };
     let vault = Address([0x11; 20]);
 
-    vaults
-        .view_mut(&vault)
-        .total_shares
-        .set(&U256::from(99_999));
+    vaults.entry(&vault).total_shares.set(&U256::from(99_999));
 
     // solc-equivalent derivation: the struct lives at derived =
     // keccak256(pad32(vault) ++ pad32(0)), and total_shares (field 0)
@@ -124,11 +121,11 @@ fn mapping_of_lazy_round_trip() {
     let host = fresh_host();
     let mut m = unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
 
-    // Storage-typed map: write/read via view_mut/view returning Ref<Lazy<U256>>
-    m.view_mut(&1u64).set(&U256::from(42));
-    m.view_mut(&2u64).set(&U256::from(7));
-    assert_eq!(m.view(&1u64).get(), U256::from(42));
-    assert_eq!(m.view(&2u64).get(), U256::from(7));
+    // Storage-typed map: write via `entry` (RefMut/Lazy cursor), read via `get`.
+    m.entry(&1u64).set(&U256::from(42));
+    m.entry(&2u64).set(&U256::from(7));
+    assert_eq!(m.get(&1u64).get(), U256::from(42));
+    assert_eq!(m.get(&2u64).get(), U256::from(7));
 }
 
 #[test]
@@ -140,9 +137,9 @@ fn mapping_of_lazy_subword_matches_canonical_offset() {
     let host = fresh_host();
     let mut m = unsafe { Mapping::<u64, Lazy<u128>>::new(StorageKey::from_slot(0), host.clone()) };
     let v: u128 = 0xCAFE_BABE_DEAD_BEEFu128;
-    m.view_mut(&1u64).set(&v);
+    m.entry(&1u64).set(&v);
 
-    assert_eq!(m.view(&1u64).get(), v);
+    assert_eq!(m.get(&1u64).get(), v);
 
     // Wire-level check: the value lives at canonical offset 16 of derived slot.
     let derived = m.slot_of(&1u64);
@@ -172,13 +169,11 @@ fn nested_mapping_via_generalized_storage_typed_impl() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    // `view_mut(owner)` → RefMut<Mapping<Address, U256>>, then .insert via DerefMut.
-    allowances
-        .view_mut(&owner)
-        .insert(&spender, &U256::from(500));
+    // `entry(owner)` → RefMut<Mapping<Address, U256>>, then .insert via DerefMut.
+    allowances.entry(&owner).insert(&spender, &U256::from(500));
 
-    // Read via `view(owner)` → Ref<Mapping<Address, U256>>, then .get via Deref.
-    assert_eq!(allowances.view(&owner).get(&spender), U256::from(500));
+    // Read via `get(owner)` → Ref<Mapping<Address, U256>>, then .get via Deref.
+    assert_eq!(allowances.get(&owner).get(&spender), U256::from(500));
 }
 
 #[test]
@@ -191,11 +186,11 @@ fn nested_storage_typed_mapping_independent_outer_keys() {
     let owner_b = Address([0x22; 20]);
     let spender = Address([0xCC; 20]);
 
-    m.view_mut(&owner_a).insert(&spender, &U256::from(100));
-    m.view_mut(&owner_b).insert(&spender, &U256::from(200));
+    m.entry(&owner_a).insert(&spender, &U256::from(100));
+    m.entry(&owner_b).insert(&spender, &U256::from(200));
 
-    assert_eq!(m.view(&owner_a).get(&spender), U256::from(100));
-    assert_eq!(m.view(&owner_b).get(&spender), U256::from(200));
+    assert_eq!(m.get(&owner_a).get(&spender), U256::from(100));
+    assert_eq!(m.get(&owner_b).get(&spender), U256::from(200));
 }
 
 // ---------------------------------------------------------------------------
@@ -228,12 +223,12 @@ fn outer_storage_struct_holding_mapping_of_storage_struct_runtime() {
     // cleanly at any depth.
     outer
         .by_owner
-        .view_mut(&vault)
+        .entry(&vault)
         .shares
         .insert(&alice, &U256::from(31_415));
 
     assert_eq!(
-        outer.by_owner.view(&vault).shares.get(&alice),
+        outer.by_owner.get(&vault).shares.get(&alice),
         U256::from(31_415),
     );
 }
@@ -304,7 +299,7 @@ fn delete_struct_entry_clears_all_lazy_fields() {
 
     // Set up: one Lazy field + two Mapping entries.
     {
-        let mut v = vaults.view_mut(&vault);
+        let mut v = vaults.entry(&vault);
         v.total_shares.set(&U256::from(1_000_000));
         v.shares.insert(&alice, &U256::from(700_000));
         v.last_deposit.insert(&alice, &U256::from(42));
@@ -318,18 +313,18 @@ fn delete_struct_entry_clears_all_lazy_fields() {
 
     // Lazy field is cleared.
     assert_eq!(
-        vaults.view(&vault).total_shares.get(),
+        vaults.get(&vault).total_shares.get(),
         U256::ZERO,
         "Lazy field cleared by delete",
     );
     // Sub-mapping entries remain — solc behaviour, no enumeration available.
     assert_eq!(
-        vaults.view(&vault).shares.get(&alice),
+        vaults.get(&vault).shares.get(&alice),
         U256::from(700_000),
         "sub-mapping entries survive (solc-compatible)",
     );
     assert_eq!(
-        vaults.view(&vault).last_deposit.get(&alice),
+        vaults.get(&vault).last_deposit.get(&alice),
         U256::from(42),
         "sub-mapping entries survive (solc-compatible)",
     );
@@ -339,14 +334,14 @@ fn delete_struct_entry_clears_all_lazy_fields() {
 fn delete_lazy_entry_clears_the_slot() {
     let host = fresh_host();
     let mut m = unsafe { Mapping::<u64, Lazy<U256>>::new(StorageKey::from_slot(0), host.clone()) };
-    m.view_mut(&1u64).set(&U256::from(42));
-    assert_eq!(m.view(&1u64).get(), U256::from(42));
+    m.entry(&1u64).set(&U256::from(42));
+    assert_eq!(m.get(&1u64).get(), U256::from(42));
 
     m.delete(&1u64);
     // Slot is auto-deleted by `set_storage_or_clear` on all-zero write.
     let raw = raw_slot(&host, &m.slot_of(&1u64));
     assert_eq!(raw, [0u8; 32], "Lazy<U256> entry's slot is zeroed");
-    assert_eq!(m.view(&1u64).get(), U256::ZERO);
+    assert_eq!(m.get(&1u64).get(), U256::ZERO);
 }
 
 #[test]
@@ -354,8 +349,8 @@ fn delete_lazy_subword_entry_clears_the_canonical_window() {
     let host = fresh_host();
     let mut m = unsafe { Mapping::<u64, Lazy<u128>>::new(StorageKey::from_slot(0), host.clone()) };
     let v: u128 = 0xCAFE_BABE_DEAD_BEEFu128;
-    m.view_mut(&1u64).set(&v);
-    assert_eq!(m.view(&1u64).get(), v);
+    m.entry(&1u64).set(&v);
+    assert_eq!(m.get(&1u64).get(), v);
 
     m.delete(&1u64);
     let raw = raw_slot(&host, &m.slot_of(&1u64));
@@ -363,7 +358,7 @@ fn delete_lazy_subword_entry_clears_the_canonical_window() {
         raw, [0u8; 32],
         "no-neighbour sub-word entry auto-deletes the slot on clear",
     );
-    assert_eq!(m.view(&1u64).get(), 0u128);
+    assert_eq!(m.get(&1u64).get(), 0u128);
 }
 
 #[test]
@@ -375,7 +370,7 @@ fn delete_nested_mapping_entry_is_noop_matching_solc() {
     let owner = Address([0xAA; 20]);
     let spender = Address([0xBB; 20]);
 
-    m.view_mut(&owner).insert(&spender, &U256::from(500));
+    m.entry(&owner).insert(&spender, &U256::from(500));
 
     // `delete m[owner]` for a nested mapping: solc cannot enumerate inner
     // keys, so the entry persists. Our Mapping::clear is a no-op,
@@ -383,7 +378,7 @@ fn delete_nested_mapping_entry_is_noop_matching_solc() {
     m.delete(&owner);
 
     assert_eq!(
-        m.view(&owner).get(&spender),
+        m.get(&owner).get(&spender),
         U256::from(500),
         "nested-mapping entries are NOT cleared by delete on the outer key (matches solc)",
     );
@@ -396,11 +391,11 @@ fn delete_then_overwrite_storage_struct_entry() {
         unsafe { Mapping::<Address, VaultData>::new(StorageKey::from_slot(0), host.clone()) };
     let vault = Address([0x11; 20]);
 
-    vaults.view_mut(&vault).total_shares.set(&U256::from(999));
+    vaults.entry(&vault).total_shares.set(&U256::from(999));
     vaults.delete(&vault);
-    vaults.view_mut(&vault).total_shares.set(&U256::from(7));
+    vaults.entry(&vault).total_shares.set(&U256::from(7));
 
-    assert_eq!(vaults.view(&vault).total_shares.get(), U256::from(7));
+    assert_eq!(vaults.get(&vault).total_shares.get(), U256::from(7));
 }
 
 // ---------------------------------------------------------------------------

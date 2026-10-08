@@ -10,6 +10,8 @@ description = "Core structures for PVM smart contracts sdk"
 ruint = { workspace = true, default-features = false }
 pvm-contract-types = { path = "../pvm-contract-types", version = "0.4.0", default-features = false }
 
+[dev-dependencies]
+pvm-contract-types = { path = "../pvm-contract-types", features = ["std"] }
 
 [features]
 default = []

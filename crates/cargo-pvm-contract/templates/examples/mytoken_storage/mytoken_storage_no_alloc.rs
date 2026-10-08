@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
@@ -41,7 +40,7 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.caller();
+            let caller = self.env().caller();
 
             let mut sender_cell = self.balances.entry(&caller);
             let sender_balance = sender_cell.get();
@@ -71,12 +70,6 @@ mod my_token {
         #[pvm_contract_sdk::fallback]
         pub fn fallback(&mut self) -> Result<(), TokenError> {
             Ok(())
-        }
-
-        fn caller(&self) -> Address {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            Address(caller)
         }
     }
 }

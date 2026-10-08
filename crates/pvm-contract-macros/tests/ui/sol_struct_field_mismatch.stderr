@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: `echo` parameter 0: the Rust type does not ABI-encode as the `.sol` type `(uint64,uint64)` (a struct must declare the same field types, in order)
+ --> tests/ui/sol_struct_field_mismatch.rs:8:1
+  |
+8 | #[pvm_contract_macros::contract("tests/ui/fixtures/StructMismatch.sol")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `c::_` failed here
+
+error[E0080]: evaluation panicked: `echo` return: the Rust type does not ABI-encode as the `.sol` type `(uint64,uint64)` (a struct must declare the same field types, in order)
+ --> tests/ui/sol_struct_field_mismatch.rs:8:1
+  |
+8 | #[pvm_contract_macros::contract("tests/ui/fixtures/StructMismatch.sol")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `c::_` failed here

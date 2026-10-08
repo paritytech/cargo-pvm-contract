@@ -39,4 +39,8 @@ fn ui() {
     copy_fixtures_into_trybuild_project();
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/*.rs");
+    // Compile-PASS cases (non-recursive `tests/ui/*.rs` above never picks these
+    // up): pin properties that must keep *compiling*, e.g. `#![forbid(unsafe_code)]`
+    // contract-author code despite macro-emitted `unsafe`.
+    t.pass("tests/ui/pass/*.rs");
 }

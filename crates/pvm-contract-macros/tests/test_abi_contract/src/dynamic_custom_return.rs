@@ -14,7 +14,7 @@ pub struct Named {
 mod my_contract {
     use super::Named;
     use alloc::string::String;
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     pub struct MyContract;
 
@@ -32,11 +32,7 @@ mod my_contract {
 
         #[pvm_contract_sdk::method]
         pub fn process(&self, data: Named, flag: bool) -> u64 {
-            if flag {
-                data.id
-            } else {
-                0
-            }
+            if flag { data.id } else { 0 }
         }
     }
 }

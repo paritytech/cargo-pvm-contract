@@ -5,6 +5,11 @@ pub const DEFAULT_PRIVATE_KEY: &str =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 pub const DEFAULT_ADDRESS: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
 
+/// The node's second pre-funded dev account. Useful where a test needs a
+/// funded account that is *not* the transaction sender, so its balance cannot
+/// move under gas accounting.
+pub const SECOND_ADDRESS: &str = "0x70997970C51812dc3A010C7d01b50e0d17dc79C8";
+
 pub struct CastClient {
     pub rpc_url: String,
 }
@@ -356,6 +361,63 @@ impl CastClient {
         let hash = String::from_utf8(output.stdout).unwrap();
         let hash = hash.trim().trim_start_matches("0x");
         hash[..8].to_lowercase()
+    }
+
+    /// The node's own view of a scalar chain property, as a `u64`.
+    ///
+    /// Used to check a contract's `env()` reads against ground truth, so it
+    /// deliberately goes through a different path than `cast call`: no ABI
+    /// decoding is involved, only the node's JSON-RPC.
+    fn query_u64(&self, args: &[&str], what: &str) -> u64 {
+        let raw = self.query_scalar(args, what);
+        raw.parse()
+            .unwrap_or_else(|e| panic!("cast {what} returned unparseable {raw:?}: {e}"))
+    }
+
+    /// Same, left as a decimal string for values that can exceed `u64` —
+    /// balances are 256-bit and the test crate has no big-integer type.
+    fn query_scalar(&self, args: &[&str], what: &str) -> String {
+        let output = Command::new("cast")
+            .args(args)
+            .args(["--rpc-url", &self.rpc_url])
+            .output()
+            .unwrap_or_else(|e| panic!("cast {what} failed to execute: {e}"));
+        assert!(
+            output.status.success(),
+            "cast {what} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let raw = String::from_utf8(output.stdout).unwrap();
+        // cast annotates large numbers like "999999 [9.999e5]".
+        let raw = raw.trim();
+        let raw = match raw.find(" [") {
+            Some(pos) => &raw[..pos],
+            None => raw,
+        };
+        raw.to_string()
+    }
+
+    /// Current head block number.
+    pub fn block_number(&self) -> u64 {
+        self.query_u64(&["block-number"], "block-number")
+    }
+
+    /// EIP-155 chain ID.
+    pub fn chain_id(&self) -> u64 {
+        self.query_u64(&["chain-id"], "chain-id")
+    }
+
+    /// Balance of an account in wei, as a decimal string.
+    pub fn balance(&self, account: &str) -> String {
+        self.query_scalar(&["balance", account], "balance")
+    }
+
+    /// Timestamp (seconds) of the current head block.
+    pub fn block_timestamp(&self) -> u64 {
+        self.query_u64(
+            &["block", "latest", "--field", "timestamp"],
+            "block timestamp",
+        )
     }
 
     /// Get logs for a specific event signature.

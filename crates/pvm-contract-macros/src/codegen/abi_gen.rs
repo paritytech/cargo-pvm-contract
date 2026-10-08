@@ -12,7 +12,7 @@ use super::storage_layout::generate_layout_emit;
 ///
 /// When a `.sol` file is provided, the builder derives the ABI from the Solidity
 /// interface at build time. However, `storageLayout` is always Rust-side, so
-/// `main()` is still generated when `#[slot]` fields exist.
+/// `main()` is still generated when the contract struct declares storage fields.
 ///
 /// `no_main` suppresses the `fn main()` emission entirely — used when the
 /// caller (e.g. an integration test or a library crate) supplies its own
@@ -68,7 +68,7 @@ pub fn generate_abi_gen(
 /// Auto-numbered slots reference a chain of `__pvm_storage_slot_*` const items
 /// declared inside the helper fn (mirroring the chain produced for the
 /// `this` construction in `deploy()`/`call()`). This way the slot value is
-/// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
+/// const-evaluated at compile time even when `<Ty as StorageType>::SLOTS`
 /// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
 /// fields run through [`generate_layout_emit`] with an empty prefix —
 /// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries; embedded
@@ -431,6 +431,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
@@ -541,6 +542,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         }
     }
 
@@ -554,7 +556,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::View,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -576,7 +577,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::Pure,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -636,6 +636,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -686,6 +687,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -729,6 +731,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
