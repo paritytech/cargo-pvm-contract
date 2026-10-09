@@ -109,6 +109,18 @@ fn storage_layout_composed_produces_valid_abi() {
         .assert_eq(&cargo_run_abi("storage-layout-composed"))
 }
 
+/// Contract whose `#[storage]` sub-structs have packed sub-word members, so
+/// the `members` lists in `types` carry non-zero `offset`s (`small` at 1,
+/// `who` at 5). Also nests one sub-struct inside another: `Counters` is
+/// registered once and referenced from both `Shell`'s `members` and the
+/// top-level `again` entry, and `tag` after the nested struct starts a fresh
+/// slot.
+#[test]
+fn storage_layout_packed_substruct_produces_valid_abi() {
+    expect_test::expect_file!("./test_abi_contract/abi_storage_layout_packed_substruct.json")
+        .assert_eq(&cargo_run_abi("storage-layout-packed-substruct"))
+}
+
 /// Contract with `StorageVec` storage fields. Verifies that the storageLayout
 /// JSON compiles and resolves `StorageVec<T>` to Solidity's `T[]` type name,
 /// including nested (`uint256[][]`) and mapping-valued

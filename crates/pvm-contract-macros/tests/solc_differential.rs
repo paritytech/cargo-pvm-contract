@@ -396,6 +396,90 @@ contract WithProfile {
 }
 "#;
 
+/// Nested `#[storage]` sub-structs, anchored with `#[slot(N)]`, with packed
+/// sub-word members, a mapping member, and a dynamic-array member — and the
+/// inner struct used twice in one contract (once nested, once directly).
+/// Checks that: members of the inner struct pack solc-style with
+/// struct-relative slots; a mapping / `T[]` member takes one slot inside the
+/// struct; the inner struct is registered once and referenced from both the
+/// outer struct's `members` and the top-level entry; `#[slot(N)]` anchoring
+/// only moves the top-level entries.
+#[pvm_contract_sdk::storage]
+pub struct Counters {
+    pub flag: Lazy<bool>,
+    pub small: Lazy<u32>,
+    pub who: Lazy<Address>,
+    pub balances: Mapping<Address, U256>,
+}
+
+#[pvm_contract_sdk::storage]
+pub struct Shell {
+    pub counters: Counters,
+    pub tag: Lazy<u16>,
+    pub items: StorageVec<U256>,
+}
+
+#[pvm_contract_macros::contract(no_main)]
+mod nested_substruct {
+    use super::*;
+
+    pub struct Nested {
+        #[slot(0)]
+        pub shell: Shell,
+        #[slot(4)]
+        pub again: Counters,
+        #[slot(6)]
+        pub sentinel: Lazy<U256>,
+    }
+
+    impl Nested {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+const NESTED_SUBSTRUCT_SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract Nested {
+    struct Counters { bool flag; uint32 small; address who; mapping(address => uint256) balances; }
+    struct Shell { Counters counters; uint16 tag; uint256[] items; }
+    Shell shell;
+    Counters again;
+    uint256 sentinel;
+}
+"#;
+
+/// A value struct at every nesting level of the containers: mapping of
+/// mapping, array of array, mapping of array. The container `type` strings
+/// must qualify the struct label at the innermost position.
+#[pvm_contract_macros::contract(no_main)]
+mod nested_containers {
+    use super::*;
+
+    pub struct NestedContainers {
+        pub mm: Mapping<Address, Mapping<u64, Point>>,
+        pub vv: StorageVec<StorageVec<Point>>,
+        pub mv: Mapping<Address, StorageVec<Point>>,
+        pub sentinel: Lazy<U256>,
+    }
+
+    impl NestedContainers {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+const NESTED_CONTAINERS_SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract NestedContainers {
+    struct Point { uint64 x; uint64 y; }
+    mapping(address => mapping(uint64 => Point)) mm;
+    Point[][] vv;
+    mapping(address => Point[]) mv;
+    uint256 sentinel;
+}
+"#;
+
 // ---------------------------------------------------------------------------
 // Normalized layout + helpers
 // ---------------------------------------------------------------------------
@@ -653,6 +737,22 @@ fn dynamic_member_struct_layout_matches_solc() {
     assert_eq!(
         ours(&dynstruct::__storage_layout_json()),
         solc(DYNSTRUCT_SOL, "WithProfile")
+    );
+}
+
+#[test]
+fn nested_substruct_layout_matches_solc() {
+    assert_eq!(
+        ours(&nested_substruct::__storage_layout_json()),
+        solc(NESTED_SUBSTRUCT_SOL, "Nested")
+    );
+}
+
+#[test]
+fn nested_containers_layout_matches_solc() {
+    assert_eq!(
+        ours(&nested_containers::__storage_layout_json()),
+        solc(NESTED_CONTAINERS_SOL, "NestedContainers")
     );
 }
 
