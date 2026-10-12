@@ -3,7 +3,9 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn_solidity::{File, ItemFunction, SolIdent, Spanned};
 pub mod parse;
-use crate::utils::{build_method_signature_expr, capitalize, to_pascal_case, to_snake_case};
+use crate::utils::{
+    build_method_signature_expr, capitalize, keyword_safe_ident, to_pascal_case, to_snake_case,
+};
 mod ctxt;
 
 pub fn expand_function(
@@ -16,7 +18,7 @@ pub fn expand_function(
     let func_name = if is_constructor {
         format_ident!("{}_{}", "new", to_snake_case(&contract_name.to_string()))
     } else {
-        format_ident!("{}", ctxt.function_name(func))
+        keyword_safe_ident(&ctxt.function_name(func))
     };
     let (param_types, return_type) = resolve_signature_types(func, alloc, ctxt)?;
     let state_mutability = state_mutability_type(func, is_constructor)?;
@@ -25,14 +27,19 @@ pub fn expand_function(
         let name = name
             .as_ref()
             .map_or_else(|| format!("s{index}"), |v| v.to_string());
-        format_ident!("{}", to_snake_case(&name))
+        keyword_safe_ident(&to_snake_case(&name))
     });
 
     let selector: TokenStream = if is_constructor {
         let sel: Vec<TokenStream> = [0u8; 4].into_iter().map(|x| quote! { #x }).collect();
         quote! {[#(#sel),*]}
     } else {
-        let sig_expr = build_method_signature_expr(&func.name().to_string(), &param_types);
+        // `as_string()`, not `Display`: syn-solidity stores a Rust-keyword
+        // function name as a raw identifier and `Display` keeps the `r#`, so
+        // the signature would hash as `r#move(uint256)` — silently diverging
+        // from solc and every ABI consumer. Mirrors
+        // `compute_function_signature`.
+        let sig_expr = build_method_signature_expr(&func.name().as_string(), &param_types);
 
         quote! {
             const {
@@ -50,7 +57,7 @@ pub fn expand_function(
                 .as_ref()
                 .unwrap_or(&SolIdent::new(&format!("s{}", index)))
                 .to_string();
-            let name = format_ident!("{}", to_snake_case(name));
+            let name = keyword_safe_ident(&to_snake_case(name));
             quote! {#name: #typ}
         });
         quote! { #(#args),* }
@@ -241,7 +248,12 @@ fn to_rust_type(typ: &syn_solidity::Type, alloc: bool, ctxt: &Ctxt) -> syn::Resu
             }
         }
         syn_solidity::Type::Custom(custom) => {
-            let name = format_ident!("{}", to_pascal_case(&custom.last().to_string()));
+            // Must spell the type exactly as the declaration site does
+            // (`expand_struct` / `expand_error` / `expand_udt`): `as_string()`
+            // to drop the `r#` syn-solidity puts on a keyword name, since
+            // `to_pascal_case` would otherwise carry it into `R#move` and make
+            // `format_ident!` panic.
+            let name = keyword_safe_ident(&to_pascal_case(&custom.last().as_string()));
             match ctxt.resolve(custom)? {
                 Resolution::Local => quote! { #name },
                 Resolution::TopLevel => quote! { super::#name },
@@ -279,15 +291,15 @@ fn expand_fields<'a>(
     alloc: bool,
 ) -> syn::Result<Vec<TokenStream>> {
     try_collect_combined(fields.enumerate().map(|(idx, x)| {
-        let name = format_ident!(
-            "{}",
-            to_snake_case(
-                &x.name
-                    .clone()
-                    .map(|x| x.as_string())
-                    .unwrap_or(format!("param_{}", idx))
-            )
-        );
+        // `keyword_safe_ident`, not `format_ident!`: `as_string()` strips the
+        // `r#` syn-solidity puts on a keyword name, so a field named `ref` would
+        // be emitted bare as `pub ref: U256` and fail to parse.
+        let name = keyword_safe_ident(&to_snake_case(
+            &x.name
+                .clone()
+                .map(|x| x.as_string())
+                .unwrap_or(format!("param_{}", idx)),
+        ));
         to_rust_type(&x.ty, alloc, ctxt).map(|typ| {
             quote! {
                 pub #name: #typ
@@ -302,7 +314,7 @@ fn expand_struct(
     alloc: bool,
 ) -> syn::Result<TokenStream> {
     let fields = expand_fields(x.fields.iter(), ctxt, alloc)?;
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     Ok(quote! {
         #[derive(SolType, PartialEq, Eq,  Debug)]
         pub struct #name {
@@ -313,7 +325,7 @@ fn expand_struct(
 
 fn expand_error(x: &syn_solidity::ItemError, ctxt: &Ctxt, alloc: bool) -> syn::Result<TokenStream> {
     let fields = expand_fields(x.parameters.iter(), ctxt, alloc)?;
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     Ok(quote! {
         #[derive(SolError, PartialEq, Eq, Debug)]
         pub struct #name {
@@ -323,7 +335,7 @@ fn expand_error(x: &syn_solidity::ItemError, ctxt: &Ctxt, alloc: bool) -> syn::R
 }
 
 fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &Ctxt, alloc: bool) -> syn::Result<TokenStream> {
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     let typ = to_rust_type(&x.ty, alloc, ctxt)?;
     let sol_typ = x.ty.abi_name();
     Ok(quote! {
@@ -374,7 +386,7 @@ fn expand_udt(x: &syn_solidity::ItemUdt, ctxt: &Ctxt, alloc: bool) -> syn::Resul
     })
 }
 fn expand_enum(x: &syn_solidity::ItemEnum) -> TokenStream {
-    let name = format_ident!("{}", to_pascal_case(&x.name.to_string()));
+    let name = keyword_safe_ident(&to_pascal_case(&x.name.as_string()));
     let variants = x
         .variants
         .iter()
@@ -408,7 +420,14 @@ fn expand_items<'a>(
     })
 }
 
-pub fn expand_to_module(file: &File, alloc: bool) -> syn::Result<TokenStream> {
+/// `sol_path` is the file the interface was read from, when `abi_import!` was
+/// given a path rather than inline Solidity. It is only used to register a
+/// rebuild dependency; see `dep_tracking`.
+pub fn expand_to_module(
+    file: &File,
+    alloc: bool,
+    sol_path: Option<&std::path::Path>,
+) -> syn::Result<TokenStream> {
     // Whole-invocation failures carry no better span than the invocation
     // itself: on stable, `file.span()` degrades to the first item's span
     // (`Span::join` is unavailable), which would misattribute a whole-file
@@ -677,13 +696,29 @@ pub fn expand_to_module(file: &File, alloc: bool) -> syn::Result<TokenStream> {
     }).collect::<Vec<TokenStream>>();
 
     let user_types = expand_items(file.items.iter(), alloc, &ctxt);
+    let dep_tracking = dep_tracking(sol_path);
 
     Ok(quote! {
         use pvm_contract_sdk::*;
 
+        #dep_tracking
+
         #(#modules)*
         #(#user_types)*
     })
+}
+
+/// Register the interface file as a rebuild dependency. The macro reads it with
+/// `fs::read_to_string` and hashes selectors from it — including struct field
+/// layouts — but cargo has no idea the file was read, so editing it would leave
+/// the compiled selectors stale. `include_bytes!` makes rustc record the file in
+/// the crate's dep-info, which cargo uses to trigger a rebuild. The constant is
+/// `const _`, so the bytes never reach the object file.
+fn dep_tracking(sol_path: Option<&std::path::Path>) -> TokenStream {
+    match sol_path.and_then(|p| p.to_str()) {
+        Some(path) => quote! { const _: &[u8] = include_bytes!(#path); },
+        None => quote! {},
+    }
 }
 
 #[cfg(test)]
@@ -720,7 +755,9 @@ mod test {
             #tts
         })
         .unwrap();
-        let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
+        let tokens = expand_to_module(&file, true, None)
+            .unwrap()
+            .to_token_stream();
         prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
     }
 
@@ -2479,6 +2516,66 @@ mod test {
         .assert_eq(&file);
     }
 
+    /// A `.sol` function or parameter named after a Rust keyword must expand to
+    /// a raw identifier (`fn r#move(..., r#ref: ...)`) — `format_ident!` panics
+    /// on a bare keyword — and its selector must hash the plain Solidity name
+    /// (`move(uint256)`), not syn-solidity's raw `r#move` spelling.
+    #[test]
+    fn keyword_named_function_and_param() {
+        let file = quote! {
+            interface KwImport {
+                function move(uint256 ref) external;
+            }
+        };
+        let parsed = syn_solidity::parse2(file).unwrap();
+        let tokens = expand_to_module(&parsed, false, None)
+            .unwrap()
+            .to_token_stream();
+        let out = prettyplease::unparse(&syn::parse2(tokens).unwrap());
+
+        assert!(
+            out.contains("fn r#move"),
+            "method not raw-identified:\n{out}"
+        );
+        assert!(out.contains("r#ref"), "param not raw-identified:\n{out}");
+        // The selector is built at const-eval from a signature string, so assert
+        // on that string's literal prefix: `r#move(` would hash to a selector no
+        // solc-generated caller would ever send.
+        assert!(
+            out.contains(r#""move(""#),
+            "signature prefix not canonical:\n{out}"
+        );
+        assert!(
+            !out.contains(r##""r#move(""##),
+            "raw prefix leaked into the hashed signature:\n{out}"
+        );
+    }
+
+    /// A keyword-named `.sol` *type* must be spelled identically where it is
+    /// declared and where it is referenced. `to_pascal_case` does not strip the
+    /// `r#` syn-solidity puts on a keyword name, so taking the reference site's
+    /// name via `Display` yielded `R#move` and panicked `format_ident!`.
+    #[test]
+    fn keyword_named_struct_type_declares_and_resolves() {
+        let file = quote! {
+            interface KwType {
+                struct move { uint64 x; }
+                function f(move m) external;
+            }
+        };
+        let parsed = syn_solidity::parse2(file).unwrap();
+        let tokens = expand_to_module(&parsed, false, None)
+            .unwrap()
+            .to_token_stream();
+        let out = prettyplease::unparse(&syn::parse2(tokens).unwrap());
+
+        assert!(out.contains("struct Move"), "declaration site:\n{out}");
+        assert!(
+            !out.contains("R#move"),
+            "raw prefix leaked into a type name:\n{out}"
+        );
+    }
+
     #[test]
     fn point() {
         let file = quote! {
@@ -2505,7 +2602,9 @@ mod test {
         };
         let file = {
             let file = syn_solidity::parse2(file).unwrap();
-            let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
+            let tokens = expand_to_module(&file, true, None)
+                .unwrap()
+                .to_token_stream();
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
         expect_test::expect![[r#"
@@ -2883,7 +2982,9 @@ mod test {
         };
         let file = {
             let file = syn_solidity::parse2(file).unwrap();
-            let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
+            let tokens = expand_to_module(&file, true, None)
+                .unwrap()
+                .to_token_stream();
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
 
@@ -3184,7 +3285,9 @@ mod test {
         };
         let file = {
             let file = syn_solidity::parse2(file).unwrap();
-            let tokens = expand_to_module(&file, true).unwrap().to_token_stream();
+            let tokens = expand_to_module(&file, true, None)
+                .unwrap()
+                .to_token_stream();
             prettyplease::unparse(&syn::File::parse.parse2(tokens).unwrap())
         };
 

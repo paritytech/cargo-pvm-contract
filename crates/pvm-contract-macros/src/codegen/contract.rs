@@ -933,6 +933,10 @@ fn parse_contract(
     let mut constructor_returns_result = false;
     let mut constructor_inputs = Vec::new();
     let mut constructor_is_payable = false;
+    // Kept so the `.sol` cross-check below can attribute its errors to the
+    // constructor. The interface is only resolved once, after this loop, so the
+    // check cannot run inside the `#[constructor]` arm itself.
+    let mut constructor_fn: Option<syn::ImplItemFn> = None;
     let mut fallback_name = None;
     let mut fallback_returns_result = false;
     let mut fallback_is_payable = false;
@@ -984,6 +988,7 @@ fn parse_contract(
                     ));
                 }
                 constructor_inputs = extract_typed_params_impl(func, &func.sig.inputs)?;
+                constructor_fn = Some(func.clone());
                 collect_error_type(&func.sig.output, &mut error_types, &mut seen_error_names);
             } else if has_pvm_attr(&func.attrs, "fallback") {
                 has_fallback = true;
@@ -1097,7 +1102,31 @@ fn parse_contract(
                                 if explicit_rename.is_some() {
                                     name.as_string() == rename
                                 } else {
-                                    name.as_string() == rename || to_snake_case(name.to_string().as_str()) == rust_fn_name
+                                    // Compare with underscores dropped and case folded, rather
+                                    // than trying to *recover* one spelling from the other.
+                                    // Recovery cannot be made total: the scaffolder snake_cases
+                                    // with `convert_case`, which is acronym-aware (`tokenURI` ->
+                                    // `token_uri`), while `to_snake_case` here breaks before every
+                                    // uppercase (`token_u_r_i`) and `to_camel_case` cannot restore
+                                    // the original capitalisation (`tokenUri`) — so `tokenURI`,
+                                    // i.e. any ERC-721 interface, matched nothing. Normalising
+                                    // both sides also subsumes the digit-boundary case (`fixed3`
+                                    // vs `fixed_3`), so one rule replaces three accreted clauses.
+                                    //
+                                    // This is a matching predicate only — the Solidity name used
+                                    // for the selector and the ABI still comes from `sol_func`, so
+                                    // a looser match cannot change what is emitted, only which
+                                    // interface function is found.
+                                    fn fold(s: &str) -> String {
+                                        s.strip_prefix("r#")
+                                            .unwrap_or(s)
+                                            .chars()
+                                            .filter(|c| *c != '_')
+                                            .flat_map(char::to_lowercase)
+                                            .collect()
+                                    }
+                                    name.as_string() == rename
+                                        || fold(&name.as_string()) == fold(&rust_fn_name)
                                 }
                             }) => Some(item_function),
                            _ => None
@@ -1151,14 +1180,39 @@ fn parse_contract(
                             ));
                         }
                     }
-                    if let Some(rust_ret) = rust_success_type(&func.sig.output)
-                        && let Some(canonical) = sol_return_canonical(sol_func, &sol_custom_types)
-                    {
-                        sig_asserts.push(sol_name_assert(
+                    // Compare the return *presence* as well as its type: an
+                    // assertion can only be emitted when both sides have a type,
+                    // so a method that returns nothing where the `.sol` declares
+                    // a return (or the reverse) would otherwise slip through and
+                    // ship an ABI that disagrees with what dispatch encodes.
+                    match (
+                        rust_success_type(&func.sig.output),
+                        sol_return_canonical(sol_func, &sol_custom_types),
+                    ) {
+                        (Some(rust_ret), Some(canonical)) => sig_asserts.push(sol_name_assert(
                             &rust_ret,
                             &canonical,
                             &format!("`{sol_fn_label}` return"),
-                        ));
+                        )),
+                        (None, Some(canonical)) => {
+                            return Err(syn::Error::new_spanned(
+                                func,
+                                format!(
+                                    "`{sol_fn_label}` returns nothing, but the `.sol` interface \
+                                     declares it returns `{canonical}`"
+                                ),
+                            ));
+                        }
+                        (Some(_), None) => {
+                            return Err(syn::Error::new_spanned(
+                                &func.sig.output,
+                                format!(
+                                    "`{sol_fn_label}` returns a value, but the `.sol` interface \
+                                     declares no return type"
+                                ),
+                            ));
+                        }
+                        (None, None) => (),
                     }
                     implemented_sol_methods.push(sol_func.name.clone());
                     let sol_mutability = match sol_func.attributes.mutability() {
@@ -1175,7 +1229,15 @@ fn parse_contract(
                             inferred_mutability,
                         ));
                     }
-                    (sol_func.name().to_string(), inferred_mutability)
+                    // `as_string()`, not `Display`: this name is hashed into the
+                    // selector (via `MethodInfo::sol_name` ->
+                    // `build_method_signature_expr`) and emitted into the
+                    // abi-gen JSON. syn-solidity stores a Rust-keyword name as a
+                    // raw identifier and `Display` keeps the `r#`, which would
+                    // hash `r#move(uint256)` — silently uncallable, and
+                    // disagreeing with the `.abi.json` the builder derives from
+                    // this same `.sol`.
+                    (sol_func.name().as_string(), inferred_mutability)
                 } else {
                     let sol_name = extract_method_rename(&func.attrs)?
                         .unwrap_or_else(|| to_camel_case(&func.sig.ident.to_string()));
@@ -1217,6 +1279,91 @@ fn parse_contract(
             }
         }
     {
+        // Hold the constructor to the same two layers as a `#[method]`. The
+        // method lookup cannot reach it: a constructor is an `Item::Function`
+        // with `FunctionKind::Constructor` and `name: None`, so the by-name
+        // `find_map` never matches one. Without this, constructor parameters
+        // get neither `check_signature_compatibility` nor a signature
+        // assertion, while the builder still emits a constructor entry into
+        // `.abi.json` from this same `.sol` — so a drifted Rust constructor
+        // ships an ABI telling deployers to encode something the contract does
+        // not decode. There is no selector involved, so the failure is silent
+        // mis-initialization rather than a dead entry point.
+        //
+        // Only cross-checked when the interface actually declares a
+        // constructor. solc rejects `constructor` inside an `interface`, so
+        // most `.sol` files have none and their Rust constructor is
+        // unconstrained, exactly as before.
+        let sol_ctor = sol_iface.body.iter().find_map(|f| match f {
+            syn_solidity::Item::Function(item_function)
+                if matches!(
+                    item_function.kind,
+                    syn_solidity::FunctionKind::Constructor(_)
+                ) =>
+            {
+                Some(item_function)
+            }
+            _ => None,
+        });
+
+        // The mirror of the method-side "Missing implementations" check. A
+        // parameterised `.sol` constructor with no `#[constructor]` to decode it
+        // still reaches the shipped `.abi.json` — the builder emits that entry
+        // from this same `.sol` — so deployers ABI-encode arguments the default
+        // `deploy()` never reads and storage silently stays zero. A
+        // zero-parameter `.sol` constructor is consistent with the default
+        // `deploy()`, so it needs no implementation.
+        if constructor_fn.is_none()
+            && let Some(sol_ctor) = sol_ctor
+            && !sol_ctor.parameters.is_empty()
+        {
+            return Err(syn::Error::new_spanned(
+                input,
+                "the `.sol` interface declares a constructor with parameters, but this \
+                 contract has no `#[constructor]`; the generated ABI would tell deployers \
+                 to encode arguments that `deploy()` never decodes",
+            ));
+        }
+
+        if let Some(ctor_fn) = &constructor_fn
+            && let Some(sol_ctor) = sol_ctor
+        {
+            let param_types: Vec<syn::Type> = constructor_inputs
+                .iter()
+                .map(|(_, ty)| ty.clone())
+                .collect();
+            let sig = sol_ctor
+                .parameters
+                .types()
+                .map(|x| x.clone().try_into())
+                .collect::<Result<Vec<SolType>, String>>()
+                .map_err(|x| {
+                    syn::Error::new_spanned(
+                        ctor_fn,
+                        format!(
+                            "Failed to map syn_solidity abstraction `{x}` to supported type in interface"
+                        ),
+                    )
+                })?;
+            check_signature_compatibility(ctor_fn, "constructor", &sig, &param_types)?;
+            let sol_param_tys: Vec<_> = sol_ctor.parameters.types().collect();
+            for (i, rust_ty) in param_types.iter().enumerate() {
+                let sol_custom = sig.get(i).is_some_and(|s| s.has_custom_types());
+                let rust_custom =
+                    SolType::from_rust_type(rust_ty).is_some_and(|r| r.has_custom_types());
+                if (sol_custom || rust_custom)
+                    && let Some(sol_ty) = sol_param_tys.get(i)
+                {
+                    let canonical = sol_custom_types.canonical_name(sol_ty);
+                    sig_asserts.push(sol_name_assert(
+                        rust_ty,
+                        &canonical,
+                        &format!("`constructor` parameter {i}"),
+                    ));
+                }
+            }
+        }
+
         let missing: Vec<_> = sol_iface
             .body
             .iter()
@@ -2945,6 +3092,95 @@ mod tests {
             .expect_err("allocator_size should require an allocator");
 
         assert!(error.to_string().contains("`allocator_size` requires"));
+    }
+
+    /// A `.sol` function named after a Rust keyword must hash its selector over
+    /// the plain Solidity name. syn-solidity stores such a name as a raw
+    /// identifier and `SolIdent`'s `Display` keeps the `r#`, so taking the name
+    /// via `to_string()` would hash `r#move(uint256)` — a selector no solc,
+    /// cast, or viem caller would ever send, making the method silently
+    /// uncallable while the project builds green. The `.abi.json` the builder
+    /// emits from the same `.sol` says `move`, so the two shipped artifacts
+    /// would disagree.
+    #[test]
+    fn sol_keyword_method_hashes_unraw_signature() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn r#move(&mut self, r#ref: U256) -> U256 { r#ref }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let args = ContractArgs {
+            sol_path: Some("tests/ui/fixtures/KwSelector.sol".to_string()),
+            ..ContractArgs::default()
+        };
+        let output = expand_contract(args, item).unwrap().to_string();
+
+        assert!(
+            output.contains("\"move(\""),
+            "selector signature not canonical:\n{output}"
+        );
+        assert!(
+            !output.contains("\"r#move(\""),
+            "raw prefix leaked into the hashed signature:\n{output}"
+        );
+    }
+
+    /// Acronym-containing interface names must be found from the natural Rust
+    /// name, with no `#[selector(name = ...)]` needed. `tokenURI` is ERC-721, and
+    /// before the lookup folded case/underscores it matched nothing: the
+    /// scaffolder snake_cases with `convert_case` (`token_uri`) while the macro's
+    /// own `to_snake_case` breaks before every uppercase (`token_u_r_i`) and
+    /// `to_camel_case` cannot restore the capitalisation (`tokenUri`). Hand-written
+    /// contracts hit this too, which is why the fix belongs here and not in the
+    /// scaffolder's generated output. `fixed3` covers the digit boundary the same
+    /// rule subsumes.
+    #[test]
+    fn sol_lookup_matches_acronym_and_digit_boundary_names() {
+        let item: syn::ItemMod = syn::parse_str(
+            r#"
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::constructor]
+                    pub fn new(&mut self) {}
+
+                    #[pvm_contract_macros::method]
+                    pub fn token_uri(&self, token_id: U256) -> u64 { let _ = token_id; 0 }
+
+                    #[pvm_contract_macros::method]
+                    pub fn get_url(&self) -> u64 { 0 }
+
+                    #[pvm_contract_macros::method]
+                    pub fn fixed_3(&self, a: u64) -> u64 { a }
+                }
+            }
+        "#,
+        )
+        .unwrap();
+
+        let args = ContractArgs {
+            sol_path: Some("tests/ui/fixtures/AcroLookup.sol".to_string()),
+            ..ContractArgs::default()
+        };
+        let output = expand_contract(args, item)
+            .expect("acronym and digit-boundary names must resolve against the interface")
+            .to_string();
+
+        // Selectors must hash the interface's own spelling, not the Rust name.
+        for sig in ["\"tokenURI(\"", "\"getURL(\"", "\"fixed3(\""] {
+            assert!(output.contains(sig), "missing {sig} in:\n{output}");
+        }
     }
 
     #[test]

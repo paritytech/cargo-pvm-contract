@@ -44,11 +44,6 @@ impl CustomTypes {
                         self.check_declared(&field.ty)?;
                     }
                 }
-                Item::Error(e) => {
-                    for param in e.parameters.iter() {
-                        self.check_declared(&param.ty)?;
-                    }
-                }
                 Item::Function(f) => {
                     for ty in f.parameters.types() {
                         self.check_declared(ty)?;
@@ -59,6 +54,24 @@ impl CustomTypes {
                         }
                     }
                 }
+                // Errors and events generate code on the `abi_import!` path
+                // (`expand_error` / `expand_event`), which never goes through the
+                // builder — so the builder's own walker cannot cover them here.
+                // An unchecked `uint256[N]` would resolve to the *dynamic*
+                // `uint256[]`, making the derived error selector
+                // `Slots(uint256[])` where the reverting contract sends
+                // `Slots(uint256[3])`, and the decode silently fails.
+                Item::Error(e) => {
+                    for ty in e.parameters.types() {
+                        self.check_declared(ty)?;
+                    }
+                }
+                Item::Event(e) => {
+                    for param in e.parameters.iter() {
+                        self.check_declared(&param.ty)?;
+                    }
+                }
+                Item::Udt(u) => self.check_declared(&u.ty)?,
                 Item::Contract(c) => self.check_resolvable(&c.body)?,
                 _ => (),
             }
@@ -70,6 +83,13 @@ impl CustomTypes {
     /// from `defs`.
     fn check_declared(&self, ty: &Type) -> Result<(), String> {
         match ty {
+            // A size expression that is not a number literal (`uint256[N]` with
+            // `N` a constant) makes `size()` return `None`, and `resolve` would
+            // canonicalize it as the *dynamic* `uint256[]` — a silently wrong
+            // selector. Constants are not evaluated, so reject instead.
+            Type::Array(arr) if arr.size.is_some() && arr.size_lit().is_none() => {
+                Err(pvm_contract_types::SOL_NON_LITERAL_ARRAY_SIZE.to_string())
+            }
             Type::Array(arr) => self.check_declared(&arr.ty),
             Type::Tuple(tuple) => tuple.types.iter().try_for_each(|t| self.check_declared(t)),
             Type::Custom(path) => {
@@ -304,6 +324,16 @@ mod tests {
     }
 
     #[test]
+    fn enum_declared_inside_an_interface_is_visible() {
+        // `visit_items` recurses into an interface body and declares `Item::Enum`
+        // from the same arm list as `Item::Struct`, so the nested enum resolves
+        // by bare name and by qualified path just as a nested struct does.
+        let t = types("interface IVote { enum Choice { Yes, No } }");
+        assert_eq!(name_of(&t, "Choice"), "uint8");
+        assert_eq!(name_of(&t, "IVote.Choice"), "uint8");
+    }
+
+    #[test]
     fn enum_is_uint8_and_udt_is_its_underlying_type() {
         let t = types(
             "enum Status { Open, Closed }
@@ -372,6 +402,44 @@ mod tests {
             .err()
             .expect("two `Id` aliases must be rejected");
         assert!(err.contains("both named `Id`"), "{err}");
+    }
+
+    #[test]
+    fn non_literal_array_size_rejected() {
+        // `uint256[N]` with `N` a named constant: `size()` is `None`, so the
+        // type would canonicalize as the dynamic `uint256[]` and hash a
+        // selector that differs from solc's folded `uint256[3]`.
+        let src = "interface I { function f(uint256[N] xs) external; }";
+        let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+        let err = CustomTypes::from_file(&file)
+            .err()
+            .expect("non-literal array size must be rejected");
+        assert!(err.contains("number literal"), "{err}");
+    }
+
+    #[test]
+    fn non_literal_array_size_rejected_in_error_and_event_params() {
+        // `abi_import!` generates code from `error` and `event` items without
+        // ever going through the builder, so the builder's own walker cannot
+        // cover them. An unchecked `uint256[N]` resolves to the dynamic
+        // `uint256[]`, making the derived error selector `Slots(uint256[])`
+        // where the reverting contract sends `Slots(uint256[3])`.
+        for src in [
+            "interface I { error Slots(uint256[N] xs); }",
+            "interface I { event Ev(uint256[N] xs); }",
+        ] {
+            let file = syn_solidity::parse2(src.parse().unwrap()).unwrap();
+            let err = CustomTypes::from_file(&file)
+                .err()
+                .unwrap_or_else(|| panic!("must be rejected: {src}"));
+            assert!(err.contains("number literal"), "{err}");
+        }
+    }
+
+    #[test]
+    fn literal_array_size_accepted() {
+        let t = types("interface I { function f(uint256[3] xs) external; }");
+        assert_eq!(name_of(&t, "uint256[3]"), "uint256[3]");
     }
 
     #[test]

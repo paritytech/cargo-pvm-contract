@@ -43,6 +43,9 @@ struct GeneratedStruct {
 
 struct GeneratedField {
     name: String,
+    /// The field's Solidity name, kept only so a snake_case collision can name
+    /// both offending members in the error.
+    sol_name: String,
     rust_type: String,
 }
 
@@ -288,6 +291,10 @@ fn init_from_example_files_inner(
     // build-time parsers give.
     if let Ok(source) = std::str::from_utf8(sol_contents) {
         cargo_pvm_contract_builder::reject_sol_imports(source)?;
+        // Same reasoning for `uint256[N]` with a named constant: solc folds it
+        // for the ABI this scaffold consumes, but the generated project's own
+        // `.sol` re-parse cannot, and would hash a dynamic-array selector.
+        cargo_pvm_contract_builder::reject_non_literal_array_sizes(source)?;
     }
 
     log::debug!("Extracting metadata from {sol_file_name}");
@@ -553,6 +560,10 @@ fn extract_function_info(
 ) -> Result<(Vec<MacroFunctionInfo>, Vec<GeneratedStruct>)> {
     let mut registry = StructRegistry::default();
     let mut functions = Vec::new();
+    // Rust fn name -> the Solidity function that claimed it. snake_casing is
+    // lossy (`myMethod` and `my_method` collapse), which would emit two
+    // methods with one name.
+    let mut seen_fns: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
     for item in &metadata.output.abi {
         let AbiItem::Function {
@@ -565,14 +576,48 @@ fn extract_function_info(
             continue;
         };
 
-        let name_snake = name.to_case(Case::Snake);
+        reject_dollar_ident(name, "function")?;
+        let snake = name.to_case(Case::Snake);
+        reject_non_ident(&snake, name, "function")?;
+        let name_snake = sanitize_rust_ident(&snake);
+        if RESERVED_METHOD_NAMES.contains(&name_snake.as_str()) {
+            anyhow::bail!(
+                "the Solidity function `{name}` maps to the Rust method name `{name_snake}`, \
+                 which `impl Contract` already defines (the template's constructor, or an \
+                 accessor the `#[contract]` macro injects). Rename it in the interface, or \
+                 edit the generated file manually."
+            );
+        }
+        if let Some(other) = seen_fns.insert(name_snake.clone(), name.clone()) {
+            anyhow::bail!(
+                "functions `{other}` and `{name}` both map to the Rust method name \
+                 `{name_snake}`; rename one in the interface, or edit the generated \
+                 file manually"
+            );
+        }
         let mut param_strs = Vec::with_capacity(inputs.len());
+        let mut seen_params: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         for (i, p) in inputs.iter().enumerate() {
             let param_name = if p.name.is_empty() {
                 format!("arg{i}")
             } else {
-                p.name.to_case(Case::Snake)
+                // A Solidity parameter may be named after a Rust keyword
+                // (`ref`, `gen`, `move`), which would otherwise emit a
+                // signature that doesn't parse.
+                reject_dollar_ident(&p.name, "parameter")?;
+                let snake = p.name.to_case(Case::Snake);
+                reject_non_ident(&snake, &p.name, "parameter")?;
+                sanitize_rust_ident(&snake)
             };
+            if let Some(other) = seen_params.insert(param_name.clone(), p.name.clone()) {
+                anyhow::bail!(
+                    "parameters `{other}` and `{}` of `{name}` both map to the Rust \
+                     name `{param_name}`; rename one in the interface, or edit the \
+                     generated file manually",
+                    p.name,
+                );
+            }
             let rust_type = abi_param_rust_type(
                 &p.type_name,
                 p.internal_type.as_deref(),
@@ -731,6 +776,113 @@ fn is_valid_ident(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// Identifiers the generated module already binds, which a generated struct
+/// must not reuse. `Contract` is the contract struct in the template; the rest
+/// come from `use pvm_contract_sdk::prelude::*` and the alloc-mode imports
+/// (`Bytes`, `String`, `Vec`).
+///
+/// A collision here is not merely a name clash: an explicit item silently
+/// *shadows* a glob import, so a `.sol` declaring `struct Address` would make
+/// every `address` parameter decode as that struct — the project compiles and
+/// the method reverts (or mis-decodes) on-chain. Reject at scaffold time
+/// instead, per this module's "never emit code we know is wrong" rule.
+///
+/// Reserved regardless of allocator mode, even though `Bytes`/`String`/`Vec`
+/// are only imported when one is enabled: the same interface should scaffold
+/// the same way either way, and a name accepted in no-alloc mode would break
+/// the moment the project adds `allocator = "bump"`.
+const RESERVED_STRUCT_NAMES: [&str; 19] = [
+    // Declared by the template.
+    "Contract",
+    // From the Rust prelude, not the SDK's: the template's constructor returns
+    // `Result<(), EmptyError>`, so a generated `pub struct Result` shadows
+    // `core::result::Result` in the same module and the constructor fails with
+    // `E0107` (0 generic arguments expected, 2 supplied). `Ok`/`Err` need no
+    // entry — a braced struct does not shadow the value namespace.
+    "Result",
+    // `pvm_contract_sdk::prelude::*`.
+    "Address",
+    "DecodeError",
+    "EmptyError",
+    "Host",
+    "HostApi",
+    "I256",
+    "PolkaVmHost",
+    "ReturnFlags",
+    "SolDecode",
+    "SolEncode",
+    "SolError",
+    "StaticEncodedLen",
+    "StorageFlags",
+    "U256",
+    // Alloc-mode imports.
+    "Bytes",
+    "String",
+    "Vec",
+];
+
+/// Method names `impl Contract` already defines, which a scaffolded method
+/// must not reuse. `new` is the template's `#[constructor]`; `host`, `env`, and
+/// `with_host` are injected by the `#[contract]` macro (the storage accessor,
+/// the environment accessor, and the host-target test constructor).
+///
+/// Keep this in sync with the `impl #struct_name` blocks in
+/// `pvm-contract-macros/src/codegen/contract.rs` — those are the source of
+/// truth, and unlike [`RESERVED_STRUCT_NAMES`] (which
+/// `reserved_struct_names_cover_sdk_prelude` pins to the SDK prelude) there is
+/// no single declaration site to test against.
+///
+/// The type-namespace analogue is [`RESERVED_STRUCT_NAMES`]. This one fails
+/// loudly rather than silently — two inherent methods of one name is `E0592`,
+/// not a shadow — but the diagnostic points into the macro expansion (`host`
+/// additionally trips `E0034`, because the generated dispatch calls
+/// `this.host()` and the call becomes ambiguous), so the interface that caused
+/// it is not obvious from the build output. Reject at scaffold time instead.
+///
+/// Deliberately *not* listed: `route`, `deploy`, and `call` are free functions
+/// in the generated module, not inherent methods, so a `.sol` function of the
+/// same name does not collide.
+const RESERVED_METHOD_NAMES: [&str; 4] = ["new", "host", "env", "with_host"];
+
+/// Reject a Solidity identifier containing `$`. Legal in Solidity, but there
+/// is no Rust spelling for it, and the generated project's own `.sol` re-parse
+/// (syn-solidity) cannot read it either — so rather than emit code that fails
+/// later with a parser error, refuse with the actionable message here.
+fn reject_dollar_ident(name: &str, what: &str) -> Result<()> {
+    if name.contains('$') {
+        anyhow::bail!(
+            "{what} `{name}`: Solidity identifiers containing `$` are not supported; \
+             rename it in the interface"
+        );
+    }
+    Ok(())
+}
+
+/// Reject a Solidity name whose snake_cased form is not a valid Rust
+/// identifier.
+///
+/// `to_case(Case::Snake)` drops leading underscores, so a perfectly legal
+/// Solidity name can come out of it unusable: `_` and `__` both become the
+/// empty string, and `_9` becomes `9`. solc accepts all three and emits them in
+/// the ABI. The templates interpolate the result directly, so without this the
+/// scaffolder emits `pub fn (`, `pub fn 9(`, `pub 9: u64,` or `fn 9_handler` —
+/// a syntax error the user only discovers when they build.
+///
+/// `emitted` is the identifier that actually reaches the template, which is not
+/// always the snake form itself: the DSL wraps a function name as
+/// `{name}_handler`, so an empty name is fine there but a digit-leading one is
+/// not. Check the spelling that gets written, not the intermediate.
+fn reject_non_ident(emitted: &str, sol_name: &str, what: &str) -> Result<()> {
+    if !is_valid_ident(emitted) {
+        anyhow::bail!(
+            "{what} `{sol_name}` maps to `{emitted}`, which is not a valid Rust \
+             identifier (snake_casing drops leading underscores); rename it in the \
+             interface, or edit the generated file manually"
+        );
+    }
+    Ok(())
+}
+
 /// Make a Solidity identifier safe to emit as a Rust identifier. A Solidity
 /// `struct`/field name can be a Rust keyword (e.g. a field named `ref`), which
 /// would otherwise produce non-compiling code. Raw-identify where allowed;
@@ -774,10 +926,20 @@ fn register_struct(
     if reg.by_path.contains_key(path) {
         return Ok(());
     }
+    if RESERVED_STRUCT_NAMES.contains(&rust_name) {
+        anyhow::bail!(
+            "the Solidity struct `{path}` maps to the Rust type `{rust_name}`, which the \
+             generated contract module binds — or would bind once an allocator is enabled \
+             (the contract struct, a `pvm_contract_sdk` prelude import, or an alloc-mode \
+             import). A struct by that name would shadow it and silently change how other \
+             parameters decode. Rename it in the interface, or edit the generated file \
+             manually."
+        );
+    }
     if let Some(other) = reg.name_owner.get(rust_name) {
         anyhow::bail!(
             "two Solidity structs (`{other}` and `{path}`) both map to the Rust type \
-             `{rust_name}`; rename one in the interface to avoid the collision"
+             `{rust_name}`; rename one in the interface, or edit the generated file manually"
         );
     }
     // Mark as seen before recursing so a self-referential struct terminates.
@@ -790,7 +952,10 @@ fn register_struct(
         let field_name = if c.name.is_empty() {
             format!("field{i}")
         } else {
-            sanitize_rust_ident(&c.name.to_case(Case::Snake))
+            reject_dollar_ident(&c.name, "struct field")?;
+            let snake = c.name.to_case(Case::Snake);
+            reject_non_ident(&snake, &c.name, "struct field")?;
+            sanitize_rust_ident(&snake)
         };
         let rust_type = abi_param_rust_type(
             &c.type_name,
@@ -799,8 +964,25 @@ fn register_struct(
             reg,
         )
         .with_context(|| format!("in field `{field_name}` of struct `{rust_name}`"))?;
+        // Snake-casing is lossy: `myField` and `my_field` are distinct Solidity
+        // members that collapse to the same Rust ident, which would emit a
+        // struct with a duplicate field (`E0124`) only discovered when the user
+        // builds. Reject here instead.
+        if let Some(prev) = fields
+            .iter()
+            .find(|f: &&GeneratedField| f.name == field_name)
+        {
+            anyhow::bail!(
+                "fields `{}` and `{}` of Solidity struct `{rust_name}` both map to the Rust \
+                 field name `{field_name}`; rename one in the interface, or edit the \
+                 generated file manually",
+                prev.sol_name,
+                c.name,
+            );
+        }
         fields.push(GeneratedField {
             name: field_name,
+            sol_name: c.name.clone(),
             rust_type,
         });
     }
@@ -835,6 +1017,10 @@ fn receiver_from_mutability(sm: &str) -> Result<(String, String)> {
 }
 
 fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunctionInfo>> {
+    // Mirrors the macro path's `seen_fns`. snake_casing is lossy, and the DSL
+    // name is emitted twice — as `{name}_handler` and as the stem of
+    // `{NAME}_SELECTOR` — so a collision defines both items twice (`E0428`).
+    let mut seen_fns: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     metadata
         .output
         .abi
@@ -849,7 +1035,26 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             _ => None,
         })
         .map(|(name, inputs, outputs)| -> Result<DslFunctionInfo> {
+            reject_dollar_ident(name, "function")?;
+            // Unlike the macro path, the DSL name is only ever emitted as
+            // `{name}_handler` and as the stem of a `SCREAMING_SELECTOR` const,
+            // neither of which can collide with a Rust keyword. Raw-identifying
+            // it would instead leak the `r#` into both — `R#MOVE_SELECTOR` does
+            // not parse. Parameter names below still need sanitizing, because
+            // those are emitted bare.
             let name_snake = name.to_case(Case::Snake);
+            // The DSL never emits the bare name — it emits `{name}_handler` and
+            // `{NAME}_SELECTOR` — so an empty snake form is harmless here
+            // (`_handler`) while a digit-leading one is not (`9_handler`).
+            // Check the spelling that is actually written.
+            reject_non_ident(&format!("{name_snake}_handler"), name, "function")?;
+            if let Some(other) = seen_fns.insert(name_snake.clone(), name.clone()) {
+                anyhow::bail!(
+                    "functions `{other}` and `{name}` both map to the Rust handler name \
+                     `{name_snake}_handler`; rename one in the interface, or edit the \
+                     generated file manually"
+                );
+            }
             let screaming = name_snake.to_case(Case::ScreamingSnake);
             let selector_const = format!("{screaming}_SELECTOR");
 
@@ -864,6 +1069,13 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
             // so the loop carries state and must stay imperative — keep this
             // out of `.fold(...)`.
             let mut offset_expr = String::new();
+            // A DSL parameter is emitted as a `let` binding, so two that
+            // collapse to one Rust name *shadow* rather than clash: the project
+            // builds clean and the first parameter is silently unreachable.
+            // That is the same silent-mis-decode hazard `RESERVED_STRUCT_NAMES`
+            // exists to close, so reject it here too.
+            let mut seen_params: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
             let params: Vec<DslParam> = inputs
                 .iter()
                 .enumerate()
@@ -871,8 +1083,19 @@ fn extract_dsl_function_info(metadata: &ContractMetadata) -> Result<Vec<DslFunct
                     let param_name = if p.name.is_empty() {
                         format!("arg{i}")
                     } else {
-                        p.name.to_case(Case::Snake)
+                        reject_dollar_ident(&p.name, "parameter")?;
+                        let snake = p.name.to_case(Case::Snake);
+                        reject_non_ident(&snake, &p.name, "parameter")?;
+                        sanitize_rust_ident(&snake)
                     };
+                    if let Some(other) = seen_params.insert(param_name.clone(), p.name.clone()) {
+                        anyhow::bail!(
+                            "parameters `{other}` and `{}` of `{name}` both map to the Rust \
+                             name `{param_name}`; rename one in the interface, or edit the \
+                             generated file manually",
+                            p.name,
+                        );
+                    }
                     let rust_type = solidity_to_rust_type(&p.type_name)?;
                     // Angle-bracket the type so compound shapes like
                     // `[U256; 3]` / `Vec<U256>` parse as qualified paths;
@@ -1386,6 +1609,385 @@ mod tests {
         // Non-keywords pass through untouched.
         assert_eq!(sanitize_rust_ident("from"), "from");
         assert_eq!(sanitize_rust_ident("amount"), "amount");
+    }
+
+    #[test]
+    fn reserved_struct_name_rejected() {
+        // `Address` comes in through the template's `prelude::*` glob, and a
+        // local item silently shadows a glob import — so a generated `Address`
+        // would make every `address` parameter decode as this struct while the
+        // project still compiles. Reject at scaffold time.
+        for reserved in ["Address", "U256", "Contract", "Vec", "Result"] {
+            let comps = vec![input("x", "uint64")];
+            let mut reg = StructRegistry::default();
+            let err = abi_param_rust_type(
+                "tuple",
+                Some(&format!("struct IFoo.{reserved}")),
+                Some(&comps),
+                &mut reg,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(reserved), "expected `{reserved}` in: {err}");
+            assert!(err.contains("shadow"), "expected shadowing note in: {err}");
+        }
+    }
+
+    /// `RESERVED_STRUCT_NAMES` is a hand-copy of the SDK prelude, and this
+    /// crate cannot depend on the SDK to assert against it directly. Read the
+    /// prelude out of the sibling crate's source instead: a name added there
+    /// but not here would silently reopen the shadowing hole the deny-list
+    /// exists to close, and nothing else in the workspace would notice.
+    ///
+    /// Only a subset check — the deny-list deliberately carries extras the
+    /// prelude does not (`Contract` from the template, and the alloc-mode
+    /// `Bytes`/`String`/`Vec` imports).
+    #[test]
+    fn reserved_struct_names_cover_sdk_prelude() {
+        let sdk =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../pvm-contract-sdk/src/lib.rs");
+        let source =
+            std::fs::read_to_string(&sdk).unwrap_or_else(|e| panic!("read {}: {e}", sdk.display()));
+
+        let prelude = source
+            .split_once("pub mod prelude {")
+            .expect("SDK no longer declares `pub mod prelude`")
+            .1;
+
+        // Every `pub use crate::{ .. }` block, not just the first: a second one
+        // (a `#[cfg(feature = "alloc")]` re-export is the obvious candidate)
+        // would otherwise go unchecked, silently reopening the shadowing hole
+        // this test exists to close.
+        let blocks: Vec<&str> = prelude
+            .match_indices("pub use crate::{")
+            .map(|(i, pat)| {
+                prelude[i + pat.len()..]
+                    .split_once("};")
+                    .expect("unterminated `pub use crate::{ .. }` in prelude")
+                    .0
+            })
+            .collect();
+        assert!(
+            !blocks.is_empty(),
+            "prelude no longer re-exports through `pub use crate::{{ .. }}`; \
+             the parser needs updating"
+        );
+
+        let exported: Vec<&str> = blocks
+            .iter()
+            .flat_map(|uses| uses.lines())
+            .map(|line| line.split("//").next().unwrap_or("").trim())
+            .flat_map(|line| line.split(','))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect();
+        assert!(
+            !exported.is_empty(),
+            "parsed no names out of the SDK prelude; the parser needs updating"
+        );
+
+        let missing: Vec<&str> = exported
+            .into_iter()
+            .filter(|name| !RESERVED_STRUCT_NAMES.contains(name))
+            .collect();
+        assert_eq!(
+            missing,
+            Vec::<&str>::new(),
+            "`pvm_contract_sdk::prelude` exports these names but \
+             `RESERVED_STRUCT_NAMES` does not reserve them, so a `.sol` struct \
+             by that name would shadow the import and silently mis-decode"
+        );
+    }
+
+    #[test]
+    fn non_reserved_struct_name_accepted() {
+        // Guard against the deny-list being over-broad: a name that merely
+        // resembles a prelude item must still scaffold.
+        let comps = vec![input("x", "uint64")];
+        let mut reg = StructRegistry::default();
+        let ty = abi_param_rust_type(
+            "tuple",
+            Some("struct IFoo.AddressBook"),
+            Some(&comps),
+            &mut reg,
+        )
+        .unwrap();
+        assert_eq!(ty, "AddressBook");
+    }
+
+    #[test]
+    fn fields_colliding_after_snake_case_rejected() {
+        // `myField` and `my_field` are distinct Solidity members that both
+        // snake_case to `my_field`, which would emit a struct with a duplicate
+        // field (E0124) only discovered when the user builds.
+        let comps = vec![input("myField", "uint64"), input("my_field", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", Some("struct IFoo.S"), Some(&comps), &mut reg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("my_field"), "{err}");
+        assert!(err.contains("myField"), "{err}");
+    }
+
+    #[test]
+    fn keyword_param_and_function_names_sanitized() {
+        // A Solidity parameter or function named after a Rust keyword must be
+        // raw-identified, or the generated signature does not parse. The macro
+        // strips the `r#` when deriving the Solidity name, so the `.sol` lookup
+        // still matches.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![AbiItem::Function {
+                    name: "move".to_string(),
+                    inputs: vec![input("ref", "uint256"), input("gen", "uint256")],
+                    outputs: vec![],
+                    state_mutability: "nonpayable".to_string(),
+                }],
+            },
+        };
+        let (functions, _) = extract_function_info(&metadata).unwrap();
+        assert_eq!(functions[0].name_snake, "r#move");
+        assert_eq!(functions[0].params, "r#ref: U256, r#gen: U256");
+    }
+
+    fn function_item(name: &str, inputs: Vec<AbiInput>) -> AbiItem {
+        AbiItem::Function {
+            name: name.to_string(),
+            inputs,
+            outputs: vec![],
+            state_mutability: "nonpayable".to_string(),
+        }
+    }
+
+    #[test]
+    fn functions_colliding_after_snake_case_rejected() {
+        // `myMethod` and `my_method` are distinct Solidity functions (distinct
+        // selectors) that collapse to one Rust method name, which would emit
+        // two `pub fn my_method`.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("myMethod", vec![]),
+                    function_item("my_method", vec![]),
+                ],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(
+            err.contains("myMethod") && err.contains("my_method"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn reserved_method_name_rejected() {
+        // `impl Contract` already defines `new` (the template's constructor),
+        // `host`, and `with_host` (injected by `#[contract]`). A `.sol` function
+        // mapping onto one of them emits a second inherent method of the same
+        // name — `E0592`, reported against the macro expansion rather than the
+        // interface that caused it.
+        for sol_name in ["New", "host", "env", "withHost"] {
+            let metadata = ContractMetadata {
+                output: MetadataOutput {
+                    abi: vec![function_item(sol_name, vec![])],
+                },
+            };
+            let err = extract_function_info(&metadata)
+                .err()
+                .unwrap_or_else(|| panic!("`{sol_name}` must be rejected"))
+                .to_string();
+            assert!(err.contains(sol_name), "expected `{sol_name}` in: {err}");
+            assert!(
+                err.contains("already defines"),
+                "expected a reserved-method note in: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_reserved_method_name_accepted() {
+        // Guard against the deny-list being over-broad: a name that merely
+        // resembles a reserved one must still scaffold.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("newOwner", vec![]),
+                    function_item("hostName", vec![]),
+                ],
+            },
+        };
+        let (functions, _) = extract_function_info(&metadata).unwrap();
+        assert_eq!(
+            functions.iter().map(|f| &f.name_snake).collect::<Vec<_>>(),
+            ["new_owner", "host_name"]
+        );
+    }
+
+    #[test]
+    fn names_that_snake_case_to_a_non_identifier_rejected() {
+        // `to_case(Snake)` drops leading underscores, so these legal Solidity
+        // names come out unusable: `_` -> "" and `_9` -> "9". solc accepts both
+        // and emits them in the ABI, and the templates interpolate the result
+        // straight into `pub fn {}(`.
+        for sol_name in ["_", "__", "_9"] {
+            let metadata = ContractMetadata {
+                output: MetadataOutput {
+                    abi: vec![function_item(sol_name, vec![])],
+                },
+            };
+            let err = extract_function_info(&metadata)
+                .err()
+                .unwrap_or_else(|| panic!("function `{sol_name}` must be rejected"))
+                .to_string();
+            assert!(
+                err.contains("not a valid Rust identifier"),
+                "expected an identifier rejection for `{sol_name}`, got: {err}"
+            );
+        }
+
+        // Same for a parameter and for a struct field.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("f", vec![input("_9", "uint256")])],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("parameter `_9` must be rejected")
+            .to_string();
+        assert!(err.contains("not a valid Rust identifier"), "{err}");
+
+        let comps = vec![input("_9", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", Some("struct IFoo.S"), Some(&comps), &mut reg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not a valid Rust identifier"), "{err}");
+    }
+
+    #[test]
+    fn dsl_names_that_snake_case_to_a_non_identifier_rejected() {
+        // The DSL emits `{name}_handler` and `{NAME}_SELECTOR`, so `_` is fine
+        // here (`_handler` is a valid identifier) but `_9` is not (`9_handler`).
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("_9", vec![])],
+            },
+        };
+        let err = extract_dsl_function_info(&metadata)
+            .err()
+            .expect("function `_9` must be rejected")
+            .to_string();
+        assert!(err.contains("not a valid Rust identifier"), "{err}");
+
+        // `_` stays accepted: it emits `_handler` / `_SELECTOR`, both valid, and
+        // the selector still hashes the plain Solidity name.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("_", vec![])],
+            },
+        };
+        let functions = extract_dsl_function_info(&metadata).expect("`_` scaffolds under the DSL");
+        assert_eq!(functions[0].solidity_signature, "_()");
+    }
+
+    #[test]
+    fn dsl_functions_colliding_after_snake_case_rejected() {
+        // The DSL mirror of `functions_colliding_after_snake_case_rejected`:
+        // the name is emitted as both `{name}_handler` and `{NAME}_SELECTOR`,
+        // so a collision defines each twice.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![
+                    function_item("myMethod", vec![]),
+                    function_item("my_method", vec![]),
+                ],
+            },
+        };
+        let err = extract_dsl_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(
+            err.contains("myMethod") && err.contains("my_method"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn dsl_params_colliding_after_snake_case_rejected() {
+        // Unlike the macro path's duplicate *fn argument* (a hard error), a DSL
+        // parameter is emitted as a `let` binding, so a collision shadows: the
+        // project builds clean with the first parameter unreachable. Silent, so
+        // it must be rejected at scaffold time.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item(
+                    "f",
+                    vec![input("myArg", "uint256"), input("my_arg", "uint256")],
+                )],
+            },
+        };
+        let err = extract_dsl_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("myArg") && err.contains("my_arg"), "{err}");
+    }
+
+    #[test]
+    fn params_colliding_after_snake_case_rejected() {
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item(
+                    "f",
+                    vec![input("myArg", "uint256"), input("my_arg", "uint256")],
+                )],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("myArg") && err.contains("my_arg"), "{err}");
+    }
+
+    #[test]
+    fn dollar_identifiers_rejected() {
+        // `$` is legal in Solidity but has no Rust spelling, and the generated
+        // project's own `.sol` re-parse (syn-solidity) cannot read it either.
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("foo$bar", vec![])],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("foo$bar") && err.contains('$'), "{err}");
+
+        let metadata = ContractMetadata {
+            output: MetadataOutput {
+                abi: vec![function_item("f", vec![input("a$b", "uint256")])],
+            },
+        };
+        let err = extract_function_info(&metadata)
+            .err()
+            .expect("expected an error")
+            .to_string();
+        assert!(err.contains("a$b"), "{err}");
+
+        // Struct field, via the tuple mapper.
+        let comps = vec![input("x$y", "uint64")];
+        let mut reg = StructRegistry::default();
+        let err = abi_param_rust_type("tuple", Some("struct IFoo.S"), Some(&comps), &mut reg)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("x$y"), "{err}");
     }
 
     #[test]

@@ -436,6 +436,68 @@ pub fn reject_sol_imports(source: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject a fixed-size array whose length is not a number literal (`uint256[N]`
+/// with `N` a named constant). Constants are not evaluated by any build-time
+/// parser, so the type would canonicalize as the *dynamic* `uint256[]` — a
+/// different selector and ABI than solc's folded `uint256[3]`. Mirrors
+/// [`reject_sol_imports`]: unparseable sources pass, real errors surface later.
+pub fn reject_non_literal_array_sizes(source: &str) -> Result<()> {
+    if let Ok(file) = syn::parse_str::<syn_solidity::File>(source) {
+        check_array_sizes_in_items(&file.items)?;
+    }
+    Ok(())
+}
+
+fn check_array_sizes_in_items(items: &[syn_solidity::Item]) -> Result<()> {
+    use syn_solidity::Item;
+    for item in items {
+        match item {
+            Item::Contract(c) => check_array_sizes_in_items(&c.body)?,
+            Item::Function(f) => {
+                for p in f.parameters.iter() {
+                    check_array_size(&p.ty)?;
+                }
+                if let Some(returns) = &f.returns {
+                    for r in returns.returns.iter() {
+                        check_array_size(&r.ty)?;
+                    }
+                }
+            }
+            Item::Struct(s) => {
+                for field in s.fields.iter() {
+                    check_array_size(&field.ty)?;
+                }
+            }
+            Item::Error(e) => {
+                for p in e.parameters.iter() {
+                    check_array_size(&p.ty)?;
+                }
+            }
+            Item::Event(e) => {
+                for p in e.parameters.iter() {
+                    check_array_size(&p.ty)?;
+                }
+            }
+            Item::Udt(u) => check_array_size(&u.ty)?,
+            _ => (),
+        }
+    }
+    Ok(())
+}
+
+fn check_array_size(ty: &syn_solidity::Type) -> Result<()> {
+    match ty {
+        syn_solidity::Type::Array(arr) => {
+            if arr.size.is_some() && arr.size_lit().is_none() {
+                anyhow::bail!(pvm_contract_types::SOL_NON_LITERAL_ARRAY_SIZE);
+            }
+            check_array_size(&arr.ty)
+        }
+        syn_solidity::Type::Tuple(tuple) => tuple.types.iter().try_for_each(check_array_size),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> {
     let content = std::fs::read_to_string(sol_path)
         .with_context(|| format!("Failed to read sol file: {}", sol_path.display()))?;
@@ -461,6 +523,7 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     if contains_import(&file) {
         anyhow::bail!(SOL_IMPORT_UNSUPPORTED);
     }
+    check_array_sizes_in_items(&file.items)?;
 
     // Flatten items, descending into contract/interface/library bodies.
     let mut flat: Vec<&syn_solidity::Item> = Vec::new();
@@ -667,7 +730,8 @@ fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &CustomMap) -> Op
             }
             .to_string();
             Some(AbiItem::Function {
-                name: func.name().to_string(),
+                // `unraw`: a keyword-named function stringifies as `r#move`.
+                name: unraw(func.name()),
                 inputs,
                 outputs,
                 state_mutability: Some(state_mutability),
@@ -700,7 +764,7 @@ fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &CustomMap) -> Op
 
 fn error_to_abi(err: &syn_solidity::ItemError, structs: &CustomMap) -> AbiItem {
     AbiItem::Error {
-        name: err.name.to_string(),
+        name: unraw(&err.name),
         inputs: err
             .parameters
             .iter()
@@ -725,7 +789,7 @@ fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> AbiItem {
         })
         .collect();
     AbiItem::Event {
-        name: evt.name.to_string(),
+        name: unraw(&evt.name),
         inputs,
         anonymous: evt.is_anonymous(),
     }
@@ -749,6 +813,89 @@ interface I { function f() external; }"#;
         let plain = r#"pragma solidity ^0.8.0;
 interface I { function f() external; }"#;
         reject_sol_imports(plain).expect("plain interface has no import");
+    }
+
+    #[test]
+    fn reject_non_literal_array_sizes_flags_constant_and_allows_literal() {
+        // `uint256[N]` with `N` a named constant would canonicalize as the
+        // dynamic `uint256[]` — a different selector and ABI than solc's
+        // folded `uint256[3]`.
+        let with_constant = r#"pragma solidity ^0.8.0;
+uint256 constant N = 3;
+interface I { function f(uint256[N] xs) external; }"#;
+        let err = reject_non_literal_array_sizes(with_constant)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("number literal"), "{err}");
+
+        let with_literal = r#"pragma solidity ^0.8.0;
+interface I { function f(uint256[3] xs) external; }"#;
+        reject_non_literal_array_sizes(with_literal).expect("literal size is fine");
+
+        // Also reachable through event/error params, which the macro-side
+        // check does not walk.
+        let in_event = r#"pragma solidity ^0.8.0;
+uint256 constant N = 3;
+interface I { event E(uint256[N] xs); }"#;
+        assert!(reject_non_literal_array_sizes(in_event).is_err());
+    }
+
+    #[test]
+    fn generate_abi_from_sol_keyword_item_names_are_not_raw() {
+        // A function/error/event named after a Rust keyword parses as a raw
+        // identifier; the ABI must carry the plain Solidity name — `r#move`
+        // would also poison any selector a consumer derives from it.
+        let (_d, path) = write_sol(
+            "KwItems.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface KwItems {
+    event move(uint256 amount);
+    error ref(uint256 code);
+    function move(uint256 ref) external;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        // The generator also injects the framework error items; only the three
+        // declared names matter here, and none may carry `r#`.
+        let names: Vec<&str> = abi
+            .0
+            .iter()
+            .filter_map(|i| match i {
+                AbiItem::Function { name, .. } => Some(name.as_str()),
+                AbiItem::Error { name, .. } | AbiItem::Event { name, .. }
+                    if !name.contains("Selector") =>
+                {
+                    Some(name.as_str())
+                }
+                _ => None,
+            })
+            .filter(|n| ["move", "ref", "r#move", "r#ref"].contains(n))
+            .collect();
+        assert_eq!(
+            names.len(),
+            3,
+            "expected the three declared items: {names:?}"
+        );
+        assert!(
+            names.iter().all(|n| !n.starts_with("r#")),
+            "raw prefix leaked into the ABI: {names:?}"
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_rejects_non_literal_array_size() {
+        let (_d, path) = write_sol(
+            "ConstArr.sol",
+            r#"pragma solidity ^0.8.0;
+uint256 constant N = 3;
+interface ConstArr { function f(uint256[N] xs) external; }
+"#,
+        );
+        let err = generate_abi_from_sol(&path).unwrap_err().to_string();
+        assert!(err.contains("number literal"), "{err}");
     }
 
     #[test]

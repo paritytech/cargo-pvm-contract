@@ -1,0 +1,5 @@
+error: `b` returns a value, but the `.sol` interface declares no return type
+  --> tests/ui/sol_return_unexpected.rs:13:25
+   |
+13 |         pub fn b(&self) -> u64 {
+   |                         ^^^^^^

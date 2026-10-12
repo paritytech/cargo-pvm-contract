@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-pub use abi::{AbiJson, reject_sol_imports};
+pub use abi::{AbiJson, reject_non_literal_array_sizes, reject_sol_imports};
 
 /// Internal environment variable to prevent recursive builds.
 const INTERNAL_BUILD_ENV: &str = "CARGO_PVM_CONTRACT_INTERNAL";
