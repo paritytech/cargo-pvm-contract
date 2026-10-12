@@ -244,8 +244,11 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // Per-field layout-emit code: leaves push directly, embedded `#[storage]`
-    // sub-structs recurse via `StorageLayoutEmit::emit_entries`.
+    // Per-field layout-emit code, run inside `emit_members` to build this
+    // struct's `members` list: every field pushes one entry via
+    // `StorageLayoutEmit::emit_entries`; a nested `#[storage]` sub-struct
+    // registers itself in the `types` registry and pushes a single
+    // struct-typed entry (no flattening).
     let layout_emits: Vec<TokenStream> = field_names
         .iter()
         .zip(field_types.iter())
@@ -263,7 +266,7 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // Reuse the offset chain inside the layout helper. Each `emit_entries`
+    // Reuse the offset chain inside the layout helper. Each `emit_members`
     // call rebuilds it locally so the consts stay in fn scope and the helper
     // doesn't have to track an external chain.
     let offset_consts_for_layout = offset_consts.clone();
@@ -391,21 +394,30 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
                 base: u64,
                 offset: u8,
                 name_prefix: &str,
+                contract_name: &str,
                 entries: &mut ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry>,
+                registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
             ) {
-                let _ = offset;
-                #(#offset_consts_for_layout)*
-                #(#layout_emits)*
+                // Delegate struct registration + key assignment to the
+                // StorageTypeName::emit_members impl below (single source of
+                // truth, shared with the `#[derive(SolStorage)]` path).
+                let key = <Self as ::pvm_contract_sdk::StorageTypeName>::emit_members(
+                    registry,
+                    contract_name,
+                );
+
+                // One entry for the whole sub-struct — no flattening.
+                entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                    label: ::std::string::String::from(name_prefix),
+                    slot: base.to_string(),
+                    offset,
+                    ty: key,
+                });
             }
         }
 
-        // Name resolver for the layout-emit code path: when this struct is
-        // used as the value type of a `Mapping<K, Self>`, the parent layout
-        // emit asks `<Self as StorageTypeName>::name()` for the `"type"`
-        // string of the `"mapping(K => …)"` entry. `pvm-contract-types` has no
-        // blanket `StorageTypeName` impl — each type provides its own — so
-        // `#[storage]` sub-structs need this explicit impl returning the
-        // Rust ident.
+        // Name resolver for the layout-emit code path — also now the single
+        // place that registers this struct's shape into the `types` registry.
         #[cfg(feature = "abi-gen")]
         impl #impl_generics ::pvm_contract_sdk::StorageTypeName
             for #struct_name #ty_generics
@@ -413,6 +425,36 @@ pub fn expand_storage_struct(input: ItemStruct) -> syn::Result<TokenStream> {
         {
             fn name() -> ::std::string::String {
                 ::std::string::String::from(#struct_name_str)
+            }
+
+            fn emit_members(
+                registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
+                contract_name: &str,
+            ) -> ::std::string::String {
+                let qualified = ::std::format!("struct {}.{}", contract_name, #struct_name_str);
+                let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                    ::std::vec::Vec::new();
+                {
+                    // `entries`, `name_prefix` and `base` are the bindings the
+                    // generated `layout_emits` / `offset_consts_for_layout`
+                    // code expects in scope (see `generate_layout_emit`).
+                    // Member slots are relative to the struct (`base = 0`)
+                    // and labels are bare field names (`name_prefix = ""`),
+                    // matching solc's `types[..].members` shape.
+                    // `contract_name` is deliberately not shadowed — members
+                    // still belong to the same top-level contract.
+                    let entries = &mut member_entries;
+                    let name_prefix = "";
+                    let base: u64 = 0;
+                    #(#offset_consts_for_layout)*
+                    #(#layout_emits)*
+                }
+                registry.register_struct(
+                    #struct_name_str,
+                    qualified,
+                    member_entries,
+                    (<Self as ::pvm_contract_sdk::StorageType>::SLOTS * 32).to_string(),
+                )
             }
         }
     })
@@ -515,6 +557,59 @@ fn field_access_tokens(
         }
         Fields::Unit => quote! { compile_error!("storage struct cannot be a unit struct") },
     }
+}
+
+fn build_emit_members_body(name: &syn::Ident, member_emit_pushes: &[TokenStream]) -> TokenStream {
+    quote! {
+        fn emit_members(
+            registry: &mut ::pvm_contract_sdk::LayoutTypesRegistry,
+            contract_name: &str,
+        ) -> ::std::string::String {
+            let qualified = ::std::format!("struct {}.{}", contract_name, stringify!(#name));
+            let mut member_entries: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
+                ::std::vec::Vec::new();
+            #(#member_emit_pushes)*
+            registry.register_struct(
+                stringify!(#name),
+                qualified,
+                member_entries,
+                (Self::__STORAGE_LAYOUT.1 as u64 * 32).to_string(),
+            )
+        }
+    }
+}
+
+/// Build the per-field `member_entries.push(...)` token blocks shared by both
+/// the dynamic and static branches of `generate_sol_storage_impls`. Each
+/// field's slot/offset comes from `Self::__STORAGE_LAYOUT`, and its `type` is
+/// resolved via `StorageTypeName::emit_members` so struct-valued fields (once
+/// supported) would qualify correctly the same way primitives do today.
+fn build_member_emit_pushes(
+    field_info: &[(Option<syn::Ident>, SolType)],
+    field_types: &[&Type],
+) -> Vec<TokenStream> {
+    field_info
+        .iter()
+        .zip(field_types.iter())
+        .enumerate()
+        .map(|(i, ((field_name, _), field_ty))| {
+            let label = match field_name {
+                Some(ident) => ident.to_string(),
+                None => i.to_string(),
+            };
+            quote! {
+                {
+                    let (__s, __o) = Self::__STORAGE_LAYOUT.0[#i];
+                    member_entries.push(::pvm_contract_sdk::StorageLayoutEntry {
+                        label: ::std::string::String::from(#label),
+                        slot: __s.to_string(),
+                        offset: 32u8 - __o as u8 - <#field_ty as ::pvm_contract_sdk::StorageEncode>::PACKED_BYTES as u8,
+                        ty: <#field_ty as ::pvm_contract_sdk::StorageTypeName>::emit_members(registry, contract_name),
+                    });
+                }
+            }
+        })
+        .collect()
 }
 
 /// Emit the `StorageEncode` + `StorageDecode` impls for a SolStorage-derived
@@ -895,6 +990,9 @@ fn generate_sol_storage_impls(
             Fields::Unit => quote! { Self },
         };
 
+        let member_emit_pushes = build_member_emit_pushes(field_info, &field_types);
+
+        let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
         Ok(quote! {
             // Eager type-check-time slot-count guard. Module-scope so it
             // fires under `cargo check` (visible to trybuild) instead of
@@ -1002,9 +1100,15 @@ fn generate_sol_storage_impls(
                 fn name() -> ::std::string::String {
                     ::std::string::String::from(stringify!(#name))
                 }
+
+                #emit_members_body
             }
         })
     } else {
+        let member_emit_pushes = build_member_emit_pushes(field_info, &field_types);
+
+        let emit_members_body = build_emit_members_body(name, &member_emit_pushes);
+
         // Static struct: universal trait methods delegate to shared helpers;
         // encode_slot + from_slots live on Static* refinement.
         Ok(quote! {
@@ -1093,6 +1197,8 @@ fn generate_sol_storage_impls(
                 fn name() -> ::std::string::String {
                     ::std::string::String::from(stringify!(#name))
                 }
+
+                #emit_members_body
             }
         })
     }

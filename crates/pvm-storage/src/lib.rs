@@ -781,17 +781,19 @@ where
 // StorageLayoutEmit: per-struct hook for emitting layout JSON leaves.
 // ---------------------------------------------------------------------------
 
-/// Push flattened storage-layout entries for a composable storage component.
+/// Push a storage-layout entry for a composable storage component.
 ///
 /// The `#[contract]` macro generates the top-level `__storage_layout_json()`
 /// function by dispatching **every** storage field through this trait — there
-/// is no separate inlined-leaf path. `Lazy<T>` and `Mapping<K, V>` push a
-/// single entry; embedded `#[storage]` sub-structs recursively flatten their
-/// own fields, prefixing each entry's label with the field path
-/// (`erc20.total_supply`, `metadata.name`, …) to match solc's storage-layout
-/// convention. Adding a new storage component (e.g. a `StorageVec<T>`) is
-/// therefore a pure trait-impl task: implement this (and `StorageTypeName`)
-/// and the macro renders it with no codegen changes.
+/// is no separate inlined-leaf path. Every field pushes exactly one entry
+/// into `out`; struct-typed fields (embedded `#[storage]` sub-structs, or a
+/// `Lazy`/`Mapping`/`StorageVec` value whose type derives `SolStorage`)
+/// additionally register their own member breakdown into the `types`
+/// registry via `StorageTypeName::emit_members`, matching solc's
+/// storage-layout convention — no flattening into `out`. Adding a new
+/// storage component (e.g. a new container type) is therefore a pure
+/// trait-impl task: implement this (and `StorageTypeName`) and the macro
+/// renders it with no codegen changes.
 ///
 /// `#[storage]` auto-emits this impl. Hand-rolled storage components need to
 /// implement it explicitly to participate in abi-gen layout output.
@@ -802,17 +804,31 @@ pub trait StorageLayoutEmit {
     /// string at top level). `offset` is non-zero only for packed sub-word
     /// leaf fields sharing a slot with neighbours; multi-slot composites and
     /// `#[storage]` sub-structs always start a fresh slot and ignore it.
+    ///
+    /// Struct-typed leaves (a `#[storage]` sub-struct, or a `Lazy`/`Mapping`
+    /// value whose type derives `SolStorage`) push exactly one entry into
+    /// `out`, whose `type` field is a synthetic key (e.g.
+    /// `t_struct(Inner)0_storage`) into a `types` table entry describing the
+    /// struct's members — that entry's own `label` holds the solc-style
+    /// qualified name (e.g. `"struct Outer.Inner"`) — instead of flattening
+    /// into `out`.
     fn emit_entries(
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
     );
 }
 
 /// Join `prefix` and `name` with a `.` separator, or return `name` alone when
-/// `prefix` is empty. Used by macro-generated layout helpers to build dotted
-/// field paths like `erc20.balances`.
+/// `prefix` is empty. Used by macro-generated layout helpers to build each
+/// entry's `label`. Since sub-structs are described in the `types` table
+/// rather than flattened, the prefix is `""` on every current call site
+/// (top-level contract fields and struct members alike); the join is kept so
+/// a hand-rolled `StorageLayoutEmit` that does flatten can still produce
+/// dotted paths like `erc20.balances`.
 #[cfg(feature = "abi-gen")]
 pub fn join_label(prefix: &str, name: &str) -> String {
     if prefix.is_empty() {
@@ -1229,16 +1245,27 @@ impl<T: StorageEncode + StorageDecode> StorageType for Lazy<T> {
 
 /// `Lazy<T>` is a storage handle around `T`; in layout JSON it's named by `T`.
 ///
-/// The macro names every field through `<#ty as StorageTypeName>::name()`, so
-/// this explicit impl is what gives `Lazy<T>` its name — and it keeps working
-/// when a contract author aliases the type (`type Counter = Lazy<U256>;`), where
+/// The macro names every field through `<#ty as StorageTypeName>`, so this
+/// explicit impl is what gives `Lazy<T>` its name — and it keeps working when
+/// a contract author aliases the type (`type Counter = Lazy<U256>;`), where
 /// the field's syntactic ident is "Counter", not "Lazy". There is no blanket
 /// `StorageTypeName` impl (`Lazy` doesn't implement `SolEncode`), so without
 /// this impl that path would fail.
+///
+/// `emit_members` forwards to `T` as well, so a `Lazy<S>` holding a
+/// `#[derive(SolStorage)]` struct registers `S` in the `types` table and
+/// reports its `t_struct(S)N_storage` key, exactly as a bare `S` field would.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName for Lazy<T> {
     fn name() -> alloc::string::String {
         <T as pvm_contract_types::StorageTypeName>::name()
+    }
+
+    fn emit_members(
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        <T as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name)
     }
 }
 
@@ -1251,13 +1278,16 @@ impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for Lazy<T> {
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
+        let type_name = T::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: <T as pvm_contract_types::StorageTypeName>::name(),
+            ty: type_name,
         });
     }
 }
@@ -1423,11 +1453,45 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
             <V as pvm_contract_types::StorageTypeName>::name(),
         )
     }
+
+    /// Recursively resolves `V`'s qualified display string — if `V` is a
+    /// struct, this returns its registered `"struct Contract.Name"` label
+    /// (not the raw registry key); if `V` is itself a `Mapping<K2, V2>`,
+    /// this recurses through `V`'s own `emit_members` override, so
+    /// `Mapping<K1, Mapping<K2, Struct>>` correctly qualifies at every
+    /// nesting level, matching solc.
+    fn emit_members(
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        let v_key =
+            <V as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
+        let v_display = registry
+            .types
+            .get(&v_key)
+            .map(|entry| entry.label.clone())
+            .unwrap_or(v_key);
+        alloc::format!(
+            "mapping({} => {})",
+            <K as pvm_contract_types::StorageTypeName>::name(),
+            v_display,
+        )
+    }
 }
 
 /// `Mapping<K, V>` as a layout-emit leaf — a single `mapping(K => V)` entry.
 /// A mapping always claims a fresh slot (`PACKED_BYTES == 32`), so `offset`
 /// is always `0` here; it is threaded through for signature uniformity.
+///
+/// Registers V's struct shape into `types` via `V::emit_members`, then
+/// resolves the returned key back to its registered label to build this
+/// mapping's own qualified type string
+/// (`"mapping(K => struct Contract.Name)"`). Confirmed against real solc
+/// output: solc qualifies the value type inside a mapping's label even
+/// though the value itself is a struct, not just at the value's own
+/// top-level entry. `emit_members` recurses correctly when `V` is itself a
+/// `Mapping`/`StorageVec`, so nested struct-valued containers qualify at
+/// every level.
 #[cfg(feature = "abi-gen")]
 impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeName>
     StorageLayoutEmit for Mapping<K, V>
@@ -1436,13 +1500,18 @@ impl<K: pvm_contract_types::StorageTypeName, V: pvm_contract_types::StorageTypeN
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
+        let ty =
+            <Self as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
+
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+            ty,
         });
     }
 }
@@ -2176,6 +2245,26 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
     fn name() -> alloc::string::String {
         alloc::format!("{}[]", <T as pvm_contract_types::StorageTypeName>::name())
     }
+
+    /// Recursively resolves `T`'s qualified display string, the same way
+    /// `Mapping<K, V>::emit_members` does — if `T` is a struct, returns its
+    /// registered `"struct Contract.Name"` label instead of the bare name;
+    /// if `T` is itself `StorageVec<T2>` or `Mapping<K2, T2>`, recurses
+    /// through `T`'s own override, so `StorageVec<StorageVec<Struct>>` and
+    /// `Mapping<K, StorageVec<Struct>>` qualify correctly at every level.
+    fn emit_members(
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        let t_key =
+            <T as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
+        let t_display = registry
+            .types
+            .get(&t_key)
+            .map(|entry| entry.label.clone())
+            .unwrap_or(t_key);
+        alloc::format!("{}[]", t_display)
+    }
 }
 
 /// `StorageVec<T>` as a layout-emit leaf — a single `T[]` entry. The length
@@ -2183,19 +2272,32 @@ impl<T: pvm_contract_types::StorageTypeName> pvm_contract_types::StorageTypeName
 /// always `0`; it is threaded through for signature uniformity. The generic
 /// `T` covers the nested `StorageVec<StorageVec<U256>>` shape too, since the
 /// inner `StorageVec<U256>` itself implements `StorageTypeName` above.
+///
+/// Registers T's struct shape into `types` via `T::emit_members`, then
+/// resolves the returned key back to its registered label to build this
+/// array's own qualified type string (`"struct Contract.Name[]"`).
+/// Confirmed against real solc output: `Point[]` labels as
+/// `"struct Contract.Point[]"`, not the bare name. `emit_members` recurses
+/// correctly when `T` is itself a `StorageVec`/`Mapping`, so
+/// `StorageVec<StorageVec<Struct>>` and `Mapping<K, StorageVec<Struct>>`
+/// qualify at every nesting level.
 #[cfg(feature = "abi-gen")]
 impl<T: pvm_contract_types::StorageTypeName> StorageLayoutEmit for StorageVec<T> {
     fn emit_entries(
         base: u64,
         offset: u8,
         name_prefix: &str,
+        contract_name: &str,
         out: &mut Vec<pvm_contract_types::StorageLayoutEntry>,
+        registry: &mut pvm_contract_types::LayoutTypesRegistry,
     ) {
+        let ty =
+            <Self as pvm_contract_types::StorageTypeName>::emit_members(registry, contract_name);
         out.push(pvm_contract_types::StorageLayoutEntry {
             label: String::from(name_prefix),
             slot: alloc::format!("{}", base),
             offset,
-            ty: <Self as pvm_contract_types::StorageTypeName>::name(),
+            ty,
         });
     }
 }

@@ -48,6 +48,10 @@ name = "storage-layout-composed"
 path = "src/storage_layout_composed.rs"
 
 [[bin]]
+name = "storage-layout-packed-substruct"
+path = "src/storage_layout_packed_substruct.rs"
+
+[[bin]]
 name = "storage-layout-vec"
 path = "src/storage_layout_vec.rs"
 

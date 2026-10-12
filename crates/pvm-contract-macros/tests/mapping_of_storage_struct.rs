@@ -15,7 +15,7 @@
 //!     `keccak256(pad32(k)+slot).add(N)` derivation solc would emit.
 
 use pvm_contract_sdk::{
-    Address, HostApi, Lazy, Mapping, StorageComponent, StorageFlags, StorageKey,
+    Address, HostApi, Lazy, Mapping, StorageComponent, StorageFlags, StorageKey, StorageVec,
 };
 use pvm_contract_types::{Host, MockHostBuilder};
 use ruint::aliases::U256;
@@ -278,7 +278,7 @@ fn mapping_of_storage_struct_layout_json_names_value_struct() {
     assert_eq!(e["slot"], "0");
     assert_eq!(e["offset"], 0);
     assert_eq!(
-        e["type"], "mapping(address => VaultData)",
+        e["type"], "mapping(address => struct Registry.VaultData)",
         "storage-typed mapping value resolved via StorageTypeName: {layout}",
     );
 }
@@ -573,14 +573,158 @@ fn sol_storage_value_struct_uses_struct_name_in_layout_json() {
     // ident; without it the type would render as the ABI tuple
     // `"(uint64,uint64)"`.
     assert_eq!(
-        origin["type"], "PackedPoint",
+        origin["type"], "t_struct(PackedPoint)0_storage",
         "Lazy<PackedPoint> should report struct ident, not ABI tuple notation. Got layout: {layout}",
     );
 
     // `Mapping<u64, PackedPoint>` — value-type name embedded in mapping
     // notation, again as the struct ident.
     assert_eq!(
-        by_id["type"], "mapping(uint64 => PackedPoint)",
+        by_id["type"], "mapping(uint64 => struct PointRegistry.PackedPoint)",
         "Mapping<_, PackedPoint> should embed struct ident, not ABI tuple. Got layout: {layout}",
+    );
+
+    // Check the type table entry for the struct itself. The `SolStorage` derive
+    // emits a `StorageTypeName` impl returning the ident; without it the type
+    // would render as the ABI tuple `"(uint64,uint64)"`.
+    let types = &parsed["types"];
+    let entry = &types["t_struct(PackedPoint)0_storage"];
+    assert_eq!(entry["label"], "struct PointRegistry.PackedPoint");
+}
+
+#[cfg(feature = "abi-gen")]
+#[allow(dead_code)]
+#[pvm_contract_macros::contract(no_main)]
+mod nested_mapping_layout_contract {
+    use super::*;
+
+    pub struct NestedRegistry {
+        pub by_owner_and_id: Mapping<Address, Mapping<u64, VaultData>>,
+    }
+
+    impl NestedRegistry {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn nested_mapping_of_storage_struct_layout_json_qualifies_struct_name() {
+    let layout = nested_mapping_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let e = &parsed["storage"].as_array().unwrap()[0];
+
+    assert_eq!(e["label"], "by_owner_and_id");
+    assert_eq!(
+        e["type"], "mapping(address => mapping(uint64 => struct NestedRegistry.VaultData))",
+        "nested mapping-of-struct should fully qualify the struct name at every \
+         level, matching solc. Got layout: {layout}",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nested StorageVec<StorageVec<Struct>> and Mapping<K, StorageVec<Struct>>
+// layout-JSON qualification — same recursive `emit_members` mechanism as
+// the nested Mapping<K1, Mapping<K2, Struct>> case above, exercised through
+// StorageVec instead.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "abi-gen")]
+#[allow(dead_code)]
+#[pvm_contract_macros::contract(no_main)]
+mod nested_vec_layout_contract {
+    use super::*;
+
+    pub struct NestedVecRegistry {
+        pub matrix: StorageVec<StorageVec<PackedPoint>>,
+        pub by_owner: Mapping<Address, StorageVec<PackedPoint>>,
+    }
+
+    impl NestedVecRegistry {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn nested_storage_vec_of_storage_vec_of_struct_layout_json_qualifies_struct_name() {
+    let layout = nested_vec_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    let matrix = entries
+        .iter()
+        .find(|e| e["label"] == "matrix")
+        .expect("matrix entry");
+    assert_eq!(
+        matrix["type"], "struct NestedVecRegistry.PackedPoint[][]",
+        "StorageVec<StorageVec<Struct>> should fully qualify the struct name \
+         at every nesting level, matching solc. Got layout: {layout}",
+    );
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn mapping_of_storage_vec_of_struct_layout_json_qualifies_struct_name() {
+    let layout = nested_vec_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    let by_owner = entries
+        .iter()
+        .find(|e| e["label"] == "by_owner")
+        .expect("by_owner entry");
+    assert_eq!(
+        by_owner["type"], "mapping(address => struct NestedVecRegistry.PackedPoint[])",
+        "Mapping<K, StorageVec<Struct>> should fully qualify the struct name \
+         inside the array, matching solc. Got layout: {layout}",
+    );
+}
+
+#[cfg(feature = "abi-gen")]
+#[allow(dead_code)]
+#[pvm_contract_macros::contract(no_main)]
+mod fixed_array_layout_contract {
+    use super::*;
+
+    pub struct FixedArrayRegistry {
+        pub points: Lazy<[PackedPoint; 3]>,
+        pub sel: Lazy<[u8; 4]>,
+    }
+
+    impl FixedArrayRegistry {
+        #[pvm_contract_macros::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn fixed_array_of_struct_layout_json_qualifies_struct_name() {
+    let layout = fixed_array_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    let points = entries.iter().find(|e| e["label"] == "points").unwrap();
+    assert_eq!(
+        points["type"], "struct FixedArrayRegistry.PackedPoint[3]",
+        "Lazy<[Struct; N]> should qualify the struct name, matching solc \
+        (`Point[3]` → `struct Contract.Point[3]`). Got layout: {layout}",
+    );
+}
+
+#[cfg(feature = "abi-gen")]
+#[test]
+fn fixed_array_of_bytes_layout_json_unaffected() {
+    let layout = fixed_array_layout_contract::__storage_layout_json();
+    let parsed: serde_json::Value = serde_json::from_str(&layout).unwrap();
+    let entries = parsed["storage"].as_array().unwrap();
+
+    let sel = entries.iter().find(|e| e["label"] == "sel").unwrap();
+    assert_eq!(
+        sel["type"], "bytes4",
+        "[u8; N] stays bytesN, never qualified — matches solc's bytes4 handling",
     );
 }

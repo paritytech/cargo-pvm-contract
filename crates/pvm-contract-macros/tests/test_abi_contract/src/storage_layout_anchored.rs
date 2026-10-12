@@ -4,9 +4,10 @@ use pvm_contract_sdk::{Address, Lazy};
 
 /// The `#[slot(0)]`-anchored twin of `storage_layout_auto.rs`: the same two
 /// sub-word fields, wrapped in a `#[storage]` sub-struct pinned at slot 0.
-/// Apart from the dotted `state.` label prefix, its layout must be identical
-/// to the auto-numbered form — asserted by
-/// `auto_and_anchored_layouts_agree` in `abi_output.rs`.
+/// It renders solc-style as a single `state` entry typed
+/// `t_struct(CounterState)0_storage`; that type's `members` in the `types`
+/// table must be identical to the auto-numbered form's top-level entries —
+/// asserted by `auto_and_anchored_layouts_agree` in `abi_output.rs`.
 #[pvm_contract_sdk::storage]
 pub struct CounterState {
     pub count: Lazy<u32>,

@@ -9,10 +9,24 @@
 //! This file closes that gap. For each fixture it:
 //!   1. takes a `#[contract]` module and the *equivalent* Solidity source,
 //!   2. runs `solc --standard-json` with `storageLayout` output selection,
-//!   3. resolves solc's `type` ids through its `types` table to the human label,
-//!   4. normalizes both sides to `{label, slot, offset, type}` (the subset we
-//!      emit — we don't emit solc's `astId` / `encoding` / `numberOfBytes`),
-//!   5. asserts the two normalized layouts are identical.
+//!   3. normalizes both sides into the same [`NormLayout`]: the `storage`
+//!      entries as `{label, slot, offset, type}` and every struct entry of the
+//!      `types` table as `{label, encoding, numberOfBytes, members}`. Each
+//!      `type` id is resolved through the `types` table to its human label, so
+//!      the key format (solc's astId-derived `t_struct(Point)6_storage` vs our
+//!      counter-derived `t_struct(Point)0_storage`) never affects the
+//!      comparison. solc's `astId` / `contract` fields have no equivalent on
+//!      our side and are dropped,
+//!   4. asserts the two normalized layouts are identical.
+//!
+//! Because `ours()` and `solc()` both return a [`NormLayout`], every fixture
+//! compares the `types` table by construction — a new fixture can't silently
+//! skip the struct members / `encoding` / `numberOfBytes` check.
+//!
+//! Only *struct* entries of `types` are compared. We don't route primitives
+//! (`t_uint256`, …) or container types (`t_mapping(..)`, `t_array(..)`)
+//! through the table — their `type` string is the human label directly — so
+//! the solc entries without a `members` array are filtered out.
 //!
 //! Gated behind the `solc-tests` feature (which implies `abi-gen`, since we
 //! call the macro-emitted `__storage_layout_json()` accessor) because it needs
@@ -21,24 +35,6 @@
 //! ```text
 //! cargo test -p pvm-contract-macros --features solc-tests
 //! ```
-//!
-//! ## Known divergences (captured as `#[ignore]`d tests)
-//!
-//! Two shapes do NOT match solc today and are encoded as ignored, currently
-//! failing tests at the bottom of this file (`soltype_struct_value_*`,
-//! `substruct_*`) with TODOs to flip them on once fixed:
-//!
-//! - A `#[derive(SolType)]` struct used as a storage value: slots/offsets line
-//!   up, but our `type` is the inline tuple name (`(uint64,uint64)`) rather than
-//!   a solc `struct ...` type.
-//! - A `#[storage]` sub-struct: we flatten its leaves into dotted top-level
-//!   entries (`erc20.total_supply`), whereas solc emits a single struct-typed
-//!   entry and describes members in its `types` table.
-//!
-//! Both stem from our `StorageLayoutEntry` format having no `types` table, so it
-//! can't represent a Solidity `struct` the way solc does. Until that's
-//! addressed, composed layouts also remain covered on the golden-snapshot path
-//! in `storage_composition.rs` / `abi_output.rs`.
 #![cfg(feature = "solc-tests")]
 
 extern crate alloc;
@@ -261,30 +257,22 @@ contract Arrays {
 "#;
 
 // ---------------------------------------------------------------------------
-// Known divergences — currently FAILING, gated with `#[ignore]`.
-//
-// These two cases produce a layout that does NOT match solc today. They are
-// captured here as ignored tests (rather than silently omitted) so the gap is
-// visible and the test flips green the moment the generator is fixed. Run with
-// `cargo test -p pvm-contract-macros --features solc-tests -- --ignored` to see
-// the current diff.
-//
-// The shared root cause: our `StorageLayoutEntry` format inlines a flat type
-// *string* and has no `types` table, so it cannot represent a Solidity
-// `struct` the way solc does (a single entry whose `type` references a struct
-// in the `types` table, with the struct's members described there). Fixing
-// either case means teaching the generator to emit solc-shaped struct types.
+// Struct-typed values. These exercise the `types` table: the storage entry's
+// `type` is a key into `types`, whose entry carries the solc-style qualified
+// label (`struct Contract.Name`), `encoding`, `numberOfBytes`, and the member
+// layout with struct-relative slots.
 // ---------------------------------------------------------------------------
 
-/// A `#[derive(SolType)]` struct used as a `Lazy` value. The fields/slots line
-/// up with solc, but our `type` is the inline tuple name `(uint64,uint64)`
-/// whereas solc names it `struct WithStruct.Point`.
+/// A `#[derive(SolType, SolStorage)]` value struct. Used directly as a `Lazy`
+/// value and as the element of every container shape below.
 #[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
 pub struct Point {
     pub x: u64,
     pub y: u64,
 }
 
+/// A value struct as a `Lazy` value: one `struct WithStruct.Point` entry with
+/// the two packed `uint64` members described in `types`.
 #[pvm_contract_macros::contract(no_main)]
 mod soltype_value {
     use super::*;
@@ -307,10 +295,9 @@ contract WithStruct {
 }
 "#;
 
-/// A `#[storage]` sub-struct embedded in a contract. We flatten its leaves into
-/// dotted top-level entries (`inner.a`@0, `inner.b`@1); solc emits a SINGLE
-/// entry (`inner`@0, type `struct Outer.Inner`) and describes the members in
-/// its `types` table. Different entry count and labels → mismatch.
+/// A `#[storage]` sub-struct embedded in a contract. Like solc, we emit a
+/// SINGLE entry (`inner`@0, type `struct Outer.Inner`) and describe the
+/// members (`a`@0, `b`@1, struct-relative) in the `types` table.
 #[pvm_contract_sdk::storage]
 pub struct Inner {
     pub a: Lazy<U256>,
@@ -339,12 +326,167 @@ contract Outer {
 }
 "#;
 
+/// A value struct inside every container shape: mapping value, dynamic array
+/// element, and fixed array element. The containers' own `type` strings must
+/// embed the qualified struct label (`mapping(address => struct C.Point)`,
+/// `struct C.Point[]`, `struct C.Point[3]`) and the struct must be registered
+/// in `types` exactly once. The trailing sentinel catches a wrong slot advance
+/// for `Point[3]` (3 slots, one per element — not 1, not 6).
+#[pvm_contract_macros::contract(no_main)]
+mod struct_containers {
+    use super::*;
+
+    pub struct StructContainers {
+        pub m: Mapping<Address, Point>,
+        pub v: StorageVec<Point>,
+        pub a: Lazy<[Point; 3]>,
+        pub sentinel: Lazy<U256>,
+    }
+
+    impl StructContainers {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+const STRUCT_CONTAINERS_SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract StructContainers {
+    struct Point { uint64 x; uint64 y; }
+    mapping(address => Point) m;
+    Point[] v;
+    Point[3] a;
+    uint256 sentinel;
+}
+"#;
+
+/// A value struct with a dynamic (`string`) member followed by packable
+/// members. Checks that `numberOfBytes` counts the string's slot, that the
+/// members after it pack into the *next* slot with solc's offsets, and that a
+/// struct holding a `string` is still `inplace` (only the member's own type
+/// is `bytes`-encoded).
+#[derive(Clone, Debug, PartialEq, Eq, SolType, SolStorage)]
+pub struct Profile {
+    pub name: alloc::string::String,
+    pub age: u64,
+    pub active: bool,
+}
+
+#[pvm_contract_macros::contract(no_main)]
+mod dynstruct {
+    use super::*;
+
+    pub struct WithProfile {
+        pub profile: Lazy<Profile>,
+        pub sentinel: Lazy<U256>,
+    }
+
+    impl WithProfile {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+const DYNSTRUCT_SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract WithProfile {
+    struct Profile { string name; uint64 age; bool active; }
+    Profile profile;
+    uint256 sentinel;
+}
+"#;
+
+/// Nested `#[storage]` sub-structs, anchored with `#[slot(N)]`, with packed
+/// sub-word members, a mapping member, and a dynamic-array member — and the
+/// inner struct used twice in one contract (once nested, once directly).
+/// Checks that: members of the inner struct pack solc-style with
+/// struct-relative slots; a mapping / `T[]` member takes one slot inside the
+/// struct; the inner struct is registered once and referenced from both the
+/// outer struct's `members` and the top-level entry; `#[slot(N)]` anchoring
+/// only moves the top-level entries.
+#[pvm_contract_sdk::storage]
+pub struct Counters {
+    pub flag: Lazy<bool>,
+    pub small: Lazy<u32>,
+    pub who: Lazy<Address>,
+    pub balances: Mapping<Address, U256>,
+}
+
+#[pvm_contract_sdk::storage]
+pub struct Shell {
+    pub counters: Counters,
+    pub tag: Lazy<u16>,
+    pub items: StorageVec<U256>,
+}
+
+#[pvm_contract_macros::contract(no_main)]
+mod nested_substruct {
+    use super::*;
+
+    pub struct Nested {
+        #[slot(0)]
+        pub shell: Shell,
+        #[slot(4)]
+        pub again: Counters,
+        #[slot(6)]
+        pub sentinel: Lazy<U256>,
+    }
+
+    impl Nested {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+const NESTED_SUBSTRUCT_SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract Nested {
+    struct Counters { bool flag; uint32 small; address who; mapping(address => uint256) balances; }
+    struct Shell { Counters counters; uint16 tag; uint256[] items; }
+    Shell shell;
+    Counters again;
+    uint256 sentinel;
+}
+"#;
+
+/// A value struct at every nesting level of the containers: mapping of
+/// mapping, array of array, mapping of array. The container `type` strings
+/// must qualify the struct label at the innermost position.
+#[pvm_contract_macros::contract(no_main)]
+mod nested_containers {
+    use super::*;
+
+    pub struct NestedContainers {
+        pub mm: Mapping<Address, Mapping<u64, Point>>,
+        pub vv: StorageVec<StorageVec<Point>>,
+        pub mv: Mapping<Address, StorageVec<Point>>,
+        pub sentinel: Lazy<U256>,
+    }
+
+    impl NestedContainers {
+        #[pvm_contract_sdk::constructor]
+        pub fn new(&mut self) {}
+    }
+}
+
+const NESTED_CONTAINERS_SOL: &str = r#"
+pragma solidity ^0.8.26;
+contract NestedContainers {
+    struct Point { uint64 x; uint64 y; }
+    mapping(address => mapping(uint64 => Point)) mm;
+    Point[][] vv;
+    mapping(address => Point[]) mv;
+    uint256 sentinel;
+}
+"#;
+
 // ---------------------------------------------------------------------------
-// Normalized layout entry + helpers
+// Normalized layout + helpers
 // ---------------------------------------------------------------------------
 
 /// The subset of a storage-layout entry our generator emits. Ordered so two
-/// layouts can be compared regardless of source ordering.
+/// layouts can be compared regardless of source ordering. Used both for
+/// top-level `storage` entries and for struct `members` inside `types`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct NormEntry {
     slot: u64,
@@ -353,32 +495,112 @@ struct NormEntry {
     ty: String,
 }
 
-/// Parse our macro-emitted `__storage_layout_json()` string into sorted
-/// normalized entries. Shape: `{"storage":[{"label","slot"(str),"offset"(num),"type"}]}`.
-fn ours(json: &str) -> Vec<NormEntry> {
-    let v: serde_json::Value = serde_json::from_str(json).expect("our layout json parses");
-    let storage = v["storage"].as_array().expect("storage is an array");
-    let mut out: Vec<NormEntry> = storage
-        .iter()
-        .map(|e| NormEntry {
-            slot: e["slot"]
-                .as_str()
-                .expect("slot is a string")
-                .parse()
-                .expect("slot parses as u64"),
-            offset: e["offset"].as_u64().expect("offset is a number"),
-            label: e["label"].as_str().expect("label is a string").to_owned(),
-            ty: e["type"].as_str().expect("type is a string").to_owned(),
-        })
-        .collect();
-    out.sort();
-    out
+/// A struct entry of the `types` table, independent of its key: solc keys by
+/// astId (`t_struct(Point)6_storage`), we key by a per-contract counter
+/// (`t_struct(Point)0_storage`), so entries are compared by `label`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NormType {
+    label: String,
+    encoding: String,
+    number_of_bytes: String,
+    members: Vec<NormEntry>,
 }
 
-/// Run `solc --standard-json` on `source` and return the named contract's
-/// storage layout as sorted normalized entries, resolving each entry's `type`
-/// id through the `types` table's `label`.
-fn solc(source: &str, contract: &str) -> Vec<NormEntry> {
+/// Everything a fixture compares: the top-level entries plus every struct
+/// described in `types`. Both `ours()` and `solc()` produce one of these, so
+/// the `types` table is always part of the assertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormLayout {
+    storage: Vec<NormEntry>,
+    types: Vec<NormType>,
+}
+
+/// Resolve a `type` id through the `types` table to its human label. Falls
+/// back to the raw string for types that aren't in the table — on our side
+/// every non-struct type (`uint256`, `mapping(address => uint256)`, …) is
+/// already the label; on solc's side every type is a key, so a missing entry
+/// surfaces as a raw `t_…` id in the assertion diff.
+fn resolve_type(types: &serde_json::Value, raw_ty: &str) -> String {
+    types
+        .get(raw_ty)
+        .and_then(|t| t["label"].as_str())
+        .map_or_else(|| raw_ty.to_owned(), String::from)
+}
+
+/// Normalize one `storage` entry or one struct `member` (same JSON shape).
+fn norm_entry(e: &serde_json::Value, types: &serde_json::Value) -> NormEntry {
+    NormEntry {
+        slot: e["slot"]
+            .as_str()
+            .expect("slot is a string")
+            .parse()
+            .expect("slot parses as u64"),
+        offset: e["offset"].as_u64().expect("offset is a number"),
+        label: e["label"].as_str().expect("label is a string").to_owned(),
+        ty: resolve_type(types, e["type"].as_str().expect("type is a string")),
+    }
+}
+
+/// Normalize a raw `storageLayout` object (ours or solc's) into a
+/// [`NormLayout`]. Only `types` entries with a `members` array (structs) are
+/// kept; primitive and container entries are dropped since we don't emit
+/// them (see the module docs).
+fn normalize(layout: &serde_json::Value) -> NormLayout {
+    let types = &layout["types"];
+
+    let mut storage: Vec<NormEntry> = layout["storage"]
+        .as_array()
+        .expect("storageLayout.storage is an array")
+        .iter()
+        .map(|e| norm_entry(e, types))
+        .collect();
+    storage.sort();
+
+    let mut struct_types: Vec<NormType> = types
+        .as_object()
+        .into_iter()
+        .flat_map(|obj| obj.values())
+        .filter_map(|entry| {
+            let mut members: Vec<NormEntry> = entry
+                .get("members")?
+                .as_array()?
+                .iter()
+                .map(|m| norm_entry(m, types))
+                .collect();
+            members.sort();
+            Some(NormType {
+                label: entry["label"].as_str().expect("type label").to_owned(),
+                encoding: entry["encoding"]
+                    .as_str()
+                    .expect("type encoding")
+                    .to_owned(),
+                number_of_bytes: entry["numberOfBytes"]
+                    .as_str()
+                    .expect("type numberOfBytes")
+                    .to_owned(),
+                members,
+            })
+        })
+        .collect();
+    struct_types.sort();
+
+    NormLayout {
+        storage,
+        types: struct_types,
+    }
+}
+
+/// Parse our macro-emitted `__storage_layout_json()` string. Shape:
+/// `{"storage":[{"label","slot"(str),"offset"(num),"type"}],"types":{..}}`
+/// (`types` is omitted entirely when no struct is registered).
+fn ours(json: &str) -> NormLayout {
+    let v: serde_json::Value = serde_json::from_str(json).expect("our layout json parses");
+    normalize(&v)
+}
+
+/// Run `solc --standard-json` on `source` and return the raw `storageLayout`
+/// object for `contract`.
+fn solc_raw(source: &str, contract: &str) -> serde_json::Value {
     let input = serde_json::json!({
         "language": "Solidity",
         "sources": { "C.sol": { "content": source } },
@@ -423,33 +645,16 @@ fn solc(source: &str, contract: &str) -> Vec<NormEntry> {
     }
 
     let layout = &parsed["contracts"]["C.sol"][contract]["storageLayout"];
-    let types = &layout["types"];
-    let storage = layout["storage"]
-        .as_array()
-        .unwrap_or_else(|| panic!("no storageLayout.storage for contract {contract}"));
+    assert!(
+        layout.is_object(),
+        "no storageLayout for contract {contract} in solc output"
+    );
+    layout.clone()
+}
 
-    let mut out: Vec<NormEntry> = storage
-        .iter()
-        .map(|e| {
-            let type_id = e["type"].as_str().expect("solc entry has a type id");
-            let ty = types[type_id]["label"]
-                .as_str()
-                .unwrap_or_else(|| panic!("solc types table missing label for {type_id}"))
-                .to_owned();
-            NormEntry {
-                slot: e["slot"]
-                    .as_str()
-                    .expect("solc slot is a string")
-                    .parse()
-                    .expect("solc slot parses as u64"),
-                offset: e["offset"].as_u64().expect("solc offset is a number"),
-                label: e["label"].as_str().expect("solc label").to_owned(),
-                ty,
-            }
-        })
-        .collect();
-    out.sort();
-    out
+/// Run solc on `source` and normalize the named contract's storage layout.
+fn solc(source: &str, contract: &str) -> NormLayout {
+    normalize(&solc_raw(source, contract))
 }
 
 // ---------------------------------------------------------------------------
@@ -503,16 +708,7 @@ fn fixed_array_layout_matches_solc() {
     );
 }
 
-// --- Known-divergent cases (see the "Known divergences" section above) ------
-
-// TODO(storage-layout solc parity): un-ignore once the layout generator emits
-// solc-compatible Solidity `struct` types — i.e. a single entry whose `type`
-// names the struct (`struct WithStruct.Point`) and a `types` table describing
-// its members — instead of the inline tuple SOL_NAME (`(uint64,uint64)`).
-// Currently FAILS only on the `type` field; label/slot/offset already match.
 #[test]
-#[ignore = "known divergence: SolType struct value emits inline tuple type name, \
-            not a solc `struct ...` type — enable after generator fix"]
 fn soltype_struct_value_layout_matches_solc() {
     assert_eq!(
         ours(&soltype_value::__storage_layout_json()),
@@ -520,16 +716,72 @@ fn soltype_struct_value_layout_matches_solc() {
     );
 }
 
-// TODO(storage-layout solc parity): un-ignore once embedded `#[storage]`
-// sub-structs emit a single struct-typed entry (matching solc) instead of
-// flattening their leaves into dotted-label entries (`inner.a`, `inner.b`).
-// Currently FAILS on entry count and labels (we emit N entries, solc emits 1).
 #[test]
-#[ignore = "known divergence: #[storage] sub-struct flattens to dotted-label \
-            entries, solc emits one struct-typed entry — enable after generator fix"]
 fn substruct_layout_matches_solc() {
     assert_eq!(
         ours(&substruct::__storage_layout_json()),
         solc(SUBSTRUCT_SOL, "Outer")
+    );
+}
+
+#[test]
+fn struct_containers_layout_matches_solc() {
+    assert_eq!(
+        ours(&struct_containers::__storage_layout_json()),
+        solc(STRUCT_CONTAINERS_SOL, "StructContainers")
+    );
+}
+
+#[test]
+fn dynamic_member_struct_layout_matches_solc() {
+    assert_eq!(
+        ours(&dynstruct::__storage_layout_json()),
+        solc(DYNSTRUCT_SOL, "WithProfile")
+    );
+}
+
+#[test]
+fn nested_substruct_layout_matches_solc() {
+    assert_eq!(
+        ours(&nested_substruct::__storage_layout_json()),
+        solc(NESTED_SUBSTRUCT_SOL, "Nested")
+    );
+}
+
+#[test]
+fn nested_containers_layout_matches_solc() {
+    assert_eq!(
+        ours(&nested_containers::__storage_layout_json()),
+        solc(NESTED_CONTAINERS_SOL, "NestedContainers")
+    );
+}
+
+/// The normalizer must actually see our `types` table: a struct fixture whose
+/// `types` went missing would otherwise compare equal to solc on the storage
+/// entries alone.
+#[test]
+fn normalizer_keeps_struct_types() {
+    let layout = ours(&struct_containers::__storage_layout_json());
+    assert_eq!(
+        layout.types,
+        vec![NormType {
+            label: "struct StructContainers.Point".to_owned(),
+            encoding: "inplace".to_owned(),
+            number_of_bytes: "32".to_owned(),
+            members: vec![
+                NormEntry {
+                    slot: 0,
+                    offset: 0,
+                    label: "x".to_owned(),
+                    ty: "uint64".to_owned(),
+                },
+                NormEntry {
+                    slot: 0,
+                    offset: 8,
+                    label: "y".to_owned(),
+                    ty: "uint64".to_owned(),
+                },
+            ],
+        }]
     );
 }

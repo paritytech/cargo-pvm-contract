@@ -261,9 +261,10 @@ fn nested_storage_struct_uses_offset() {
 /// `__abi_json()` / `__storage_layout_json()` accessors on the module. With
 /// `no_main`, the integration-test harness's own `main` is preserved and
 /// these accessors are reachable from a `#[test]` fn. Verifies that
-/// embedded `#[storage]` sub-structs flatten into the layout JSON with
-/// dotted labels (`erc20.total_supply`, `metadata.name`, …) via
-/// `StorageLayoutEmit::emit_entries`.
+/// embedded `#[storage]` sub-structs render solc-style: one struct-typed
+/// entry per sub-struct (`erc20`, `metadata`) plus a `types` table entry
+/// describing its members, via `StorageLayoutEmit::emit_entries` +
+/// `StorageTypeName::emit_members`.
 #[cfg(feature = "abi-gen")]
 #[test]
 fn composed_contract_emits_storage_layout_under_abi_gen() {

@@ -118,27 +118,33 @@ pub(super) fn slot_chain_consts(
     (items, idents)
 }
 
-/// Generate the TokenStream that pushes storage-layout entries for one field
-/// into the local `entries` Vec.
+/// Generate the TokenStream that pushes a storage-layout entry for one field
+/// into the local `entries` Vec, and registers/threads a `types` registry
+/// for struct-typed fields.
 ///
 /// Every field — `Lazy<T>`, `Mapping<K, V>`, or an embedded `#[storage]`
 /// sub-struct — dispatches uniformly through
-/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`]. Leaf types push a
-/// single entry; sub-structs recursively flatten their own leaves into the
-/// same `entries` Vec, prefixing labels with the field path
-/// (`erc20.total_supply`, `metadata.name`, …) per solc convention. There is
-/// no syntactic type-name special-casing: `<#ty as StorageLayoutEmit>` is the
-/// single source of truth for both the entry's `type` string and its layout,
-/// so adding a storage component is a pure trait-impl task.
+/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`]. Every field, leaf
+/// or struct-typed, pushes exactly one entry into `entries`; struct-typed
+/// fields additionally register their own member breakdown into the `types`
+/// registry via `StorageTypeName::emit_members`, rather than flattening
+/// into `entries`. There is no syntactic type-name special-casing: `<#ty as
+/// StorageLayoutEmit>` is the single source of truth for both the entry's
+/// `type` string and its layout, so adding a storage component is a pure
+/// trait-impl task.
 ///
 /// `slot_expr` is a `u64` expression (literal or `base + __pvm_storage_offset_*`
 /// const); `offset_expr` is a `u8` expression (the packed byte offset, `0` for
 /// full-slot fields). `prefix_expr` is a `&str` expression: `""` at the top of
-/// a `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
-/// `emit_entries` body.
+/// a `#[contract]`, the local `name_prefix` binding (also `""`) inside a
+/// `#[storage]` `emit_members` body, where the pushed entries are the
+/// struct's `members` and carry bare field names.
 ///
-/// Used by `#[contract]`'s `__storage_layout_json` (top-level) and `#[storage]`'s
-/// `emit_entries` (sub-storage).
+/// Used by `#[contract]`'s `__storage_layout_json` (top-level entries) and
+/// `#[storage]`'s `StorageTypeName::emit_members` (the struct's `members`
+/// list in the `types` table, with `base = 0` so slots are struct-relative).
+/// The caller must also have `contract_name: &str` and
+/// `registry: &mut LayoutTypesRegistry` bindings in scope.
 pub(super) fn generate_layout_emit(
     field_name_str: &str,
     ty: &syn::Type,
@@ -176,7 +182,9 @@ pub(super) fn generate_layout_emit(
             #slot_expr,
             #solc_offset,
             &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
+            contract_name,
             entries,
+            registry,
         );
     }
 }

@@ -941,15 +941,31 @@ impl<const N: usize> crate::StorageTypeName for [u8; N] {
     fn name() -> alloc::string::String {
         alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
+    // No emit_members override: [u8; N] is always bytesN, a primitive-like
+    // leaf type (as per solc: bytes4 stays "bytes4", never qualified).
 }
 
 #[cfg(feature = "abi-gen")]
-impl<T: crate::SolArrayElement, const N: usize> crate::StorageTypeName for [T; N] {
+impl<T: crate::SolArrayElement + crate::StorageTypeName, const N: usize> crate::StorageTypeName
+    for [T; N]
+{
     fn name() -> alloc::string::String {
         alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
-}
 
+    fn emit_members(
+        registry: &mut crate::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        let t_key = <T as crate::StorageTypeName>::emit_members(registry, contract_name);
+        let t_display = registry
+            .types
+            .get(&t_key)
+            .map(|entry| entry.label.clone())
+            .unwrap_or(t_key);
+        alloc::format!("{}[{}]", t_display, N)
+    }
+}
 // ---------------------------------------------------------------------------
 // Fixed-size arrays `[T; N]` for T != u8.
 //
