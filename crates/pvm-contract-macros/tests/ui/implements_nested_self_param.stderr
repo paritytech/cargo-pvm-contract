@@ -1,0 +1,5 @@
+error: folded interface method parameters must be concrete types; a parameter mentioning `Self` (directly or nested, e.g. `Self::Item` or `Vec<Self::Item>`) has no ABI selector name
+  --> tests/ui/implements_nested_self_param.rs:23:38
+   |
+23 |         fn ingest(&mut self, _items: Vec<Self::Item>) {}
+   |                                      ^^^^^^^^^^^^^^^

@@ -431,6 +431,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            folded_error_asserts: vec![],
             sig_asserts: vec![],
         };
 
@@ -542,6 +543,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            folded_error_asserts: vec![],
             sig_asserts: vec![],
         }
     }
@@ -557,6 +559,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::View,
             is_non_reentrant: false,
+            trait_path: None,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -578,6 +581,7 @@ mod tests {
             returns_result: false,
             mutability: StateMutability::Pure,
             is_non_reentrant: false,
+            trait_path: None,
         };
         let parsed = parsed_contract_with_method(method);
         let (helper, _main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -636,6 +640,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            folded_error_asserts: vec![],
             sig_asserts: vec![],
         };
 
@@ -687,6 +692,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            folded_error_asserts: vec![],
             sig_asserts: vec![],
         };
 
@@ -731,6 +737,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            folded_error_asserts: vec![],
             sig_asserts: vec![],
         };
 

@@ -1,0 +1,5 @@
+error: #[interface_id]: interface methods must not have a default body; a defaulted method still contributes its selector to INTERFACE_ID but is not dispatched unless the impl restates it
+ --> tests/ui/interface_id_default_method.rs:9:8
+  |
+9 |     fn defaulted(&self) -> u64 {
+  |        ^^^^^^^^^

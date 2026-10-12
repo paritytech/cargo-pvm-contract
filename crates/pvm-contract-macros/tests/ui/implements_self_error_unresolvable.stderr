@@ -1,0 +1,11 @@
+error: a folded method's error type must be a concrete type or exactly `Self::Error` (resolved via the interface's `<Error = ...>` binding)
+  --> tests/ui/implements_self_error_unresolvable.rs:35:40
+   |
+35 |         fn maybe(&self) -> Result<u64, Wrapper<Self::Error>> {
+   |                                        ^^^^^^^^^^^^^^^^^^^^
+
+error: a folded method's error type must be a concrete type or exactly `Self::Error` (resolved via the interface's `<Error = ...>` binding)
+  --> tests/ui/implements_self_error_unresolvable.rs:61:40
+   |
+61 |         fn maybe(&self) -> Result<u64, Self::Other> {
+   |                                        ^^^^^^^^^^^

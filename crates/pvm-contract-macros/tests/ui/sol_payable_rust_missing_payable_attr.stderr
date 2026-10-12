@@ -1,4 +1,4 @@
-error: method `deposit` mutability mismatch: `.sol` declares `payable`, Rust signature is `nonpayable`. add `#[payable]`.
+error: method `deposit` mutability mismatch: the `.sol` interface declares `payable` but the Rust implementation is `nonpayable`; add `#[payable]`.
  --> tests/ui/sol_payable_rust_missing_payable_attr.rs:6:9
   |
 6 | /         #[pvm_contract_macros::method]

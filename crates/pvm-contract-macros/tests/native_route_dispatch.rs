@@ -13,7 +13,7 @@
 
 use pvm_contract_types::{
     Address, Host, HostApi, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router,
-    SolDecode, SolEncode, StaticEncodedLen, assert_reverts, finalize_outcome,
+    SolDecode, SolEncode, StaticEncodedLen, assert_reverts, const_selector, finalize_outcome,
 };
 use ruint::aliases::U256;
 use std::rc::Rc;
@@ -44,10 +44,6 @@ mod my_token {
     }
 }
 
-fn selector(sig: &str) -> [u8; 4] {
-    pvm_contract_types::const_selector(sig)
-}
-
 fn encode_u64(n: u64) -> Vec<u8> {
     let mut buf = vec![0u8; <u64 as StaticEncodedLen>::ENCODED_SIZE];
     n.encode_to(&mut buf);
@@ -69,7 +65,7 @@ fn new_contract() -> (my_token::MyContract, MockHost) {
 #[test]
 fn route_matches_selector_and_returns_encoded_u64() {
     let (mut contract, _mock) = new_contract();
-    let sel = selector("double(uint64)");
+    let sel = const_selector("double(uint64)");
     let input = encode_u64(21);
 
     let mut buf = [0u8; my_token::MAX_RETURN_LEN];
@@ -86,7 +82,7 @@ fn route_matches_selector_and_returns_encoded_u64() {
 #[test]
 fn route_void_method_returns_empty_ok() {
     let (mut contract, _mock) = new_contract();
-    let sel = selector("noop()");
+    let sel = const_selector("noop()");
 
     let mut buf = [0u8; my_token::MAX_RETURN_LEN];
     let mut out: &mut [u8] = &mut buf;
@@ -109,7 +105,7 @@ fn route_unknown_selector_returns_unhandled() {
 #[test]
 fn route_short_input_reverts_with_invalid_calldata() {
     let (mut contract, mock) = new_contract();
-    let sel = selector("double(uint64)");
+    let sel = const_selector("double(uint64)");
     let short_input = [0u8; 1]; // need at least 32 bytes for u64
 
     // The size check diverges via `host.revert` (unwinds on host targets) —
@@ -127,7 +123,7 @@ fn route_short_input_reverts_with_invalid_calldata() {
 fn router_trait_impl_delegates_to_module_route() {
     let (mut contract, _mock) = new_contract();
     // Rust `balance_of` becomes Solidity `balanceOf` (snake_case → camelCase).
-    let sel = selector("balanceOf(address)");
+    let sel = const_selector("balanceOf(address)");
     let input = encode_address(Address::from([0xAA; 20]));
 
     // Call through the Router trait rather than the free function.
@@ -176,7 +172,7 @@ fn finalize_lowers_return_to_success_and_revert_door_carries_revert_flags() {
 fn route_then_finalize_records_return_value_end_to_end() {
     let (mut contract, mock) = new_contract();
     let host = Host::from_dyn(Rc::new(mock.clone()));
-    let sel = selector("double(uint64)");
+    let sel = const_selector("double(uint64)");
     let input = encode_u64(21);
 
     let mut buf = [0u8; my_token::MAX_RETURN_LEN];

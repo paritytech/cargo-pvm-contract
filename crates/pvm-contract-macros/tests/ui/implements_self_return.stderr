@@ -1,0 +1,5 @@
+error: folded interface method return types must be concrete; a return type mentioning `Self` (e.g. `Self::Value`) has no ABI name. A `Result<_, Self::Error>` error type is resolved via `implements(ITrait<Error = ...>)`.
+  --> tests/ui/implements_self_return.rs:23:28
+   |
+23 |         fn value(&self) -> Self::Value {
+   |                            ^^^^^^^^^^^

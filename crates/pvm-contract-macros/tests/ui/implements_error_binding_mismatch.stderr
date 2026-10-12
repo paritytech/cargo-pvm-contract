@@ -1,0 +1,7 @@
+error[E0308]: mismatched types
+  --> tests/ui/implements_error_binding_mismatch.rs:11:1
+   |
+11 | #[pvm_contract_macros::contract(implements(IFaulty<Error = Declared>))]
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `Declared`, found `Actual`
+   |
+   = note: this error originates in the attribute macro `pvm_contract_macros::contract` (in Nightly builds, run with -Z macro-backtrace for more info)

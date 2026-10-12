@@ -122,6 +122,20 @@ impl ContractBuilder {
         }
     }
 
+    /// Panic if `selector` is already registered *on this builder*. The DSL
+    /// builds its dispatch table at runtime, so it has no compile-time analog of
+    /// the macro path's selector-collision check; a duplicate registration is a
+    /// runtime panic instead. This guards only within a single builder — clashes
+    /// *across* chained extensions (`dispatch_composed`) are not caught here;
+    /// they are resolved by first-match-wins.
+    #[inline(always)]
+    fn assert_unique_selector(&self, selector: Selector) {
+        assert!(
+            !self.methods[..self.len].iter().any(|(s, _)| *s == selector),
+            "ContractBuilder: duplicate selector registration"
+        );
+    }
+
     /// Register a non-payable method handler for the given selector.
     ///
     /// Rejects calls carrying a non-zero value transfer at the dispatch
@@ -129,7 +143,8 @@ impl ContractBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if more than MAX_METHODS methods are registered.
+    /// Panics if more than MAX_METHODS methods are registered, or if `selector`
+    /// is already registered (duplicate-selector guard).
     #[inline]
     pub fn method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         assert!(
@@ -137,6 +152,7 @@ impl ContractBuilder {
             "ContractBuilder: exceeded MAX_METHODS ({})",
             MAX_METHODS
         );
+        self.assert_unique_selector(selector);
         self.methods[self.len] = (selector, handler);
         self.len += 1;
         self
@@ -149,7 +165,8 @@ impl ContractBuilder {
     ///
     /// # Panics
     ///
-    /// Panics if more than MAX_METHODS methods are registered.
+    /// Panics if more than MAX_METHODS methods are registered, or if `selector`
+    /// is already registered (duplicate-selector guard).
     #[inline]
     pub fn payable_method(mut self, selector: Selector, handler: MethodHandler) -> Self {
         assert!(
@@ -157,6 +174,7 @@ impl ContractBuilder {
             "ContractBuilder: exceeded MAX_METHODS ({})",
             MAX_METHODS
         );
+        self.assert_unique_selector(selector);
         self.methods[self.len] = (selector, handler);
         self.payable_bits |= 1u64 << self.len;
         self.len += 1;
@@ -274,6 +292,59 @@ impl ContractBuilder {
             }
         }
     }
+
+    /// Dispatch, trying this builder's methods first and then each extension
+    /// builder in order — first match wins.
+    ///
+    /// This is the builder-DSL analog of the macro's `implements(...)` fold: an
+    /// extension exposes its handlers as a `ContractBuilder`, and the composing
+    /// contract chains them here. Selector uniqueness *within* a single builder
+    /// is enforced at registration ([`method`](Self::method) panics on a
+    /// duplicate). *Across* chained builders a selector may legitimately appear
+    /// more than once; first match wins, which is how a composing contract
+    /// overrides an extension. Unlike the macro fold, that clash is resolved here
+    /// at dispatch rather than rejected at compile time, so order the extensions
+    /// with precedence in mind.
+    ///
+    /// Kept as a standalone body rather than sharing one with `dispatch_impl`:
+    /// folding the two into a shared helper regressed the common (non-composing)
+    /// dispatch path's code size.
+    #[inline(always)]
+    pub fn dispatch_composed<const BUF_SIZE: usize>(
+        &self,
+        host: &Host,
+        extensions: &[&ContractBuilder],
+    ) {
+        let call_data_len = host.call_data_size() as usize;
+
+        if call_data_len > BUF_SIZE {
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+        } else {
+            let mut calldata = [0u8; BUF_SIZE];
+            host.call_data_copy(&mut calldata[..call_data_len], 0);
+
+            if call_data_len < 4 {
+                host.revert(&pvm_contract_types::framework_errors::NO_SELECTOR);
+            } else {
+                let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
+                let input = &calldata[4..call_data_len];
+                let mut output = [0u8; BUF_SIZE];
+
+                let result = self
+                    .try_route(host, selector, input, &mut output)
+                    .or_else(|| {
+                        extensions
+                            .iter()
+                            .find_map(|ext| ext.try_route(host, selector, input, &mut output))
+                    });
+                if let Some(result) = result {
+                    finalize_response(host, &mut output, result);
+                } else {
+                    host.revert(&pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
+                }
+            }
+        }
+    }
 }
 
 /// `ContractBuilder` extended with a [`#[fallback]`]-equivalent and/or
@@ -367,6 +438,75 @@ impl ContractBuilderWithHandlers {
             let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
             let input = &calldata[4..call_data_len];
             if let Some(result) = self.inner.try_route(host, selector, input, &mut output) {
+                finalize_response(host, &mut output, result);
+                return;
+            }
+            &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR
+        };
+
+        if let Some(handler) = self.fallback {
+            if !self.fallback_is_payable && pvm_contract_types::value_transferred_is_nonzero(host) {
+                output[..4].copy_from_slice(
+                    &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED,
+                );
+                host.revert(&output[..4]);
+            }
+            let result = handler(host, &calldata[..call_data_len], &mut output);
+            finalize_response(host, &mut output, result);
+            return;
+        }
+
+        host.revert(default_err);
+    }
+
+    /// Like [`dispatch_impl`](Self::dispatch_impl) but also chains each extension
+    /// builder after this contract's own methods (first match wins) before the
+    /// fallback — the with-handlers analog of
+    /// [`ContractBuilder::dispatch_composed`]. Lets a DSL contract compose
+    /// extensions *and* keep a `fallback`/`receive` handler, matching the macro
+    /// path's `implements(...)` + `#[fallback]`/`#[receive]`.
+    ///
+    /// Kept as a standalone body rather than sharing one with `dispatch_impl`:
+    /// folding the two into a shared helper regressed the common (non-composing)
+    /// dispatch path's code size.
+    #[inline]
+    pub fn dispatch_composed<const BUF_SIZE: usize>(
+        &self,
+        host: &Host,
+        extensions: &[&ContractBuilder],
+    ) {
+        let call_data_len = host.call_data_size() as usize;
+
+        if call_data_len > BUF_SIZE {
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
+        }
+
+        let mut calldata = [0u8; BUF_SIZE];
+        host.call_data_copy(&mut calldata[..call_data_len], 0);
+        let mut output = [0u8; BUF_SIZE];
+
+        if call_data_len == 0
+            && let Some(receive) = self.receive
+        {
+            let result = receive(host, &[], &mut output);
+            finalize_response(host, &mut output, result);
+            return;
+        }
+
+        let default_err = if call_data_len < 4 {
+            &pvm_contract_types::framework_errors::NO_SELECTOR
+        } else {
+            let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
+            let input = &calldata[4..call_data_len];
+            if let Some(result) = self
+                .inner
+                .try_route(host, selector, input, &mut output)
+                .or_else(|| {
+                    extensions
+                        .iter()
+                        .find_map(|ext| ext.try_route(host, selector, input, &mut output))
+                })
+            {
                 finalize_response(host, &mut output, result);
                 return;
             }
@@ -627,6 +767,122 @@ mod tests {
             .receive(|_, _, _| panic!("receive must NOT fire for 1..=3 byte calldata"))
             .fallback(ok_marker_handler)
             .dispatch_impl::<256>(&wrap(&mock));
+        let rv = mock.take_return_value().unwrap();
+        assert!(rv.flags.is_empty());
+        assert_eq!(&rv.data[..], b"hit");
+    }
+
+    // --- composition (router chaining) + duplicate-selector guard --------
+
+    #[test]
+    fn dispatch_composed_falls_through_to_extension() {
+        // The main contract only knows DEPOSIT; TRANSFER lives on an extension.
+        let mock = Rc::new(MockHostBuilder::new().calldata(TRANSFER.to_vec()).build());
+        let extension = ContractBuilder::new().method(TRANSFER, ok_marker_handler);
+        let main = ContractBuilder::new().method(DEPOSIT, dummy_handler);
+
+        main.dispatch_composed::<256>(&wrap(&mock), &[&extension]);
+
+        let rv = mock
+            .take_return_value()
+            .expect("chained extension should handle TRANSFER");
+        assert!(rv.flags.is_empty());
+        assert_eq!(&rv.data[..], b"hit");
+    }
+
+    #[test]
+    fn dispatch_composed_prefers_own_method_over_extension() {
+        // Both define DEPOSIT; first-match-wins means the main contract's own
+        // handler runs (the extension's is shadowed).
+        let mock = Rc::new(MockHostBuilder::new().calldata(DEPOSIT.to_vec()).build());
+        let extension =
+            ContractBuilder::new().method(DEPOSIT, |_, _, _| panic!("extension must not win"));
+        let main = ContractBuilder::new().method(DEPOSIT, ok_marker_handler);
+
+        main.dispatch_composed::<256>(&wrap(&mock), &[&extension]);
+
+        let rv = mock.take_return_value().unwrap();
+        assert_eq!(&rv.data[..], b"hit");
+    }
+
+    #[test]
+    fn dispatch_composed_reverts_unknown_selector() {
+        let mock = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xaa, 0xbb, 0xcc, 0xdd])
+                .build(),
+        );
+        let extension = ContractBuilder::new().method(TRANSFER, ok_marker_handler);
+        let main = ContractBuilder::new().method(DEPOSIT, dummy_handler);
+
+        // An unmatched selector across the whole chain reverts (diverges).
+        let rv = mock.expect_revert(|| {
+            main.dispatch_composed::<256>(&wrap(&mock), &[&extension]);
+        });
+        assert_eq!(
+            &rv.data[..],
+            &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate selector")]
+    fn method_panics_on_duplicate_selector() {
+        ContractBuilder::new()
+            .method(TRANSFER, dummy_handler)
+            .method(TRANSFER, dummy_handler);
+    }
+
+    // --- composition + fallback/receive on the with-handlers builder ---------
+
+    #[test]
+    fn composed_with_handlers_routes_to_chained_extension() {
+        // Selector lives on the extension; the composed contract also has a
+        // fallback — the extension must win over the fallback.
+        let mock = Rc::new(MockHostBuilder::new().calldata(TRANSFER.to_vec()).build());
+        let extension = ContractBuilder::new().method(TRANSFER, ok_marker_handler);
+        let main = ContractBuilder::new()
+            .method(DEPOSIT, dummy_handler)
+            .fallback(|_, _, _| panic!("fallback must not fire when an extension handles it"));
+
+        main.dispatch_composed::<256>(&wrap(&mock), &[&extension]);
+
+        let rv = mock.take_return_value().unwrap();
+        assert!(rv.flags.is_empty());
+        assert_eq!(&rv.data[..], b"hit");
+    }
+
+    #[test]
+    fn composed_with_handlers_unmatched_selector_routes_to_fallback() {
+        // No builder handles the selector — the composed contract's fallback
+        // fires (rather than reverting), proving composition + fallback coexist.
+        let mock = Rc::new(
+            MockHostBuilder::new()
+                .calldata(vec![0xaa, 0xbb, 0xcc, 0xdd])
+                .build(),
+        );
+        let extension = ContractBuilder::new().method(TRANSFER, dummy_handler);
+        let main = ContractBuilder::new()
+            .method(DEPOSIT, dummy_handler)
+            .fallback(ok_marker_handler);
+
+        main.dispatch_composed::<256>(&wrap(&mock), &[&extension]);
+
+        let rv = mock.take_return_value().unwrap();
+        assert!(rv.flags.is_empty());
+        assert_eq!(&rv.data[..], b"hit");
+    }
+
+    #[test]
+    fn composed_with_handlers_empty_calldata_hits_receive() {
+        let mock = Rc::new(MockHostBuilder::new().build());
+        let extension = ContractBuilder::new().method(TRANSFER, dummy_handler);
+        let main = ContractBuilder::new()
+            .method(DEPOSIT, dummy_handler)
+            .receive(ok_marker_handler);
+
+        main.dispatch_composed::<256>(&wrap(&mock), &[&extension]);
+
         let rv = mock.take_return_value().unwrap();
         assert!(rv.flags.is_empty());
         assert_eq!(&rv.data[..], b"hit");

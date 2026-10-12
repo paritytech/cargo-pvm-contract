@@ -259,7 +259,15 @@ fn variants_for_contract(contract: &str) -> Vec<Variant> {
     //     auto-numbered slot walker for sub-word siblings.
     //   - `allowlist`: address allowlist backed by `StorageVec<Address>`
     //     (push/pop/swap-remove/linear scan).
-    if contract == "mytoken_storage" || contract == "amm_reserves" || contract == "allowlist" {
+    //   - `mytoken_interface`: the `mytoken` ERC-20 surface folded via
+    //     `implements(IErc20Simplified)` instead of inherent `#[method]`s; sized against
+    //     `mytoken` to show the cost of folding vs. inherent dispatch. Macro-only
+    //     (the DSL analog is `dispatch_composed`, exercised elsewhere).
+    if contract == "mytoken_storage"
+        || contract == "amm_reserves"
+        || contract == "allowlist"
+        || contract == "mytoken_interface"
+    {
         return vec![Variant::NoAlloc, Variant::WithAlloc];
     }
     vec![Variant::NoAlloc, Variant::WithAlloc, Variant::BuilderDsl]
@@ -280,6 +288,7 @@ fn main() -> Result<()> {
     let contracts = vec![
         "fibonacci",
         "mytoken",
+        "mytoken_interface",
         "mytoken_storage",
         "multi",
         "amm_reserves",
