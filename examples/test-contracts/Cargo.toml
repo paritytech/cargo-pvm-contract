@@ -36,6 +36,14 @@ name = "reentrancy_attacker"
 path = "src/reentrancy_attacker.rs"
 
 [[bin]]
+name = "reentrancy_typed"
+path = "src/reentrancy_typed.rs"
+
+[[bin]]
+name = "reentrancy_callback"
+path = "src/reentrancy_callback.rs"
+
+[[bin]]
 name = "error_caller"
 path = "src/error_caller.rs"
 

@@ -1043,3 +1043,52 @@ fn non_reentrant_guard_blocks_cross_contract_reentry() {
         "revert should carry the ReentrancyGuardReentrantCall selector (0x{reentrancy_selector}); got:\n{combined}"
     );
 }
+
+#[test]
+fn typed_reentry_denied_without_opt_in() {
+    let (_anvil, cast, lender) = deploy("reentrancy_typed");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("reentrancy_callback", "release");
+    let borrower = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+
+    let out = cast.send_expect_revert(
+        &lender,
+        "lendWithoutReentry(address)",
+        &[&borrower],
+        DEFAULT_PRIVATE_KEY,
+    );
+    assert!(!out.status.success(), "reentry should have been denied");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // The subcall failure surfaces as CallError(CalleeTrapped = 0). pallet-revive's
+    // ReentranceDenied is not distinguishable from any other trapped subcall at this
+    // layer — the paired success test is what pins the cause.
+    let call_error_selector = cast.selector("CallError(uint256)");
+    assert!(
+        combined.to_lowercase().contains(&call_error_selector),
+        "revert should carry the CallError selector (0x{call_error_selector}); got:\n{combined}"
+    );
+}
+
+#[test]
+fn typed_reentry_allowed_with_opt_in() {
+    let (_anvil, cast, lender) = deploy("reentrancy_typed");
+    let c = contract("test-contracts");
+    let hex = c.bytecode_hex("reentrancy_callback", "release");
+    let borrower = cast.deploy(&hex, "", &[], DEFAULT_PRIVATE_KEY);
+
+    // Same chain as the denied test, but the lender's outbound call carries
+    // .allow_reentry(), so the borrower's callback into onCallback() is
+    // permitted. The borrower reverts unless onCallback() returns true, so a
+    // successful tx proves the callback body ran.
+    cast.send(
+        &lender,
+        "lendWithReentry(address)",
+        &[&borrower],
+        DEFAULT_PRIVATE_KEY,
+    );
+}

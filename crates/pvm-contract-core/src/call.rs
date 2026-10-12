@@ -263,7 +263,7 @@ impl Default for CallLimits {
 /// ```ignore
 /// let result = foo.bar()
 ///     .allow_reentry()
-///     .call(self.host())?;
+///     .call(self)?;
 /// ```
 ///
 /// Only enable this when your contract is designed to handle callbacks

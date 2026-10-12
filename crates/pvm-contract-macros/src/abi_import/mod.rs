@@ -581,6 +581,16 @@ pub fn expand_to_module(file: &File, alloc: bool) -> syn::Result<TokenStream> {
                             self
                         }
 
+                        /// Allow the callee to re-enter this contract.
+                        ///
+                        /// Without this, pallet-revive rejects any call from the callee (or its
+                        /// callees) back into the current contract.
+                        /// Applies to `call` and `call_raw` only.
+                        pub fn allow_reentry(mut self) -> Self {
+                            self.call_builder = self.call_builder.allow_reentry();
+                            self
+                        }
+
                         /// Perform a delegated call to another contract.
                         ///
                         /// Always requires `&mut impl ContractContext` regardless of the
@@ -903,6 +913,15 @@ mod test {
                     /// Set call limits for the given call.
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
                         self
                     }
                     /// Perform a delegated call to another contract.
@@ -1255,6 +1274,15 @@ mod test {
                         self.call_builder = self.call_builder.set_call_limits(limits);
                         self
                     }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
+                        self
+                    }
                     /// Perform a delegated call to another contract.
                     ///
                     /// Always requires `&mut impl ContractContext` regardless of the
@@ -1571,6 +1599,15 @@ mod test {
                     /// Set call limits for the given call.
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
                         self
                     }
                     /// Perform a delegated call to another contract.
@@ -1929,6 +1966,15 @@ mod test {
                         self.call_builder = self.call_builder.set_call_limits(limits);
                         self
                     }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
+                        self
+                    }
                     /// Perform a delegated call to another contract.
                     ///
                     /// Always requires `&mut impl ContractContext` regardless of the
@@ -2250,6 +2296,15 @@ mod test {
                     /// Set call limits for the given call.
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
                         self
                     }
                     /// Perform a delegated call to another contract.
@@ -2608,6 +2663,15 @@ mod test {
                         self.call_builder = self.call_builder.set_call_limits(limits);
                         self
                     }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
+                        self
+                    }
                     /// Perform a delegated call to another contract.
                     ///
                     /// Always requires `&mut impl ContractContext` regardless of the
@@ -2954,6 +3018,15 @@ mod test {
                         self.call_builder = self.call_builder.set_call_limits(limits);
                         self
                     }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
+                        self
+                    }
                     /// Perform a delegated call to another contract.
                     ///
                     /// Always requires `&mut impl ContractContext` regardless of the
@@ -3253,6 +3326,15 @@ mod test {
                     /// Set call limits for the given call.
                     pub fn set_call_limits(mut self, limits: CallLimits) -> Self {
                         self.call_builder = self.call_builder.set_call_limits(limits);
+                        self
+                    }
+                    /// Allow the callee to re-enter this contract.
+                    ///
+                    /// Without this, pallet-revive rejects any call from the callee (or its
+                    /// callees) back into the current contract.
+                    /// Applies to `call` and `call_raw` only.
+                    pub fn allow_reentry(mut self) -> Self {
+                        self.call_builder = self.call_builder.allow_reentry();
                         self
                     }
                     /// Perform a delegated call to another contract.
