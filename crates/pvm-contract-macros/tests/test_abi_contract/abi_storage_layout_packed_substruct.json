@@ -1,0 +1,114 @@
+{
+  "abi": [
+    {
+      "inputs": [],
+      "stateMutability": "nonpayable",
+      "type": "constructor"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidCalldata",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "CalldataTooLarge",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NoSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "UnknownSelector",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NonPayableValueReceived",
+      "type": "error"
+    }
+  ],
+  "storageLayout": {
+    "storage": [
+      {
+        "label": "shell",
+        "offset": 0,
+        "slot": "0",
+        "type": "t_struct(Shell)1_storage"
+      },
+      {
+        "label": "again",
+        "offset": 0,
+        "slot": "4",
+        "type": "t_struct(Counters)0_storage"
+      },
+      {
+        "label": "sentinel",
+        "offset": 0,
+        "slot": "6",
+        "type": "uint256"
+      }
+    ],
+    "types": {
+      "t_struct(Counters)0_storage": {
+        "encoding": "inplace",
+        "label": "struct PackedSubstruct.Counters",
+        "members": [
+          {
+            "label": "flag",
+            "offset": 0,
+            "slot": "0",
+            "type": "bool"
+          },
+          {
+            "label": "small",
+            "offset": 1,
+            "slot": "0",
+            "type": "uint32"
+          },
+          {
+            "label": "who",
+            "offset": 5,
+            "slot": "0",
+            "type": "address"
+          },
+          {
+            "label": "balances",
+            "offset": 0,
+            "slot": "1",
+            "type": "mapping(address => uint256)"
+          }
+        ],
+        "numberOfBytes": "64"
+      },
+      "t_struct(Shell)1_storage": {
+        "encoding": "inplace",
+        "label": "struct PackedSubstruct.Shell",
+        "members": [
+          {
+            "label": "counters",
+            "offset": 0,
+            "slot": "0",
+            "type": "t_struct(Counters)0_storage"
+          },
+          {
+            "label": "tag",
+            "offset": 0,
+            "slot": "2",
+            "type": "uint16"
+          },
+          {
+            "label": "items",
+            "offset": 0,
+            "slot": "3",
+            "type": "uint256[]"
+          }
+        ],
+        "numberOfBytes": "128"
+      }
+    }
+  }
+}

@@ -8,18 +8,7 @@ use crate::signature::SolType;
 /// Each expression reads from `input` at `__decode_offset` and advances
 /// `__decode_offset` by the type's `HEAD_SIZE`. The caller must emit
 /// `let mut __decode_offset: usize = 0;` before using these.
-pub fn generate_decode_params(types: &[syn::Type], is_constructor: bool) -> Vec<TokenStream> {
-    let ret = if is_constructor {
-        quote! {
-            #[allow(unreachable_code)]
-            return ();
-        }
-    } else {
-        quote! {
-            #[allow(unreachable_code)]
-            return ::core::option::Option::Some(());
-        }
-    };
+pub fn generate_decode_params(types: &[syn::Type]) -> Vec<TokenStream> {
     types
         .iter()
         .map(|ty| {
@@ -31,14 +20,14 @@ pub fn generate_decode_params(types: &[syn::Type], is_constructor: bool) -> Vec<
                     let __value = unsafe { <#ty as ::pvm_contract_sdk::StaticDecode>::decode_unchecked(&input, __decode_offset) };
                 }
             } else {
+                // `revert` is `-> !`, so it satisfies the `let-else` divergence
+                // requirement directly — no explicit `return` needed.
                 quote! {
                     let Ok(__value) = <#ty as ::pvm_contract_sdk::SolDecode>::decode_at(&input, __decode_offset) else {
-                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::return_value(
+                        <::pvm_contract_sdk::Host as ::pvm_contract_sdk::HostApi>::revert(
                             this.host(),
-                            ::pvm_contract_sdk::ReturnFlags::REVERT,
                             &::pvm_contract_sdk::framework_errors::INVALID_CALLDATA,
-                        );
-                        #ret
+                        )
                     };
                 }
             };

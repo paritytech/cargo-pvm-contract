@@ -1,0 +1,5 @@
+error: #[interface_id]: generic interfaces are not supported; an interface ID must be a single fixed constant
+ --> tests/ui/interface_id_generic_trait.rs:3:11
+  |
+3 | pub trait IGeneric<T> {
+  |           ^^^^^^^^

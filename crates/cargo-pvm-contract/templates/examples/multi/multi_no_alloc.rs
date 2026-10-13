@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_sdk::Address;
 use pvm_contract_sdk::U256;
@@ -7,7 +6,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("Multi.sol", buffer = 256)]
 mod multi {
     use super::*;
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     pub struct Multi;
 

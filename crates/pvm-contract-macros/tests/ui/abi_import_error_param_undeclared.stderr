@@ -1,0 +1,12 @@
+error: undeclared type `Missing` in the `.sol` interface; declare it in this file (imports are not followed)
+  --> tests/ui/abi_import_error_param_undeclared.rs:5:1
+   |
+ 5 | / pvm_contract_macros::abi_import! {
+ 6 | |     error Bad(Missing m);
+ 7 | |     interface I {
+ 8 | |         function f(uint256 x) external;
+ 9 | |     }
+10 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `pvm_contract_macros::abi_import` (in Nightly builds, run with -Z macro-backtrace for more info)

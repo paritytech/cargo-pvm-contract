@@ -2,7 +2,7 @@
 
 A non-macro alternative to `#[contract]`. You wire up dispatch manually using `ContractBuilder`, with no proc macros and full explicit control over entry points and method routing.
 
-> **Host handle:** DSL handlers take a concrete `&Host`. On `riscv64` `Host` is a zero-sized wrapper around `PolkaVmHost`, with `#[inline(always)]` delegations on every `HostApi` method, so production builds pay no indirection. In native unit tests `Host` wraps `Rc<dyn HostApi>` (via `Host::from_dyn`) so a `MockHost` can back the same handler signature without changing it. This matches the `#[contract]` macro path, which also threads a concrete `Host` through the storage struct.
+> **Host handle:** DSL handlers take a concrete `&Host`. On `riscv64` `Host` is a zero-sized wrapper around `PolkaVmHost`, with `#[inline(always)]` delegations on every `HostApi` method, so production builds pay no indirection. In native unit tests `Host` wraps `Rc<dyn HostApi>` (via `Host::from_dyn`) so a `MockHost` can back the same handler signature without changing it. This matches the `#[contract]` macro path, which also threads a concrete `Host` through the storage struct. Handlers read transaction and block context via `host.env()` (`caller`, `value`, `block_number`, `timestamp`, `chain_id`) rather than decoding raw `HostApi` buffers by hand — see [Environment Access](proc-macros.md#environment-access) for the accessor table and the little-endian byte-order rule it hides.
 
 ## Basic Usage
 
@@ -189,6 +189,18 @@ fn transfer_handler(host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerRe
     // Mutating call — `&mut cx` satisfies `&mut impl ContractContext`.
     Erc20::from_address(addr).transfer(to, amount).call(&mut cx)?;
     HandlerResult::Ok(0)
+}
+```
+
+`ContractContext::env()` gives the same read-only context accessor a macro
+contract gets from `self.env()`, so a handler that already holds a `Context`
+reads through it (`cx.env().caller()`) rather than reaching back for the host.
+Because `env()` lives on the trait, a helper written against the typed-call
+bound gets it too:
+
+```rust,ignore
+fn only_owner(cx: &impl ContractContext) -> bool {
+    cx.env().caller() == OWNER
 }
 ```
 

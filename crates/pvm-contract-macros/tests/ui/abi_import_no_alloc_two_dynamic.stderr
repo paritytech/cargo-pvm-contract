@@ -1,0 +1,11 @@
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_no_alloc_two_dynamic.rs:7:24
+  |
+7 |         function greet(string memory who, bytes memory data) external;
+  |                        ^^^^^^
+
+error: Enable alloc to support dynamic types
+ --> tests/ui/abi_import_no_alloc_two_dynamic.rs:7:43
+  |
+7 |         function greet(string memory who, bytes memory data) external;
+  |                                           ^^^^^

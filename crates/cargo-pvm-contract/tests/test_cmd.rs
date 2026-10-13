@@ -277,7 +277,9 @@ fn verify_abi_json(project_dir: &Path, binary_name: &str, profile: &str) {
     );
 
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
-    let abi: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    let value: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    // Contracts with storage wrap the ABI as {"abi": [...], "storageLayout": {...}}.
+    let abi = value.get("abi").unwrap_or(&value);
     assert!(abi.is_array(), "ABI should be an array");
 }
 
@@ -429,7 +431,14 @@ fn abi_json_has_correct_structure() {
         .join("debug")
         .join("abi-test.abi.json");
     let abi_content = std::fs::read_to_string(&abi_file).expect("read ABI file");
-    let abi: Vec<serde_json::Value> = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    let value: serde_json::Value = serde_json::from_str(&abi_content).expect("parse ABI JSON");
+    // Contracts with storage wrap the ABI as {"abi": [...], "storageLayout": {...}}.
+    let abi = value
+        .get("abi")
+        .unwrap_or(&value)
+        .as_array()
+        .expect("ABI should be an array")
+        .clone();
 
     let function_names: Vec<&str> = abi
         .iter()
@@ -797,6 +806,56 @@ fn scaffold_from_sol_macro_no_alloc_static_surface() {
         "macro",
         Some("no-alloc"),
         &sol,
+    );
+}
+
+#[test]
+fn scaffold_from_sol_macro_tuple_structs() {
+    // Solidity `struct` params/returns become generated `#[derive(SolType)]`
+    // structs. Exercises a plain struct, a struct array (`Point[]`), and a
+    // nested struct, through the full solc -> scaffold -> build round-trip.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "TupleIface",
+        "    struct Point { uint64 x; uint64 y; }\n\
+         \x20   struct Nested { Point p; uint256 label; }\n\
+         \x20   function addPoint(Point calldata a, Point calldata b) external pure returns (Point memory);\n\
+         \x20   function sumAll(Point[] calldata pts) external view returns (uint256);\n\
+         \x20   function nested(Nested calldata n) external returns (Nested memory);",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "tuple-structs", "macro", Some("bump"), &sol);
+}
+
+#[test]
+fn scaffold_from_sol_macro_struct_keyword_field() {
+    // A Solidity struct field named `ref` is a Rust keyword; the generated
+    // struct must raw-identify it (`r#ref`) so the project still builds.
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "KwIface",
+        "    struct Order { address from; uint256 ref; uint256 amount; }\n\
+         \x20   function place(Order calldata o) external returns (uint256);",
+    );
+    scaffold_from_sol_and_build(&temp_dir, "kw-field", "macro", Some("bump"), &sol);
+}
+
+#[test]
+fn scaffold_rejects_dsl_tuple() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let sol = sol_interface(
+        "DslTuple",
+        "    struct Point { uint64 x; uint64 y; }\n\
+         \x20   function addPoint(Point calldata a) external;",
+    );
+    let output = scaffold_init_with_dsl_dynamic(&temp_dir, "dsl-tuple", &sol);
+    assert!(
+        !output.status.success(),
+        "expected scaffold to fail with DSL + tuple"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("tuple"),
+        "expected tuple-mentioning error, got stderr: {stderr}"
     );
 }
 

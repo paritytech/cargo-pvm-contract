@@ -10,7 +10,7 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract]
 mod my_contract {
     use super::*;
-    use pvm_contract_sdk::{StorageFlags};
+    use pvm_contract_sdk::StorageFlags;
 
     pub struct MyContract;
 
@@ -23,7 +23,9 @@ mod my_contract {
             let key_bytes = key.to_be_bytes::<32>();
             let mut buf = [0u8; 32];
             let mut out = buf.as_mut_slice();
-            let _ = self.host().get_storage(StorageFlags::empty(), &key_bytes, &mut out);
+            let _ = self
+                .host()
+                .get_storage(StorageFlags::empty(), &key_bytes, &mut out);
             U256::from_be_bytes::<32>(buf)
         }
 
@@ -31,7 +33,8 @@ mod my_contract {
         pub fn write_storage(&mut self, key: U256, value: U256) {
             let key_bytes = key.to_be_bytes::<32>();
             let value_bytes = value.to_be_bytes::<32>();
-            self.host().set_storage(StorageFlags::empty(), &key_bytes, &value_bytes);
+            self.host()
+                .set_storage(StorageFlags::empty(), &key_bytes, &value_bytes);
         }
 
         #[pvm_contract_sdk::method]

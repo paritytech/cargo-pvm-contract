@@ -1,0 +1,5 @@
+error: duplicate `#[selector(name = "...")]`; a method may carry at most one
+  --> tests/ui/selector_duplicate.rs:13:9
+   |
+13 |         #[pvm_contract_macros::selector(name = "b")]
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

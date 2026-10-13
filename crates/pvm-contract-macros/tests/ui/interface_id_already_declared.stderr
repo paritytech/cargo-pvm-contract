@@ -1,0 +1,5 @@
+error: #[interface_id]: the trait already declares `INTERFACE_ID`; remove it and let the macro generate it
+ --> tests/ui/interface_id_already_declared.rs:4:11
+  |
+4 |     const INTERFACE_ID: [u8; 4];
+  |           ^^^^^^^^^^^^

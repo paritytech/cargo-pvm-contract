@@ -2,7 +2,7 @@
 
 #[pvm_contract_sdk::contract]
 mod my_contract {
-    use pvm_contract_sdk::{Address};
+    use pvm_contract_sdk::Address;
     use ruint::aliases::U256;
 
     pub struct MyContract;

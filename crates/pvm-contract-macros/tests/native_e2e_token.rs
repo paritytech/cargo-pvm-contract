@@ -20,7 +20,8 @@
 //! tests — all host calls route through `MockHost`.
 
 use pvm_contract_types::{
-    Address, MockHost, MockHostBuilder, ReturnFlags, Router, SolDecode, SolEncode, StaticEncodedLen,
+    Address, MockHost, MockHostBuilder, OutSink, Outcome, ReturnFlags, Router, SolDecode,
+    SolEncode, StaticEncodedLen,
 };
 use ruint::aliases::U256;
 
@@ -225,38 +226,39 @@ fn read_balance(host: &MockHost, addr: [u8; 20]) -> U256 {
     U256::from_be_bytes::<32>(bytes)
 }
 
-/// Call `route()`, expect a successful match (selector handled and
-/// `return_value` called with `flags == empty`), and return the captured
-/// encoded data.
+/// Call `route()`, expect a successful match, and return the encoded data the
+/// arm wrote into the output buffer. `route()` returns `Outcome::Return(n)`
+/// without touching the host, so this asserts on the returned value directly.
 fn route_ok(
     contract: &mut mini_token::MiniToken,
-    mock: &MockHost,
+    _mock: &MockHost,
     sel: [u8; 4],
     input: &[u8],
 ) -> Vec<u8> {
-    let outcome = mini_token::route(contract, sel, input);
-    assert_eq!(outcome, Some(()), "expected matched selector");
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::empty(), "expected success flags");
-    rv.data
+    let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    match mini_token::route(contract, sel, input, &mut out) {
+        Outcome::Return(n) => out.view(n).to_vec(),
+        other => panic!("expected Return, got {other:?}"),
+    }
 }
 
-/// Call `route()`, expect a revert (selector handled and `return_value`
-/// called with `flags == REVERT`), and return the captured revert payload.
+/// Call `route()` for a method whose own `Err(e)` reverts, and return the
+/// encoded revert payload. A revert diverges through the `revert` door (`-> !`),
+/// which unwinds on host, so it's caught with `expect_revert` — the same idiom
+/// as every other revert (size check, storage `Panic`, …).
 fn route_revert(
     contract: &mut mini_token::MiniToken,
     mock: &MockHost,
     sel: [u8; 4],
     input: &[u8],
 ) -> Vec<u8> {
-    let outcome = mini_token::route(contract, sel, input);
-    assert_eq!(outcome, Some(()), "expected matched selector");
-    let rv = mock
-        .take_return_value()
-        .expect("contract called return_value");
-    assert_eq!(rv.flags, ReturnFlags::REVERT, "expected REVERT flags");
+    let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let rv = mock.expect_revert(|| {
+        mini_token::route(contract, sel, input, &mut out);
+    });
+    assert_eq!(rv.flags, ReturnFlags::REVERT);
     rv.data
 }
 
@@ -404,14 +406,20 @@ fn short_input_reverts_with_framework_invalid_calldata() {
 
     let short = [0u8; 10]; // need 64 bytes for (Address, U256)
 
-    let data = route_revert(
-        &mut contract,
-        &mock,
-        selector("transfer(address,uint256)"),
-        &short,
-    );
+    // Size-check failure diverges via `host.revert` (unwinds on host) — caught
+    // with `expect_revert`, like every revert.
+    let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let rv = mock.expect_revert(|| {
+        mini_token::route(
+            &mut contract,
+            selector("transfer(address,uint256)"),
+            &short,
+            &mut out,
+        );
+    });
     assert_eq!(
-        data,
+        rv.data,
         pvm_contract_types::framework_errors::INVALID_CALLDATA.as_slice()
     );
 }
@@ -421,9 +429,10 @@ fn unknown_selector_returns_unhandled() {
     let mock = host_with_caller(ALICE);
     let mut contract = make_contract(&mock);
 
-    let outcome = mini_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[]);
-    assert_eq!(outcome, None);
-    assert!(mock.take_return_value().is_none());
+    let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = mini_token::route(&mut contract, [0xDE, 0xAD, 0xBE, 0xEF], &[], &mut out);
+    assert_eq!(outcome, Outcome::Unhandled);
 }
 
 #[test]
@@ -489,19 +498,22 @@ fn router_trait_path_produces_identical_result_to_free_fn() {
     let input = encode_balance_of_calldata(Address::from(ALICE));
     let sel = selector("balanceOf(address)");
 
-    // Drive via the free function, take the captured return.
-    let outcome = mini_token::route(&mut contract, sel, &input);
-    assert_eq!(outcome, Some(()));
-    let free = mock
-        .take_return_value()
-        .expect("free fn called return_value");
+    // Drive via the free function.
+    let mut buf = [0u8; mini_token::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let free = match mini_token::route(&mut contract, sel, &input, &mut out) {
+        Outcome::Return(n) => out.view(n).to_vec(),
+        other => panic!("expected Return, got {other:?}"),
+    };
 
-    // Drive via the Router trait, take the freshly captured return.
-    let outcome = <mini_token::MiniToken as Router>::route(&mut contract, sel, &input);
-    assert_eq!(outcome, Some(()));
-    let via_trait = mock
-        .take_return_value()
-        .expect("trait route called return_value");
+    // Drive via the Router trait — must produce identical bytes.
+    let mut buf2 = [0u8; mini_token::MAX_RETURN_LEN];
+    let mut out2: &mut [u8] = &mut buf2;
+    let via_trait =
+        match <mini_token::MiniToken as Router>::route(&mut contract, sel, &input, &mut out2) {
+            Outcome::Return(n) => out2.view(n).to_vec(),
+            other => panic!("expected Return, got {other:?}"),
+        };
 
     assert_eq!(free, via_trait);
 }

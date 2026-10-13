@@ -1,9 +1,10 @@
 //! Regression test: a view-style `&self` method must not be able to mutate
-//! storage through a nested-mapping `.view()` chain. `Mapping<K, V>` for
-//! `V: StorageComponent` exposes `view(&self) -> Ref<'_, V>` (read) and
-//! `view_mut(&mut self) -> RefMut<'_, V>` (write). The `&self` caller can
-//! only obtain `Ref<'_, …>`, which has no `DerefMut` impl, so `insert`
-//! (which requires `&mut self` on the inner mapping) is unreachable.
+//! storage through a nested-mapping `.get()` chain. `Mapping<K, V>` for
+//! `V: StorageType` exposes `get(&self) -> V::Get<'_>` (a `Ref<'_, V>` for a
+//! container V) and `entry(&mut self) -> V::GetMut<'_>` (a `RefMut<'_, V>`).
+//! The `&self` caller can only obtain `Ref<'_, …>`, which has no `DerefMut`
+//! impl, so `insert` (which requires `&mut self` on the inner mapping) is
+//! unreachable.
 use pvm_contract_types::{Address, Host, MockHostBuilder};
 use pvm_storage::{Mapping, StorageKey};
 use ruint::aliases::U256;
@@ -15,10 +16,10 @@ struct Storage {
 
 impl Storage {
     fn try_bypass_view(&self, owner: Address, spender: Address) {
-        // `self.allowances.view(&owner)` returns `Ref<'_, Mapping<...>>`,
+        // `self.allowances.get(&owner)` returns `Ref<'_, Mapping<...>>`,
         // which has no `DerefMut` impl — `insert` requires `&mut self` on
         // the inner mapping and is therefore unreachable.
-        let mut inner = self.allowances.view(&owner);
+        let mut inner = self.allowances.get(&owner);
         inner.insert(&spender, &U256::from(9999));
     }
 }

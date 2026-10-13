@@ -1,4 +1,4 @@
-#![doc = include_str!("../../../specs/builder-dsl.md")]
+#![doc = include_str!("../builder-dsl.md")]
 #![no_std]
 
 pub use pallet_revive_uapi;
@@ -8,7 +8,7 @@ pub use polkavm_derive::polkavm_export;
 pub use pvm_contract_types;
 pub use ruint;
 
-use pvm_contract_types::{Host, HostApi, ReturnFlags};
+use pvm_contract_types::{Host, HostApi};
 
 /// 4-byte Solidity function selector.
 pub type Selector = [u8; 4];
@@ -22,10 +22,7 @@ pub type Selector = [u8; 4];
 #[inline(always)]
 pub fn assert_non_payable_deploy(host: &Host) {
     if pvm_contract_types::value_transferred_is_nonzero(host) {
-        host.return_value(
-            ReturnFlags::REVERT,
-            &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED,
-        );
+        host.revert(&pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED);
     }
 }
 
@@ -231,14 +228,15 @@ impl ContractBuilder {
         None
     }
 
-    /// Read calldata from the host, match the selector, and call
-    /// `host.return_value(flags, data)` directly with the encoded result.
+    /// Read calldata from the host, match the selector, and hand the encoded
+    /// result to the host: `host.return_value(data)` on success, `host.revert(data)`
+    /// on failure (unmatched selector, short calldata, or a handler revert).
     ///
-    /// On `riscv64`, `host.return_value` is the `pallet_revive_uapi` syscall
-    /// (`-> !`) and dispatch terminates the contract. On host targets, the
-    /// `MockHost` implementation captures `(flags, data)` and returns
-    /// control — tests inspect the result via
-    /// `MockHost::take_return_value()`.
+    /// On `riscv64` both are the `pallet_revive_uapi` syscall (`-> !`) and
+    /// dispatch terminates the contract. On host targets, `MockHost` captures a
+    /// success into a `ReturnValue` and returns control (inspect via
+    /// `MockHost::take_return_value()`), while a revert unwinds (assert via
+    /// `MockHost::expect_revert`).
     ///
     /// Mirrors the `#[contract]` macro's `route()` shape: same dispatch
     /// architecture across DSL and macro paths, same test ergonomics.
@@ -256,40 +254,22 @@ impl ContractBuilder {
         let call_data_len = host.call_data_size() as usize;
 
         if call_data_len > BUF_SIZE {
-            host.return_value(
-                ReturnFlags::REVERT,
-                &pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE,
-            );
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
         } else {
             let mut calldata = [0u8; BUF_SIZE];
             host.call_data_copy(&mut calldata[..call_data_len], 0);
 
             if call_data_len < 4 {
-                host.return_value(
-                    ReturnFlags::REVERT,
-                    &pvm_contract_types::framework_errors::NO_SELECTOR,
-                );
+                host.revert(&pvm_contract_types::framework_errors::NO_SELECTOR);
             } else {
                 let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
                 let input = &calldata[4..call_data_len];
                 let mut output = [0u8; BUF_SIZE];
 
                 if let Some(result) = self.try_route(host, selector, input, &mut output) {
-                    let (flags, raw_len) = match result {
-                        HandlerResult::Ok(n) => (ReturnFlags::empty(), n),
-                        HandlerResult::Revert(n) => (ReturnFlags::REVERT, n),
-                    };
-                    let len = if raw_len > BUF_SIZE {
-                        BUF_SIZE
-                    } else {
-                        raw_len
-                    };
-                    host.return_value(flags, &output[..len]);
+                    finalize_response(host, &mut output, result);
                 } else {
-                    host.return_value(
-                        ReturnFlags::REVERT,
-                        &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR,
-                    );
+                    host.revert(&pvm_contract_types::framework_errors::UNKNOWN_SELECTOR);
                 }
             }
         }
@@ -362,16 +342,11 @@ impl ContractBuilderWithHandlers {
     /// Dispatch entry point — semantics described on
     /// [`ContractBuilderWithHandlers`].
     #[inline]
-    #[allow(unreachable_code)]
     pub fn dispatch_impl<const BUF_SIZE: usize>(&self, host: &Host) {
         let call_data_len = host.call_data_size() as usize;
 
         if call_data_len > BUF_SIZE {
-            host.return_value(
-                ReturnFlags::REVERT,
-                &pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE,
-            );
-            return;
+            host.revert(&pvm_contract_types::framework_errors::CALLDATA_TOO_LARGE);
         }
 
         let mut calldata = [0u8; BUF_SIZE];
@@ -382,7 +357,7 @@ impl ContractBuilderWithHandlers {
             && let Some(receive) = self.receive
         {
             let result = receive(host, &[], &mut output);
-            finalize_response(host, &output, result);
+            finalize_response(host, &mut output, result);
             return;
         }
 
@@ -392,7 +367,7 @@ impl ContractBuilderWithHandlers {
             let selector: Selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
             let input = &calldata[4..call_data_len];
             if let Some(result) = self.inner.try_route(host, selector, input, &mut output) {
-                finalize_response(host, &output, result);
+                finalize_response(host, &mut output, result);
                 return;
             }
             &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR
@@ -403,36 +378,44 @@ impl ContractBuilderWithHandlers {
                 output[..4].copy_from_slice(
                     &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED,
                 );
-                host.return_value(ReturnFlags::REVERT, &output[..4]);
-                return;
+                host.revert(&output[..4]);
             }
             let result = handler(host, &calldata[..call_data_len], &mut output);
-            finalize_response(host, &output, result);
+            finalize_response(host, &mut output, result);
             return;
         }
 
-        host.return_value(ReturnFlags::REVERT, default_err);
+        host.revert(default_err);
     }
 }
 
+/// Hand a [`HandlerResult`] to the host: success is lowered through the shared
+/// [`pvm_contract_types::finalize_outcome`] success exit — the same door the
+/// `#[contract]` macro uses — while a revert diverges directly through
+/// [`HostApi::revert`], matching the macro path (all reverts diverge; only the
+/// non-reverting result flows as an `Outcome`).
+///
+/// The length is clamped to the buffer first: a [`MethodHandler`] is a
+/// user-supplied `fn` (untrusted), so a bad `n` must not index past `output`.
+/// The macro path skips this clamp because its lengths come from trusted codegen.
 #[inline(always)]
-fn finalize_response(host: &Host, output: &[u8], result: HandlerResult) {
-    let (flags, raw_len) = match result {
-        HandlerResult::Ok(n) => (ReturnFlags::empty(), n),
-        HandlerResult::Revert(n) => (ReturnFlags::REVERT, n),
-    };
-    let len = if raw_len > output.len() {
-        output.len()
-    } else {
-        raw_len
-    };
-    host.return_value(flags, &output[..len]);
+fn finalize_response(host: &Host, output: &mut [u8], result: HandlerResult) {
+    match result {
+        HandlerResult::Ok(n) => {
+            let outcome = pvm_contract_types::Outcome::Return(n.min(output.len()));
+            pvm_contract_types::finalize_outcome(host, outcome, &output);
+        }
+        HandlerResult::Revert(n) => {
+            let len = n.min(output.len());
+            host.revert(&output[..len]);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pvm_contract_types::{Host, MockHost};
+    use pvm_contract_types::{Host, MockHost, U256};
 
     const DEPOSIT: Selector = [0xde, 0x00, 0x00, 0x01];
     const TRANSFER: Selector = [0x7f, 0x00, 0x00, 0x02];
@@ -526,11 +509,11 @@ mod tests {
     #[test]
     fn empty_calldata_without_receive_or_fallback_reverts_no_selector() {
         let mock = Rc::new(MockHostBuilder::new().build());
-        ContractBuilder::new()
-            .method(TRANSFER, dummy_handler)
-            .dispatch_impl::<256>(&wrap(&mock));
-        let rv = mock.take_return_value().unwrap();
-        assert!(rv.flags.contains(ReturnFlags::REVERT));
+        let rv = mock.expect_revert(|| {
+            ContractBuilder::new()
+                .method(TRANSFER, dummy_handler)
+                .dispatch_impl::<256>(&wrap(&mock));
+        });
         assert_eq!(
             &rv.data[..],
             &pvm_contract_types::framework_errors::NO_SELECTOR
@@ -573,11 +556,11 @@ mod tests {
                 .calldata(vec![0xff, 0xff, 0xff, 0xff])
                 .build(),
         );
-        ContractBuilder::new()
-            .method(TRANSFER, dummy_handler)
-            .dispatch_impl::<256>(&wrap(&mock));
-        let rv = mock.take_return_value().unwrap();
-        assert!(rv.flags.contains(ReturnFlags::REVERT));
+        let rv = mock.expect_revert(|| {
+            ContractBuilder::new()
+                .method(TRANSFER, dummy_handler)
+                .dispatch_impl::<256>(&wrap(&mock));
+        });
         assert_eq!(
             &rv.data[..],
             &pvm_contract_types::framework_errors::UNKNOWN_SELECTOR
@@ -589,17 +572,14 @@ mod tests {
         let mock = Rc::new(
             MockHostBuilder::new()
                 .calldata(vec![0xff, 0xff, 0xff, 0xff])
-                .value_transferred([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 1,
-                ])
+                .value_transferred(U256::from(1u8))
                 .build(),
         );
-        ContractBuilder::new()
-            .fallback(ok_marker_handler)
-            .dispatch_impl::<256>(&wrap(&mock));
-        let rv = mock.take_return_value().unwrap();
-        assert!(rv.flags.contains(ReturnFlags::REVERT));
+        let rv = mock.expect_revert(|| {
+            ContractBuilder::new()
+                .fallback(ok_marker_handler)
+                .dispatch_impl::<256>(&wrap(&mock));
+        });
         assert_eq!(
             &rv.data[..],
             &pvm_contract_types::framework_errors::NON_PAYABLE_VALUE_RECEIVED
@@ -611,10 +591,7 @@ mod tests {
         let mock = Rc::new(
             MockHostBuilder::new()
                 .calldata(vec![0xff, 0xff, 0xff, 0xff])
-                .value_transferred([
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 1,
-                ])
+                .value_transferred(U256::from(1u8))
                 .build(),
         );
         ContractBuilder::new()

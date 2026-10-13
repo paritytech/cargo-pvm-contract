@@ -5,7 +5,6 @@ use pvm_contract_sdk::U256;
 #[pvm_contract_sdk::contract("CompositeTypes.sol", allocator = "pico")]
 mod composite_types {
     use super::*;
-    use pvm_contract_sdk::{HostApi};
 
     pub struct CompositeTypes;
 

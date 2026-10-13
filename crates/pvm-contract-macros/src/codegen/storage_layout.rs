@@ -118,27 +118,33 @@ pub(super) fn slot_chain_consts(
     (items, idents)
 }
 
-/// Generate the TokenStream that pushes storage-layout entries for one field
-/// into the local `entries` Vec.
+/// Generate the TokenStream that pushes a storage-layout entry for one field
+/// into the local `entries` Vec, and registers/threads a `types` registry
+/// for struct-typed fields.
 ///
 /// Every field — `Lazy<T>`, `Mapping<K, V>`, or an embedded `#[storage]`
 /// sub-struct — dispatches uniformly through
-/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`]. Leaf types push a
-/// single entry; sub-structs recursively flatten their own leaves into the
-/// same `entries` Vec, prefixing labels with the field path
-/// (`erc20.total_supply`, `metadata.name`, …) per solc convention. There is
-/// no syntactic type-name special-casing: `<#ty as StorageLayoutEmit>` is the
-/// single source of truth for both the entry's `type` string and its layout,
-/// so adding a storage component is a pure trait-impl task.
+/// [`pvm_contract_sdk::StorageLayoutEmit::emit_entries`]. Every field, leaf
+/// or struct-typed, pushes exactly one entry into `entries`; struct-typed
+/// fields additionally register their own member breakdown into the `types`
+/// registry via `StorageTypeName::emit_members`, rather than flattening
+/// into `entries`. There is no syntactic type-name special-casing: `<#ty as
+/// StorageLayoutEmit>` is the single source of truth for both the entry's
+/// `type` string and its layout, so adding a storage component is a pure
+/// trait-impl task.
 ///
 /// `slot_expr` is a `u64` expression (literal or `base + __pvm_storage_offset_*`
 /// const); `offset_expr` is a `u8` expression (the packed byte offset, `0` for
 /// full-slot fields). `prefix_expr` is a `&str` expression: `""` at the top of
-/// a `#[contract]`, the inherited `name_prefix` argument inside a `#[storage]`
-/// `emit_entries` body.
+/// a `#[contract]`, the local `name_prefix` binding (also `""`) inside a
+/// `#[storage]` `emit_members` body, where the pushed entries are the
+/// struct's `members` and carry bare field names.
 ///
-/// Used by `#[contract]`'s `__storage_layout_json` (top-level) and `#[storage]`'s
-/// `emit_entries` (sub-storage).
+/// Used by `#[contract]`'s `__storage_layout_json` (top-level entries) and
+/// `#[storage]`'s `StorageTypeName::emit_members` (the struct's `members`
+/// list in the `types` table, with `base = 0` so slots are struct-relative).
+/// The caller must also have `contract_name: &str` and
+/// `registry: &mut LayoutTypesRegistry` bindings in scope.
 pub(super) fn generate_layout_emit(
     field_name_str: &str,
     ty: &syn::Type,
@@ -158,7 +164,7 @@ pub(super) fn generate_layout_emit(
     // bytes (distance from the most-significant byte). solc's `storageLayout`
     // counts `offset` from the least-significant byte, so convert here —
     // `solc_offset = 32 - high - size`, where `size` is the field's packed
-    // width (`StorageComponent::PACKED_BYTES`). Right-alignment holds for every
+    // width (`StorageType::PACKED_BYTES`). Right-alignment holds for every
     // value type in solc storage (integers, bool, address, `bytesN`), and
     // full-slot leaves (`PACKED_BYTES == 32`, `high == 0`) map to `0`
     // unchanged, so this one formula covers every leaf. The leaf `emit_entries`
@@ -168,7 +174,7 @@ pub(super) fn generate_layout_emit(
         {
             let __high: u8 = #offset_expr;
             32u8 - __high
-                - <#ty as ::pvm_contract_sdk::StorageComponent>::PACKED_BYTES as u8
+                - <#ty as ::pvm_contract_sdk::StorageType>::PACKED_BYTES as u8
         }
     };
     quote! {
@@ -176,14 +182,28 @@ pub(super) fn generate_layout_emit(
             #slot_expr,
             #solc_offset,
             &::pvm_contract_sdk::join_label(#prefix_expr, #field_name_str),
+            contract_name,
             entries,
+            registry,
         );
     }
 }
 
-/// Extract the `#[slot(N)]` attribute value from a field, if present.
+/// A parsed `#[slot(...)]` attribute value.
+#[derive(Debug, Clone)]
+pub(super) enum SlotAttr {
+    /// `#[slot(N)]` — a numeric slot index in the compiler-assigned range.
+    Numeric(u64),
+    /// `#[slot(raw = EXPR)]` — bind the field to a fixed, externally-known
+    /// 32-byte slot (e.g. an EIP-1967 proxy slot). `EXPR` must evaluate to a
+    /// `[u8; 32]`; it is quoted verbatim into the field initializer.
+    Raw(syn::Expr),
+}
+
+/// Extract the `#[slot(...)]` attribute value from a field, if present.
+/// Accepts either `#[slot(N)]` (numeric) or `#[slot(raw = EXPR)]`.
 /// Returns `None` when the field has no `#[slot]` attribute.
-pub(super) fn extract_optional_slot_attr(field: &syn::Field) -> syn::Result<Option<u64>> {
+pub(super) fn extract_optional_slot_attr(field: &syn::Field) -> syn::Result<Option<SlotAttr>> {
     let mut found: Option<&syn::Attribute> = None;
     for attr in &field.attrs {
         if attr.path().is_ident("slot") {
@@ -199,6 +219,21 @@ pub(super) fn extract_optional_slot_attr(field: &syn::Field) -> syn::Result<Opti
     let Some(attr) = found else {
         return Ok(None);
     };
-    let slot: syn::LitInt = attr.parse_args()?;
-    Ok(Some(slot.base10_parse::<u64>()?))
+    let parsed = attr.parse_args_with(|input: syn::parse::ParseStream| {
+        if input.peek(syn::Ident) {
+            let ident: syn::Ident = input.parse()?;
+            if ident != "raw" {
+                return Err(syn::Error::new_spanned(
+                    &ident,
+                    "expected an integer slot literal or `raw = <[u8; 32] expr>`",
+                ));
+            }
+            input.parse::<syn::Token![=]>()?;
+            Ok(SlotAttr::Raw(input.parse::<syn::Expr>()?))
+        } else {
+            let slot: syn::LitInt = input.parse()?;
+            Ok(SlotAttr::Numeric(slot.base10_parse::<u64>()?))
+        }
+    })?;
+    Ok(Some(parsed))
 }

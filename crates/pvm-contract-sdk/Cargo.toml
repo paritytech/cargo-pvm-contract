@@ -7,12 +7,12 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-pvm-contract-macros = { path = "../pvm-contract-macros" }
-pvm-contract-types = { path = "../pvm-contract-types", default-features = false }
-pvm-contract-core = { path = "../pvm-contract-core" }
+pvm-contract-macros = { path = "../pvm-contract-macros", version = "0.4.0" }
+pvm-contract-types = { path = "../pvm-contract-types", version = "0.4.0", default-features = false }
+pvm-contract-core = { path = "../pvm-contract-core", version = "0.4.0" }
 polkavm-derive = { workspace = true }
 ruint = { workspace = true, default-features = false }
-pvm-storage = { path = "../pvm-storage", default-features = false }
+pvm-storage = { path = "../pvm-storage", version = "0.4.0", default-features = false }
 
 [features]
 default = []

@@ -1,8 +1,9 @@
 #![no_main]
 #![no_std]
 
-// `HostApi` is needed so the `host.get_storage(...)` / `set_storage(...)` /
-// `value_transferred(...)` method calls below resolve through the trait.
+// `HostApi` is needed so the `host.get_storage(...)` / `set_storage(...)`
+// method calls below resolve through the trait. `msg.value` is read via the
+// typed `host.env().value()` accessor instead of the raw host call.
 use pvm_contract_builder_dsl::pvm_contract_types::{
     Host, HostApi, SolEncode, StaticEncodedLen, StorageFlags,
 };
@@ -50,9 +51,7 @@ fn write_u256(host: &Host, key: &[u8; 32], value: U256) {
 }
 
 fn receive_handler(host: &Host, _input: &[u8], _output: &mut [u8]) -> HandlerResult {
-    let mut value_buf = [0u8; 32];
-    host.value_transferred(&mut value_buf);
-    let value = U256::from_le_bytes(value_buf);
+    let value = host.env().value();
 
     let total = read_u256(host, &TOTAL_KEY);
     write_u256(host, &TOTAL_KEY, total.saturating_add(value));

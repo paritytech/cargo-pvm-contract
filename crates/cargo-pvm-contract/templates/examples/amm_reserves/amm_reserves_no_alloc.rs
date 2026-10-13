@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 // Simplified Uniswap V2-style packed pool reserves. The two `u128` fields
 // live inside one `Lazy<Reserves>` so the storage cell occupies exactly one

@@ -41,7 +41,7 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.caller();
+            let caller = self.env().caller();
 
             let mut sender_cell = self.balances.entry(&caller);
             let sender_balance = sender_cell.get();
@@ -73,10 +73,5 @@ mod my_token {
             Ok(())
         }
 
-        fn caller(&self) -> Address {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            Address(caller)
-        }
     }
 }

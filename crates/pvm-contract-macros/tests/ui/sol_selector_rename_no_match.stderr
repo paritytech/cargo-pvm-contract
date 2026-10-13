@@ -1,0 +1,7 @@
+error: No matching Solidity function found for `transfer` in interface
+  --> tests/ui/sol_selector_rename_no_match.rs:10:9
+   |
+10 | /         #[pvm_contract_macros::method]
+11 | |         #[pvm_contract_macros::selector(name = "transfer")]
+12 | |         pub fn transfer_tokens(&mut self) {}
+   | |____________________________________________^

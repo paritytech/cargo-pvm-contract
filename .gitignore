@@ -3,3 +3,5 @@ target
 examples/*/target/
 *.polkavm
 .worktrees
+.DS_Store
+.claude/

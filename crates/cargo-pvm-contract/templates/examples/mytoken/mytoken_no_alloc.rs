@@ -1,5 +1,4 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 use pvm_contract_sdk::U256;
 
@@ -25,7 +24,10 @@ mod my_token {
             let mut supply_bytes = [0u8; 32];
             let mut supply_slice = &mut supply_bytes[..];
 
-            match self.host().get_storage(StorageFlags::empty(), &key, &mut supply_slice) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &key, &mut supply_slice)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(supply_bytes),
                 Err(_) => U256::ZERO,
             }
@@ -38,7 +40,10 @@ mod my_token {
             let mut balance_bytes = [0u8; 32];
             let mut balance_slice = &mut balance_bytes[..];
 
-            match self.host().get_storage(StorageFlags::empty(), &key, &mut balance_slice) {
+            match self
+                .host()
+                .get_storage(StorageFlags::empty(), &key, &mut balance_slice)
+            {
                 Ok(_) => U256::from_be_bytes::<32>(balance_bytes),
                 Err(_) => U256::ZERO,
             }
@@ -46,8 +51,8 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), InsufficientBalance> {
-            let caller = self.get_caller();
-            let sender_balance = self.balance_of(caller.into());
+            let caller = self.env().caller();
+            let sender_balance = self.balance_of(caller);
 
             if sender_balance < amount {
                 return Err(InsufficientBalance);
@@ -58,6 +63,7 @@ mod my_token {
             let new_recipient_balance = recipient_balance + amount;
 
             let to: [u8; 20] = to.into();
+            let caller: [u8; 20] = caller.into();
             self.set_balance(&caller, new_sender_balance);
             self.set_balance(&to, new_recipient_balance);
 
@@ -94,12 +100,6 @@ mod my_token {
             let key = self.balance_key(addr);
             self.host()
                 .set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
-        }
-
-        fn get_caller(&self) -> [u8; 20] {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            caller
         }
     }
 

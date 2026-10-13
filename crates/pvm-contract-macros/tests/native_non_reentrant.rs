@@ -6,9 +6,14 @@
 //! by pre-setting that slot in the mock, and assert the guarded method reverts
 //! with the OZ-compatible `ReentrancyGuardReentrantCall` selector. We also check
 //! the happy path leaves the lock cleared, across every `&mut self` body shape.
+//!
+//! Under the Outcome-in-route model a successful `route()` returns
+//! `Outcome::Return` without calling the host; a revert (including the reentrancy
+//! guard) diverges via `host.revert`, so it's caught with `expect_revert`.
 
 use pvm_contract_types::{
-    HostApi, MockHost, MockHostBuilder, ReturnFlags, StorageFlags, const_keccak256, const_selector,
+    HostApi, MockHost, MockHostBuilder, Outcome, ReturnFlags, ReturnValue, StorageFlags,
+    const_keccak256, const_selector,
 };
 
 #[allow(dead_code)] // `new()` runs only through deploy() (riscv64-gated)
@@ -78,8 +83,7 @@ fn reentrancy_selector() -> [u8; 4] {
     const_selector("ReentrancyGuardReentrantCall()")
 }
 
-fn assert_reverted_with_reentrancy(mock: &MockHost, ctx: &str) {
-    let rv = mock.take_return_value().expect("return_value called");
+fn assert_reentrancy_revert(rv: &ReturnValue, ctx: &str) {
     assert_eq!(rv.flags, ReturnFlags::REVERT, "{ctx}: expected a revert");
     assert_eq!(
         &rv.data[..4],
@@ -102,8 +106,13 @@ fn guarded_methods_revert_when_lock_held() {
     for &sig in GUARDED {
         let (mut contract, mock) = new_contract();
         set_lock(&mock);
-        guarded::route(&mut contract, const_selector(sig), &[]);
-        assert_reverted_with_reentrancy(&mock, sig);
+        // The reentrancy guard diverges via `host.revert`; catch the unwind.
+        let mut buf = [0u8; guarded::MAX_RETURN_LEN];
+        let mut out: &mut [u8] = &mut buf;
+        let rv = mock.expect_revert(|| {
+            guarded::route(&mut contract, const_selector(sig), &[], &mut out);
+        });
+        assert_reentrancy_revert(&rv, sig);
     }
 }
 
@@ -111,9 +120,13 @@ fn guarded_methods_revert_when_lock_held() {
 fn guarded_methods_succeed_and_leave_lock_clear_when_unlocked() {
     for &sig in GUARDED {
         let (mut contract, mock) = new_contract();
-        guarded::route(&mut contract, const_selector(sig), &[]);
-        let rv = mock.take_return_value().expect("return_value called");
-        assert_eq!(rv.flags, ReturnFlags::empty(), "{sig} should succeed");
+        let mut buf = [0u8; guarded::MAX_RETURN_LEN];
+        let mut out: &mut [u8] = &mut buf;
+        let outcome = guarded::route(&mut contract, const_selector(sig), &[], &mut out);
+        assert!(
+            matches!(outcome, Outcome::Return(_)),
+            "{sig} should succeed, got {outcome:?}"
+        );
         // Full guard sets-then-clears; the view check never writes — either way
         // the lock must be absent afterwards.
         assert!(!lock_is_set(&mock), "{sig} must leave the lock clear");
@@ -124,11 +137,11 @@ fn guarded_methods_succeed_and_leave_lock_clear_when_unlocked() {
 fn unguarded_method_ignores_lock() {
     let (mut contract, mock) = new_contract();
     set_lock(&mock);
-    guarded::route(&mut contract, const_selector("plain()"), &[]);
-    let rv = mock.take_return_value().expect("return_value called");
-    assert_eq!(
-        rv.flags,
-        ReturnFlags::empty(),
-        "unguarded method should run"
+    let mut buf = [0u8; guarded::MAX_RETURN_LEN];
+    let mut out: &mut [u8] = &mut buf;
+    let outcome = guarded::route(&mut contract, const_selector("plain()"), &[], &mut out);
+    assert!(
+        matches!(outcome, Outcome::Return(_)),
+        "unguarded method should run, got {outcome:?}"
     );
 }

@@ -82,7 +82,7 @@ fn transfer_handler(host: &Host, input: &[u8], output: &mut [u8]) -> HandlerResu
     let amount =
         unsafe { U256::decode_unchecked(input, <Address as StaticEncodedLen>::ENCODED_SIZE) };
 
-    let caller = get_caller(host);
+    let caller: [u8; 20] = host.env().caller().into();
     let sender_key = balance_key(host, &caller);
     let mut sender_balance_bytes = [0u8; 32];
     let mut sender_balance_slice = &mut sender_balance_bytes[..];
@@ -177,12 +177,6 @@ fn set_total_supply(host: &Host, amount: U256) {
 fn set_balance(host: &Host, addr: &[u8; 20], amount: U256) {
     let key = balance_key(host, addr);
     host.set_storage(StorageFlags::empty(), &key, &amount.to_be_bytes::<32>());
-}
-
-fn get_caller(host: &Host) -> [u8; 20] {
-    let mut caller = [0u8; 20];
-    host.caller(&mut caller);
-    caller
 }
 
 fn emit_transfer(host: &Host, from: &[u8; 20], to: &[u8; 20], value: U256) {

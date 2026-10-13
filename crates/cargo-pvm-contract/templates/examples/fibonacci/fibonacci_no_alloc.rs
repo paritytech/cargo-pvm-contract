@@ -1,9 +1,8 @@
-#![no_main]
-#![no_std]
+#![cfg_attr(not(feature = "abi-gen"), no_main, no_std)]
 
 #[pvm_contract_sdk::contract("Fibonacci.sol", buffer = 256)]
 mod fibonacci {
-    use pvm_contract_sdk::{HostApi};
+    use pvm_contract_sdk::HostApi;
 
     pub struct Fibonacci;
 

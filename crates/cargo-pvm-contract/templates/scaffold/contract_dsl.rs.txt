@@ -92,7 +92,9 @@ mod tests {
     use super::*;
     // `Host` and `ContractBuilder` come in via `super::*`; only the std-gated
     // test helpers need an explicit import.
-    use pvm_contract_builder_dsl::pvm_contract_types::{MockHostBuilder, ReturnFlags};
+    use pvm_contract_builder_dsl::pvm_contract_types::{
+        MockHostBuilder, assert_reverts, framework_errors,
+    };
     use std::rc::Rc;
 
     // DSL contracts are tested at the dispatch level: build a `MockHost` with
@@ -108,7 +110,7 @@ mod tests {
     //         .method(MY_METHOD_SELECTOR, my_method_handler)
     //         .dispatch_impl::<256>(&Host::from_dyn(mock.clone()));
     //     let rv = mock.take_return_value().expect("dispatch should return");
-    //     assert_eq!(rv.flags, ReturnFlags::empty());
+    //     assert_eq!(rv.data, /* your expected encoded return bytes */);
 
     #[test]
     fn unknown_selector_reverts() {
@@ -117,10 +119,13 @@ mod tests {
                 .calldata(vec![0xde, 0xad, 0xbe, 0xef])
                 .build(),
         );
-        ContractBuilder::new().dispatch_impl::<256>(&Host::from_dyn(mock.clone()));
-        let rv = mock
-            .take_return_value()
-            .expect("dispatch should call return_value");
-        assert_eq!(rv.flags, ReturnFlags::REVERT);
+        // An unmatched selector reverts with the framework "unknown selector"
+        // error. A revert unwinds on host targets; `assert_reverts!` runs the
+        // closure, catches the unwind, and asserts the revert data matches.
+        assert_reverts!(
+            mock,
+            framework_errors::UNKNOWN_SELECTOR,
+            ContractBuilder::new().dispatch_impl::<256>(&Host::from_dyn(mock.clone()))
+        );
     }
 }

@@ -217,12 +217,14 @@ pub trait StorageEncode {
     /// `keccak256(slot) + i`) rather than the fixed slot-buffer codec.
     ///
     /// Static types (primitives, fixed arrays, tuples, fully-static structs)
-    /// leave this `false`. It gates two compile-time guards:
+    /// leave this `false`. Two consumers:
     /// - `StorageEncode for [T; N]` const-asserts `!T::HAS_DYNAMIC_BODY`,
-    ///   rejecting `[String; N]` (use [`StorageVec<T>`] instead).
-    /// - `StorageVec<T>::clear_at` uses it to choose between a plain
-    ///   slot-zeroing clear and `T::clear_storage` (which also tears down
-    ///   spilled body chunks).
+    ///   rejecting `[String; N]` (use [`StorageVec<T>`] instead) — a
+    ///   compile-time guard.
+    /// - the leaf `StorageType` impls derive `NEEDS_RECURSIVE_CLEAR` from it,
+    ///   which routes `StorageVec<T>::clear` between a bulk slot-zeroing clear
+    ///   and per-element recursion (`clear_at` → `T::clear_storage`, which also
+    ///   tears down spilled body chunks) — a runtime dispatch.
     ///
     /// [`StorageVec<T>`]: https://docs.rs/pvm-storage
     const HAS_DYNAMIC_BODY: bool = false;
@@ -396,20 +398,6 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
     /// Decode from `slots`, which must have length `STORAGE_SLOTS`.
     fn from_slots(slots: &[[u8; 32]]) -> Self;
 
-    /// All-zero slots → `None`; otherwise decode via [`from_slots`]. This is
-    /// the canonical Solidity-compat presence check for static types: if
-    /// every slot reads as zero, the type was never written (or was
-    /// explicitly cleared to zero — solc/EVM cannot distinguish those).
-    ///
-    /// [`from_slots`]: Self::from_slots
-    fn try_from_slots(slots: &[[u8; 32]]) -> Option<Self> {
-        if slots.iter().all(|s| s == &[0u8; 32]) {
-            None
-        } else {
-            Some(Self::from_slots(slots))
-        }
-    }
-
     /// Default host-aware read. Per-type [`StorageDecode::read_from_storage`]
     /// impls for static types delegate here.
     #[inline]
@@ -469,7 +457,13 @@ pub trait StaticStorageDecode: StorageDecode + StaticStorageEncode {
             host.get_storage_or_zero(StorageFlags::empty(), &k, slot);
             inc_be_32(&mut k);
         }
-        Self::try_from_slots(&slots[..used])
+        // All-zero → `None` (Solidity-compat presence: an all-zero static value
+        // is indistinguishable from never-written); otherwise decode.
+        if slots[..used].iter().all(|s| s == &[0u8; 32]) {
+            None
+        } else {
+            Some(Self::from_slots(&slots[..used]))
+        }
     }
 }
 
@@ -947,15 +941,31 @@ impl<const N: usize> crate::StorageTypeName for [u8; N] {
     fn name() -> alloc::string::String {
         alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
+    // No emit_members override: [u8; N] is always bytesN, a primitive-like
+    // leaf type (as per solc: bytes4 stays "bytes4", never qualified).
 }
 
 #[cfg(feature = "abi-gen")]
-impl<T: crate::SolArrayElement, const N: usize> crate::StorageTypeName for [T; N] {
+impl<T: crate::SolArrayElement + crate::StorageTypeName, const N: usize> crate::StorageTypeName
+    for [T; N]
+{
     fn name() -> alloc::string::String {
         alloc::string::String::from(<Self as crate::SolEncode>::SOL_NAME)
     }
-}
 
+    fn emit_members(
+        registry: &mut crate::LayoutTypesRegistry,
+        contract_name: &str,
+    ) -> alloc::string::String {
+        let t_key = <T as crate::StorageTypeName>::emit_members(registry, contract_name);
+        let t_display = registry
+            .types
+            .get(&t_key)
+            .map(|entry| entry.label.clone())
+            .unwrap_or(t_key);
+        alloc::format!("{}[{}]", t_display, N)
+    }
+}
 // ---------------------------------------------------------------------------
 // Fixed-size arrays `[T; N]` for T != u8.
 //
@@ -1255,7 +1265,7 @@ fn decode_dyn_header(slot_bytes: &[u8; 32]) -> DynHeader {
         }
     } else {
         // Spilled: whole slot encodes `len * 2 + 1` as big-endian u256.
-        // A dynamic value has no fixed upper bound — like solc (and Stylus) it
+        // A dynamic value has no fixed upper bound — like solc it
         // stripes across as many 32-byte slots as `len` needs, so the header
         // length is authoritative. Storage is per-contract isolated (the header
         // is always self-written) and the read loop is gas-bounded on-chain, so
@@ -1381,8 +1391,20 @@ pub(crate) fn write_dynamic_bytes(host: &Host, slot: &[u8; 32], data: &[u8]) {
 pub(crate) fn read_dynamic_bytes(host: &Host, slot: &[u8; 32]) -> alloc::vec::Vec<u8> {
     let mut slot_bytes = [0u8; 32];
     host.get_storage_or_zero(StorageFlags::empty(), slot, &mut slot_bytes);
-    match decode_dyn_header(&slot_bytes) {
-        DynHeader::Inline { len } => alloc::vec::Vec::from(&slot_bytes[..len]),
+    read_dynamic_bytes_from_header(host, slot, &slot_bytes)
+}
+
+/// Decode a dynamic value from an already-fetched header slot, materialising
+/// any spilled body. Lets a caller that has already SLOAD'd the header (e.g.
+/// the presence peek in `try_read_from_storage`) avoid re-reading it.
+#[cfg(feature = "alloc")]
+pub(crate) fn read_dynamic_bytes_from_header(
+    host: &Host,
+    slot: &[u8; 32],
+    header: &[u8; 32],
+) -> alloc::vec::Vec<u8> {
+    match decode_dyn_header(header) {
+        DynHeader::Inline { len } => alloc::vec::Vec::from(&header[..len]),
         DynHeader::Spilled { len } => read_dyn_body(host, slot, len),
     }
 }
@@ -1437,8 +1459,7 @@ impl StorageEncode for alloc::string::String {
 impl StorageDecode for alloc::string::String {
     fn read_from_storage(host: &Host, base_key: &[u8; 32]) -> Self {
         let bytes = read_dynamic_bytes(host, base_key);
-        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Matches
-        // Stylus's `StorageString::get_string`. Trapping on invalid bytes
+        // Lossy UTF-8 decode: invalid sequences become U+FFFD. Trapping on invalid bytes
         // would be a DoS vector when storage is shared with a Solidity
         // contract that doesn't validate. For byte-exact roundtrips use
         // `Lazy<Bytes>` / `Mapping<K, Bytes>` instead.
@@ -1455,8 +1476,10 @@ impl StorageDecode for alloc::string::String {
         if header == [0u8; 32] {
             return None;
         }
-        // Header is non-zero → some value was written; load body.
-        Some(Self::read_from_storage(host, base_key))
+        // Header is non-zero → some value was written; decode from the header
+        // we already read (no second SLOAD of the header slot).
+        let bytes = read_dynamic_bytes_from_header(host, base_key, &header);
+        Some(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
     }
 }
 
@@ -1664,7 +1687,7 @@ mod tests {
     #[test]
     fn dynamic_bytes_above_old_cap_roundtrips() {
         // Regression guard: a value well past the old 416-byte clamp must
-        // roundtrip. Dynamic values have no fixed cap — like solc/Stylus they
+        // roundtrip. Dynamic values have no fixed cap — like solc they
         // stripe across as many 32-byte slots as the length needs.
         let host = mock_host();
         let slot = [11u8; 32];

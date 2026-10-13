@@ -15,7 +15,7 @@ static mut ALLOC: picoalloc::Mutex<picoalloc::Allocator<picoalloc::ArrayPointer<
 #[pvm_contract_sdk::contract("MyToken.sol", buffer = 256)]
 mod my_token {
     use super::*;
-    use pvm_contract_sdk::{Address, HostApi, Lazy, Mapping};
+    use pvm_contract_sdk::{Address, Lazy, Mapping};
 
     #[derive(pvm_contract_sdk::SolEvent)]
     pub struct Transfer {
@@ -60,7 +60,7 @@ mod my_token {
 
         #[pvm_contract_sdk::method]
         pub fn transfer(&mut self, to: Address, amount: U256) -> Result<(), TokenError> {
-            let caller = self.caller();
+            let caller = self.env().caller();
 
             let mut sender_cell = self.balances.entry(&caller);
             let sender_balance = sender_cell.get();
@@ -99,12 +99,6 @@ mod my_token {
         fn emit_transfer(&self, from: Address, to: Address, value: U256) {
             Transfer { from, to, value }.emit(self.host());
         }
-
-        fn caller(&self) -> Address {
-            let mut caller = [0u8; 20];
-            self.host().caller(&mut caller);
-            Address(caller)
-        }
-
+        
     }
 }

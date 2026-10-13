@@ -1,0 +1,11 @@
+error: two Solidity user-defined types are both named `S`; rename one in the interface to avoid the collision
+  --> tests/ui/abi_import_duplicate_type_name.rs:5:1
+   |
+ 5 | / pvm_contract_macros::abi_import! {
+ 6 | |     struct S {
+ 7 | |         uint256 a;
+...  |
+15 | | }
+   | |_^
+   |
+   = note: this error originates in the macro `pvm_contract_macros::abi_import` (in Nightly builds, run with -Z macro-backtrace for more info)

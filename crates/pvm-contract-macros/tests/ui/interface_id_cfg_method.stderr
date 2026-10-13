@@ -1,0 +1,5 @@
+error: #[interface_id]: `#[cfg]` / `#[cfg_attr]` on interface methods is not supported; a conditionally-compiled method would still contribute its selector to the interface ID
+ --> tests/ui/interface_id_cfg_method.rs:8:5
+  |
+8 |     #[cfg(any())]
+  |     ^^^^^^^^^^^^^

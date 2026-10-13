@@ -12,7 +12,7 @@ use super::storage_layout::generate_layout_emit;
 ///
 /// When a `.sol` file is provided, the builder derives the ABI from the Solidity
 /// interface at build time. However, `storageLayout` is always Rust-side, so
-/// `main()` is still generated when `#[slot]` fields exist.
+/// `main()` is still generated when the contract struct declares storage fields.
 ///
 /// `no_main` suppresses the `fn main()` emission entirely — used when the
 /// caller (e.g. an integration test or a library crate) supplies its own
@@ -33,7 +33,12 @@ pub fn generate_abi_gen(
         // .sol path with storage: builder gets ABI from .sol, but needs
         // main() to output storage layout from the Rust side.
         let mod_name = &parsed.mod_name;
-        let helper = storage_layout_helper(slot_fields);
+        let contract_name_str = parsed
+            .struct_name
+            .as_ref()
+            .map(|ident| ident.to_string())
+            .unwrap_or_else(|| parsed.mod_name.to_string());
+        let helper = storage_layout_helper(slot_fields, &contract_name_str);
         let main_fn = if no_main {
             quote! {}
         } else {
@@ -63,13 +68,14 @@ pub fn generate_abi_gen(
 /// Auto-numbered slots reference a chain of `__pvm_storage_slot_*` const items
 /// declared inside the helper fn (mirroring the chain produced for the
 /// `this` construction in `deploy()`/`call()`). This way the slot value is
-/// const-evaluated at compile time even when `<Ty as StorageComponent>::SLOTS`
+/// const-evaluated at compile time even when `<Ty as StorageType>::SLOTS`
 /// is not trivially 1 (e.g. for embedded sub-storage structs). Top-level
 /// fields run through [`generate_layout_emit`] with an empty prefix —
-/// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries, embedded
-/// `#[storage]` sub-structs dispatch through `StorageLayoutEmit::emit_entries`
-/// to recursively flatten their leaves with dotted labels.
-fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
+/// `Lazy<T>` / `Mapping<K, V>` get pushed as single entries; embedded
+/// `#[storage]` sub-structs also push a single entry (no flattening),
+/// registering their own member breakdown into the `types` table via
+/// `StorageTypeName::emit_members`.
+fn storage_layout_helper(slot_fields: &[SlotField], contract_name_str: &str) -> TokenStream {
     use super::contract::Slot;
 
     // Layout JSON only needs the slot consts (no `alone` flags here), so the
@@ -78,9 +84,13 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
 
     let layout_emits: Vec<TokenStream> = slot_fields
         .iter()
-        .map(|sf| {
-            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match sf.slot {
+        .filter_map(|sf| {
+            let (slot_expr, offset_expr): (TokenStream, TokenStream) = match &sf.slot {
                 Slot::Explicit(n) => (quote! { #n }, quote! { 0u8 }),
+                // Raw external slots (e.g. EIP-1967) live outside solc's
+                // sequential storage layout — solc doesn't emit them in
+                // `storageLayout` either, so omit them here.
+                Slot::ExplicitRaw(_) => return None,
                 Slot::Auto => {
                     let const_ident =
                         quote::format_ident!("{}{}", super::contract::AUTO_SLOT_PREFIX, &sf.name);
@@ -95,19 +105,20 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
                 quote! { "" },
             );
             let cfgs = &sf.cfg_attrs;
-            quote! {
+            Some(quote! {
                 #(#cfgs)*
                 {
                     #emit
                 }
-            }
+            })
         })
         .collect();
 
-    // `storage` owns the Vec. `entries` is a `&mut Vec` alias used by the
-    // generated `layout_emits` so leaf pushes (`entries.push(...)`) and trait
-    // recursions (`StorageLayoutEmit::emit_entries(..., entries)`) compile
-    // identically inside both this function and the per-`#[storage]` impl.
+    // `storage` owns the Vec; `entries` is a `&mut Vec` alias. `types_registry`
+    // owns the LayoutTypesRegistry; `registry` is a `&mut` alias. Both alias
+    // names match what the generated `layout_emits` calls expect
+    // (`entries.push(...)`, `StorageLayoutEmit::emit_entries(..., entries, registry)`),
+    // so this compiles identically inside this function and the per-`#[storage]` impl.
     quote! {
         #[cfg(feature = "abi-gen")]
         #[doc(hidden)]
@@ -115,9 +126,12 @@ fn storage_layout_helper(slot_fields: &[SlotField]) -> TokenStream {
             #(#auto_slot_consts)*
             let mut storage: ::std::vec::Vec<::pvm_contract_sdk::StorageLayoutEntry> =
                 ::std::vec::Vec::new();
+            let mut types_registry = ::pvm_contract_sdk::LayoutTypesRegistry::new();
             let entries = &mut storage;
+            let registry = &mut types_registry;
+            let contract_name = #contract_name_str;
             #(#layout_emits)*
-            let layout = ::pvm_contract_sdk::StorageLayout { storage };
+            let layout = ::pvm_contract_sdk::StorageLayout { storage, types: types_registry.types };
             ::pvm_contract_sdk::storage_layout_to_json(&layout)
         }
     }
@@ -314,11 +328,16 @@ fn generate_abi_gen_impl(
     };
 
     let mod_name = &parsed.mod_name;
+    let contract_name_str = parsed
+        .struct_name
+        .as_ref()
+        .map(|ident| ident.to_string())
+        .unwrap_or_else(|| parsed.mod_name.to_string());
 
     let combined_helper = if slot_fields.is_empty() {
         helper
     } else {
-        let sh = storage_layout_helper(slot_fields);
+        let sh = storage_layout_helper(slot_fields, &contract_name_str);
         quote! { #helper #sh }
     };
 
@@ -412,6 +431,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, true, &[], false);
@@ -522,6 +542,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         }
     }
 
@@ -535,7 +556,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::View,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -557,7 +577,6 @@ mod tests {
             return_types: vec![syn::parse_quote!(U256)],
             returns_result: false,
             mutability: StateMutability::Pure,
-            precomputed_selector: None,
             is_non_reentrant: false,
         };
         let parsed = parsed_contract_with_method(method);
@@ -617,6 +636,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -667,6 +687,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let (helper, main_fn) = generate_abi_gen(&parsed, false, &[], false);
@@ -710,6 +731,7 @@ mod tests {
             receive_returns_result: false,
             error_types: vec![],
             event_idents: vec![],
+            sig_asserts: vec![],
         };
 
         let slot_fields = vec![SlotField {
@@ -744,7 +766,7 @@ mod tests {
             slot: crate::codegen::contract::Slot::Explicit(0),
             cfg_attrs: vec![cfg_attr],
         }];
-        let helper = storage_layout_helper(&slot_fields);
+        let helper = storage_layout_helper(&slot_fields, "MyContract");
         let helper_str = helper.to_string();
         assert!(
             helper_str.contains("feature") && helper_str.contains("v2"),
