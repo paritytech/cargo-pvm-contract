@@ -1048,195 +1048,6 @@
       "events": []
     },
     {
-      "name": "storage-types",
-      "abiFile": "abi/storage-types.abi.json",
-      "wrapped": false,
-      "functions": [
-        {
-          "id": "setU8/max",
-          "functionName": "setU8",
-          "signature": "setU8(uint8)",
-          "selector": "0x17b90d94",
-          "args": [
-            "255"
-          ],
-          "calldata": "0x17b90d9400000000000000000000000000000000000000000000000000000000000000ff"
-        },
-        {
-          "id": "getU8",
-          "functionName": "getU8",
-          "signature": "getU8()",
-          "selector": "0x3e486bfc",
-          "args": [],
-          "calldata": "0x3e486bfc",
-          "result": "255",
-          "returndata": "0x00000000000000000000000000000000000000000000000000000000000000ff"
-        },
-        {
-          "id": "setU16/max",
-          "functionName": "setU16",
-          "signature": "setU16(uint16)",
-          "selector": "0x264e5c97",
-          "args": [
-            "65535"
-          ],
-          "calldata": "0x264e5c97000000000000000000000000000000000000000000000000000000000000ffff"
-        },
-        {
-          "id": "getU16",
-          "functionName": "getU16",
-          "signature": "getU16()",
-          "selector": "0x6a0060ce",
-          "args": [],
-          "calldata": "0x6a0060ce",
-          "result": "65535",
-          "returndata": "0x000000000000000000000000000000000000000000000000000000000000ffff"
-        },
-        {
-          "id": "setU32/max",
-          "functionName": "setU32",
-          "signature": "setU32(uint32)",
-          "selector": "0xbc488eeb",
-          "args": [
-            "4294967295"
-          ],
-          "calldata": "0xbc488eeb00000000000000000000000000000000000000000000000000000000ffffffff"
-        },
-        {
-          "id": "getU32",
-          "functionName": "getU32",
-          "signature": "getU32()",
-          "selector": "0xff69afb6",
-          "args": [],
-          "calldata": "0xff69afb6",
-          "result": "4294967295",
-          "returndata": "0x00000000000000000000000000000000000000000000000000000000ffffffff"
-        },
-        {
-          "id": "setU64/max",
-          "functionName": "setU64",
-          "signature": "setU64(uint64)",
-          "selector": "0x32c98b79",
-          "args": [
-            "18446744073709551615"
-          ],
-          "calldata": "0x32c98b79000000000000000000000000000000000000000000000000ffffffffffffffff"
-        },
-        {
-          "id": "getU64",
-          "functionName": "getU64",
-          "signature": "getU64()",
-          "selector": "0xaa7bdb8e",
-          "args": [],
-          "calldata": "0xaa7bdb8e",
-          "result": "18446744073709551615",
-          "returndata": "0x000000000000000000000000000000000000000000000000ffffffffffffffff"
-        },
-        {
-          "id": "setU128/max",
-          "functionName": "setU128",
-          "signature": "setU128(uint128)",
-          "selector": "0xd30ebb72",
-          "args": [
-            "340282366920938463463374607431768211455"
-          ],
-          "calldata": "0xd30ebb7200000000000000000000000000000000ffffffffffffffffffffffffffffffff"
-        },
-        {
-          "id": "getU128",
-          "functionName": "getU128",
-          "signature": "getU128()",
-          "selector": "0x94b36ca3",
-          "args": [],
-          "calldata": "0x94b36ca3",
-          "result": "340282366920938463463374607431768211455",
-          "returndata": "0x00000000000000000000000000000000ffffffffffffffffffffffffffffffff"
-        },
-        {
-          "id": "setU256/max",
-          "functionName": "setU256",
-          "signature": "setU256(uint256)",
-          "selector": "0xd562c1e6",
-          "args": [
-            "115792089237316195423570985008687907853269984665640564039457584007913129639935"
-          ],
-          "calldata": "0xd562c1e6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-        },
-        {
-          "id": "getU256",
-          "functionName": "getU256",
-          "signature": "getU256()",
-          "selector": "0x38d0f94e",
-          "args": [],
-          "calldata": "0x38d0f94e",
-          "result": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
-          "returndata": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-        },
-        {
-          "id": "setBool",
-          "functionName": "setBool",
-          "signature": "setBool(bool)",
-          "selector": "0x1e26fd33",
-          "args": [
-            true
-          ],
-          "calldata": "0x1e26fd330000000000000000000000000000000000000000000000000000000000000001"
-        },
-        {
-          "id": "getBool",
-          "functionName": "getBool",
-          "signature": "getBool()",
-          "selector": "0x12a7b914",
-          "args": [],
-          "calldata": "0x12a7b914",
-          "result": true,
-          "returndata": "0x0000000000000000000000000000000000000000000000000000000000000001"
-        },
-        {
-          "id": "setBytes32",
-          "functionName": "setBytes32",
-          "signature": "setBytes32(bytes32)",
-          "selector": "0xc2b12a73",
-          "args": [
-            "0xdeadbeef00000000000000000000000000000000000000000000000000000001"
-          ],
-          "calldata": "0xc2b12a73deadbeef00000000000000000000000000000000000000000000000000000001"
-        },
-        {
-          "id": "getBytes32",
-          "functionName": "getBytes32",
-          "signature": "getBytes32()",
-          "selector": "0x1f903037",
-          "args": [],
-          "calldata": "0x1f903037",
-          "result": "0xdeadbeef00000000000000000000000000000000000000000000000000000001",
-          "returndata": "0xdeadbeef00000000000000000000000000000000000000000000000000000001"
-        },
-        {
-          "id": "setAddress",
-          "functionName": "setAddress",
-          "signature": "setAddress(address)",
-          "selector": "0xe30081a0",
-          "args": [
-            "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
-          ],
-          "calldata": "0xe30081a0000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "id": "getAddress",
-          "functionName": "getAddress",
-          "signature": "getAddress()",
-          "selector": "0x38cc4831",
-          "args": [],
-          "calldata": "0x38cc4831",
-          "result": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-          "returndata": "0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
-      ],
-      "errors": [],
-      "events": []
-    },
-    {
       "name": "point-adder",
       "abiFile": "abi/point-adder.abi.json",
       "wrapped": false,
@@ -1294,7 +1105,14 @@
         }
       ],
       "errors": [],
-      "events": []
+      "events": [],
+      "knownGapDeploy": {
+        "args": [
+          "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+          "1000000"
+        ],
+        "encodedArgs": "0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa9604500000000000000000000000000000000000000000000000000000000000f4240"
+      }
     },
     {
       "name": "events",
@@ -1390,7 +1208,9 @@
           "returndata": "0x0000000000000000000000000000000000000000000000000000000000000005"
         }
       ],
-      "errors": [
+      "errors": [],
+      "events": [],
+      "knownGapErrors": [
         {
           "id": "AlwaysReverts",
           "errorName": "AlwaysReverts",
@@ -1407,8 +1227,7 @@
           "args": [],
           "data": "0xcf4b4e2e"
         }
-      ],
-      "events": []
+      ]
     },
     {
       "name": "error-caller",
@@ -1426,18 +1245,7 @@
           "calldata": "0xa33fb0f0000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
         }
       ],
-      "errors": [
-        {
-          "id": "RevertString",
-          "errorName": "Error",
-          "signature": "Error(string)",
-          "selector": "0x08c379a0",
-          "args": [
-            "call failed"
-          ],
-          "data": "0x08c379a00000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000b63616c6c206661696c6564000000000000000000000000000000000000000000"
-        }
-      ],
+      "errors": [],
       "events": []
     },
     {
@@ -1487,139 +1295,6 @@
           "calldata": "0x70a08231000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045",
           "result": "1000",
           "returndata": "0x00000000000000000000000000000000000000000000000000000000000003e8"
-        }
-      ],
-      "errors": [],
-      "events": []
-    },
-    {
-      "name": "receive",
-      "abiFile": "abi/receive.abi.json",
-      "wrapped": false,
-      "functions": [
-        {
-          "id": "totalReceived",
-          "functionName": "totalReceived",
-          "signature": "totalReceived()",
-          "selector": "0xa3c2c462",
-          "args": [],
-          "calldata": "0xa3c2c462",
-          "result": "5",
-          "returndata": "0x0000000000000000000000000000000000000000000000000000000000000005"
-        },
-        {
-          "id": "receiveCount",
-          "functionName": "receiveCount",
-          "signature": "receiveCount()",
-          "selector": "0x7ba85592",
-          "args": [],
-          "calldata": "0x7ba85592",
-          "result": "1",
-          "returndata": "0x0000000000000000000000000000000000000000000000000000000000000001"
-        }
-      ],
-      "errors": [],
-      "events": []
-    },
-    {
-      "name": "caller-check",
-      "abiFile": "abi/caller-check.abi.json",
-      "wrapped": false,
-      "functions": [
-        {
-          "id": "getCaller",
-          "functionName": "getCaller",
-          "signature": "getCaller()",
-          "selector": "0xab470f05",
-          "args": [],
-          "calldata": "0xab470f05",
-          "result": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-          "returndata": "0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "id": "recordCaller",
-          "functionName": "recordCaller",
-          "signature": "recordCaller()",
-          "selector": "0x6266ab41",
-          "args": [],
-          "calldata": "0x6266ab41"
-        },
-        {
-          "id": "getLastCaller",
-          "functionName": "getLastCaller",
-          "signature": "getLastCaller()",
-          "selector": "0x880b36e7",
-          "args": [],
-          "calldata": "0x880b36e7",
-          "result": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
-          "returndata": "0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
-      ],
-      "errors": [],
-      "events": []
-    },
-    {
-      "name": "flipper-call",
-      "abiFile": "abi/flipper-call.abi.json",
-      "wrapped": false,
-      "functions": [
-        {
-          "id": "callFlipper",
-          "functionName": "callFlipper",
-          "signature": "callFlipper(address)",
-          "selector": "0x0f4744a2",
-          "args": [
-            "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
-          ],
-          "calldata": "0x0f4744a2000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        }
-      ],
-      "errors": [],
-      "events": []
-    },
-    {
-      "name": "flipper-delegate",
-      "abiFile": "abi/flipper-delegate.abi.json",
-      "wrapped": false,
-      "functions": [
-        {
-          "id": "delegateFlipper",
-          "functionName": "delegateFlipper",
-          "signature": "delegateFlipper(address)",
-          "selector": "0x437fe05c",
-          "args": [
-            "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
-          ],
-          "calldata": "0x437fe05c000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
-        },
-        {
-          "id": "get",
-          "functionName": "get",
-          "signature": "get()",
-          "selector": "0x6d4ce63c",
-          "args": [],
-          "calldata": "0x6d4ce63c",
-          "result": false,
-          "returndata": "0x0000000000000000000000000000000000000000000000000000000000000000"
-        }
-      ],
-      "errors": [],
-      "events": []
-    },
-    {
-      "name": "point-adder-call",
-      "abiFile": "abi/point-adder-call.abi.json",
-      "wrapped": false,
-      "functions": [
-        {
-          "id": "callPointAdder",
-          "functionName": "callPointAdder",
-          "signature": "callPointAdder(address)",
-          "selector": "0x76aea54d",
-          "args": [
-            "0xd8da6bf26964af9d7eed9e03e53415d37aa96045"
-          ],
-          "calldata": "0x76aea54d000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045"
         }
       ],
       "errors": [],

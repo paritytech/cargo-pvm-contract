@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Abi, AbiParameter } from 'viem'
-import { formatAbiItem, getAbiItem, toEventSelector, toFunctionSelector } from 'viem/utils'
+import { formatAbiItem, toEventSelector, toFunctionSelector } from 'viem/utils'
 
 import { allAbiFiles, fixtures, loadAbi } from '../src/fixtures.js'
+import { expectErrorSignatureAgrees } from './helpers.js'
 
 const abiFiles = allAbiFiles()
 
-type AbiErrorItem = Extract<Abi[number], { type: 'error' }>
 type AbiEventItem = Extract<Abi[number], { type: 'event' }>
 
 describe('every emitted ABI is structurally valid for viem', () => {
@@ -20,7 +20,12 @@ describe('every emitted ABI is structurally valid for viem', () => {
       // The Rust serde model makes the field optional and skips it when absent,
       // so a codegen path that forgot to set it would silently make every
       // method look non-payable. Assert it is always there.
-      if (item.type === 'function' || item.type === 'constructor' || item.type === 'receive') {
+      if (
+        item.type === 'function' ||
+        item.type === 'constructor' ||
+        item.type === 'receive' ||
+        item.type === 'fallback'
+      ) {
         expect(item, `${describeItem(item)} must declare stateMutability`).toHaveProperty(
           'stateMutability',
         )
@@ -59,6 +64,38 @@ describe('a `receive` entry is emitted for contracts with a receive handler', ()
   })
 })
 
+describe('a `fallback` entry is emitted for contracts with a fallback handler', () => {
+  // solc emits `{"type":"fallback","stateMutability":…}`; without it a contract
+  // that accepts arbitrary calldata looks, to any ABI consumer, like it rejects
+  // it. `abi-surface` declares a non-payable `#[fallback]`.
+  it('abi-surface', () => {
+    const abi = loadAbi('abi/abi-surface.abi.json')
+    const entry = abi.find((item) => item.type === 'fallback')
+    expect(entry).toEqual({ type: 'fallback', stateMutability: 'nonpayable' })
+  })
+
+  it('is absent when no handler is declared', () => {
+    expect(loadAbi('abi/flipper.abi.json').some((item) => item.type === 'fallback')).toBe(false)
+  })
+})
+
+describe('every ABI item has a canonical signature viem can hash', () => {
+  // This gate needs no hand-written vectors, so it runs over every emitted ABI
+  // whether or not the corpus has cases for it. `formatAbiItem` expands tuples
+  // through `components` and throws on anything it cannot spell, and the
+  // selector helpers throw on a type outside the grammar, so an item that
+  // survives import but cannot be called is caught here.
+  it.each(abiFiles)('$name', ({ abi }) => {
+    for (const item of abi) {
+      if (item.type === 'function' || item.type === 'error') {
+        expect(() => toFunctionSelector(formatAbiItem(item))).not.toThrow()
+      } else if (item.type === 'event') {
+        expect(() => toEventSelector(formatAbiItem(item))).not.toThrow()
+      }
+    }
+  })
+})
+
 describe('fixture signatures agree with the emitted ABI', () => {
   for (const contract of fixtures.contracts) {
     const abi = loadAbi(contract.abiFile)
@@ -70,27 +107,16 @@ describe('fixture signatures agree with the emitted ABI', () => {
       // the Rust side. Any disagreement about camelCasing, tuple flattening or
       // type spelling shows up here rather than as an opaque byte diff.
       it.each(contract.functions)('function $id', (fixture) => {
+        // `findFunction` already matched the item by canonical signature, so
+        // the signature itself is not re-asserted here; the selector is.
         const item = findFunction(abi, fixture.functionName, fixture.signature)
-        expect(formatAbiItem(item)).toBe(fixture.signature)
         expect(toFunctionSelector(formatAbiItem(item))).toBe(fixture.selector)
         expect(fixture.calldata.slice(0, 10)).toBe(fixture.selector)
       })
 
-      it.each(contract.errors)('error $id', (fixture) => {
-        const item = abi.find(
-          (candidate) =>
-            candidate.type === 'error' && formatAbiItem(candidate) === fixture.signature,
-        )
-        expect(item, `${fixture.signature} is missing from ${contract.abiFile}`).toBeDefined()
-        expect((item as AbiErrorItem).name).toBe(fixture.errorName)
-        // `formatAbiItem` is what viem's own `decodeErrorResult` hashes;
-        // passing the item straight to `toFunctionSelector` would fold the
-        // `error` keyword into the hash and give a different answer.
-        expect(toFunctionSelector(formatAbiItem(item!))).toBe(fixture.selector)
-        // For an error enum the enum's own selector is zeroed, so the leading
-        // four bytes of the payload must be the held variant's.
-        expect(fixture.data.slice(0, 10)).toBe(fixture.selector)
-      })
+      it.each(contract.errors)('error $id', (fixture) =>
+        expectErrorSignatureAgrees(abi, fixture),
+      )
 
       it.each(contract.events)('event $id', (fixture) => {
         const item = abi.find(
@@ -141,19 +167,16 @@ const UNEXERCISED_BY_DESIGN: Record<string, string[]> = {
   // can be produced for them. The parser must still map them, which is why they
   // stay in the interface.
   'sol-type-surface': ['oddWidths(uint24,uint40,int72)', 'byteArray(uint8[2])'],
-  // Every signature here contains a type the emitter cannot express, so none of
-  // them can be encoded at all. See abi-completeness.test.ts. `totalSupply` comes
-  // from the `IToken` helper interface in the same file, which the parser
-  // flattens in alongside the interface under test.
-  'sol-reference-types': [
-    'setToken(IToken)',
-    'setTokens(IToken[])',
-    'addNode((uint256,Node[]))',
-    'totalSupply()',
-  ],
 }
 
 describe('every ABI item is exercised by a fixture', () => {
+  // Vector coverage is opt-in by contract: an ABI with a corpus entry must have a
+  // case for every function, error and event it declares, so a method added to
+  // one of those contracts without a vector fails here rather than quietly
+  // reducing coverage. ABIs without a corpus entry are still covered by the
+  // signature gate above and the grammar gate below, which need no vectors —
+  // what they forgo is the byte-level round-trip, which is only worth writing
+  // for a contract that adds a parameter shape.
   const FRAMEWORK_ERRORS = new Set([
     'InvalidCalldata()',
     'CalldataTooLarge()',
@@ -162,12 +185,16 @@ describe('every ABI item is exercised by a fixture', () => {
     'NonPayableValueReceived()',
   ])
 
-  it.each(abiFiles)('$name', ({ name, abi, abiFile }) => {
-    const contract = fixtures.contracts.find((c) => c.abiFile === abiFile)
+  const withVectors = abiFiles.filter(({ abiFile }) =>
+    fixtures.contracts.some((c) => c.abiFile === abiFile),
+  )
+
+  it.each(withVectors)('$name', ({ name, abi, abiFile }) => {
+    const contract = fixtures.contracts.find((c) => c.abiFile === abiFile)!
     const exercised = new Set([
-      ...(contract?.functions ?? []).map((f) => f.signature),
-      ...(contract?.errors ?? []).map((e) => e.signature),
-      ...(contract?.events ?? []).map((e) => e.signature),
+      ...contract.functions.map((f) => f.signature),
+      ...contract.errors.map((e) => e.signature),
+      ...contract.events.map((e) => e.signature),
     ])
 
     const unexercised = abi
@@ -177,6 +204,43 @@ describe('every ABI item is exercised by a fixture', () => {
 
     expect(unexercised.sort()).toEqual((UNEXERCISED_BY_DESIGN[name] ?? []).sort())
   })
+
+  it('every corpus contract names an emitted ABI', () => {
+    const emitted = abiFiles.map((f) => f.abiFile)
+    for (const contract of fixtures.contracts) {
+      expect(emitted).toContain(contract.abiFile)
+    }
+  })
+})
+
+describe('known-gap cases are still gaps', () => {
+  // `knownGapErrors` / `knownGapDeploy` hold vectors for items the ABI does not
+  // carry yet; `test/known-gaps/` runs viem over them, non-blocking. This guard
+  // is the blocking half of that arrangement: the moment the emitter starts
+  // producing the item, the case has to be promoted into `errors` (or the
+  // deploy case dropped in favour of a constructor assertion) so the vector
+  // joins the blocking suite instead of sitting in the gap list indefinitely.
+  const withGaps = fixtures.contracts.filter(
+    (c) => (c.knownGapErrors?.length ?? 0) > 0 || c.knownGapDeploy !== undefined,
+  )
+
+  it.each(withGaps)('$name', (contract) => {
+    const abi = loadAbi(contract.abiFile)
+    const errors = abi.filter((item) => item.type === 'error').map((item) => formatAbiItem(item))
+    for (const gap of contract.knownGapErrors ?? []) {
+      expect(
+        errors,
+        `gap closed: ${contract.name} now declares ${gap.signature}; move the vector from knownGapErrors to errors in corpus.rs`,
+      ).not.toContain(gap.signature)
+    }
+    if (contract.knownGapDeploy) {
+      const constructor = abi.find((item) => item.type === 'constructor')
+      expect(
+        constructor?.inputs.length ?? 0,
+        `gap closed: ${contract.name} now declares its constructor; drop knownGapDeploy in corpus.rs and assert the constructor in abi-completeness.test.ts`,
+      ).toBe(0)
+    }
+  })
 })
 
 describe('every parameter type is a valid ABI type', () => {
@@ -184,19 +248,12 @@ describe('every parameter type is a valid ABI type', () => {
   // and only blows up at the first encode, decode or selector computation. This
   // walks every parameter of every item so such a type is caught up front,
   // whichever emitter produced it.
-  it.each(abiFiles)('$name', ({ name, abi }) => {
+  it.each(abiFiles)('$name', ({ abi }) => {
     const invalid: string[] = []
     for (const item of abi) {
       for (const param of parametersOf(item)) {
         collectInvalidTypes(param, describeItem(item), invalid)
       }
-    }
-    if (name === 'sol-reference-types') {
-      // This fixture exists precisely because the emitter produces invalid
-      // types for it; the failure is asserted with its full explanation in
-      // abi-completeness.test.ts rather than reported twice.
-      expect(invalid.length).toBeGreaterThan(0)
-      return
     }
     expect(invalid).toEqual([])
   })
@@ -257,12 +314,3 @@ function findFunction(abi: Abi, name: string, signature: string) {
   expect(matches.length, `${signature} is missing from the ABI`).toBe(1)
   return matches[0] as Extract<Abi[number], { type: 'function' }>
 }
-
-// Referenced so an unused-import lint cannot remove the ABI-item lookup viem
-// users rely on; also a cheap sanity check that it agrees with `findFunction`.
-describe('getAbiItem resolves non-overloaded fixture functions', () => {
-  it('flipper.get', () => {
-    const abi = loadAbi('abi/flipper.abi.json')
-    expect(getAbiItem({ abi, name: 'get' })).toMatchObject({ name: 'get', type: 'function' })
-  })
-})

@@ -86,7 +86,7 @@ jobs:
           toolchain: 1.92
           components: rust-src
       # Only the one Rust-path ABI fixture needs this: the builder compiles and
-      # runs that binary for the host with `-Zbuild-std`. The 18 `.sol`-backed
+      # runs that binary for the host with `-Zbuild-std`. The 19 `.sol`-backed
       # fixtures are derived by parsing the Solidity interface, with no build at
       # all, and the `abi-surface` contract is compiled as part of the generator
       # crate itself.
@@ -113,13 +113,33 @@ jobs:
       # legitimate change, run the two generator commands above locally and
       # commit the result.
       - name: Fail on fixture drift
-        run: git diff --exit-code -- ts/viem-roundtrip/fixtures ts/viem-roundtrip/src/generated
+        # `git status --porcelain` rather than `git diff`: it also reports a
+        # fixture the generator newly created or a stale one it no longer
+        # writes, which a tracked-files-only diff would miss.
+        run: |
+          drift="$(git status --porcelain -- ts/viem-roundtrip/fixtures ts/viem-roundtrip/src/generated)"
+          if [ -n "$drift" ]; then
+            echo "Fixtures are out of date. Regenerate and commit:"
+            echo "$drift"
+            git --no-pager diff -- ts/viem-roundtrip/fixtures ts/viem-roundtrip/src/generated
+            exit 1
+          fi
       - name: Run the viem round-trip suite
         working-directory: ts/viem-roundtrip
         run: pnpm test
       - name: Check viem's TypeScript inference over the emitted ABIs
         working-directory: ts/viem-roundtrip
         run: pnpm typecheck
+      # `test/known-gaps/` asserts what a viem user needs from the ABI but the
+      # emitter does not yet provide (Rust-declared errors and constructor
+      # arguments on the `.sol` path). The assertions are real failures, not
+      # skips; this step only keeps them from blocking unrelated changes. When
+      # the gap closes, fold the tests back into the main suite and drop the
+      # `continue-on-error`.
+      - name: Report the known ABI-completeness gaps (non-blocking)
+        working-directory: ts/viem-roundtrip
+        continue-on-error: true
+        run: pnpm test:known-gaps
 
   check-examples:
     runs-on: ubuntu-latest

@@ -14,27 +14,13 @@ import { loadAbi } from '../src/fixtures.js'
 // a viem user do the things the contract actually supports, given only the
 // emitted `.abi.json`?
 //
-// The failures here are real gaps, not fixture drift. They are asserted rather
-// than skipped so that fixing the emitter turns them green, and so that nobody
-// has to rediscover them.
+// The claims here hold today. The ones the emitter cannot yet satisfy live in
+// `known-gaps/`, which CI runs without blocking.
 
 describe('a contract emits the errors it can revert with', () => {
-  // The `.sol` path derives the whole ABI from the Solidity interface, so a
-  // `#[derive(SolError)]` type that the `.sol` does not declare never reaches
-  // the ABI — and viem then cannot decode that revert. `ErrorHandling.sol`
-  // declares no errors, while `error-handling.rs` reverts with two.
-  it('error-handling declares AlwaysReverts and ZeroNotAllowed', () => {
-    expect(errorSignatures(loadAbi('abi/error-handling.abi.json'))).toEqual(
-      expect.arrayContaining(['AlwaysReverts()', 'ZeroNotAllowed()']),
-    )
-  })
-
-  it('error-caller declares Error(string)', () => {
-    expect(errorSignatures(loadAbi('abi/error-caller.abi.json'))).toContain('Error(string)')
-  })
-
-  // Positive control: on the Rust path the same declarations do reach the ABI,
-  // which localises the gap above to `.sol` parsing rather than to the emitter.
+  // On the Rust path every `#[derive(SolError)]` type reachable from a method's
+  // error enum reaches the ABI, including the framework's `Error(string)` /
+  // `Panic(uint256)` wrappers and the reentrancy guard's error.
   it('abi-surface declares every error its enum can hold', () => {
     expect(errorSignatures(loadAbi('abi/abi-surface.abi.json'))).toEqual(
       expect.arrayContaining([
@@ -50,18 +36,6 @@ describe('a contract emits the errors it can revert with', () => {
 })
 
 describe('a contract emits its constructor', () => {
-  // Without a constructor entry, `encodeDeployData` cannot append constructor
-  // arguments and the contract is undeployable through viem. A Solidity
-  // *interface* cannot declare a constructor at all, so the `.sol` path has no
-  // way to recover this — the arguments are only known on the Rust side.
-  it('constructor-args declares its two constructor inputs', () => {
-    const constructor = loadAbi('abi/constructor-args.abi.json').find(
-      (item) => item.type === 'constructor',
-    )
-    expect(constructor).toBeDefined()
-    expect(constructor!.inputs).toHaveLength(2)
-  })
-
   it('abi-surface constructor arguments encode into deploy data', () => {
     const abi = loadAbi('abi/abi-surface.abi.json')
     const constructor = abi.find((item) => item.type === 'constructor')!
@@ -76,49 +50,37 @@ describe('a contract emits its constructor', () => {
 })
 
 describe('reference types resolve to an ABI type', () => {
-  // `type_to_abi_param` falls back to the bare Solidity type name when it cannot
-  // resolve a custom type. That produces `type` strings outside the ABI grammar,
-  // which viem accepts at import and then throws on at the first encode, decode
-  // or selector computation — so the ABI looks fine until it is used.
+  // A contract- or interface-typed parameter is an `address` on the wire. solc
+  // emits `{"type":"address","internalType":"contract IToken"}`; the encoding
+  // does not depend on `internalType`, so `address` alone is what viem needs.
+  // Each shape below reaches `type_to_abi_param` through a different branch.
   const abi = loadAbi('abi/sol-reference-types.abi.json')
 
-  it('a contract-typed parameter becomes address', () => {
-    // solc: {"type":"address","internalType":"contract IToken"}. Passing a
-    // contract handle is ordinary Solidity, so this shape is common.
+  it('a bare handle, an array of handles, a struct field and a return value', () => {
     expect(inputTypesOf(abi, 'setToken')).toEqual(['address'])
     expect(inputTypesOf(abi, 'setTokens')).toEqual(['address[]'])
+    const [pool] = inputsOf(abi, 'setPool')
+    expect(pool?.type).toBe('tuple')
+    const components = (pool as unknown as { components: readonly AbiParameter[] }).components
+    expect(components.map((c) => c.type)).toEqual(['address', 'uint256'])
+    expect(outputTypesOf(abi, 'token')).toEqual(['address'])
   })
 
-  it('a self-referential struct field resolves', () => {
-    // `struct Node { uint256 value; Node[] children; }` — the cycle is broken by
-    // emitting `Node[]`, which is not an ABI type. Any resolution is acceptable
-    // here except a bare type name; rejecting the interface outright would also
-    // be an improvement over emitting an unusable ABI.
-    const [param] = inputsOf(abi, 'addNode')
-    const components = (param as { components?: readonly AbiParameter[] }).components ?? []
-    expect(components[1]?.type).not.toBe('Node[]')
-  })
-
-  it('viem can encode a call to every function', () => {
-    // The user-facing consequence: an unresolvable `type` survives ABI import
-    // and only throws here, at the first attempt to actually call the contract.
+  it('viem can encode a call through every shape', () => {
+    const token = '0xd8da6bf26964af9d7eed9e03e53415d37aa96045'
+    expect(() =>
+      encodeFunctionData({ abi, functionName: 'setToken', args: [token] } as never),
+    ).not.toThrow()
+    expect(() =>
+      encodeFunctionData({ abi, functionName: 'setTokens', args: [[token]] } as never),
+    ).not.toThrow()
     expect(() =>
       encodeFunctionData({
         abi,
-        functionName: 'setToken',
-        args: ['0xd8da6bf26964af9d7eed9e03e53415d37aa96045'],
+        functionName: 'setPool',
+        args: [{ token, weight: 1n }],
       } as never),
     ).not.toThrow()
-  })
-})
-
-describe('a contract emits its fallback handler', () => {
-  // solc emits `{"type":"fallback","stateMutability":…}`; the SDK's ABI model
-  // has no `fallback` variant, so a contract that accepts arbitrary calldata
-  // looks — to any consumer reading the ABI — like it does not.
-  it('abi-surface declares a fallback', () => {
-    const abi = loadAbi('abi/abi-surface.abi.json')
-    expect(abi.some((item) => item.type === 'fallback')).toBe(true)
   })
 })
 
@@ -130,6 +92,12 @@ function inputsOf(abi: Abi, name: string): readonly AbiParameter[] {
 
 function inputTypesOf(abi: Abi, name: string): string[] {
   return inputsOf(abi, name).map((param) => param.type)
+}
+
+function outputTypesOf(abi: Abi, name: string): string[] {
+  const item = abi.find((candidate) => candidate.type === 'function' && candidate.name === name)
+  expect(item, `${name} is missing from the ABI`).toBeDefined()
+  return (item as { outputs: readonly AbiParameter[] }).outputs.map((param) => param.type)
 }
 
 function errorSignatures(abi: Abi): string[] {

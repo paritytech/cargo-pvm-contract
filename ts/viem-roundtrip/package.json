@@ -8,6 +8,7 @@
   "scripts": {
     "gen:abis": "node scripts/gen-abi-ts.mjs",
     "test": "vitest run",
+    "test:known-gaps": "vitest run --config vitest.known-gaps.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

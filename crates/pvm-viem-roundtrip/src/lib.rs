@@ -84,6 +84,40 @@ pub struct ContractFixture {
     pub functions: Vec<FunctionCase>,
     pub errors: Vec<ErrorCase>,
     pub events: Vec<EventCase>,
+    /// Revert payloads the contract really produces but whose error item the
+    /// emitted ABI does *not* carry (the `.sol`-path gap). The main suite never
+    /// reads these; `test/known-gaps/` runs the same viem decode/encode
+    /// assertions over them so the gap shows up as viem's own
+    /// `AbiErrorSignatureNotFoundError`, and a guard in the main suite fails
+    /// the moment the ABI gains the item, so the case has to be promoted to
+    /// `errors` rather than going stale.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub known_gap_errors: Vec<ErrorCase>,
+    /// Constructor arguments the contract really takes but whose `constructor`
+    /// item the emitted ABI does not carry. Same treatment as
+    /// `known_gap_errors`: `test/known-gaps/` drives `encodeDeployData` with
+    /// them, and the main suite guards against the case going stale.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub known_gap_deploy: Option<DeployCase>,
+}
+
+/// Constructor arguments and their ABI encoding, as `encodeDeployData` must
+/// append them to the bytecode.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeployCase {
+    /// Arguments in viem's input shape, one per constructor input.
+    pub args: Vec<serde_json::Value>,
+    /// `0x`-prefixed ABI encoding of the argument tuple.
+    pub encoded_args: String,
+}
+
+/// Build a [`DeployCase`] from the constructor's argument tuple.
+pub fn deploy_case<A: SolEncode>(args: &A, args_json: Vec<serde_json::Value>) -> DeployCase {
+    DeployCase {
+        args: args_json,
+        encoded_args: hex(&encode(args)),
+    }
 }
 
 /// One function's calldata and/or return-data vector.
@@ -310,6 +344,17 @@ pub fn error_case<E: SolError>(
     value: &E,
     args_json: Vec<serde_json::Value>,
 ) -> ErrorCase {
+    // A struct error carries its own signature; an enum zeroes it (the wire
+    // selector is the held variant's), so only the former can be cross-checked
+    // against the signature the case was declared with.
+    if !E::SIGNATURE.is_empty() {
+        assert_eq!(
+            E::SIGNATURE,
+            signature,
+            "error case `{id}`: declared signature disagrees with the type's SolError::SIGNATURE",
+        );
+    }
+
     let mut buf = vec![0u8; value.encoded_size()];
     let written = value.encode_to(&mut buf);
     buf.truncate(written);

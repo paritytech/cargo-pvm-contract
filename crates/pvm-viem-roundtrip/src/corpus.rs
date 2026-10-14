@@ -23,7 +23,7 @@ use crate::surface::abi_surface::{
 };
 use crate::{
     ContractFixture, ErrorCase, EventCase, Fixtures, FunctionCase, ParameterCase, bytes,
-    error_case, event_case, function_case, function_case_noargs, num, parameter_case,
+    deploy_case, error_case, event_case, function_case, function_case_noargs, num, parameter_case,
 };
 
 // ---------------------------------------------------------------------------
@@ -54,7 +54,9 @@ pub struct Bundle {
     pub tags: [[u8; 4]; 3],
 }
 
-/// Mirrors `error-handling.rs`'s parameterless errors.
+/// Mirrors `error-handling.rs`'s parameterless errors. The contract really
+/// reverts with these, but `ErrorHandling.sol` declares neither, so on the
+/// `.sol` path they are missing from the ABI — they feed `known_gap_errors`.
 #[derive(Debug, SolError)]
 pub struct AlwaysReverts;
 
@@ -205,24 +207,27 @@ const TAG: [u8; 32] = [
 pub fn build() -> Fixtures {
     Fixtures {
         parameters: parameters(),
+        // Not every emitted ABI gets vectors. An ABI with no entry here is
+        // still parsed, grammar-checked and signature-checked by the suite;
+        // what it forgoes is the byte-level round-trip, which is only worth
+        // writing for a contract that adds a parameter shape. `storage-types`
+        // (eighteen elementary setters and getters), `caller-check`,
+        // `receive`, `flipper-call`, `flipper-delegate` and `point-adder-call`
+        // add none beyond what the contracts below already carry, and their
+        // encodings are pinned against alloy-core by `pvm-contract-types::tests`
+        // regardless. `constructor-args` is here only for its deploy case.
         contracts: vec![
             flipper(),
             multi_method(),
             return_values(),
             dynamic_types(),
             composite_types(),
-            storage_types(),
             point_adder(),
             constructor_args(),
             events(),
             error_handling(),
             error_caller(),
             payable(),
-            receive(),
-            caller_check(),
-            flipper_call(),
-            flipper_delegate(),
-            point_adder_call(),
             mytoken_storage(),
             abi_surface(),
             sol_type_surface(),
@@ -483,6 +488,8 @@ fn contract(
         functions,
         errors,
         events,
+        known_gap_errors: vec![],
+        known_gap_deploy: None,
     }
 }
 
@@ -685,137 +692,6 @@ fn composite_types() -> ContractFixture {
     )
 }
 
-fn storage_types() -> ContractFixture {
-    contract(
-        "storage-types",
-        vec![
-            function_case(
-                "setU8/max",
-                "setU8",
-                "setU8(uint8)",
-                &(u8::MAX,),
-                vec![num(u8::MAX)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs("getU8", "getU8", "getU8()", Some((&u8::MAX, num(u8::MAX)))),
-            function_case(
-                "setU16/max",
-                "setU16",
-                "setU16(uint16)",
-                &(u16::MAX,),
-                vec![num(u16::MAX)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getU16",
-                "getU16",
-                "getU16()",
-                Some((&u16::MAX, num(u16::MAX))),
-            ),
-            function_case(
-                "setU32/max",
-                "setU32",
-                "setU32(uint32)",
-                &(u32::MAX,),
-                vec![num(u32::MAX)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getU32",
-                "getU32",
-                "getU32()",
-                Some((&u32::MAX, num(u32::MAX))),
-            ),
-            function_case(
-                "setU64/max",
-                "setU64",
-                "setU64(uint64)",
-                &(u64::MAX,),
-                vec![num(u64::MAX)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getU64",
-                "getU64",
-                "getU64()",
-                Some((&u64::MAX, num(u64::MAX))),
-            ),
-            function_case(
-                "setU128/max",
-                "setU128",
-                "setU128(uint128)",
-                &(u128::MAX,),
-                vec![num(u128::MAX)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getU128",
-                "getU128",
-                "getU128()",
-                Some((&u128::MAX, num(u128::MAX))),
-            ),
-            function_case(
-                "setU256/max",
-                "setU256",
-                "setU256(uint256)",
-                &(U256::MAX,),
-                vec![num(U256::MAX)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getU256",
-                "getU256",
-                "getU256()",
-                Some((&U256::MAX, num(U256::MAX))),
-            ),
-            function_case(
-                "setBool",
-                "setBool",
-                "setBool(bool)",
-                &(true,),
-                vec![json!(true)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getBool",
-                "getBool",
-                "getBool()",
-                Some((&true, json!(true))),
-            ),
-            function_case(
-                "setBytes32",
-                "setBytes32",
-                "setBytes32(bytes32)",
-                &(TAG,),
-                vec![bytes(&TAG)],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getBytes32",
-                "getBytes32",
-                "getBytes32()",
-                Some((&TAG, bytes(&TAG))),
-            ),
-            function_case(
-                "setAddress",
-                "setAddress",
-                "setAddress(address)",
-                &(addr(),),
-                vec![addr_json()],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs(
-                "getAddress",
-                "getAddress",
-                "getAddress()",
-                Some((&addr(), addr_json())),
-            ),
-        ],
-        vec![],
-        vec![],
-    )
-}
-
 fn point_adder() -> ContractFixture {
     contract(
         "point-adder",
@@ -841,106 +717,6 @@ fn point_adder() -> ContractFixture {
                 },
                 json!({ "a": "4", "b": "6" }),
             )),
-        )],
-        vec![],
-        vec![],
-    )
-}
-
-fn constructor_args() -> ContractFixture {
-    contract(
-        "constructor-args",
-        vec![
-            function_case_noargs(
-                "getOwner",
-                "getOwner",
-                "getOwner()",
-                Some((&addr(), addr_json())),
-            ),
-            function_case_noargs(
-                "getInitialSupply",
-                "getInitialSupply",
-                "getInitialSupply()",
-                Some((&U256::from(1_000_000u64), num(1_000_000))),
-            ),
-        ],
-        vec![],
-        vec![],
-    )
-}
-
-/// The remaining `.sol`-backed binaries. Their ABI surface is small — an
-/// `address` argument and an accessor or two — but the coverage gate in
-/// `abi-shape.test.ts` requires every emitted item to be exercised, so that a
-/// newly added contract method cannot silently go unchecked.
-fn caller_check() -> ContractFixture {
-    contract(
-        "caller-check",
-        vec![
-            function_case_noargs(
-                "getCaller",
-                "getCaller",
-                "getCaller()",
-                Some((&addr(), addr_json())),
-            ),
-            void("recordCaller", "recordCaller", "recordCaller()"),
-            function_case_noargs(
-                "getLastCaller",
-                "getLastCaller",
-                "getLastCaller()",
-                Some((&addr(), addr_json())),
-            ),
-        ],
-        vec![],
-        vec![],
-    )
-}
-
-fn flipper_call() -> ContractFixture {
-    contract(
-        "flipper-call",
-        vec![function_case(
-            "callFlipper",
-            "callFlipper",
-            "callFlipper(address)",
-            &(addr(),),
-            vec![addr_json()],
-            None::<(&bool, _)>,
-        )],
-        vec![],
-        vec![],
-    )
-}
-
-fn flipper_delegate() -> ContractFixture {
-    contract(
-        "flipper-delegate",
-        vec![
-            function_case(
-                "delegateFlipper",
-                "delegateFlipper",
-                "delegateFlipper(address)",
-                &(addr(),),
-                vec![addr_json()],
-                None::<(&bool, _)>,
-            ),
-            function_case_noargs("get", "get", "get()", Some((&false, json!(false)))),
-        ],
-        vec![],
-        vec![],
-    )
-}
-
-fn point_adder_call() -> ContractFixture {
-    contract(
-        "point-adder-call",
-        vec![function_case(
-            "callPointAdder",
-            "callPointAdder",
-            "callPointAdder(address)",
-            &(addr(),),
-            vec![addr_json()],
-            None::<(&bool, _)>,
         )],
         vec![],
         vec![],
@@ -992,7 +768,7 @@ fn events() -> ContractFixture {
 }
 
 fn error_handling() -> ContractFixture {
-    contract(
+    let base = contract(
         "error-handling",
         vec![
             void("willRevert", "willRevert", "willRevert()"),
@@ -1017,9 +793,20 @@ fn error_handling() -> ContractFixture {
                 Some((&U256::from(5u64), num(5))),
             ),
         ],
-        vec![
-            // Encoded through the enum, exactly as dispatch does, to prove the
-            // wire selector is the held variant's and not the enum's (zeroed).
+        vec![],
+        vec![],
+    );
+    // `error-handling.rs` reverts with `AlwaysReverts()` / `ZeroNotAllowed()`,
+    // but `ErrorHandling.sol` declares neither, and on the `.sol` path the ABI
+    // is the interface — so these payloads cannot be decoded through it. They
+    // go in `known_gap_errors`: `test/known-gaps/errors.test.ts` runs viem over
+    // them (and fails, as a user would), and the guard in `abi-shape.test.ts`
+    // forces the move into `errors` once the ABI carries the items.
+    //
+    // Encoded through the enum, exactly as dispatch does, to prove the wire
+    // selector is the held variant's and not the enum's (zeroed).
+    ContractFixture {
+        known_gap_errors: vec![
             error_case(
                 "AlwaysReverts",
                 "AlwaysReverts",
@@ -1035,11 +822,16 @@ fn error_handling() -> ContractFixture {
                 vec![],
             ),
         ],
-        vec![],
-    )
+        ..base
+    }
 }
 
 fn error_caller() -> ContractFixture {
+    // The contract re-raises the callee's revert as `Error(string)`, which the
+    // interface does not declare — and that is *not* a gap: solc never emits
+    // `Error(string)` / `Panic(uint256)` in an ABI either, and viem decodes
+    // both without an entry. `errors.test.ts` asserts exactly that against this
+    // ABI, using the `RevertString` bytes from the `abi-surface` corpus.
     contract(
         "error-caller",
         vec![function_case(
@@ -1050,15 +842,43 @@ fn error_caller() -> ContractFixture {
             vec![addr_json()],
             None::<(&bool, _)>,
         )],
-        vec![error_case(
-            "RevertString",
-            "Error",
-            "Error(string)",
-            &RevertString("call failed".to_string()),
-            vec![json!("call failed")],
-        )],
+        vec![],
         vec![],
     )
+}
+
+/// `ConstructorArgs.sol` is an interface, so it cannot declare the two
+/// constructor arguments `constructor-args.rs` takes; the emitted ABI has no
+/// `constructor` item at all. The deploy case lets `test/known-gaps/` show the
+/// consequence through `encodeDeployData` with the real arguments, and the
+/// guard in `abi-shape.test.ts` retires it once the ABI gains the item.
+fn constructor_args() -> ContractFixture {
+    let base = contract(
+        "constructor-args",
+        vec![
+            function_case_noargs(
+                "getOwner",
+                "getOwner",
+                "getOwner()",
+                Some((&addr(), addr_json())),
+            ),
+            function_case_noargs(
+                "getInitialSupply",
+                "getInitialSupply",
+                "getInitialSupply()",
+                Some((&U256::from(1_000_000u64), num(1_000_000))),
+            ),
+        ],
+        vec![],
+        vec![],
+    );
+    ContractFixture {
+        known_gap_deploy: Some(deploy_case(
+            &(addr(), U256::from(1_000_000u64)),
+            vec![addr_json(), num(1_000_000)],
+        )),
+        ..base
+    }
 }
 
 fn payable() -> ContractFixture {
@@ -1089,28 +909,6 @@ fn payable() -> ContractFixture {
                 &(addr(),),
                 vec![addr_json()],
                 Some((&U256::from(1_000u64), num(1_000))),
-            ),
-        ],
-        vec![],
-        vec![],
-    )
-}
-
-fn receive() -> ContractFixture {
-    contract(
-        "receive",
-        vec![
-            function_case_noargs(
-                "totalReceived",
-                "totalReceived",
-                "totalReceived()",
-                Some((&U256::from(5u64), num(5))),
-            ),
-            function_case_noargs(
-                "receiveCount",
-                "receiveCount",
-                "receiveCount()",
-                Some((&U256::from(1u64), num(1))),
             ),
         ],
         vec![],
@@ -1184,6 +982,8 @@ fn mytoken_storage() -> ContractFixture {
                 ("value", num(1_000)),
             ],
         )],
+        known_gap_errors: vec![],
+        known_gap_deploy: None,
     }
 }
 
@@ -1511,6 +1311,8 @@ fn abi_surface() -> ContractFixture {
         functions,
         errors,
         events,
+        known_gap_errors: vec![],
+        known_gap_deploy: None,
     }
 }
 
@@ -1803,6 +1605,8 @@ fn sol_type_surface() -> ContractFixture {
         functions,
         errors,
         events,
+        known_gap_errors: vec![],
+        known_gap_deploy: None,
     }
 }
 

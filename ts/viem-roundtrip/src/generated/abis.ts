@@ -389,6 +389,10 @@ export const abiSurfaceAbi = [
     "stateMutability": "payable"
   },
   {
+    "type": "fallback",
+    "stateMutability": "nonpayable"
+  },
+  {
     "type": "error",
     "name": "Unauthorized",
     "inputs": []
@@ -590,6 +594,95 @@ export const callerCheckAbi = [
   },
   {
     "type": "function",
+    "name": "getOrigin",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getSelfAddress",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getBlockNumber",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getTimestamp",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getChainId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getBalance",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getBalanceOf",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "recordCaller",
     "inputs": [],
     "outputs": [],
@@ -597,7 +690,50 @@ export const callerCheckAbi = [
   },
   {
     "type": "function",
+    "name": "recordContext",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "recordContextOn",
+    "inputs": [
+      {
+        "name": "target",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "getLastCaller",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getLastOrigin",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getLastSelf",
     "inputs": [],
     "outputs": [
       {
@@ -1642,6 +1778,96 @@ export const pointAdderAbi = [
   }
 ] as const satisfies Abi
 
+export const precompilesAbi = [
+  {
+    "type": "function",
+    "name": "recover",
+    "inputs": [
+      {
+        "name": "hash",
+        "type": "bytes32"
+      },
+      {
+        "name": "v",
+        "type": "uint8"
+      },
+      {
+        "name": "r",
+        "type": "bytes32"
+      },
+      {
+        "name": "s",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "verifyP256",
+    "inputs": [
+      {
+        "name": "hash",
+        "type": "bytes32"
+      },
+      {
+        "name": "r",
+        "type": "bytes32"
+      },
+      {
+        "name": "s",
+        "type": "bytes32"
+      },
+      {
+        "name": "x",
+        "type": "bytes32"
+      },
+      {
+        "name": "y",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "error",
+    "name": "InvalidCalldata",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CalldataTooLarge",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnknownSelector",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NonPayableValueReceived",
+    "inputs": []
+  }
+] as const satisfies Abi
+
 export const receiveAbi = [
   {
     "type": "receive",
@@ -1798,7 +2024,7 @@ export const solReferenceTypesAbi = [
     "inputs": [
       {
         "name": "token",
-        "type": "IToken"
+        "type": "address"
       }
     ],
     "outputs": [],
@@ -1810,7 +2036,7 @@ export const solReferenceTypesAbi = [
     "inputs": [
       {
         "name": "tokens",
-        "type": "IToken[]"
+        "type": "address[]"
       }
     ],
     "outputs": [],
@@ -1818,25 +2044,37 @@ export const solReferenceTypesAbi = [
   },
   {
     "type": "function",
-    "name": "addNode",
+    "name": "setPool",
     "inputs": [
       {
-        "name": "n",
+        "name": "p",
         "type": "tuple",
         "components": [
           {
-            "name": "value",
-            "type": "uint256"
+            "name": "token",
+            "type": "address"
           },
           {
-            "name": "children",
-            "type": "Node[]"
+            "name": "weight",
+            "type": "uint256"
           }
         ]
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "token",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "error",
@@ -2778,6 +3016,7 @@ export const abis = {
   "payable": payableAbi,
   "point-adder-call": pointAdderCallAbi,
   "point-adder": pointAdderAbi,
+  "precompiles": precompilesAbi,
   "receive": receiveAbi,
   "return-values": returnValuesAbi,
   "sol-reference-types": solReferenceTypesAbi,

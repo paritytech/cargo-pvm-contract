@@ -1,11 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { Abi } from 'viem'
-import { decodeErrorResult, encodeErrorResult, formatAbiItem } from 'viem/utils'
+import { decodeErrorResult } from 'viem/utils'
 
-import { toViemValues } from '../src/convert.js'
 import { fixtures, loadAbi } from '../src/fixtures.js'
-
-type AbiError = Extract<Abi[number], { type: 'error' }>
+import { expectErrorDecodes, expectErrorEncodes } from './helpers.js'
 
 describe('revert payloads decode with viem', () => {
   for (const contract of fixtures.contracts) {
@@ -13,26 +10,8 @@ describe('revert payloads decode with viem', () => {
     const abi = loadAbi(contract.abiFile)
 
     describe(contract.name, () => {
-      it.each(contract.errors)('decode $id', (fixture) => {
-        const decoded = decodeErrorResult({ abi, data: fixture.data })
-        expect(decoded.errorName).toBe(fixture.errorName)
-        const item = decoded.abiItem as AbiError
-        expect(formatAbiItem(item)).toBe(fixture.signature)
-        const args = toViemValues(item.inputs ?? [], fixture.args)
-        expect(decoded.args ?? []).toEqual(args)
-      })
-
-      it.each(contract.errors)('encode $id', (fixture) => {
-        const item = findError(abi, fixture.signature)
-        const args = toViemValues(item.inputs ?? [], fixture.args)
-        expect(
-          encodeErrorResult({
-            abi: [item],
-            errorName: fixture.errorName,
-            ...(args.length > 0 ? { args } : {}),
-          } as never),
-        ).toBe(fixture.data)
-      })
+      it.each(contract.errors)('decode $id', (fixture) => expectErrorDecodes(abi, fixture))
+      it.each(contract.errors)('encode $id', (fixture) => expectErrorEncodes(abi, fixture))
     })
   }
 })
@@ -77,6 +56,37 @@ describe('the standard Solidity reverts keep their canonical selectors', () => {
   })
 })
 
+describe('the Solidity built-in errors decode without an ABI entry', () => {
+  // solc never lists `Error(string)` or `Panic(uint256)` in an ABI, and viem
+  // decodes both regardless. So a `.sol`-path contract whose interface does
+  // not declare them (error-caller re-raises its callee's revert as
+  // `Error(string)`) is still fully decodable — unlike a custom error, which
+  // is the real `.sol`-path gap asserted in `known-gaps/`.
+  const abi = loadAbi('abi/error-caller.abi.json')
+
+  it('the error-caller ABI declares neither', () => {
+    const declared = abi.filter((item) => item.type === 'error').map((item) => item.name)
+    expect(declared).not.toContain('Error')
+    expect(declared).not.toContain('Panic')
+  })
+
+  it('Error(string) decodes', () => {
+    const fixture = byId('abi-surface', 'RevertString')
+    expect(decodeErrorResult({ abi, data: fixture.data })).toMatchObject({
+      errorName: 'Error',
+      args: ['guard tripped'],
+    })
+  })
+
+  it('Panic(uint256) decodes', () => {
+    const fixture = byId('abi-surface', 'Panic/overflow')
+    expect(decodeErrorResult({ abi, data: fixture.data })).toMatchObject({
+      errorName: 'Panic',
+      args: [0x11n],
+    })
+  })
+})
+
 describe('dispatch-level reverts are decodable too', () => {
   // The framework errors are appended to every emitted ABI, so a caller that
   // hits an unknown selector gets a named error rather than opaque bytes.
@@ -94,12 +104,4 @@ function byId(contractName: string, id: string) {
   const fixture = contract.errors.find((e) => e.id === id)
   if (!fixture) throw new Error(`no error fixture ${contractName}/${id}`)
   return fixture
-}
-
-function findError(abi: Abi, signature: string): AbiError {
-  const matches = abi.filter(
-    (item): item is AbiError => item.type === 'error' && formatAbiItem(item) === signature,
-  )
-  expect(matches.length, `${signature} is missing from the ABI`).toBe(1)
-  return matches[0]!
 }

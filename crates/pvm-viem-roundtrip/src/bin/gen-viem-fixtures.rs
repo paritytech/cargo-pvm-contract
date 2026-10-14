@@ -115,6 +115,11 @@ const SOL_TARGETS: &[Target] = &[
         bin: "point_adder_call",
         name: "point-adder-call",
     },
+    Target {
+        project: "examples/test-contracts",
+        bin: "precompiles",
+        name: "precompiles",
+    },
 ];
 
 /// Binaries whose ABI has to come from the Rust side.

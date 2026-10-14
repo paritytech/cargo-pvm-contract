@@ -47,6 +47,12 @@ export type EventCase = {
   decoded: Record<string, unknown>
 }
 
+/** Mirrors `DeployCase`. */
+export type DeployCase = {
+  args: unknown[]
+  encodedArgs: `0x${string}`
+}
+
 /** Mirrors `ContractFixture`. */
 export type ContractFixture = {
   name: string
@@ -55,6 +61,14 @@ export type ContractFixture = {
   functions: FunctionCase[]
   errors: ErrorCase[]
   events: EventCase[]
+  /**
+   * Revert payloads the contract produces whose error item the ABI does not
+   * carry yet. Only `test/known-gaps/` reads these; the main suite guards
+   * against them going stale once the ABI gains the item.
+   */
+  knownGapErrors?: ErrorCase[]
+  /** Constructor arguments whose `constructor` item the ABI does not carry yet. */
+  knownGapDeploy?: DeployCase
 }
 
 /** Mirrors `Fixtures`. */

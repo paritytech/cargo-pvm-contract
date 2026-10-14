@@ -187,6 +187,22 @@ fn generate_abi_gen_impl(
         quote! {}
     };
 
+    let fallback_entry = if parsed.has_fallback {
+        let mutability = if parsed.fallback_is_payable {
+            StateMutability::Payable
+        } else {
+            StateMutability::NonPayable
+        }
+        .as_abi_str();
+        quote! {
+            __items.push(::pvm_contract_sdk::AbiItem::Fallback {
+                state_mutability: Some(#mutability.into()),
+            });
+        }
+    } else {
+        quote! {}
+    };
+
     // Emit error ABI entries by calling error_signatures() on each error type.
     // Deduplication uses exact-match on the full signature ("Name(type1,type2)")
     // so that overloaded errors with different params are all emitted.
@@ -314,6 +330,8 @@ fn generate_abi_gen_impl(
             #(#method_entries)*
 
             #receive_entry
+
+            #fallback_entry
 
             #(#error_entries)*
 
@@ -513,6 +531,58 @@ mod tests {
             after_ctor.contains(&mutability_token("payable")),
             "payable constructor must declare payable; got:\n{after_ctor}"
         );
+    }
+
+    #[test]
+    fn fallback_abi_entry_follows_payable_marker() {
+        let non_payable: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::fallback]
+                    pub fn fallback(&mut self) {}
+                }
+            }
+        };
+        let s = expand_to_string(non_payable);
+        let marker = "AbiItem :: Fallback";
+        assert!(
+            s.contains(marker),
+            "fallback entry marker missing; got:\n{s}"
+        );
+        let after = &s[s.find(marker).unwrap()..];
+        assert!(
+            after.contains(&mutability_token("nonpayable")),
+            "non-payable fallback must declare nonpayable; got:\n{after}"
+        );
+
+        let payable: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::fallback]
+                    #[pvm_contract_macros::payable]
+                    pub fn fallback(&mut self) {}
+                }
+            }
+        };
+        let s = expand_to_string(payable);
+        let after = &s[s.find(marker).unwrap()..];
+        assert!(
+            after.contains(&mutability_token("payable")),
+            "payable fallback must declare payable; got:\n{after}"
+        );
+
+        let none: syn::ItemMod = syn::parse_quote! {
+            mod c {
+                pub struct C;
+                impl C {
+                    #[pvm_contract_macros::method]
+                    pub fn get(&self) -> bool { true }
+                }
+            }
+        };
+        assert!(!expand_to_string(none).contains(marker));
     }
 
     #[test]

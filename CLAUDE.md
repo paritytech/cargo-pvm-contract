@@ -130,7 +130,7 @@ Solidity `stateMutability` is inferred from the Rust receiver. No explicit `#[vi
 
 **Constructor:** must take `&mut self`; `pure`/`view` constructors are rejected (they cannot initialize storage). `#[payable]` is allowed.
 
-**Fallback:** follows the same inference table as regular methods.
+**Fallback:** follows the same inference table as regular methods for the payable check (`&self` and `&mut self` are both accepted, no receiver is rejected). The ABI entry is `{"type":"fallback","stateMutability":"nonpayable"|"payable"}` only — Solidity has no `view`/`pure` fallback, so a `&self` fallback is advertised as `nonpayable`, matching what solc would emit.
 
 **`.sol` consistency check:** when a `.sol` interface is provided, the macro errors if the Rust-inferred mutability disagrees with the `.sol` declaration (e.g., `.sol` says `view` but Rust uses `&mut self`).
 
@@ -511,33 +511,48 @@ pnpm --dir ts/viem-roundtrip gen:abis
 
 # Run the suite
 pnpm --dir ts/viem-roundtrip install --frozen-lockfile
-pnpm --dir ts/viem-roundtrip test
-pnpm --dir ts/viem-roundtrip typecheck
+pnpm --dir ts/viem-roundtrip test              # blocking in CI
+pnpm --dir ts/viem-roundtrip typecheck         # blocking in CI
+pnpm --dir ts/viem-roundtrip test:known-gaps   # non-blocking in CI, red by design
 ```
 
 Fixtures are committed and CI fails on any diff, so an ABI change lands as a
 reviewable diff; the two generator commands above are the re-bless flow. The
 `abi-surface` contract in `crates/pvm-viem-roundtrip/src/surface.rs` exercises
 the Rust-side ABI emitter (signed integers, `bytesN` widths, dynamic structs,
-parameterised errors, indexed dynamic and anonymous events, overloads) without
-adding another binary to the riscv build; the standalone interfaces in
-`crates/pvm-viem-roundtrip/sol/` do the same for the `.sol` parser's
-`type_to_abi_param` (enums, user-defined value types, nested structs, struct
-arrays, bare `uint`/`int`, nested array suffixes).
+parameterised errors, indexed dynamic and anonymous events, overloads, the
+`fallback` entry) without adding another binary to the riscv build; the
+standalone interfaces in `crates/pvm-viem-roundtrip/sol/` do the same for the
+`.sol` parser's `type_to_abi_param` (enums, user-defined value types, nested
+structs, struct arrays, bare `uint`/`int`, nested array suffixes, contract-typed
+parameters, which resolve to `address`).
 
-Two gates keep coverage from eroding: every function, error and event in every
-emitted ABI must be exercised by a fixture case, and every parameter `type` must
-be a valid ABI type (viem parses lazily, so a bad type string only throws at the
-first encode). `SolEncode`/`SolDecode` symmetry is enforced Rust-side inside
-`parameter_case` — viem cannot see an encoding our own dispatch then misreads.
+Three gates keep coverage from eroding: every function, error and event in
+every emitted ABI must have a canonical signature viem can hash (no vectors
+needed, so it covers all ABIs); every parameter `type` must be a valid ABI type
+(viem parses lazily, so a bad type string only throws at the first encode); and
+for the contracts that carry vectors in `vectors.json`, every item must be
+exercised by a case. Vector coverage is opt-in by contract — only add vectors
+for a contract that introduces a parameter shape. `SolEncode`/`SolDecode`
+symmetry is enforced Rust-side inside `parameter_case` — viem cannot see an
+encoding our own dispatch then misreads.
 
-The suite does *not* restate `pvm-contract-types::tests`, which already pins
-every primitive and container shape byte-for-byte against alloy-core under
-proptest. Raw parameter cases cover only the delta plus one value per `SOL_NAME`
-family (the sole check on `abi_param`'s descriptor output); revert and log
-encodings are tested *through the emitted ABI* rather than re-checked as bytes.
+The suite does *not* restate `pvm-contract-types::tests` or
+`pvm-contract-macros/tests/derive_sol_type_encoding.rs`, which already pin
+every primitive, container and `SolType` struct shape byte-for-byte against
+alloy-core under proptest. Raw parameter cases cover only the delta plus one
+value per `SOL_NAME` family (the sole check on `abi_param`'s descriptor
+output); revert and log encodings are tested *through the emitted ABI* rather
+than re-checked as bytes.
 
-Some tests are red on purpose — see the "Known failures" section of
+`ts/viem-roundtrip/test/known-gaps/` holds assertions the emitter does not
+satisfy yet (Rust-declared errors, fallback and constructor arguments missing
+from `.sol`-path ABIs). They are real viem failures — the contract's actual
+revert bytes through `decodeErrorResult`, the real constructor arguments
+through `encodeDeployData` — fed by `knownGapErrors` / `knownGapDeploy` on the
+fixture, and run as a separate non-blocking CI step. A guard in the blocking
+suite fails once an ABI gains such an item, so the vector has to be promoted
+into `errors` rather than going stale — see the "Known gaps" section of
 `ts/viem-roundtrip/README.md`.
 
 ## Lint & Format

@@ -466,14 +466,16 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     let mut flat: Vec<&syn_solidity::Item> = Vec::new();
     collect_items(&file.items, &mut flat);
 
-    // First pass: build a registry of user-defined types (structs, enums, and
-    // value types) for resolution, keyed by the type's name.
+    // First pass: build a registry of user-defined types (structs, enums,
+    // value types, and contract/interface/library names) for resolution,
+    // keyed by the type's name.
     let mut structs: CustomMap = std::collections::HashMap::new();
     for item in &flat {
         let (name, def) = match item {
             syn_solidity::Item::Struct(s) => (s.name.to_string(), CustomDef::Struct(s)),
             syn_solidity::Item::Enum(e) => (e.name.to_string(), CustomDef::Enum),
             syn_solidity::Item::Udt(u) => (u.name.to_string(), CustomDef::Udt(&u.ty)),
+            syn_solidity::Item::Contract(c) => (c.name.to_string(), CustomDef::Contract),
             _ => continue,
         };
         // Keyed by simple name, so a duplicate would silently overwrite and
@@ -492,12 +494,12 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     for item in &flat {
         match item {
             syn_solidity::Item::Function(func) => {
-                if let Some(abi) = function_to_abi(func, &structs) {
+                if let Some(abi) = function_to_abi(func, &structs)? {
                     items.push(abi);
                 }
             }
-            syn_solidity::Item::Error(err) => items.push(error_to_abi(err, &structs)),
-            syn_solidity::Item::Event(evt) => items.push(event_to_abi(evt, &structs)),
+            syn_solidity::Item::Error(err) => items.push(error_to_abi(err, &structs)?),
+            syn_solidity::Item::Event(evt) => items.push(event_to_abi(evt, &structs)?),
             _ => {}
         }
     }
@@ -524,12 +526,15 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
 }
 
 /// A user-defined Solidity type, resolved to its ABI representation:
-/// a struct becomes a `tuple`, an enum a `uint8`, and a value type its
-/// underlying elementary type.
+/// a struct becomes a `tuple`, an enum a `uint8`, a value type its
+/// underlying elementary type, and a contract/interface/library handle an
+/// `address` (solc records the original in `internalType`, which the ABI
+/// encoding does not depend on).
 enum CustomDef<'a> {
     Struct(&'a syn_solidity::ItemStruct),
     Enum,
     Udt(&'a syn_solidity::Type),
+    Contract,
 }
 
 type CustomMap<'a> = std::collections::HashMap<String, CustomDef<'a>>;
@@ -545,7 +550,7 @@ fn collect_items<'a>(items: &'a [syn_solidity::Item], out: &mut Vec<&'a syn_soli
     }
 }
 
-fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &CustomMap) -> AbiParam {
+fn param_to_abi(decl: &syn_solidity::VariableDeclaration, structs: &CustomMap) -> Result<AbiParam> {
     let name = decl.name.as_ref().map(unraw).unwrap_or_default();
     type_to_abi_param(&name, &decl.ty, structs, &mut Vec::new())
 }
@@ -562,22 +567,27 @@ fn unraw<T: std::fmt::Display>(ident: T) -> String {
 /// Build an [`AbiParam`] for a `name: ty` declaration, expanding named structs
 /// and tuples into `tuple` + `components`. Struct fields keep their declared
 /// names (matching solc and the macro abi-gen path); inline-tuple elements are
-/// unnamed. `active` is the stack of struct names currently being expanded: a
-/// struct may legally reference itself through a dynamic array
-/// (`struct S { S[] children; }`), so when a struct name is already on the stack
-/// the cycle is broken by falling back to its bare name — the same fallback used
-/// for unresolved custom types (enum, UDT, undefined).
+/// unnamed. `active` is the stack of struct names currently being expanded.
+///
+/// Every `type` this produces is inside the ABI grammar. Two shapes have no
+/// ABI representation and are rejected rather than emitted under a bare name
+/// that viem/ethers would accept at import and then throw on at the first
+/// encode: a struct that reaches itself (`struct S { S[] children; }`), which
+/// solc also refuses in an external signature, and a custom type the file does
+/// not define (typically an unfollowed `import`).
 fn type_to_abi_param(
     name: &str,
     ty: &syn_solidity::Type,
     structs: &CustomMap,
     active: &mut Vec<String>,
-) -> AbiParam {
+) -> Result<AbiParam> {
     use syn_solidity::Type;
-    let leaf = |param_type: String| AbiParam {
-        name: name.to_string(),
-        param_type,
-        components: Vec::new(),
+    let leaf = |param_type: String| {
+        Ok(AbiParam {
+            name: name.to_string(),
+            param_type,
+            components: Vec::new(),
+        })
     };
     match ty {
         Type::Address(_, _) => leaf("address".to_string()),
@@ -587,39 +597,49 @@ fn type_to_abi_param(
         Type::FixedBytes(_, size) => leaf(format!("bytes{}", size.get())),
         Type::Int(_, size) => leaf(format!("int{}", size.map(|s| s.get()).unwrap_or(256))),
         Type::Uint(_, size) => leaf(format!("uint{}", size.map(|s| s.get()).unwrap_or(256))),
-        // Mappings and function types are not valid ABI parameter types.
-        Type::Mapping(_) | Type::Function(_) => leaf(String::new()),
+        // An external function pointer is an ABI `function` (24 bytes: address
+        // ++ selector), which is what solc emits.
+        Type::Function(_) => leaf("function".to_string()),
+        // A mapping cannot appear in an external signature at all.
+        Type::Mapping(_) => anyhow::bail!(
+            "mapping types cannot appear in an external signature and have no ABI representation"
+        ),
         Type::Array(arr) => {
-            let inner = type_to_abi_param("", &arr.ty, structs, active);
+            let inner = type_to_abi_param("", &arr.ty, structs, active)?;
             let suffix = match arr.size() {
                 Some(n) => format!("[{n}]"),
                 None => "[]".to_string(),
             };
-            AbiParam {
+            Ok(AbiParam {
                 name: name.to_string(),
                 param_type: format!("{}{}", inner.param_type, suffix),
                 components: inner.components,
-            }
+            })
         }
         Type::Tuple(tuple) => {
             let mut components = Vec::with_capacity(tuple.types.len());
             for t in tuple.types.iter() {
-                components.push(type_to_abi_param("", t, structs, active));
+                components.push(type_to_abi_param("", t, structs, active)?);
             }
-            AbiParam {
+            Ok(AbiParam {
                 name: name.to_string(),
                 param_type: "tuple".to_string(),
                 components,
-            }
+            })
         }
         Type::Custom(path) => {
             let custom = path.last().to_string();
             if active.contains(&custom) {
-                return leaf(custom);
+                anyhow::bail!(
+                    "struct `{custom}` references itself, which has no ABI representation \
+                     (solc rejects recursive structs in external signatures too)"
+                );
             }
             match structs.get(&custom) {
-                // Enums encode as uint8; value types as their underlying type.
+                // Enums encode as uint8; value types as their underlying type;
+                // contract handles are addresses on the wire.
                 Some(CustomDef::Enum) => leaf("uint8".to_string()),
+                Some(CustomDef::Contract) => leaf("address".to_string()),
                 Some(CustomDef::Udt(underlying)) => {
                     type_to_abi_param(name, underlying, structs, active)
                 }
@@ -628,37 +648,55 @@ fn type_to_abi_param(
                     let mut components = Vec::with_capacity(def.fields.len());
                     for field in def.fields.iter() {
                         let field_name = field.name.as_ref().map(unraw).unwrap_or_default();
-                        components.push(type_to_abi_param(&field_name, &field.ty, structs, active));
+                        components.push(type_to_abi_param(
+                            &field_name,
+                            &field.ty,
+                            structs,
+                            active,
+                        )?);
                     }
                     active.pop();
-                    AbiParam {
+                    Ok(AbiParam {
                         name: name.to_string(),
                         param_type: "tuple".to_string(),
                         components,
-                    }
+                    })
                 }
-                // Truly unknown custom type: fall back to its bare name.
-                None => leaf(custom),
+                None => anyhow::bail!(
+                    "unknown type `{custom}`: it is not declared in this file (imports are \
+                     not followed), so it cannot be mapped to an ABI type; declare the \
+                     struct, enum, value type or interface in this file"
+                ),
             }
         }
     }
 }
 
-fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &CustomMap) -> Option<AbiItem> {
+fn params_to_abi(
+    params: impl IntoIterator<Item = impl std::borrow::Borrow<syn_solidity::VariableDeclaration>>,
+    structs: &CustomMap,
+) -> Result<Vec<AbiParam>> {
+    params
+        .into_iter()
+        .map(|p| param_to_abi(p.borrow(), structs))
+        .collect()
+}
+
+fn function_to_abi(
+    func: &syn_solidity::ItemFunction,
+    structs: &CustomMap,
+) -> Result<Option<AbiItem>> {
     use syn_solidity::{FunctionKind, Mutability};
 
-    match func.kind {
+    let item = match func.kind {
         FunctionKind::Function(_) => {
-            let inputs = func
-                .parameters
-                .iter()
-                .map(|p| param_to_abi(p, structs))
-                .collect();
-            let outputs = func
-                .returns
-                .as_ref()
-                .map(|r| r.returns.iter().map(|p| param_to_abi(p, structs)).collect())
-                .unwrap_or_default();
+            let inputs = params_to_abi(func.parameters.iter(), structs)
+                .with_context(|| format!("in function `{}`", func.name()))?;
+            let outputs = match func.returns.as_ref() {
+                Some(r) => params_to_abi(r.returns.iter(), structs)
+                    .with_context(|| format!("in function `{}`", func.name()))?,
+                None => Vec::new(),
+            };
             let state_mutability = match func.attributes.mutability() {
                 Some(Mutability::Pure(_)) => "pure",
                 Some(Mutability::View(_)) => "view",
@@ -674,11 +712,8 @@ fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &CustomMap) -> Op
             })
         }
         FunctionKind::Constructor(_) => {
-            let inputs = func
-                .parameters
-                .iter()
-                .map(|p| param_to_abi(p, structs))
-                .collect();
+            let inputs =
+                params_to_abi(func.parameters.iter(), structs).context("in constructor")?;
             let state_mutability = match func.attributes.mutability() {
                 Some(Mutability::Payable(_)) => "payable",
                 _ => "nonpayable",
@@ -692,43 +727,48 @@ fn function_to_abi(func: &syn_solidity::ItemFunction, structs: &CustomMap) -> Op
         FunctionKind::Receive(_) => Some(AbiItem::Receive {
             state_mutability: Some("payable".to_string()),
         }),
-        // Fallback and modifier definitions are not emitted in the ABI
-        // (preserving the prior parser, which never handled them).
-        FunctionKind::Fallback(_) | FunctionKind::Modifier(_) => None,
-    }
-}
-
-fn error_to_abi(err: &syn_solidity::ItemError, structs: &CustomMap) -> AbiItem {
-    AbiItem::Error {
-        name: err.name.to_string(),
-        inputs: err
-            .parameters
-            .iter()
-            .map(|p| param_to_abi(p, structs))
-            .collect(),
-    }
-}
-
-fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> AbiItem {
-    let inputs = evt
-        .parameters
-        .iter()
-        .map(|p| {
-            let name = p.name.as_ref().map(unraw).unwrap_or_default();
-            let param = type_to_abi_param(&name, &p.ty, structs, &mut Vec::new());
-            AbiEventParam {
-                name: param.name,
-                param_type: param.param_type,
-                components: param.components,
-                indexed: p.indexed.is_some(),
+        FunctionKind::Fallback(_) => {
+            let state_mutability = match func.attributes.mutability() {
+                Some(Mutability::Payable(_)) => "payable",
+                _ => "nonpayable",
             }
-        })
-        .collect();
-    AbiItem::Event {
+            .to_string();
+            Some(AbiItem::Fallback {
+                state_mutability: Some(state_mutability),
+            })
+        }
+        // Modifier definitions have no ABI representation.
+        FunctionKind::Modifier(_) => None,
+    };
+    Ok(item)
+}
+
+fn error_to_abi(err: &syn_solidity::ItemError, structs: &CustomMap) -> Result<AbiItem> {
+    Ok(AbiItem::Error {
+        name: err.name.to_string(),
+        inputs: params_to_abi(err.parameters.iter(), structs)
+            .with_context(|| format!("in error `{}`", err.name))?,
+    })
+}
+
+fn event_to_abi(evt: &syn_solidity::ItemEvent, structs: &CustomMap) -> Result<AbiItem> {
+    let mut inputs = Vec::with_capacity(evt.parameters.len());
+    for p in evt.parameters.iter() {
+        let name = p.name.as_ref().map(unraw).unwrap_or_default();
+        let param = type_to_abi_param(&name, &p.ty, structs, &mut Vec::new())
+            .with_context(|| format!("in event `{}`", evt.name))?;
+        inputs.push(AbiEventParam {
+            name: param.name,
+            param_type: param.param_type,
+            components: param.components,
+            indexed: p.indexed.is_some(),
+        });
+    }
+    Ok(AbiItem::Event {
         name: evt.name.to_string(),
         inputs,
         anonymous: evt.is_anonymous(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -752,9 +792,11 @@ interface I { function f() external; }"#;
     }
 
     #[test]
-    fn generate_abi_from_sol_recursive_struct_does_not_overflow() {
-        // A struct may reference itself through a dynamic array; expanding the
-        // back-edge must terminate rather than recurse forever.
+    fn generate_abi_from_sol_rejects_recursive_struct() {
+        // A struct that reaches itself has no ABI representation: expanding the
+        // back-edge can neither terminate nor produce a type viem could encode.
+        // solc rejects the same shape in an external signature, so the build
+        // fails with a pointed message rather than emitting `"type": "S[]"`.
         let (_d, path) = write_sol(
             "Recursive.sol",
             r#"pragma solidity ^0.8.0;
@@ -770,57 +812,194 @@ interface I {
 "#,
         );
 
-        expect![[r#"
-            [
-              {
-                "type": "function",
-                "name": "f",
-                "inputs": [
-                  {
-                    "name": "s",
-                    "type": "tuple",
-                    "components": [
-                      {
-                        "name": "children",
-                        "type": "S[]"
-                      },
-                      {
-                        "name": "v",
-                        "type": "uint256"
-                      }
-                    ]
-                  }
-                ],
-                "outputs": [],
-                "stateMutability": "nonpayable"
-              },
-              {
-                "type": "error",
-                "name": "InvalidCalldata",
-                "inputs": []
-              },
-              {
-                "type": "error",
-                "name": "CalldataTooLarge",
-                "inputs": []
-              },
-              {
-                "type": "error",
-                "name": "NoSelector",
-                "inputs": []
-              },
-              {
-                "type": "error",
-                "name": "UnknownSelector",
-                "inputs": []
-              },
-              {
-                "type": "error",
-                "name": "NonPayableValueReceived",
-                "inputs": []
-              }
-            ]"#]]
-        .assert_eq(&abi_json(&path));
+        let err = generate_abi_from_sol(&path).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "in function `f`: struct `S` references itself, which has no ABI representation \
+             (solc rejects recursive structs in external signatures too)"
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_rejects_undeclared_type() {
+        // A name the file never defines (an `import` is rejected earlier by
+        // `reject_sol_imports`; this is the same hole without one, e.g. a typo
+        // or a declaration that was deleted). Emitting it verbatim would produce
+        // an ABI that imports cleanly and throws at the first encode, so it is a
+        // build error instead.
+        let (_d, path) = write_sol(
+            "Undeclared.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface I {
+    function f(Other o) external;
+}
+"#,
+        );
+
+        let err = generate_abi_from_sol(&path).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "in function `f`: unknown type `Other`: it is not declared in this file (imports \
+             are not followed), so it cannot be mapped to an ABI type; declare the struct, \
+             enum, value type or interface in this file"
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_rejects_duplicate_type_names() {
+        // Two interfaces may each scope their own `struct Info` in Solidity,
+        // but the parser resolves by bare name and would otherwise emit the
+        // last declaration for both.
+        let (_d, path) = write_sol(
+            "Dup.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface A {
+    struct Info { uint256 a; }
+    function fa(Info i) external;
+}
+
+interface B {
+    struct Info { address b; bool c; }
+    function fb(Info i) external;
+}
+"#,
+        );
+
+        let err = generate_abi_from_sol(&path).unwrap_err();
+        assert!(
+            format!("{err:#}").starts_with("two Solidity user-defined types are both named `Info`"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_function_type_and_mapping() {
+        let (_d, path) = write_sol(
+            "FnPtr.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface Hooks {
+    function register(function(uint256) external returns (bool) cb) external;
+}
+"#,
+        );
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let input = abi
+            .0
+            .iter()
+            .find_map(|i| match i {
+                AbiItem::Function { name, inputs, .. } if name == "register" => {
+                    Some(inputs[0].param_type.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(input, "function");
+
+        let (_d, path) = write_sol(
+            "Map.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface Bad {
+    function f(mapping(address => uint256) m) external;
+}
+"#,
+        );
+        let err = generate_abi_from_sol(&path).unwrap_err();
+        assert_eq!(
+            format!("{err:#}"),
+            "in function `f`: mapping types cannot appear in an external signature and have \
+             no ABI representation"
+        );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_contract_types_become_address() {
+        // A contract or interface handle is an `address` on the wire; solc
+        // emits exactly that and records the original in `internalType`.
+        let (_d, path) = write_sol(
+            "Handles.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface IToken {
+    function totalSupply() external view returns (uint256);
+}
+
+struct Pool {
+    IToken token;
+    uint256 weight;
+}
+
+interface Registry {
+    function setToken(IToken token) external;
+    function setTokens(IToken[] calldata tokens) external;
+    function setPool(Pool calldata p) external;
+    function token() external view returns (IToken);
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let function = |wanted: &str| {
+            abi.0
+                .iter()
+                .find_map(|i| match i {
+                    AbiItem::Function {
+                        name,
+                        inputs,
+                        outputs,
+                        ..
+                    } if name == wanted => Some((inputs.clone(), outputs.clone())),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(function("setToken").0[0].param_type, "address");
+        assert_eq!(function("setTokens").0[0].param_type, "address[]");
+        assert_eq!(function("token").1[0].param_type, "address");
+        let pool = &function("setPool").0[0];
+        assert_eq!(pool.param_type, "tuple");
+        assert_eq!(pool.components[0].param_type, "address");
+    }
+
+    #[test]
+    fn generate_abi_from_sol_emits_fallback() {
+        let (_d, path) = write_sol(
+            "Fallback.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface Sink {
+    function ping() external;
+    fallback() external payable;
+    receive() external payable;
+}
+"#,
+        );
+
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        assert!(abi.0.contains(&AbiItem::Fallback {
+            state_mutability: Some("payable".to_string()),
+        }));
+        assert!(abi.0.contains(&AbiItem::Receive {
+            state_mutability: Some("payable".to_string()),
+        }));
+
+        let (_d, path) = write_sol(
+            "NonPayableFallback.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface Sink {
+    function ping() external;
+    fallback() external;
+}
+"#,
+        );
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        assert!(abi.0.contains(&AbiItem::Fallback {
+            state_mutability: Some("nonpayable".to_string()),
+        }));
     }
 
     #[test]

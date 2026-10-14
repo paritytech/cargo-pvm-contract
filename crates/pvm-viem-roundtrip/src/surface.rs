@@ -248,8 +248,7 @@ pub mod abi_surface {
         #[pvm_contract_sdk::receive]
         pub fn receive(&mut self) {}
 
-        /// Emits nothing in the ABI today — the emitter has no `fallback`
-        /// variant — which is itself asserted by the TypeScript suite.
+        /// Emits a `fallback` ABI entry (`nonpayable`, since no `#[payable]`).
         #[pvm_contract_sdk::fallback]
         pub fn fallback(&mut self) -> Result<(), SurfaceError> {
             Ok(())
