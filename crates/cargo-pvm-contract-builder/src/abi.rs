@@ -509,11 +509,15 @@ pub(crate) fn generate_abi_from_sol(sol_path: &Path) -> Result<Option<AbiJson>> 
     }
 
     // Append framework-level parameterless custom errors, unless the .sol
-    // interface already defines an error with the same name.
+    // interface already declares the same *signature*. Dedupe by signature, not
+    // name, matching the macro abi-gen path: a user `error
+    // NonPayableValueReceived(uint256)` has a different selector than the
+    // framework's `NonPayableValueReceived()`, so both must be in the ABI for a
+    // client to decode either revert.
     for name in pvm_contract_types::framework_errors::NAMES {
-        let already_defined = items
-            .iter()
-            .any(|item| matches!(item, AbiItem::Error { name: n, .. } if n == name));
+        let already_defined = items.iter().any(
+            |item| matches!(item, AbiItem::Error { name: n, inputs } if n == name && inputs.is_empty()),
+        );
         if !already_defined {
             items.push(AbiItem::Error {
                 name: name.to_string(),
@@ -598,8 +602,17 @@ fn type_to_abi_param(
         Type::Int(_, size) => leaf(format!("int{}", size.map(|s| s.get()).unwrap_or(256))),
         Type::Uint(_, size) => leaf(format!("uint{}", size.map(|s| s.get()).unwrap_or(256))),
         // An external function pointer is an ABI `function` (24 bytes: address
-        // ++ selector), which is what solc emits.
-        Type::Function(_) => leaf("function".to_string()),
+        // ++ selector), which is what solc emits. Any other function type is
+        // internal — including an unannotated one, which Solidity defaults to
+        // internal — and solc rejects it in an external signature ("Internal
+        // type is not allowed for public or external functions").
+        Type::Function(f) => match f.attributes.visibility() {
+            Some(syn_solidity::Visibility::External(_)) => leaf("function".to_string()),
+            _ => anyhow::bail!(
+                "internal function types cannot appear in an external signature; \
+                 declare the function type `external`"
+            ),
+        },
         // A mapping cannot appear in an external signature at all.
         Type::Mapping(_) => anyhow::bail!(
             "mapping types cannot appear in an external signature and have no ABI representation"
@@ -913,6 +926,100 @@ interface Bad {
             "in function `f`: mapping types cannot appear in an external signature and have \
              no ABI representation"
         );
+    }
+
+    #[test]
+    fn generate_abi_from_sol_rejects_internal_function_type() {
+        // solc: "Internal type is not allowed for public or external functions"
+        // for both an explicit `internal` and an unannotated function type
+        // (which defaults to internal). Emitting `function` for either would
+        // describe an interface no real contract can implement.
+        for annotation in ["internal ", ""] {
+            let (_d, path) = write_sol(
+                "Internal.sol",
+                &format!(
+                    r#"pragma solidity ^0.8.0;
+
+interface I {{
+    function f(function(uint256) {annotation}cb) external;
+}}
+"#
+                ),
+            );
+            let err = generate_abi_from_sol(&path).unwrap_err();
+            assert_eq!(
+                format!("{err:#}"),
+                "in function `f`: internal function types cannot appear in an external \
+                 signature; declare the function type `external`",
+                "annotation {annotation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn generate_abi_from_sol_framework_errors_dedupe_by_signature() {
+        // A user error that shares a framework error's *name* but not its
+        // signature is a different selector; both must be emitted so a client
+        // can decode either revert. solc accepts this shape (an inherited
+        // scope declaring `NonPayableValueReceived(uint256)`).
+        let (_d, path) = write_sol(
+            "Shadow.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface A {
+    error NonPayableValueReceived(uint256 amount);
+}
+
+interface B is A {
+    function f() external;
+}
+"#,
+        );
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let signatures: Vec<String> = abi
+            .0
+            .iter()
+            .filter_map(|item| match item {
+                AbiItem::Error { name, inputs } if name == "NonPayableValueReceived" => {
+                    Some(format!(
+                        "{name}({})",
+                        inputs
+                            .iter()
+                            .map(|p| p.param_type.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            signatures,
+            [
+                "NonPayableValueReceived(uint256)",
+                "NonPayableValueReceived()"
+            ]
+        );
+
+        // An exact redeclaration of the framework signature is still not
+        // duplicated.
+        let (_d, path) = write_sol(
+            "Exact.sol",
+            r#"pragma solidity ^0.8.0;
+
+interface I {
+    error NonPayableValueReceived();
+    function f() external;
+}
+"#,
+        );
+        let abi = generate_abi_from_sol(&path).unwrap().unwrap();
+        let count = abi
+            .0
+            .iter()
+            .filter(|item| matches!(item, AbiItem::Error { name, .. } if name == "NonPayableValueReceived"))
+            .count();
+        assert_eq!(count, 1);
     }
 
     #[test]
