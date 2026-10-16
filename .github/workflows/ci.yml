@@ -96,6 +96,11 @@ jobs:
         run: cargo run -p pvm-viem-roundtrip --bin gen-viem-fixtures
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
+        with:
+          # The pnpm version comes from `packageManager` in this file. The
+          # action looks for `package.json` at the repo root by default, and
+          # this repo has none, so point it at the suite's own manifest.
+          package_json_file: ts/viem-roundtrip/package.json
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
@@ -131,8 +136,8 @@ jobs:
         working-directory: ts/viem-roundtrip
         run: pnpm typecheck
       # `test/known-gaps/` asserts what a viem user needs from the ABI but the
-      # emitter does not yet provide (Rust-declared errors and constructor
-      # arguments on the `.sol` path). The assertions are real failures, not
+      # emitter does not yet provide (Rust-declared errors, fallback and
+      # constructor arguments on the `.sol` path). The assertions are real failures, not
       # skips; this step only keeps them from blocking unrelated changes. When
       # the gap closes, fold the tests back into the main suite and drop the
       # `continue-on-error`.
