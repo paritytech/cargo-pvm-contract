@@ -389,6 +389,10 @@ export const abiSurfaceAbi = [
     "stateMutability": "payable"
   },
   {
+    "type": "fallback",
+    "stateMutability": "nonpayable"
+  },
+  {
     "type": "error",
     "name": "Unauthorized",
     "inputs": []
@@ -2020,7 +2024,7 @@ export const solReferenceTypesAbi = [
     "inputs": [
       {
         "name": "token",
-        "type": "IToken"
+        "type": "address"
       }
     ],
     "outputs": [],
@@ -2032,7 +2036,7 @@ export const solReferenceTypesAbi = [
     "inputs": [
       {
         "name": "tokens",
-        "type": "IToken[]"
+        "type": "address[]"
       }
     ],
     "outputs": [],
@@ -2040,25 +2044,37 @@ export const solReferenceTypesAbi = [
   },
   {
     "type": "function",
-    "name": "addNode",
+    "name": "setPool",
     "inputs": [
       {
-        "name": "n",
+        "name": "p",
         "type": "tuple",
         "components": [
           {
-            "name": "value",
-            "type": "uint256"
+            "name": "token",
+            "type": "address"
           },
           {
-            "name": "children",
-            "type": "Node[]"
+            "name": "weight",
+            "type": "uint256"
           }
         ]
       }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "token",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "error",

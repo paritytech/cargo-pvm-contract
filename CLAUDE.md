@@ -130,7 +130,7 @@ Solidity `stateMutability` is inferred from the Rust receiver. No explicit `#[vi
 
 **Constructor:** must take `&mut self`; `pure`/`view` constructors are rejected (they cannot initialize storage). `#[payable]` is allowed.
 
-**Fallback:** follows the same inference table as regular methods.
+**Fallback:** follows the same inference table as regular methods for the payable check (`&self` and `&mut self` are both accepted, no receiver is rejected). The ABI entry is `{"type":"fallback","stateMutability":"nonpayable"|"payable"}` only — Solidity has no `view`/`pure` fallback, so a `&self` fallback is advertised as `nonpayable`, matching what solc would emit.
 
 **`.sol` consistency check:** when a `.sol` interface is provided, the macro errors if the Rust-inferred mutability disagrees with the `.sol` declaration (e.g., `.sol` says `view` but Rust uses `&mut self`).
 
@@ -521,11 +521,11 @@ reviewable diff; the two generator commands above are the re-bless flow. The
 `abi-surface` contract in `crates/pvm-viem-roundtrip/src/surface.rs` exercises
 the Rust-side ABI emitter (signed integers, `bytesN` widths, dynamic structs,
 parameterised errors, indexed dynamic and anonymous events, overloads, the
-`fallback` handler) without adding another binary to the riscv build; the
+`fallback` entry) without adding another binary to the riscv build; the
 standalone interfaces in `crates/pvm-viem-roundtrip/sol/` do the same for the
 `.sol` parser's `type_to_abi_param` (enums, user-defined value types, nested
 structs, struct arrays, bare `uint`/`int`, nested array suffixes, contract-typed
-parameters, self-referential structs).
+parameters, which resolve to `address`).
 
 Three gates keep coverage from eroding: every function, error and event in
 every emitted ABI must have a canonical signature viem can hash (no vectors
@@ -546,10 +546,8 @@ output); revert and log encodings are tested *through the emitted ABI* rather
 than re-checked as bytes.
 
 `ts/viem-roundtrip/test/known-gaps/` holds assertions the emitter does not
-satisfy yet: no `fallback` ABI entry, contract-typed parameters and
-self-referential structs emitted under their bare Solidity name, and
-Rust-declared errors, fallback and constructor arguments missing from
-`.sol`-path ABIs. The suite finds these; fixing them is separate work. They are real viem failures — the contract's actual
+satisfy yet (Rust-declared errors, fallback and constructor arguments missing
+from `.sol`-path ABIs). They are real viem failures — the contract's actual
 revert bytes through `decodeErrorResult`, the real constructor arguments
 through `encodeDeployData` — fed by `knownGapErrors` / `knownGapDeploy` on the
 fixture, and run as a separate non-blocking CI step. A guard in the blocking

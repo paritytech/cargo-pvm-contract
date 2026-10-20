@@ -933,12 +933,19 @@ pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[pvm_contract::fallback]
-/// pub fn fallback() -> Result<(), Error> {
+/// pub fn fallback(&mut self) -> Result<(), Error> {
 ///     Err(Error::UnknownSelector)
 /// }
 /// ```
 ///
-/// Must return `Result<(), Error>`. Commonly used to reject unknown calls.
+/// Must take `&self` or `&mut self` (a no-receiver fallback has no host or
+/// calldata access and is rejected) and return `()` or `Result<(), Error>`.
+/// Commonly used to reject unknown calls.
+///
+/// Under `--features abi-gen` the handler is emitted as a
+/// `{"type":"fallback","stateMutability":"nonpayable"|"payable"}` ABI entry,
+/// matching solc, so ABI consumers can see the contract accepts unknown
+/// calldata.
 ///
 /// # Payable Enforcement
 ///
@@ -955,7 +962,7 @@ pub fn constructor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```ignore
 /// #[pvm_contract::fallback]
 /// #[pvm_contract::payable]
-/// pub fn fallback() -> Result<(), Error> { Ok(()) }
+/// pub fn fallback(&mut self) -> Result<(), Error> { Ok(()) }
 /// ```
 #[proc_macro_attribute]
 pub fn fallback(_attr: TokenStream, item: TokenStream) -> TokenStream {

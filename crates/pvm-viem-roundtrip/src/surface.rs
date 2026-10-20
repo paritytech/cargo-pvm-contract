@@ -248,8 +248,7 @@ pub mod abi_surface {
         #[pvm_contract_sdk::receive]
         pub fn receive(&mut self) {}
 
-        /// Should emit a `nonpayable` `fallback` ABI entry. The emitter has no
-        /// `fallback` variant today; `test/known-gaps/` asserts the entry.
+        /// Emits a `fallback` ABI entry (`nonpayable`, since no `#[payable]`).
         #[pvm_contract_sdk::fallback]
         pub fn fallback(&mut self) -> Result<(), SurfaceError> {
             Ok(())

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Abi, AbiParameter } from 'viem'
-import { encodeAbiParameters, encodeDeployData, formatAbiItem } from 'viem/utils'
+import {
+  encodeAbiParameters,
+  encodeDeployData,
+  encodeFunctionData,
+  formatAbiItem,
+} from 'viem/utils'
 
 import { toViemValues } from '../src/convert.js'
 import { loadAbi } from '../src/fixtures.js'
@@ -43,6 +48,57 @@ describe('a contract emits its constructor', () => {
     expect(deployData).toBe(`0x00${encodeAbiParameters(inputs, args).slice(2)}`)
   })
 })
+
+describe('reference types resolve to an ABI type', () => {
+  // A contract- or interface-typed parameter is an `address` on the wire. solc
+  // emits `{"type":"address","internalType":"contract IToken"}`; the encoding
+  // does not depend on `internalType`, so `address` alone is what viem needs.
+  // Each shape below reaches `type_to_abi_param` through a different branch.
+  const abi = loadAbi('abi/sol-reference-types.abi.json')
+
+  it('a bare handle, an array of handles, a struct field and a return value', () => {
+    expect(inputTypesOf(abi, 'setToken')).toEqual(['address'])
+    expect(inputTypesOf(abi, 'setTokens')).toEqual(['address[]'])
+    const [pool] = inputsOf(abi, 'setPool')
+    expect(pool?.type).toBe('tuple')
+    const components = (pool as unknown as { components: readonly AbiParameter[] }).components
+    expect(components.map((c) => c.type)).toEqual(['address', 'uint256'])
+    expect(outputTypesOf(abi, 'token')).toEqual(['address'])
+  })
+
+  it('viem can encode a call through every shape', () => {
+    const token = '0xd8da6bf26964af9d7eed9e03e53415d37aa96045'
+    expect(() =>
+      encodeFunctionData({ abi, functionName: 'setToken', args: [token] } as never),
+    ).not.toThrow()
+    expect(() =>
+      encodeFunctionData({ abi, functionName: 'setTokens', args: [[token]] } as never),
+    ).not.toThrow()
+    expect(() =>
+      encodeFunctionData({
+        abi,
+        functionName: 'setPool',
+        args: [{ token, weight: 1n }],
+      } as never),
+    ).not.toThrow()
+  })
+})
+
+function inputsOf(abi: Abi, name: string): readonly AbiParameter[] {
+  const item = abi.find((candidate) => candidate.type === 'function' && candidate.name === name)
+  expect(item, `${name} is missing from the ABI`).toBeDefined()
+  return (item as { inputs: readonly AbiParameter[] }).inputs
+}
+
+function inputTypesOf(abi: Abi, name: string): string[] {
+  return inputsOf(abi, name).map((param) => param.type)
+}
+
+function outputTypesOf(abi: Abi, name: string): string[] {
+  const item = abi.find((candidate) => candidate.type === 'function' && candidate.name === name)
+  expect(item, `${name} is missing from the ABI`).toBeDefined()
+  return (item as { outputs: readonly AbiParameter[] }).outputs.map((param) => param.type)
+}
 
 function errorSignatures(abi: Abi): string[] {
   return abi.filter((item) => item.type === 'error').map((item) => formatAbiItem(item))
