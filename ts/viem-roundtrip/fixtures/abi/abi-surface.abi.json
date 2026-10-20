@@ -382,10 +382,6 @@
     "stateMutability": "payable"
   },
   {
-    "type": "fallback",
-    "stateMutability": "nonpayable"
-  },
-  {
     "type": "error",
     "name": "Unauthorized",
     "inputs": []

@@ -31,7 +31,7 @@ vectors come from a host-side Rust binary.
 | `test/errors.test.ts` | Custom errors, error-enum dispatch, `Error(string)`, `Panic(uint256)`, the OZ guard error, framework errors |
 | `test/events.test.ts` | Topic hashing, indexed dynamic and composite fields, anonymous events |
 | `test/abi-shape.test.ts` | Structural conformance, the signature gate, the grammar gate, fixture-vs-ABI agreement, and the vector-coverage gate |
-| `test/abi-completeness.test.ts` | Whether the ABI describes everything the contract can do: errors, constructor, fallback, contract-typed parameters |
+| `test/abi-completeness.test.ts` | Whether the ABI describes everything the contract can do: errors and constructor on the Rust path |
 | `test/known-gaps/` | viem decode / deploy assertions the emitter does not satisfy yet — run separately, see below |
 | `test/types.test-d.ts` | abitype inference, enforced by `tsc` |
 
@@ -135,6 +135,24 @@ with a message saying to move the vector from `knownGapErrors` to `errors` in
 `corpus.rs`. The assertions are shared, so that move is the whole promotion.
 When the last test in the directory passes, delete it.
 
+- **No `fallback` entry.** The ABI model has no `fallback` variant, so a
+  contract with a `#[fallback]` handler looks, to any ABI consumer, like it
+  rejects unknown calldata. solc emits
+  `{"type":"fallback","stateMutability":…}`.
+- **Reference types fall back to their bare Solidity name.** When
+  `type_to_abi_param` cannot resolve a custom type it emits the type's name as
+  the ABI `type`, which is outside the ABI grammar. Two shapes reach it:
+  - A **contract- or interface-typed parameter** — `function setToken(IToken t)`
+    emits `"type": "IToken"`. solc emits `address` and records the original in
+    `internalType`. Passing a contract handle is ordinary Solidity, so this is
+    the more consequential of the two.
+  - A **self-referential struct** — `struct Node { uint256 v; Node[] kids; }`
+    emits `"type": "Node[]"` for the field.
+
+  Both ABIs import into viem without complaint and then throw at the first
+  `encodeFunctionData`. `sol-reference-types` is therefore exempt from the
+  blocking grammar gate, and a guard fails the blocking suite once its types
+  become valid, so the exemption cannot outlive the fix.
 - **`.sol`-path ABIs omit Rust-declared items.** When `#[contract("X.sol")]`
   names an interface, the whole ABI is derived from that file, so a
   `#[derive(SolError)]` type, a `#[fallback]` / `#[receive]` handler or a
@@ -163,13 +181,6 @@ them, and they are listed in `UNEXERCISED_BY_DESIGN`:
   maps only 8/16/32/64/128/256.
 - A *fixed* array of `uint8`: `[u8; N]` is `bytesN` and `Vec<u8>` is `uint8[]`,
   so `uint8[N]` is unreachable.
-
-Two more are rejected at build time rather than emitted, and are pinned by the
-builder's own unit tests instead of a fixture: a struct that reaches itself
-(`struct Node { Node[] children; }`, which solc also refuses in an external
-signature) and a custom type the `.sol` file never declares (an unfollowed
-`import`). Both used to come out under their bare name, which viem accepts at
-import and throws on at the first encode.
 
 ## Boundaries that are viem's, not ours
 

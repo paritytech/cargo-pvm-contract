@@ -54,15 +54,6 @@ pub enum AbiItem {
         #[serde(default)]
         state_mutability: Option<String>,
     },
-    /// The `fallback` handler, emitted as solc does
-    /// (`{"type":"fallback","stateMutability":"nonpayable"|"payable"}`) so an
-    /// ABI consumer can tell that the contract accepts unknown calldata.
-    Fallback {
-        #[serde(rename = "stateMutability")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        #[serde(default)]
-        state_mutability: Option<String>,
-    },
 }
 
 /// A parameter in a Solidity ABI event signature.

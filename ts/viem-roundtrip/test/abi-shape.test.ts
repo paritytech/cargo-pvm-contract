@@ -64,21 +64,6 @@ describe('a `receive` entry is emitted for contracts with a receive handler', ()
   })
 })
 
-describe('a `fallback` entry is emitted for contracts with a fallback handler', () => {
-  // solc emits `{"type":"fallback","stateMutability":…}`; without it a contract
-  // that accepts arbitrary calldata looks, to any ABI consumer, like it rejects
-  // it. `abi-surface` declares a non-payable `#[fallback]`.
-  it('abi-surface', () => {
-    const abi = loadAbi('abi/abi-surface.abi.json')
-    const entry = abi.find((item) => item.type === 'fallback')
-    expect(entry).toEqual({ type: 'fallback', stateMutability: 'nonpayable' })
-  })
-
-  it('is absent when no handler is declared', () => {
-    expect(loadAbi('abi/flipper.abi.json').some((item) => item.type === 'fallback')).toBe(false)
-  })
-})
-
 describe('every ABI item has a canonical signature viem can hash', () => {
   // This gate needs no hand-written vectors, so it runs over every emitted ABI
   // whether or not the corpus has cases for it. `formatAbiItem` expands tuples
@@ -243,21 +228,39 @@ describe('known-gap cases are still gaps', () => {
   })
 })
 
+/** ABIs exempt from the grammar gate because they demonstrate a known gap. */
+const KNOWN_INVALID_TYPES = new Set(['sol-reference-types'])
+
 describe('every parameter type is a valid ABI type', () => {
   // viem parses an ABI lazily: an unrepresentable `type` string survives import
   // and only blows up at the first encode, decode or selector computation. This
   // walks every parameter of every item so such a type is caught up front,
   // whichever emitter produced it.
-  it.each(abiFiles)('$name', ({ abi }) => {
-    const invalid: string[] = []
-    for (const item of abi) {
-      for (const param of parametersOf(item)) {
-        collectInvalidTypes(param, describeItem(item), invalid)
-      }
-    }
-    expect(invalid).toEqual([])
+  it.each(abiFiles.filter(({ name }) => !KNOWN_INVALID_TYPES.has(name)))('$name', ({ abi }) => {
+    expect(invalidTypesOf(abi)).toEqual([])
+  })
+
+  // ABIs that exist to demonstrate an emitter defect producing invalid types;
+  // the user-facing failures are asserted in `known-gaps/emitter.test.ts`.
+  // This half is blocking: once the emitter is fixed the exclusion must go, so
+  // the ABI rejoins the gate above instead of staying exempt indefinitely.
+  it.each([...KNOWN_INVALID_TYPES])('%s is still a known gap', (name) => {
+    expect(
+      invalidTypesOf(loadAbi(`abi/${name}.abi.json`)).length,
+      `gap closed: ${name} now has only valid types; remove it from KNOWN_INVALID_TYPES`,
+    ).toBeGreaterThan(0)
   })
 })
+
+function invalidTypesOf(abi: Abi): string[] {
+  const invalid: string[] = []
+  for (const item of abi) {
+    for (const param of parametersOf(item)) {
+      collectInvalidTypes(param, describeItem(item), invalid)
+    }
+  }
+  return invalid
+}
 
 /** `uint256`, `bytes4`, `string`, `tuple[2][]`, … — the ABI type grammar. */
 const ELEMENTARY = /^(?:address|bool|string|bytes|function|tuple|(?:u?int(?:8|16|24|32|40|48|56|64|72|80|88|96|104|112|120|128|136|144|152|160|168|176|184|192|200|208|216|224|232|240|248|256))|bytes(?:[1-9]|1\d|2\d|3[0-2]))$/
