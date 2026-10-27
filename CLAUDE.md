@@ -19,6 +19,7 @@ Cargo subcommand and toolchain for building Rust smart contracts targeting Polka
 | `pvm-contract-benchmarks` | Binary size comparison tool for CI regression detection |
 | `pvm-contract-e2e-tests` | End-to-end + integration test harness |
 | `pvm-solc-differential` | Differential tests of on-chain storage representation vs real solc (executed on `revm`); `solc-tests` feature |
+| `pvm-viem-roundtrip` | Emits the golden ABI + encoding fixtures consumed by the TypeScript viem round-trip suite in `ts/viem-roundtrip` |
 
 ## How It Works
 
@@ -496,6 +497,66 @@ cargo test -p pvm-contract-macros
 cargo test -p cargo-pvm-contract
 ```
 
+### viem round-trip suite
+
+`ts/viem-roundtrip` checks the emitted ABI JSON against viem: that viem can
+parse it, that viem's encoders and decoders agree byte-for-byte with
+`SolEncode` / `SolError` / `SolEvent`, and that abitype infers the right
+TypeScript types from it. Offline — no node, no riscv build.
+
+```bash
+# Regenerate the checked-in fixtures (needed after any ABI or encoding change)
+cargo run -p pvm-viem-roundtrip --bin gen-viem-fixtures
+pnpm --dir ts/viem-roundtrip gen:abis
+
+# Run the suite
+pnpm --dir ts/viem-roundtrip install --frozen-lockfile
+pnpm --dir ts/viem-roundtrip test              # blocking in CI
+pnpm --dir ts/viem-roundtrip typecheck         # blocking in CI
+pnpm --dir ts/viem-roundtrip test:known-gaps   # non-blocking in CI, red by design
+```
+
+Fixtures are committed and CI fails on any diff, so an ABI change lands as a
+reviewable diff; the two generator commands above are the re-bless flow. The
+`abi-surface` contract in `crates/pvm-viem-roundtrip/src/surface.rs` exercises
+the Rust-side ABI emitter (signed integers, `bytesN` widths, dynamic structs,
+parameterised errors, indexed dynamic and anonymous events, overloads, the
+`fallback` handler) without adding another binary to the riscv build; the
+standalone interfaces in `crates/pvm-viem-roundtrip/sol/` do the same for the
+`.sol` parser's `type_to_abi_param` (enums, user-defined value types, nested
+structs, struct arrays, bare `uint`/`int`, nested array suffixes, contract-typed
+parameters, self-referential structs).
+
+Three gates keep coverage from eroding: every function, error and event in
+every emitted ABI must have a canonical signature viem can hash (no vectors
+needed, so it covers all ABIs); every parameter `type` must be a valid ABI type
+(viem parses lazily, so a bad type string only throws at the first encode); and
+for the contracts that carry vectors in `vectors.json`, every item must be
+exercised by a case. Vector coverage is opt-in by contract — only add vectors
+for a contract that introduces a parameter shape. `SolEncode`/`SolDecode`
+symmetry is enforced Rust-side inside `parameter_case` — viem cannot see an
+encoding our own dispatch then misreads.
+
+The suite does *not* restate `pvm-contract-types::tests` or
+`pvm-contract-macros/tests/derive_sol_type_encoding.rs`, which already pin
+every primitive, container and `SolType` struct shape byte-for-byte against
+alloy-core under proptest. Raw parameter cases cover only the delta plus one
+value per `SOL_NAME` family (the sole check on `abi_param`'s descriptor
+output); revert and log encodings are tested *through the emitted ABI* rather
+than re-checked as bytes.
+
+`ts/viem-roundtrip/test/known-gaps/` holds assertions the emitter does not
+satisfy yet: no `fallback` ABI entry, contract-typed parameters and
+self-referential structs emitted under their bare Solidity name, and
+Rust-declared errors, fallback and constructor arguments missing from
+`.sol`-path ABIs. The suite finds these; fixing them is separate work. They are real viem failures — the contract's actual
+revert bytes through `decodeErrorResult`, the real constructor arguments
+through `encodeDeployData` — fed by `knownGapErrors` / `knownGapDeploy` on the
+fixture, and run as a separate non-blocking CI step. A guard in the blocking
+suite fails once an ABI gains such an item, so the vector has to be promoted
+into `errors` rather than going stale — see the "Known gaps" section of
+`ts/viem-roundtrip/README.md`.
+
 ## Lint & Format
 
 ```bash
@@ -614,9 +675,16 @@ crates/
   pvm-bump-allocator/           Bump allocator (allocator = "bump")
   pvm-contract-benchmarks/      Binary size CI regression tool
   pvm-contract-e2e-tests/       E2E + integration test harness
+  pvm-viem-roundtrip/           Golden-fixture generator for the viem suite
+    src/surface.rs              `abi-surface` contract exercising the Rust ABI emitter
+    sol/                        Standalone .sol interfaces exercising the .sol parser
+    src/corpus.rs               The fixed corpus of values and their viem-shaped JSON
+    src/bin/gen-viem-fixtures.rs  Writes fixtures into ts/viem-roundtrip/fixtures/
 examples/
   example-mytoken/              7 MyToken variants
   test-contracts/               23 test contracts (19 with .sol interfaces)
+ts/
+  viem-roundtrip/               TypeScript suite checking the emitted ABI against viem
 specs/
   abi.md                        ABI encoding specification (includes error encoding)
   architecture.md               Architecture overview

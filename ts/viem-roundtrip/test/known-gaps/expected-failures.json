@@ -1,0 +1,15 @@
+[
+  "test/known-gaps/emitter.test.ts :: a contract emits its fallback handler abi-surface declares a non-payable fallback",
+  "test/known-gaps/emitter.test.ts :: reference types resolve to an ABI type a contract-typed parameter becomes address",
+  "test/known-gaps/emitter.test.ts :: reference types resolve to an ABI type a self-referential struct field resolves",
+  "test/known-gaps/emitter.test.ts :: reference types resolve to an ABI type viem can encode a call to every function",
+  "test/known-gaps/errors.test.ts :: revert payloads the .sol-path ABI cannot decode yet error-handling decode 'AlwaysReverts'",
+  "test/known-gaps/errors.test.ts :: revert payloads the .sol-path ABI cannot decode yet error-handling decode 'ZeroNotAllowed'",
+  "test/known-gaps/errors.test.ts :: revert payloads the .sol-path ABI cannot decode yet error-handling encode 'AlwaysReverts'",
+  "test/known-gaps/errors.test.ts :: revert payloads the .sol-path ABI cannot decode yet error-handling encode 'ZeroNotAllowed'",
+  "test/known-gaps/errors.test.ts :: revert payloads the .sol-path ABI cannot decode yet error-handling signature 'AlwaysReverts'",
+  "test/known-gaps/errors.test.ts :: revert payloads the .sol-path ABI cannot decode yet error-handling signature 'ZeroNotAllowed'",
+  "test/known-gaps/sol-path-items.test.ts :: a .sol-backed contract can be deployed through viem 'constructor-args' deploys with its constructor arguments",
+  "test/known-gaps/sol-path-items.test.ts :: a .sol-backed contract emits its fallback handler error-handling declares a non-payable fallback",
+  "test/known-gaps/sol-path-items.test.ts :: a .sol-backed contract emits the custom errors it can revert with error-handling declares AlwaysReverts and ZeroNotAllowed"
+]
